@@ -1,22 +1,32 @@
 """
-AXIS-OS — WatchdogSystem
-==========================
+AXIS-OS — WatchdogSystem v2
+=============================
 Thread temps-réel qui surveille en permanence tous les joints.
 Déclenche l'e-stop automatique si seuil FATAL franchi.
 
-Licence : Apache 2.0 (open-source)
+Corrections v2 suite à revue externe :
+  - E-STOP protégé par Lock (idempotent garanti même si 2 conditions
+    FATAL arrivent en concurrence depuis des joints différents)
+  - RobotHealthState global dérivé des alertes actives
+  - Confirmation multi-échantillons avant CRITICAL (anti faux-positif)
+  - Auto-surveillance : le watchdog détecte son propre ralentissement
+  - Alertes FATAL jamais perdues (queue dédiée illimitée)
+  - Journal structuré de chaque E-STOP (raison, joint, valeurs, seuil)
+
+Licence : Propriétaire — AXIS-OS
 """
 
 from __future__ import annotations
 import threading
 import time
 import queue
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from axis_os.hal.core.interfaces import IRobotHAL
 from axis_os.hal.core.types import ActuatorFeedback, ActuatorState, JointLimits
-from .events import WatchdogAlert, AlertSeverity, AlertKind
+from .events import WatchdogAlert, AlertSeverity, AlertKind, RobotHealthState
 from .config import WatchdogConfig
 
 
@@ -26,6 +36,7 @@ class JointMonitorState:
         "last_feedback_time", "last_feedback",
         "temp_warning_active", "temp_critical_active",
         "comm_timeout_active", "comm_lost_active",
+        "torque_over_count", "velocity_over_count",
     )
 
     def __init__(self, joint_id: str, limits: JointLimits):
@@ -37,6 +48,25 @@ class JointMonitorState:
         self.temp_critical_active  = False
         self.comm_timeout_active   = False
         self.comm_lost_active      = False
+        self.torque_over_count     = 0   # échantillons consécutifs (#12)
+        self.velocity_over_count   = 0
+
+
+@dataclass
+class EstopLogEntry:
+    """Journal structuré d'un E-STOP — point #19 revue externe."""
+    timestamp_ns: int
+    reason:       str
+    joint_id:     Optional[str]
+    measured:     Optional[float]
+    threshold:    Optional[float]
+    robot_state_snapshot: Dict[str, str] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        joint = f" joint={self.joint_id}" if self.joint_id else ""
+        val   = f" mesuré={self.measured:.2f}/seuil={self.threshold:.2f}" \
+                if self.measured is not None else ""
+        return f"[ESTOP LOG] {self.reason}{joint}{val}"
 
 
 class WatchdogSystem:
@@ -48,6 +78,7 @@ class WatchdogSystem:
         wd.subscribe(my_handler)
         wd.start()
         # ...
+        print(wd.health_state)   # RobotHealthState.HEALTHY / WARNING / ...
         wd.stop()
     """
 
@@ -57,22 +88,57 @@ class WatchdogSystem:
 
         self._joint_states: Dict[str, JointMonitorState] = {}
         self._running      = False
-        self._estop_fired  = False
         self._start_time   = 0.0
         self._last_hb      = 0.0
+
+        # E-STOP protégé par Lock — corrige le point #8 (idempotence garantie
+        # même si deux conditions FATAL sont détectées la même microseconde
+        # sur deux joints différents ; sans Lock, une race condition pouvait
+        # théoriquement laisser passer un double-trigger incohérent).
+        self._estop_lock   = threading.Lock()
+        self._estop_fired  = False
+        self._estop_log: List[EstopLogEntry] = []
 
         self._thread:          Optional[threading.Thread] = None
         self._dispatch_thread: Optional[threading.Thread] = None
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="wdg_cb")
         self._subscribers: List[Callable[[WatchdogAlert], None]] = []
+
+        # Queue normale bornée (INFO/WARNING/CRITICAL) — perte tolérée en cas
+        # de saturation. Queue FATAL séparée, illimitée : point #18, une
+        # alerte FATAL ne doit JAMAIS être perdue silencieusement.
         self._queue: queue.Queue[WatchdogAlert] = queue.Queue(maxsize=256)
+        self._fatal_queue: queue.Queue[WatchdogAlert] = queue.Queue()  # illimitée
+
+        self._active_max_severity = AlertSeverity.INFO  # pour health_state
 
         self._stats = {"cycles": 0, "alerts_total": 0,
                        "alerts_fatal": 0, "estop_count": 0,
-                       "max_cycle_time_ms": 0.0}
+                       "max_cycle_time_ms": 0.0,
+                       "watchdog_degraded": False}  # #14
+
+    # ── API publique ──────────────────────────────────────────────
 
     def subscribe(self, callback: Callable[[WatchdogAlert], None]) -> None:
         self._subscribers.append(callback)
+
+    @property
+    def health_state(self) -> RobotHealthState:
+        """
+        État global du robot — point #10.
+        Dérivé de : e-stop actif > sévérité max des alertes en cours.
+        """
+        if self.estop_fired:
+            return RobotHealthState.ESTOP
+        if self._active_max_severity == AlertSeverity.CRITICAL:
+            return RobotHealthState.DEGRADED
+        if self._active_max_severity == AlertSeverity.WARNING:
+            return RobotHealthState.WARNING
+        return RobotHealthState.HEALTHY
+
+    @property
+    def estop_log(self) -> List[EstopLogEntry]:
+        return list(self._estop_log)
 
     def start(self) -> None:
         if self._running:
@@ -126,7 +192,8 @@ class WatchdogSystem:
         return {**self._stats, "uptime_s": round(uptime, 2),
                 "robot_id": self._hal.robot_id,
                 "profile": self._config.profile_name,
-                "joints_monitored": len(self._joint_states)}
+                "joints_monitored": len(self._joint_states),
+                "health_state": self.health_state.name}
 
     @property
     def is_running(self) -> bool:
@@ -134,7 +201,10 @@ class WatchdogSystem:
 
     @property
     def estop_fired(self) -> bool:
-        return self._estop_fired
+        with self._estop_lock:
+            return self._estop_fired
+
+    # ── Boucle principale ────────────────────────────────────────
 
     def _monitor_loop(self) -> None:
         while self._running:
@@ -142,15 +212,36 @@ class WatchdogSystem:
             try:
                 self._run_cycle()
             except Exception as exc:
+                # Erreur RÉELLE du watchdog (bug interne), distincte d'un
+                # JOINT_FAULT métier — on la nomme clairement pour ne plus
+                # la confondre avec une anomalie du robot lui-même.
                 self._emit(WatchdogAlert(
                     kind=AlertKind.JOINT_FAULT, severity=AlertSeverity.CRITICAL,
-                    joint_id=None, message=f"Erreur interne watchdog: {exc}",
+                    joint_id=None,
+                    message=f"[BUG INTERNE WATCHDOG] {type(exc).__name__}: {exc}",
                     value=None, threshold=None
                 ))
             elapsed = time.monotonic() - t0
             ms = elapsed * 1000
             if ms > self._stats["max_cycle_time_ms"]:
                 self._stats["max_cycle_time_ms"] = ms
+
+            # Point #14 : le watchdog détecte son propre ralentissement.
+            # Un watchdog trop lent pour surveiller correctement le robot
+            # est lui-même une condition de sécurité.
+            if ms > self._config.max_cycle_time_ms and not self._stats["watchdog_degraded"]:
+                self._stats["watchdog_degraded"] = True
+                self._emit(WatchdogAlert(
+                    kind=AlertKind.JOINT_FAULT, severity=AlertSeverity.CRITICAL,
+                    joint_id=None,
+                    message=(f"Watchdog dégradé : cycle={ms:.1f}ms "
+                             f"> seuil={self._config.max_cycle_time_ms:.0f}ms — "
+                             f"la surveillance elle-même n'est plus fiable"),
+                    value=ms, threshold=self._config.max_cycle_time_ms
+                ))
+            elif ms <= self._config.max_cycle_time_ms:
+                self._stats["watchdog_degraded"] = False
+
             sleep = self._config.poll_interval_s - elapsed
             if sleep > 0:
                 time.sleep(sleep)
@@ -165,13 +256,20 @@ class WatchdogSystem:
                 self._joint_states[jid].last_feedback_time = now
                 self._joint_states[jid].last_feedback      = fb
 
+        max_severity_this_cycle = AlertSeverity.INFO
         for jid, jstate in self._joint_states.items():
-            self._check_comm(jstate, now)
+            sev = self._check_comm(jstate, now)
+            max_severity_this_cycle = max(max_severity_this_cycle, sev)
             fb = jstate.last_feedback
             if fb is None: continue
-            self._check_joint_state(fb)
-            self._check_temperature(fb, jstate)
-            self._check_mechanical(fb, jstate)
+            sev = self._check_joint_state(fb)
+            max_severity_this_cycle = max(max_severity_this_cycle, sev)
+            sev = self._check_temperature(fb, jstate)
+            max_severity_this_cycle = max(max_severity_this_cycle, sev)
+            sev = self._check_mechanical(fb, jstate)
+            max_severity_this_cycle = max(max_severity_this_cycle, sev)
+
+        self._active_max_severity = max_severity_this_cycle
 
         if now - self._last_hb >= self._config.heartbeat_interval_s:
             self._last_hb = now
@@ -179,11 +277,12 @@ class WatchdogSystem:
                 kind=AlertKind.HEARTBEAT, severity=AlertSeverity.INFO,
                 joint_id=None,
                 message=(f"Heartbeat | cycles={self._stats['cycles']} | "
-                         f"alertes={self._stats['alerts_total']}"),
+                         f"alertes={self._stats['alerts_total']} | "
+                         f"health={self.health_state.name}"),
                 value=None, threshold=None
             ))
 
-    def _check_comm(self, jstate: JointMonitorState, now: float) -> None:
+    def _check_comm(self, jstate: JointMonitorState, now: float) -> AlertSeverity:
         elapsed = now - jstate.last_feedback_time
         if elapsed >= self._config.comm_lost_s:
             if not jstate.comm_lost_active:
@@ -195,8 +294,11 @@ class WatchdogSystem:
                     value=elapsed*1000, threshold=self._config.comm_lost_s*1000
                 ))
                 if self._config.auto_estop_on_comm_lost:
-                    self._trigger_estop(f"COMM_LOST:{jstate.joint_id}")
-            return
+                    self._trigger_estop(f"COMM_LOST:{jstate.joint_id}",
+                                        joint_id=jstate.joint_id,
+                                        measured=elapsed*1000,
+                                        threshold=self._config.comm_lost_s*1000)
+            return AlertSeverity.FATAL
         if elapsed >= self._config.comm_timeout_s:
             if not jstate.comm_timeout_active:
                 jstate.comm_timeout_active = True
@@ -206,11 +308,12 @@ class WatchdogSystem:
                     message=f"Timeout {elapsed*1000:.0f}ms",
                     value=elapsed*1000, threshold=self._config.comm_timeout_s*1000
                 ))
-        else:
-            jstate.comm_timeout_active = False
-            jstate.comm_lost_active    = False
+            return AlertSeverity.WARNING
+        jstate.comm_timeout_active = False
+        jstate.comm_lost_active    = False
+        return AlertSeverity.INFO
 
-    def _check_joint_state(self, fb: ActuatorFeedback) -> None:
+    def _check_joint_state(self, fb: ActuatorFeedback) -> AlertSeverity:
         if fb.state == ActuatorState.FAULT:
             self._emit(WatchdogAlert(
                 kind=AlertKind.JOINT_FAULT, severity=AlertSeverity.FATAL,
@@ -219,9 +322,14 @@ class WatchdogSystem:
                 value=float(fb.error_code), threshold=0.0
             ))
             if self._config.auto_estop_on_joint_fault:
-                self._trigger_estop(f"JOINT_FAULT:{fb.joint_id}")
+                self._trigger_estop(f"JOINT_FAULT:{fb.joint_id}",
+                                    joint_id=fb.joint_id,
+                                    measured=float(fb.error_code), threshold=0.0)
+            return AlertSeverity.FATAL
+        return AlertSeverity.INFO
 
-    def _check_temperature(self, fb: ActuatorFeedback, jstate: JointMonitorState) -> None:
+    def _check_temperature(self, fb: ActuatorFeedback,
+                           jstate: JointMonitorState) -> AlertSeverity:
         temp = fb.temperature
         if temp >= self._config.temp_critical_c:
             if not jstate.temp_critical_active:
@@ -233,8 +341,11 @@ class WatchdogSystem:
                     value=temp, threshold=self._config.temp_critical_c
                 ))
                 if self._config.auto_estop_on_temp_critical:
-                    self._trigger_estop(f"TEMP_CRITICAL:{fb.joint_id}")
-            return
+                    self._trigger_estop(f"TEMP_CRITICAL:{fb.joint_id}",
+                                        joint_id=fb.joint_id,
+                                        measured=temp,
+                                        threshold=self._config.temp_critical_c)
+            return AlertSeverity.FATAL
         if temp >= self._config.temp_warning_c:
             if not jstate.temp_warning_active:
                 jstate.temp_warning_active = True
@@ -244,58 +355,127 @@ class WatchdogSystem:
                     message=f"Température élevée : {temp:.1f}°C",
                     value=temp, threshold=self._config.temp_warning_c
                 ))
-        else:
-            jstate.temp_warning_active  = False
-            jstate.temp_critical_active = False
+            return AlertSeverity.WARNING
+        jstate.temp_warning_active  = False
+        jstate.temp_critical_active = False
+        return AlertSeverity.INFO
 
-    def _check_mechanical(self, fb: ActuatorFeedback, jstate: JointMonitorState) -> None:
+    def _check_mechanical(self, fb: ActuatorFeedback,
+                          jstate: JointMonitorState) -> AlertSeverity:
+        """
+        Point #12 : confirmation multi-échantillons avant CRITICAL.
+        Un seul pic de couple/vitesse ne déclenche plus d'alerte —
+        il faut confirm_samples dépassements consécutifs.
+        """
         lim = jstate.limits
-        if lim.torque_max > 0 and abs(fb.torque) > lim.torque_max * self._config.torque_overload_ratio:
-            self._emit(WatchdogAlert(
-                kind=AlertKind.TORQUE_OVERLOAD, severity=AlertSeverity.CRITICAL,
-                joint_id=fb.joint_id,
-                message=f"Surcharge couple : {abs(fb.torque):.1f} Nm",
-                value=abs(fb.torque), threshold=lim.torque_max * self._config.torque_overload_ratio
-            ))
-        if lim.vel_max > 0 and abs(fb.velocity) > lim.vel_max * self._config.velocity_overrun_ratio:
-            self._emit(WatchdogAlert(
-                kind=AlertKind.VELOCITY_OVERRUN, severity=AlertSeverity.CRITICAL,
-                joint_id=fb.joint_id,
-                message=f"Dépassement vitesse : {abs(fb.velocity):.2f} rad/s",
-                value=abs(fb.velocity), threshold=lim.vel_max * self._config.velocity_overrun_ratio
-            ))
+        severity = AlertSeverity.INFO
 
-    def _trigger_estop(self, reason: str) -> None:
-        if self._estop_fired: return
-        self._estop_fired = True
+        if lim.torque_max > 0 and abs(fb.torque) > lim.torque_max * self._config.torque_overload_ratio:
+            jstate.torque_over_count += 1
+            if jstate.torque_over_count >= self._config.confirm_samples:
+                self._emit(WatchdogAlert(
+                    kind=AlertKind.TORQUE_OVERLOAD, severity=AlertSeverity.CRITICAL,
+                    joint_id=fb.joint_id,
+                    message=(f"Surcharge couple confirmée ({jstate.torque_over_count} "
+                             f"échantillons) : {abs(fb.torque):.1f} Nm"),
+                    value=abs(fb.torque), threshold=lim.torque_max * self._config.torque_overload_ratio
+                ))
+                severity = AlertSeverity.CRITICAL
+        else:
+            jstate.torque_over_count = 0
+
+        if lim.vel_max > 0 and abs(fb.velocity) > lim.vel_max * self._config.velocity_overrun_ratio:
+            jstate.velocity_over_count += 1
+            if jstate.velocity_over_count >= self._config.confirm_samples:
+                self._emit(WatchdogAlert(
+                    kind=AlertKind.VELOCITY_OVERRUN, severity=AlertSeverity.CRITICAL,
+                    joint_id=fb.joint_id,
+                    message=(f"Dépassement vitesse confirmé ({jstate.velocity_over_count} "
+                             f"échantillons) : {abs(fb.velocity):.2f} rad/s"),
+                    value=abs(fb.velocity), threshold=lim.vel_max * self._config.velocity_overrun_ratio
+                ))
+                severity = AlertSeverity.CRITICAL
+        else:
+            jstate.velocity_over_count = 0
+
+        return severity
+
+    # ── E-STOP ────────────────────────────────────────────────────
+
+    def _trigger_estop(self, reason: str, joint_id: Optional[str] = None,
+                       measured: Optional[float] = None,
+                       threshold: Optional[float] = None) -> None:
+        """
+        Idempotent et thread-safe — point #8. Le Lock garantit qu'un seul
+        appelant peut réellement déclencher l'e-stop même si plusieurs
+        conditions FATAL sont détectées en concurrence sur des joints
+        différents pendant le même cycle.
+        """
+        with self._estop_lock:
+            if self._estop_fired:
+                return
+            self._estop_fired = True
+
+        # hal.emergency_stop_all() est appelé HORS du lock pour ne jamais
+        # bloquer la détection d'autres conditions pendant l'exécution HAL.
         self._stats["estop_count"] += 1
         self._hal.emergency_stop_all()
+
+        entry = EstopLogEntry(
+            timestamp_ns=time.time_ns(), reason=reason, joint_id=joint_id,
+            measured=measured, threshold=threshold,
+            robot_state_snapshot={
+                jid: js.last_feedback.state.name if js.last_feedback else "UNKNOWN"
+                for jid, js in self._joint_states.items()
+            }
+        )
+        self._estop_log.append(entry)
+        print(f"  {entry}")
+
         self._emit(WatchdogAlert(
             kind=AlertKind.ESTOP_TRIGGERED, severity=AlertSeverity.FATAL,
-            joint_id=None, message=f"E-STOP | raison={reason}",
-            value=None, threshold=None
+            joint_id=joint_id, message=f"E-STOP GLOBAL déclenché | raison={reason}",
+            value=measured, threshold=threshold
         ))
+
+    # ── Système d'événements ──────────────────────────────────────
 
     def _emit(self, alert: WatchdogAlert) -> None:
         self._stats["alerts_total"] += 1
         if alert.severity == AlertSeverity.FATAL:
             self._stats["alerts_fatal"] += 1
-        try: self._queue.put_nowait(alert)
-        except queue.Full: pass
+            # Point #18 : les FATAL passent par une queue illimitée,
+            # jamais droppées même si la queue normale sature.
+            self._fatal_queue.put(alert)
+            return
+        try:
+            self._queue.put_nowait(alert)
+        except queue.Full:
+            pass  # perte tolérée uniquement pour INFO/WARNING/CRITICAL
 
     def _dispatch_loop(self) -> None:
         while True:
+            # Les FATAL sont toujours traitées en priorité.
+            while not self._fatal_queue.empty():
+                alert = self._fatal_queue.get()
+                for cb in self._subscribers:
+                    try: self._executor.submit(cb, alert)
+                    except Exception: pass
+
             try:
-                alert = self._queue.get(timeout=1.0)
-                if alert is None: break
+                alert = self._queue.get(timeout=0.1)
+                if alert is None:
+                    break
                 for cb in self._subscribers:
                     try: self._executor.submit(cb, alert)
                     except Exception: pass
             except queue.Empty:
-                if not self._running: break
+                if not self._running and self._fatal_queue.empty():
+                    break
 
     def _build_joint_states(self) -> None:
         for jdef in self._hal.get_joint_definitions():
             self._joint_states[jdef.joint_id] = JointMonitorState(
                 joint_id=jdef.joint_id, limits=jdef.limits
             )
+

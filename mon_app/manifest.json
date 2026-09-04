@@ -1,0 +1,10 @@
+{
+  "app_id": "com.kenzo.mon_app",
+  "name": "Mon App",
+  "version": "0.1.0",
+  "author": "Kenzo",
+  "author_email": "axis.project.dev@gmail.com",
+  "category": "utilities",
+  "pricing_model": "free",
+  "base_price_eur": 0.0
+}

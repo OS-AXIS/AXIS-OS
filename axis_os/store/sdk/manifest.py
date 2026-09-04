@@ -46,6 +46,17 @@ class PricingModel(Enum):
 
 
 @dataclass
+class ResourceQuota:
+    """
+    Quotas d'isolation pour le sandbox multiprocessing.
+    Une app qui dépasse ces limites est tuée par le SandboxRunner.
+    """
+    max_cpu_percent: float = 50.0   # % d'un cœur CPU
+    max_memory_mb:   int   = 256    # Mo de RAM
+    max_runtime_s:   float = 30.0   # Timeout dur d'une mission
+
+
+@dataclass
 class HardwareRequirements:
     min_dof:              int        = 0
     requires_arms:        bool       = False
@@ -68,6 +79,7 @@ class AppManifest:
 
     permissions:   list[Permission]        = field(default_factory=list)
     hardware:      HardwareRequirements    = field(default_factory=HardwareRequirements)
+    quota:         ResourceQuota           = field(default_factory=ResourceQuota)
 
     pricing_model:  PricingModel = PricingModel.FREE
     base_price_eur: float        = 0.0

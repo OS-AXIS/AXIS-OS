@@ -94,6 +94,13 @@ class JointLimits:
     torque_max:      float
     current_max:     float
     temperature_max: float
+    accel_max:       Optional[float] = None
+    """
+    Accélération maximale autorisée (rad/s² ou m/s²), dérivée du delta
+    de vitesse entre deux commandes successives. None = non contrainte
+    (comportement historique inchangé — rétrocompatible avec tout
+    JointLimits existant qui ne spécifie pas ce champ).
+    """
 
 
 @dataclass

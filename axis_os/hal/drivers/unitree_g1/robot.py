@@ -168,6 +168,22 @@ class UnitreeG1HAL(IRobotHAL):
 
     def initialize_all(self) -> HALStatus:
         print(f"\n[AXIS-OS] Initialisation Unitree G1 — id={self.robot_id}")
+
+        # Validation de la table de conventions AVANT tout mouvement possible.
+        # Trou identifié par revue externe : sans ce check, un joint manquant
+        # ou un sign invalide (ex: 0.5 au lieu de ±1.0) ne serait détecté
+        # qu'au premier appel du normalizer sur ce joint précis — potentiellement
+        # jamais en test, potentiellement en plein mouvement en production.
+        from .conventions import G1_JOINT_CONVENTIONS
+        from .convention_validator import validate_convention_table
+
+        expected_ids = [jdef.joint_id for jdef in self._joint_defs]
+        validation = validate_convention_table(G1_JOINT_CONVENTIONS, expected_ids)
+        print(f"  {validation}")
+        if not validation.valid:
+            print("  [ERREUR] Table de conventions invalide — initialisation refusée.")
+            return HALStatus.ERROR_FAULT
+
         for jdef in self._joint_defs:
             act = G1SimulatedActuator(jdef)
             if act.initialize() != HALStatus.OK:

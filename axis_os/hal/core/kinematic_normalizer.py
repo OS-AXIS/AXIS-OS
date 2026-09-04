@@ -13,10 +13,34 @@ Licence : Apache 2.0 (open-source)
 """
 
 from __future__ import annotations
+import math
 from dataclasses import dataclass
 from typing import Optional, Dict
 
 from .types import ActuatorCommand, ActuatorFeedback, ControlMode
+
+
+class InvalidAngleError(ValueError):
+    """
+    Levée quand une valeur NaN/Infinity/non-finie traverse le normalizer.
+    Trou identifié par revue externe : une commande contenant NaN passait
+    silencieusement jusqu'au JointSafetyGuard, où pos_min <= NaN <= pos_max
+    est TOUJOURS False en Python — donc rejetée, mais avec un message
+    trompeur ("hors limite") au lieu de la vraie cause ("valeur invalide").
+    """
+    def __init__(self, joint_id: str, value: float, context: str):
+        self.joint_id = joint_id
+        self.value    = value
+        self.context  = context
+        super().__init__(
+            f"Valeur non-finie rejetée : joint={joint_id} value={value} "
+            f"contexte={context} (NaN/Infinity interdits)"
+        )
+
+
+def _check_finite(joint_id: str, value: Optional[float], context: str) -> None:
+    if value is not None and not math.isfinite(value):
+        raise InvalidAngleError(joint_id, value, context)
 
 
 @dataclass(frozen=True)
@@ -40,6 +64,7 @@ class KinematicNormalizer:
         self._verbose = verbose
 
     def normalized_to_raw(self, joint_id: str, normalized: float) -> float:
+        _check_finite(joint_id, normalized, "normalized_to_raw")
         entry = self._get(joint_id)
         raw   = (normalized * entry.sign) + entry.offset_rad
         if self._verbose:
@@ -47,6 +72,7 @@ class KinematicNormalizer:
         return raw
 
     def raw_to_normalized(self, joint_id: str, raw: float) -> float:
+        _check_finite(joint_id, raw, "raw_to_normalized")
         entry      = self._get(joint_id)
         normalized = (raw - entry.offset_rad) * entry.sign
         if self._verbose:

@@ -21,6 +21,10 @@ class WatchdogConfig:
     torque_overload_ratio:     float = 1.10
     velocity_overrun_ratio:    float = 1.10
     current_overload_ratio:    float = 1.10
+    confirm_samples:           int   = 3   # échantillons consécutifs requis
+                                             # avant CRITICAL (anti faux-positif, #12)
+    max_cycle_time_ms:         float = 100.0  # au-delà : le watchdog lui-même
+                                                # est considéré dégradé (#14)
     auto_estop_on_comm_lost:   bool  = True
     auto_estop_on_temp_critical: bool = True
     auto_estop_on_joint_fault: bool  = True
