@@ -23,6 +23,23 @@ class PermissionError(Exception):
     pass
 
 
+class EstopActiveError(Exception):
+    """
+    Levée quand une app tente d'envoyer une commande de mouvement alors
+    qu'un e-stop global est actif sur le robot.
+
+    Trou de sécurité identifié par le test de stress final : une mission
+    déjà en cours au moment où le Watchdog déclenche un e-stop continuait
+    auparavant son exécution jusqu'au bout — emergency_stop_all() coupait
+    bien le hardware, mais rien n'empêchait le CODE APPLICATIF de
+    continuer à tenter d'envoyer de nouvelles commandes de mouvement
+    entre-temps. Corrigé en vérifiant l'état e-stop à CHAQUE appel
+    move_arms/move_legs/move_all, pas seulement une fois à l'entrée de
+    run_mission() côté PlayStoreRuntime.
+    """
+    pass
+
+
 class RobotContext:
     """Interface sécurisée entre une app et le robot."""
 
@@ -47,6 +64,7 @@ class RobotContext:
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         self._require(Permission.ACTUATORS_WRITE_ARMS)
+        self._require_no_estop()
         arm_joints = {jid for jid in commands
                       if any(k in jid for k in ["shoulder", "elbow", "wrist"])}
         filtered = {jid: cmd for jid, cmd in commands.items() if jid in arm_joints}
@@ -55,6 +73,7 @@ class RobotContext:
 
     def move_legs(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         self._require(Permission.ACTUATORS_WRITE_LEGS)
+        self._require_no_estop()
         leg_joints = {jid for jid in commands
                       if any(k in jid for k in ["hip", "knee", "ankle"])}
         filtered = {jid: cmd for jid, cmd in commands.items() if jid in leg_joints}
@@ -63,6 +82,7 @@ class RobotContext:
 
     def move_all(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         self._require(Permission.ACTUATORS_WRITE_ALL)
+        self._require_no_estop()
         self._apply_velocity_cap(commands)
         return self._robot.send_joint_commands(commands)
 
@@ -84,6 +104,20 @@ class RobotContext:
             raise PermissionError(
                 f"Permission refusée : {permission.name} "
                 f"non déclarée dans '{self._manifest.app_id}'"
+            )
+
+    def _require_no_estop(self) -> None:
+        """
+        Vérifie qu'aucun e-stop n'est actif AVANT chaque tentative de
+        mouvement — pas seulement une fois à l'entrée de la mission.
+        Une mission déjà en cours doit s'arrêter net à la PROCHAINE
+        commande de mouvement dès qu'un e-stop survient, pas continuer
+        jusqu'à la fin de sa boucle applicative.
+        """
+        if self._watchdog.estop_fired:
+            raise EstopActiveError(
+                f"Commande de mouvement refusée : e-stop actif sur le "
+                f"robot — app '{self._manifest.app_id}'"
             )
 
     def _apply_velocity_cap(self, commands: Dict[str, ActuatorCommand]) -> None:

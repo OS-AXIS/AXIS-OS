@@ -17,7 +17,48 @@ import traceback
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.store.sdk.manifest import AppManifest, Permission, PricingModel
-from axis_os.store.sdk.app_base import RobotApp, RobotContext, MissionResult, PermissionError
+from axis_os.store.sdk.app_base import (
+    RobotApp, RobotContext, MissionResult, PermissionError, EstopActiveError
+)
+from axis_os.store.runtime.sandbox import SandboxRunner, SandboxState, SandboxErrorKind
+from axis_os.store.runtime.hal_bridge import (
+    HALBridgeServer, HALBridgeClient, HALCommand, HALResponse
+)
+import multiprocessing as mp
+
+
+def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
+                        command_queue: mp.Queue, response_queue: mp.Queue) -> MissionResult:
+    """
+    Exécutée DANS le process enfant sandboxé (via SandboxRunner). Reçoit
+    l'app elle-même (picklée par multiprocessing) et un HALBridgeClient
+    construit sur les deux Queues déjà ouvertes — jamais le vrai HAL,
+    jamais le vrai WatchdogSystem, qui contiennent tous deux des threads
+    non picklables.
+
+    L'app appelle ctx.move_arms/move_legs/log/get_imu/get_mission_log
+    exactement comme avec un RobotContext normal — HALBridgeClient
+    a la même surface d'API, donc aucune app existante n'a besoin
+    d'être modifiée pour bénéficier de l'isolation.
+    """
+    bridge_ctx = HALBridgeClient(command_queue, response_queue)
+    try:
+        result = app.run_mission(bridge_ctx, params)
+        if result is not None:
+            result.log = bridge_ctx.get_mission_log()
+        return result
+    except PermissionError as exc:
+        return MissionResult(
+            success=False, mission_id="", app_id="",
+            duration_s=0.0, error_message=f"Permission refusée : {exc}",
+            log=bridge_ctx.get_mission_log(),
+        )
+    except EstopActiveError as exc:
+        return MissionResult(
+            success=False, mission_id="", app_id="",
+            duration_s=0.0, error_message=f"Mission interrompue par e-stop : {exc}",
+            log=bridge_ctx.get_mission_log(),
+        )
 
 
 @dataclass
@@ -158,31 +199,64 @@ class PlayStoreRuntime:
         print(f"\n[PlayStore] ▶ Mission {mission_id} | app={app_id}")
 
         t_start = time.monotonic()
-        result  = None
+
+        # Isolation réelle par processus séparé — trou identifié
+        # explicitement : jusqu'ici, entry.app.run_mission(ctx, params)
+        # était appelé directement dans CE process, sans aucune des
+        # protections déjà construites (SandboxRunner, quotas CPU/RAM/
+        # temps) que le reste du projet suppose actives pour toute app.
+        # Le pont HALBridgeServer/Client (déjà écrit, jamais branché)
+        # permet à l'app sandboxée d'appeler move_arms/move_legs/log/
+        # get_imu exactement comme avant, sans qu'aucune app existante
+        # n'ait besoin d'être modifiée.
+        command_queue: mp.Queue  = mp.Queue()
+        response_queue: mp.Queue = mp.Queue()
+        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
+        bridge_server.start()
 
         try:
-            result = entry.app.run_mission(ctx, params)
-            result.log = ctx.get_mission_log()
-        except PermissionError as exc:
-            result = MissionResult(
-                success=False, mission_id=mission_id, app_id=app_id,
-                duration_s=time.monotonic()-t_start,
-                error_message=f"Permission refusée : {exc}",
-                log=ctx.get_mission_log()
+            runner = SandboxRunner(app_id, entry.manifest.quota)
+            sandbox_result = runner.run(
+                _run_app_in_sandbox,
+                args=(entry.app, params, command_queue, response_queue),
             )
-            print(f"  [SECURITY] {exc}")
-        except Exception as exc:
-            result = MissionResult(
-                success=False, mission_id=mission_id, app_id=app_id,
-                duration_s=time.monotonic()-t_start,
-                error_message=f"ERREUR APP : {exc}",
-                log=ctx.get_mission_log()
-            )
-            print(f"  [ERREUR APP] {exc}")
+
+            if sandbox_result.success and sandbox_result.result is not None:
+                result = sandbox_result.result
+            elif sandbox_result.success and sandbox_result.result is None:
+                # L'app a levé PermissionError/EstopActiveError dans
+                # _run_app_in_sandbox — celle-ci retourne alors un
+                # MissionResult d'échec directement plutôt que de
+                # laisser l'exception remonter jusqu'au SandboxRunner
+                # (qui l'aurait classée en APPLICATION_ERROR générique,
+                # perdant la distinction sécurité vs bug applicatif).
+                result = MissionResult(
+                    success=False, mission_id=mission_id, app_id=app_id,
+                    duration_s=time.monotonic() - t_start,
+                    error_message="Mission sandboxée n'a retourné aucun résultat.",
+                )
+            else:
+                # Le sandbox lui-même a détecté un problème : timeout,
+                # dépassement de quota, crash du process, fonction non
+                # picklable. Le SandboxErrorKind distingue clairement
+                # la CAUSE pour le diagnostic après coup.
+                kind = sandbox_result.error_kind
+                reason = kind.name if kind else "INCONNU"
+                print(f"  [SANDBOX] Mission arrêtée par l'isolation : "
+                      f"{sandbox_result.state.name} ({reason})")
+                result = MissionResult(
+                    success=False, mission_id=mission_id, app_id=app_id,
+                    duration_s=time.monotonic() - t_start,
+                    error_message=(f"Isolation sandbox : {sandbox_result.state.name} "
+                                   f"— {sandbox_result.error}"),
+                )
         finally:
-            if result:
-                result.mission_id = mission_id
-                result.duration_s = time.monotonic() - t_start
+            bridge_server.stop()
+
+        if result:
+            result.mission_id = mission_id
+            result.app_id     = app_id
+            result.duration_s = time.monotonic() - t_start
 
         # Facturation
         if result and result.success:

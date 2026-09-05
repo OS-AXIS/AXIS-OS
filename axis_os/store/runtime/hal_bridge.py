@@ -37,7 +37,9 @@ from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Any, Callable
 
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
-from axis_os.store.sdk.app_base import RobotContext, PermissionError as SandboxPermissionError
+from axis_os.store.sdk.app_base import (
+    RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
+)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -156,6 +158,12 @@ class HALBridgeServer:
 
         except SandboxPermissionError as exc:
             return HALResponse(cmd.request_id, False, error=f"Permission refusée : {exc}")
+        except EstopActiveError as exc:
+            # Propagé distinctement — un e-stop survenu pendant qu'une
+            # app sandboxée exécute sa mission doit être identifiable
+            # côté enfant comme une interruption de sécurité, pas une
+            # erreur applicative générique (voir HALBridgeClient._call).
+            return HALResponse(cmd.request_id, False, error=f"ESTOP_ACTIVE:{exc}")
         except Exception as exc:
             return HALResponse(cmd.request_id, False, error=f"{type(exc).__name__}: {exc}")
 
@@ -191,6 +199,7 @@ class HALBridgeClient:
         self._resp_q   = response_queue
         self._timeout  = timeout_s
         self._req_id   = 0
+        self._local_log: list = []
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, str]:
         return self._call("move_arms", {"commands": self._serialize(commands)})
@@ -205,7 +214,20 @@ class HALBridgeClient:
         return self._call("get_imu", {})
 
     def log(self, message: str) -> None:
+        self._local_log.append(message)
         self._call("log", {"message": message})
+
+    def get_mission_log(self) -> list:
+        """
+        Contrairement aux autres méthodes, le journal de mission est
+        tenu localement dans le process ENFANT plutôt que redemandé au
+        parent à chaque fois : chaque log() envoyé est aussi accumulé
+        ici, pour rendre HALBridgeClient utilisable en remplacement
+        direct de RobotContext sans changer une ligne dans les apps
+        existantes (PackageSorting, SecurityPatrol, WarehouseOps
+        appellent toutes ctx.get_mission_log() en fin de mission).
+        """
+        return list(self._local_log)
 
     def _call(self, action: str, payload: Dict[str, Any]) -> Any:
         self._req_id += 1
@@ -222,6 +244,8 @@ class HALBridgeClient:
             if resp.request_id != req_id:
                 continue  # réponse d'un autre appel — ignorer (best-effort)
             if not resp.success:
+                if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
+                    raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
                 raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
             return resp.data
         raise TimeoutError(f"HAL bridge timeout sur '{action}' (> {self._timeout}s)")

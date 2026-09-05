@@ -141,7 +141,17 @@ class SandboxRunner:
 
         try:
             pickle.dumps(target_fn)
-            pickle.dumps(args)
+            # mp.Queue est délibérément EXCLUE de ce check : elle n'est
+            # picklable que dans le contexte précis du passage à
+            # Process(args=...) au moment du vrai fork, jamais via un
+            # pickle.dumps() isolé comme celui-ci (RuntimeError
+            # "Queue objects should only be shared through inheritance").
+            # Bug réel trouvé en branchant HALBridgeServer/Client dans
+            # PlayStoreRuntime — les Queues du bridge faisaient échouer
+            # ce check préventif alors qu'elles fonctionnent normalement
+            # une fois transmises au vrai Process ci-dessous.
+            picklable_args = tuple(a for a in args if not isinstance(a, mp.queues.Queue))
+            pickle.dumps(picklable_args)
             pickle.dumps(kwargs)
         except (pickle.PicklingError, TypeError, AttributeError) as exc:
             self._set_state(SandboxState.CRASHED)
