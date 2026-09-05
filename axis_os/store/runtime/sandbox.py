@@ -152,8 +152,19 @@ class SandboxRunner:
                 duration_s=time.monotonic() - t_start,
             )
 
-        result_queue: mp.Queue = mp.Queue()
-        proc = mp.Process(
+        # Contexte "fork" forcé explicitement — indépendant de la méthode
+        # de démarrage par défaut du système. Trouvé en testant sur un
+        # vrai serveur Ubuntu/Python 3.14 : le défaut y est "forkserver",
+        # qui exige que la fonction cible soit importable depuis un vrai
+        # module. Une fonction définie dans un script exécuté directement
+        # (ou en `python3 -c`) échoue alors silencieusement avec
+        # "AttributeError: module '__main__' has no attribute ...".
+        # "fork" duplique le process tel quel, la fonction est déjà en
+        # mémoire — fonctionne dans tous les cas sur Linux (pas Windows,
+        # non concerné par AXIS-OS).
+        ctx = mp.get_context("fork")
+        result_queue: mp.Queue = ctx.Queue()
+        proc = ctx.Process(
             target=_sandbox_entrypoint,
             args=(target_fn, args, kwargs, result_queue),
             daemon=True,

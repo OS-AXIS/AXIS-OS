@@ -137,6 +137,21 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] App '{app_id}' non démarrée.")
             return None
 
+        # Barrière critique trouvée par un test de charge/intégration
+        # (aucune mission ne doit pouvoir s'exécuter, même "avec succès",
+        # une fois qu'un e-stop global a été déclenché — sans ce check,
+        # une app qui ne consulte jamais elle-même le Watchdog pouvait
+        # continuer indéfiniment après une condition de sécurité FATAL).
+        if self._watchdog.estop_fired:
+            mission_id = str(uuid.uuid4())[:8].upper()
+            print(f"  [SECURITY] Mission {mission_id} refusée : "
+                  f"e-stop actif sur le robot — {app_id}")
+            return MissionResult(
+                success=False, mission_id=mission_id, app_id=app_id,
+                duration_s=0.0,
+                error_message="Robot en état E-STOP — aucune mission autorisée.",
+            )
+
         mission_id = str(uuid.uuid4())[:8].upper()
         params     = params or {}
         ctx        = self._make_ctx(entry.manifest)
