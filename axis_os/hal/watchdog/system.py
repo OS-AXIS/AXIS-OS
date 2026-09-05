@@ -20,6 +20,7 @@ from __future__ import annotations
 import threading
 import time
 import queue
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +29,9 @@ from axis_os.hal.core.interfaces import IRobotHAL
 from axis_os.hal.core.types import ActuatorFeedback, ActuatorState, JointLimits
 from .events import WatchdogAlert, AlertSeverity, AlertKind, RobotHealthState
 from .config import WatchdogConfig
+from axis_os.hal.core.structured_log import (
+    StructuredLogger, LogCategory, get_default_logger
+)
 
 
 class JointMonitorState:
@@ -37,6 +41,7 @@ class JointMonitorState:
         "temp_warning_active", "temp_critical_active",
         "comm_timeout_active", "comm_lost_active",
         "torque_over_count", "velocity_over_count",
+        "drift_over_count",
     )
 
     def __init__(self, joint_id: str, limits: JointLimits):
@@ -50,6 +55,7 @@ class JointMonitorState:
         self.comm_lost_active      = False
         self.torque_over_count     = 0   # échantillons consécutifs (#12)
         self.velocity_over_count   = 0
+        self.drift_over_count      = 0
 
 
 @dataclass
@@ -82,9 +88,16 @@ class WatchdogSystem:
         wd.stop()
     """
 
-    def __init__(self, robot_hal: IRobotHAL, config: Optional[WatchdogConfig] = None):
+    def __init__(self, robot_hal: IRobotHAL, config: Optional[WatchdogConfig] = None,
+                logger: Optional[StructuredLogger] = None):
         self._hal    = robot_hal
         self._config = config or WatchdogConfig.standard()
+        # Logger structuré, optionnel — décision de conception cohérente
+        # avec MotionStateTracker : injecté plutôt que forcé, avec une
+        # instance partagée par défaut si rien n'est fourni. Aucune
+        # panne d'écriture ne remonte jusqu'ici (voir StructuredLogger),
+        # le Watchdog continue de fonctionner même si le disque est plein.
+        self._struct_logger = logger or get_default_logger()
 
         self._joint_states: Dict[str, JointMonitorState] = {}
         self._running      = False
@@ -268,6 +281,8 @@ class WatchdogSystem:
             max_severity_this_cycle = max(max_severity_this_cycle, sev)
             sev = self._check_mechanical(fb, jstate)
             max_severity_this_cycle = max(max_severity_this_cycle, sev)
+            sev = self._check_feedback_drift(jid, jstate)
+            max_severity_this_cycle = max(max_severity_this_cycle, sev)
 
         self._active_max_severity = max_severity_this_cycle
 
@@ -400,6 +415,50 @@ class WatchdogSystem:
 
         return severity
 
+    def _check_feedback_drift(self, joint_id: str,
+                              jstate: JointMonitorState) -> AlertSeverity:
+        """
+        Détecte un écart entre la dernière commande de position envoyée
+        et le feedback réel — signe qu'un moteur ne suit plus sa consigne
+        (bloqué, dérive de calibration). Point #4 identifié par la revue
+        externe du Watchdog, laissé ouvert jusqu'ici faute d'historique
+        de commande disponible ; comblé maintenant que MotionStateTracker
+        est branché dans UnitreeG1HAL.
+
+        No-op si le HAL n'expose pas de tracker (get_motion_tracker()
+        retourne None par défaut dans IRobotHAL) — comportement inchangé
+        pour tout backend qui n'a pas encore ce composant.
+        """
+        tracker = self._hal.get_motion_tracker()
+        if tracker is None:
+            return AlertSeverity.INFO
+
+        state = tracker.get(joint_id)
+        if state is None:
+            return AlertSeverity.INFO
+
+        error = state.compute_feedback_error()
+        if error is None or not math.isfinite(error):
+            return AlertSeverity.INFO
+
+        threshold = self._config.position_drift_max_rad
+        if abs(error) > threshold:
+            jstate.drift_over_count += 1
+            if jstate.drift_over_count >= self._config.confirm_samples:
+                self._emit(WatchdogAlert(
+                    kind=AlertKind.POSITION_DRIFT, severity=AlertSeverity.CRITICAL,
+                    joint_id=joint_id,
+                    message=(f"Écart commande/feedback confirmé "
+                             f"({jstate.drift_over_count} échantillons) : "
+                             f"{abs(error):.3f} rad — moteur ne suit plus sa consigne ?"),
+                    value=abs(error), threshold=threshold,
+                ))
+                return AlertSeverity.CRITICAL
+        else:
+            jstate.drift_over_count = 0
+
+        return AlertSeverity.INFO
+
     # ── E-STOP ────────────────────────────────────────────────────
 
     def _trigger_estop(self, reason: str, joint_id: Optional[str] = None,
@@ -432,6 +491,13 @@ class WatchdogSystem:
         self._estop_log.append(entry)
         print(f"  {entry}")
 
+        # Persistance disque — c'est LE moment le plus critique à ne
+        # jamais perdre : sans ça, un e-stop survenu il y a une semaine
+        # sur un robot resté allumé ensuite n'aurait laissé aucune trace
+        # une fois self._estop_log réinitialisé au prochain redémarrage
+        # du process (la liste en mémoire ne survit pas à un restart).
+        self._struct_logger.log(LogCategory.ESTOP, entry, robot_id=self._hal.robot_id)
+
         self._emit(WatchdogAlert(
             kind=AlertKind.ESTOP_TRIGGERED, severity=AlertSeverity.FATAL,
             joint_id=joint_id, message=f"E-STOP GLOBAL déclenché | raison={reason}",
@@ -444,6 +510,13 @@ class WatchdogSystem:
         self._stats["alerts_total"] += 1
         if alert.severity == AlertSeverity.FATAL:
             self._stats["alerts_fatal"] += 1
+            # Persistance des alertes FATAL — même raisonnement que
+            # pour l'e-stop : ces événements ne doivent pas dépendre
+            # uniquement de la mémoire du process pour être consultables
+            # après coup.
+            self._struct_logger.log(
+                LogCategory.WATCHDOG_ALERT, alert, robot_id=self._hal.robot_id
+            )
             # Point #18 : les FATAL passent par une queue illimitée,
             # jamais droppées même si la queue normale sature.
             self._fatal_queue.put(alert)
@@ -478,4 +551,3 @@ class WatchdogSystem:
             self._joint_states[jdef.joint_id] = JointMonitorState(
                 joint_id=jdef.joint_id, limits=jdef.limits
             )
-

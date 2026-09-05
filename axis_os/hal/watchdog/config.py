@@ -25,6 +25,14 @@ class WatchdogConfig:
                                              # avant CRITICAL (anti faux-positif, #12)
     max_cycle_time_ms:         float = 100.0  # au-delà : le watchdog lui-même
                                                 # est considéré dégradé (#14)
+    position_drift_max_rad:    float = 0.15
+    """
+    Écart maximal toléré entre la dernière commande de position
+    envoyée et le feedback réel avant de considérer que le joint ne
+    suit plus sa consigne (moteur bloqué, calibration dérivée, etc.).
+    Nécessite un MotionStateTracker exposé par le HAL — sans lui,
+    ce check est un no-op (voir WatchdogSystem._check_feedback_error).
+    """
     auto_estop_on_comm_lost:   bool  = True
     auto_estop_on_temp_critical: bool = True
     auto_estop_on_joint_fault: bool  = True

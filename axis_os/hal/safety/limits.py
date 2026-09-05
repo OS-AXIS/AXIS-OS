@@ -36,6 +36,7 @@ from ..core.types import (
     JointLimits, ControlMode, HALStatus
 )
 from ..core.motion_state import MotionStateTracker
+from ..core.structured_log import StructuredLogger, LogCategory, get_default_logger
 
 
 class SafetyErrorKind(Enum):
@@ -130,7 +131,8 @@ class JointSafetyGuard:
     TEMPERATURE_WARNING_C  = 65.0
 
     def __init__(self, joint_id: str, limits: JointLimits, strict_init: bool = True,
-                motion_tracker: Optional[MotionStateTracker] = None):
+                motion_tracker: Optional[MotionStateTracker] = None,
+                logger: Optional[StructuredLogger] = None):
         result = validate_limits(joint_id, limits)
         if not result.valid and strict_init:
             raise ValueError(
@@ -139,12 +141,32 @@ class JointSafetyGuard:
         self.joint_id = joint_id
         self.limits   = limits
         self._last_violation: Optional[SafetyViolation] = None
+        # Même pattern que WatchdogSystem : injecté, instance partagée
+        # par défaut si rien n'est fourni. Chaque violation détectée par
+        # ce Guard (rejetée, jamais exécutée sur le hardware) est
+        # persistée — utile pour repérer après coup une app qui envoie
+        # systématiquement des commandes invalides, même si le HAL n'a
+        # jamais vu passer ces commandes.
+        self._struct_logger = logger or get_default_logger()
 
         # MotionStateTracker optionnel — injecté par IRobotHAL, jamais créé
         # ici (décision de conception : composant partagé générique, voir
         # hal/core/motion_state.py). None = rate limiting désactivé, tout
         # le reste du comportement du Guard est inchangé.
         self._motion_tracker = motion_tracker
+
+    def _record_violation(self, v: SafetyViolation) -> SafetyViolation:
+        """
+        Point unique de journalisation d'une violation — centralise ce
+        qui était auparavant répété (self._last_violation = v) à chaque
+        cas de rejet dans validate_command(), pour garantir qu'aucun ne
+        soit oublié lors d'un futur ajout de règle.
+        """
+        self._last_violation = v
+        self._struct_logger.log(
+            LogCategory.SAFETY_VIOLATION, v, robot_id=None
+        )
+        return v
 
     def validate_command(
         self,
@@ -164,7 +186,7 @@ class JointSafetyGuard:
                     joint_id=self.joint_id, rule="INVALID_VALUE",
                     value=val, limit=0.0, kind=SafetyErrorKind.INVALID_VALUE,
                 )
-                self._last_violation = v
+                self._record_violation(v)
                 return False, v
 
         # Position
@@ -177,7 +199,7 @@ class JointSafetyGuard:
                           else self.limits.pos_min,
                     kind=SafetyErrorKind.POSITION_LIMIT,
                 )
-                self._last_violation = v
+                self._record_violation(v)
                 return False, v
 
         # Vitesse
@@ -188,7 +210,7 @@ class JointSafetyGuard:
                     value=abs(command.velocity), limit=self.limits.vel_max,
                     kind=SafetyErrorKind.VELOCITY_LIMIT,
                 )
-                self._last_violation = v
+                self._record_violation(v)
                 return False, v
 
         # Couple
@@ -199,7 +221,7 @@ class JointSafetyGuard:
                     value=abs(command.torque), limit=self.limits.torque_max,
                     kind=SafetyErrorKind.TORQUE_LIMIT,
                 )
-                self._last_violation = v
+                self._record_violation(v)
                 return False, v
 
         # Courant
@@ -210,7 +232,7 @@ class JointSafetyGuard:
                     value=abs(command.current), limit=self.limits.current_max,
                     kind=SafetyErrorKind.CURRENT_LIMIT,
                 )
-                self._last_violation = v
+                self._record_violation(v)
                 return False, v
 
         # Température (feedback)
@@ -221,7 +243,7 @@ class JointSafetyGuard:
                     value=feedback.temperature, limit=self.TEMPERATURE_CRITICAL_C,
                     kind=SafetyErrorKind.TEMPERATURE_CRITICAL,
                 )
-                self._last_violation = v
+                self._record_violation(v)
                 return False, v
 
         # Accélération / slew rate — BLOCK, jamais lissé (décision de
@@ -240,7 +262,7 @@ class JointSafetyGuard:
                         value=accel_abs, limit=self.limits.accel_max,
                         kind=SafetyErrorKind.ACCELERATION_LIMIT,
                     )
-                    self._last_violation = v
+                    self._record_violation(v)
                     return False, v
 
         return True, None

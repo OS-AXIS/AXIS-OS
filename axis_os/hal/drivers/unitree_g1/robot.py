@@ -19,6 +19,7 @@ from axis_os.hal.core.types import (
     Vector3, Quaternion
 )
 from axis_os.hal.safety.limits import JointSafetyGuard
+from axis_os.hal.core.motion_state import MotionStateTracker
 import time
 
 
@@ -166,6 +167,15 @@ class UnitreeG1HAL(IRobotHAL):
         self._actuators:  Dict[str, IActuator]  = {}
         self._imu:        Optional[IIMU]         = None
 
+        # MotionStateTracker branché ici — décision de conception actée :
+        # IRobotHAL le possède et l'instancie (composant générique, voir
+        # hal/core/motion_state.py), jamais un driver spécifique qui le
+        # créerait pour lui-même. Exposé via get_motion_tracker() pour
+        # que SafetyGuard et WatchdogSystem le consultent sans le dupliquer.
+        self._motion_tracker = MotionStateTracker(
+            [jdef.joint_id for jdef in self._joint_defs]
+        )
+
     def initialize_all(self) -> HALStatus:
         print(f"\n[AXIS-OS] Initialisation Unitree G1 — id={self.robot_id}")
 
@@ -221,15 +231,38 @@ class UnitreeG1HAL(IRobotHAL):
     def send_joint_commands(
         self, commands: Dict[str, ActuatorCommand]
     ) -> Dict[str, HALStatus]:
-        return {
-            jid: (self._actuators[jid].send_command(cmd)
-                  if jid in self._actuators else HALStatus.ERROR_NOT_INIT)
-            for jid, cmd in commands.items()
-        }
+        results = {}
+        for jid, cmd in commands.items():
+            if jid in self._actuators:
+                status = self._actuators[jid].send_command(cmd)
+                # Enregistrement dans le tracker APRÈS l'envoi réel —
+                # reflète ce qui a effectivement été transmis au HAL,
+                # pas une commande hypothétique qui aurait pu être
+                # rejetée plus tôt dans le pipeline (SafetyGuard).
+                self._motion_tracker.record_command(jid, cmd)
+                results[jid] = status
+            else:
+                results[jid] = HALStatus.ERROR_NOT_INIT
+        return results
 
     def get_full_state(self) -> Dict[str, ActuatorFeedback]:
-        return {jid: fb for jid, a in self._actuators.items()
-                if (fb := a.get_feedback()) is not None}
+        state = {}
+        for jid, a in self._actuators.items():
+            fb = a.get_feedback()
+            if fb is not None:
+                state[jid] = fb
+                self._motion_tracker.record_feedback(jid, fb)
+        return state
+
+    def get_motion_tracker(self) -> MotionStateTracker:
+        """
+        Expose le tracker à qui doit le consulter — SafetyGuard (rate
+        limiting avant envoi) et WatchdogSystem (détection d'anomalie
+        après coup). Ni l'un ni l'autre ne le crée : IRobotHAL en reste
+        l'unique propriétaire, conformément à la décision de conception
+        actée (voir hal/core/motion_state.py).
+        """
+        return self._motion_tracker
 
     def get_joint_definitions(self) -> List[JointDefinition]:
         return list(self._joint_defs)

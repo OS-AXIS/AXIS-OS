@@ -8,6 +8,10 @@ Licence : Apache 2.0 (open-source)
 """
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .motion_state import MotionStateTracker
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict
 
@@ -140,3 +144,19 @@ class IRobotHAL(ABC):
     @property
     def is_initialized(self) -> bool:
         return self._initialized
+
+    def get_motion_tracker(self) -> Optional["MotionStateTracker"]:
+        """
+        Retourne le MotionStateTracker de ce robot, si le driver en
+        possède un. Implémentation par défaut : None — un backend qui
+        n'a pas encore ce composant (ex: un driver simulateur ancien)
+        reste valide, SafetyGuard et WatchdogSystem traitent l'absence
+        de tracker comme "rate limiting / détection d'écart désactivés"
+        plutôt que comme une erreur.
+
+        Décision de conception actée : ce composant est générique
+        (hal/core/motion_state.py) et vit au niveau IRobotHAL, jamais
+        dans un driver spécifique — voir sa documentation pour le
+        raisonnement complet.
+        """
+        return None
