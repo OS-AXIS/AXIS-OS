@@ -41,6 +41,7 @@ from axis_os.store.sdk.manifest import (
     ResourceQuota, HardwareRequirements,
 )
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
+from axis_os.hal.core.capabilities import RobotCapability
 
 
 # ── Base de badges connue (stub — remplacée par une vraie base en prod) ──
@@ -295,10 +296,12 @@ SECURITY_PATROL_MANIFEST = AppManifest(
     ],
 
     hardware=HardwareRequirements(
+        required=[
+            RobotCapability.LEGS,
+            RobotCapability.IMU,
+            RobotCapability.CAMERA,
+        ],
         min_dof=12,
-        requires_legs=True,
-        requires_imu=True,
-        requires_camera=True,
         compatible_models=["G1"],
     ),
 

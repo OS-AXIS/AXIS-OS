@@ -50,6 +50,7 @@ from axis_os.store.sdk.manifest import (
     ResourceQuota, HardwareRequirements,
 )
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
+from axis_os.hal.core.capabilities import RobotCapability
 
 
 class MissionPhase(Enum):
@@ -268,12 +269,14 @@ WAREHOUSE_OPS_MANIFEST = AppManifest(
     ],
 
     hardware=HardwareRequirements(
+        required=[
+            RobotCapability.LEGS,
+            RobotCapability.ARMS,
+            RobotCapability.IMU,
+            RobotCapability.CAMERA,
+            RobotCapability.FORCE_TORQUE,
+        ],
         min_dof=20,
-        requires_legs=True,
-        requires_arms=True,
-        requires_imu=True,
-        requires_camera=True,
-        requires_force_torque=True,
         compatible_models=["G1"],
     ),
 

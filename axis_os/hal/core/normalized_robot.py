@@ -16,6 +16,7 @@ from .types import (
     JointDefinition, JointLimits
 )
 from .kinematic_normalizer import KinematicNormalizer
+from .capabilities import CapabilitySet
 
 
 class NormalizedRobotHAL:
@@ -46,6 +47,9 @@ class NormalizedRobotHAL:
         info = self._hal.get_robot_info()
         info["hal_normalized"] = "true"
         return info
+
+    def get_capabilities(self) -> CapabilitySet:
+        return self._hal.get_capabilities()
 
     # ── Commandes normalisées → brutes ────────────────────────────
 

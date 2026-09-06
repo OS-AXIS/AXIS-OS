@@ -103,6 +103,7 @@ class WatchdogSystem:
         self._running      = False
         self._start_time   = 0.0
         self._last_hb      = 0.0
+        self._last_cycle_monotonic = 0.0
 
         # E-STOP protégé par Lock — corrige le point #8 (idempotence garantie
         # même si deux conditions FATAL sont détectées la même microseconde
@@ -217,6 +218,29 @@ class WatchdogSystem:
         with self._estop_lock:
             return self._estop_fired
 
+    @property
+    def last_cycle_monotonic(self) -> float:
+        """
+        Timestamp monotonic (time.monotonic()) du dernier cycle de
+        surveillance complété avec succès — ajouté pour permettre à un
+        Supervisor EXTERNE de vérifier que ce Watchdog est toujours en
+        vie, sans dépendre d'un mécanisme interne au Watchdog lui-même.
+
+        Principe : un Watchdog ne peut pas fiablement se surveiller
+        lui-même s'il meurt complètement (thread bloqué en deadlock,
+        crash silencieux d'un composant sous-jacent) — le try/except
+        de _monitor_loop protège contre les exceptions métier, mais pas
+        contre un thread qui cesse purement et simplement de progresser.
+        Voir Supervisor dans axis_os/hal/supervisor/supervisor.py.
+
+        Retourne 0.0 avant le premier cycle (avant start(), ou start()
+        appelé mais _run_cycle() pas encore exécuté une fois) — un
+        Supervisor qui compare ça à time.monotonic() verra un écart
+        énorme et le traitera correctement comme "pas encore de
+        heartbeat", sans cas particulier à gérer.
+        """
+        return self._last_cycle_monotonic
+
     # ── Boucle principale ────────────────────────────────────────
 
     def _monitor_loop(self) -> None:
@@ -296,6 +320,14 @@ class WatchdogSystem:
                          f"health={self.health_state.name}"),
                 value=None, threshold=None
             ))
+
+        # Mis à jour uniquement si tout le cycle ci-dessus s'est terminé
+        # sans exception — un Supervisor externe lisant cette valeur ne
+        # doit voir un heartbeat frais QUE si la surveillance a réellement
+        # eu lieu, jamais si _run_cycle() a été interrompue en cours de
+        # route par une exception (voir le try/except dans _monitor_loop,
+        # qui laisse volontairement cette ligne non atteinte dans ce cas).
+        self._last_cycle_monotonic = now
 
     def _check_comm(self, jstate: JointMonitorState, now: float) -> AlertSeverity:
         elapsed = now - jstate.last_feedback_time

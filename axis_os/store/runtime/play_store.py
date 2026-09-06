@@ -140,6 +140,22 @@ class PlayStoreRuntime:
                 print(f"  [ERREUR] Modèle '{model}' non supporté. Requis: {hw.compatible_models}")
                 return False
 
+        # Vérification capacités (required = bloquant, optional = avertissement)
+        # Voir HardwareRequirements.required/.optional dans manifest.py.
+        caps = self._robot.get_capabilities()
+        if hw.required:
+            missing = caps.missing_from(hw.required)
+            if missing:
+                names = sorted(c.name for c in missing)
+                print(f"  [ERREUR] Capacité(s) requise(s) manquante(s) : {names}")
+                return False
+        if hw.optional:
+            missing_optional = caps.missing_from(hw.optional)
+            if missing_optional:
+                names = sorted(c.name for c in missing_optional)
+                print(f"  [ATTENTION] Capacité(s) optionnelle(s) absente(s) — "
+                      f"l'app fonctionnera en mode dégradé : {names}")
+
         # Permissions
         print(f"  Permissions : {[p.name for p in manifest.permissions]}")
 

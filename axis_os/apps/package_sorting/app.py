@@ -23,6 +23,7 @@ from axis_os.store.sdk.manifest import (
 )
 from axis_os.store.sdk.app_base import RobotApp, RobotContext, MissionResult
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
+from axis_os.hal.core.capabilities import RobotCapability
 
 
 class Destination(Enum):
@@ -94,7 +95,8 @@ class PackageSortingApp(RobotApp):
                 Permission.NETWORK_CLOUD,
             ],
             hardware=HardwareRequirements(
-                min_dof=10, requires_arms=True, requires_imu=True,
+                required=[RobotCapability.ARMS, RobotCapability.IMU],
+                min_dof=10,
                 compatible_models=["G1", "Digit", "Optimus"],
             ),
             pricing_model=PricingModel.PAY_PER_MISSION,

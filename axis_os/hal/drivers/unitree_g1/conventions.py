@@ -1,6 +1,4 @@
-"""
-AXIS-OS — Unitree G1 Joint Conventions
-=========================================
+"""========================================
 Table des conventions d'angles bruts du Unitree G1.
 
 Problème : le G1 a des angles asymétriques gauche/droite.
@@ -13,6 +11,20 @@ Solution : sign=-1 sur les joints inversés.
 
 Joints inversés (9) : right_hip_roll/yaw/pitch, right_knee,
   right_ankle_pitch/roll, right_shoulder_roll/yaw, right_wrist_roll
+
+⚠️ ÉCART CONNU NON CORRIGÉ (2026-09-06) — ce fichier reste
+volontairement aligné sur les 24 joints de robot.py (notre stub
+interne UnitreeG1HAL), PAS sur les 23 vrais joints du G1 dans
+Isaac Sim (voir IsaacSimBackend.ISAAC_G1_JOINT_MAP pour la table
+correcte). Une tentative de correction a été faite puis annulée
+dans cette session : changer ce fichier seul sans changer aussi
+robot.py (la chaîne cinématique pelvis→torso→chest, le coude
+comme point d'articulation nommé) déclenche un refus de démarrage
+par convention_validator.py — le stub et le vrai G1 sont donc
+DÉLIBÉRÉMENT désynchronisés sur torso/waist_yaw/waist_roll et
+elbow/elbow_pitch+elbow_roll jusqu'à ce que robot.py soit corrigé
+en même temps, avec test réel sur Isaac Sim pour valider la
+nouvelle chaîne cinématique et les signes des nouveaux joints.
 
 Licence : Apache 2.0 (open-source)
 """

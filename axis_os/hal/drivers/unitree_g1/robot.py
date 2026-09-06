@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Optional, Dict, List
 
 from axis_os.hal.core.interfaces import IRobotHAL, IActuator, IIMU, IForceTorqueSensor
+from axis_os.hal.core.capabilities import CapabilitySet, RobotCapability
 from axis_os.hal.core.types import (
     ActuatorCommand, ActuatorFeedback, ActuatorState,
     ControlMode, HALStatus, IMUData, SensorType,
@@ -51,16 +52,34 @@ def _build_g1_joint_definitions() -> List[JointDefinition]:
         JointDefinition("right_knee",        JointType.REVOLUTE, leg(-2.53, 0.09), "right_upper_leg", "right_lower_leg"),
         JointDefinition("right_ankle_pitch", JointType.REVOLUTE, leg(-0.52, 0.87), "right_lower_leg", "right_foot"),
         JointDefinition("right_ankle_roll",  JointType.REVOLUTE, leg(-0.26, 0.26), "right_foot",      "right_sole"),
-        # Torse
+        # Torse — ⚠️ ÉCART CONNU NON CORRIGÉ ICI (2026-09-06) : le vrai
+        # G1 dans Isaac Sim n'a qu'un seul joint de torse ("torso_joint"),
+        # pas deux (waist_yaw + waist_roll) comme supposé ci-dessous.
+        # conventions.py a déjà été corrigé pour utiliser "torso" à la
+        # place — mais PAS ce fichier, car fusionner waist_yaw+waist_roll
+        # en un seul joint change la CHAÎNE CINÉMATIQUE (pelvis→torso→
+        # chest) définie par les 3e/4e arguments de JointDefinition,
+        # pas juste un nom. Une correction ici doit être testée sur le
+        # vrai G1 avant d'être faite — non fait dans cette session pour
+        # éviter un changement structurel non vérifiable sans serveur
+        # Isaac Sim actif. Ce fichier (robot.py, notre stub interne
+        # UnitreeG1HAL) et backend.py (IsaacSimBackend, le vrai G1) sont
+        # donc actuellement DÉSYNCHRONISÉS sur ce point précis — le stub
+        # utilise encore waist_yaw/waist_roll, le vrai G1 utilise torso.
         JointDefinition("waist_yaw",  JointType.REVOLUTE, leg(-1.05, 1.05), "pelvis", "torso"),
         JointDefinition("waist_roll", JointType.REVOLUTE, leg(-0.52, 0.52), "torso",  "chest"),
-        # Bras gauche
+        # Bras gauche — ⚠️ MÊME ÉCART CONNU pour le coude : le vrai G1 a
+        # left_elbow_pitch_joint + left_elbow_roll_joint (2 joints),
+        # pas un seul left_elbow comme ci-dessous. Même raisonnement
+        # que pour le torse — non corrigé ici, désynchronisé avec
+        # backend.py volontairement plutôt que de deviner la bonne
+        # chaîne cinématique sans pouvoir tester.
         JointDefinition("left_shoulder_pitch", JointType.REVOLUTE, arm(-3.14, 3.14), "chest",           "left_upper_arm"),
         JointDefinition("left_shoulder_roll",  JointType.REVOLUTE, arm(-1.57, 1.57), "left_upper_arm",  "left_forearm"),
         JointDefinition("left_shoulder_yaw",   JointType.REVOLUTE, arm(-1.57, 1.57), "left_forearm",    "left_elbow"),
         JointDefinition("left_elbow",          JointType.REVOLUTE, arm(-1.57, 1.57), "left_elbow",      "left_lower_arm"),
         JointDefinition("left_wrist_roll",     JointType.REVOLUTE, arm(-1.57, 1.57), "left_lower_arm",  "left_hand"),
-        # Bras droit
+        # Bras droit — même écart connu
         JointDefinition("right_shoulder_pitch", JointType.REVOLUTE, arm(-3.14, 3.14), "chest",            "right_upper_arm"),
         JointDefinition("right_shoulder_roll",  JointType.REVOLUTE, arm(-1.57, 1.57), "right_upper_arm",  "right_forearm"),
         JointDefinition("right_shoulder_yaw",   JointType.REVOLUTE, arm(-1.57, 1.57), "right_forearm",    "right_elbow"),
@@ -276,3 +295,26 @@ class UnitreeG1HAL(IRobotHAL):
             "firmware_version": "sim-0.1.0",
             "dof":              str(len(self._joint_defs)),
         }
+
+    def get_capabilities(self) -> CapabilitySet:
+        """
+        Capacités réelles du G1 — humanoïde bipède avec bras
+        articulés, pas de roues ni de contrôle de vol. GRIPPER inclus
+        car le G1 dispose de mains capables de préhension (même si
+        AXIS-OS ne contrôle actuellement que 24 joints principaux,
+        sans le détail des doigts — voir backend.py IsaacSimBackend
+        pour cette limite déjà documentée ; déclarer GRIPPER ici
+        reste correct au niveau du ROBOT, indépendamment de ce
+        qu'AXIS-OS pilote effectivement aujourd'hui). CAMERA ajoutée
+        (oubli corrigé) : le G1 est équipé de série d'une caméra
+        frontale, indépendamment du fait qu'AXIS-OS n'expose pas
+        encore de driver de vision dédié pour l'utiliser.
+        """
+        return CapabilitySet.from_iterable([
+            RobotCapability.LEGS,
+            RobotCapability.ARMS,
+            RobotCapability.GRIPPER,
+            RobotCapability.IMU,
+            RobotCapability.FORCE_TORQUE,
+            RobotCapability.CAMERA,
+        ])

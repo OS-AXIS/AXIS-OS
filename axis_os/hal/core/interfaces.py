@@ -20,6 +20,7 @@ from .types import (
     ControlMode, HALStatus, IMUData, ForceTorqueData,
     JointDefinition, SensorType
 )
+from .capabilities import CapabilitySet
 
 
 class IActuator(ABC):
@@ -160,3 +161,17 @@ class IRobotHAL(ABC):
         raisonnement complet.
         """
         return None
+
+    def get_capabilities(self) -> CapabilitySet:
+        """
+        Retourne l'ensemble des capacités physiques de ce robot
+        (LEGS, ARMS, WHEELS, CAMERA, etc.) — voir capabilities.py pour
+        le raisonnement complet. Implémentation par défaut : ensemble
+        vide, même principe que get_motion_tracker() ci-dessus — un
+        driver qui n'a pas encore déclaré ses capacités reste valide,
+        et le comportement par défaut (capacité absente tant qu'elle
+        n'est pas explicitement déclarée) est le choix prudent :
+        mieux vaut qu'une vérification de capacité échoue par excès
+        de prudence sur un robot mal déclaré, que l'inverse.
+        """
+        return CapabilitySet.empty()

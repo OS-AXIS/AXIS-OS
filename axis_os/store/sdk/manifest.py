@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
+from axis_os.hal.core.capabilities import RobotCapability
+
 
 class Permission(Enum):
     ACTUATORS_READ       = auto()
@@ -58,12 +60,35 @@ class ResourceQuota:
 
 @dataclass
 class HardwareRequirements:
+    """
+    Déclaration des capacités matérielles dont l'app a besoin.
+
+    `required`  : indispensables — un robot qui ne les possède pas
+                  (au sens CapabilitySet.has(), donc physiquement
+                  présentes ET actuellement AVAILABLE) rend l'app
+                  INCOMPATIBLE : installation refusée par
+                  PlayStoreRuntime.install().
+    `optional`  : améliorent l'app sans lui être indispensables — une
+                  capacité manquante ici ne bloque pas l'installation,
+                  seulement un avertissement est affiché. C'est à
+                  l'app elle-même de vérifier ctx.robot.get_capabilities()
+                  en cours de mission avant d'utiliser une capacité
+                  optionnelle.
+
+    Le manifest est un contrat (voir revue externe du 2026-09-06) :
+    une capacité dont l'app ne peut réellement pas se passer doit être
+    déclarée dans `required`, jamais dans `optional` par prudence mal
+    placée — sinon l'app plantera en mission au lieu d'être refusée
+    proprement à l'installation.
+
+    min_dof et compatible_models restent des vérifications distinctes
+    (degré de liberté total, modèle exact) — indépendantes du système
+    de capacités, qui raisonne en catégories fonctionnelles, pas en
+    nombre de joints ou en identité de fabricant.
+    """
+    required:             list[RobotCapability] = field(default_factory=list)
+    optional:             list[RobotCapability] = field(default_factory=list)
     min_dof:              int        = 0
-    requires_arms:        bool       = False
-    requires_legs:        bool       = False
-    requires_imu:         bool       = False
-    requires_force_torque: bool      = False
-    requires_camera:      bool       = False
     compatible_models:    list[str]  = field(default_factory=list)
 
 
