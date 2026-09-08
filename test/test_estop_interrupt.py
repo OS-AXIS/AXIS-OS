@@ -72,7 +72,7 @@ class SlowWalkApp(RobotApp):
         try:
             for i in range(20):
                 ctx.move_legs({
-                    "left_hip_pitch": ActuatorCommand(ControlMode.POSITION, position=0.05)
+                    "left_hip_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.05)
                 })
                 steps_completed += 1
                 self.steps_completed = steps_completed
@@ -142,7 +142,7 @@ def run_interrupted():
 t2 = threading.Thread(target=run_interrupted)
 t2.start()
 time.sleep(0.1)  # laisse ~3 pas s'exécuter sur les 20 prévus (0.03s chacun)
-act2 = robot2.get_actuator("right_knee")
+act2 = robot2.get_actuator("right_knee_joint")
 act2._temperature = 85.0  # déclenche l'e-stop EN PLEIN MILIEU
 t2.join(timeout=5.0)
 
@@ -178,7 +178,7 @@ class ArmsApp(RobotApp):
     def on_stop(self, ctx): pass
     def run_mission(self, ctx, params):
         ctx.move_arms({
-            "left_elbow": ActuatorCommand(ControlMode.POSITION, position=0.3)
+            "left_elbow_joint": ActuatorCommand(ControlMode.POSITION, position=0.3)
         })
         return MissionResult(success=True, mission_id="x", app_id="com.test.arms",
                              duration_s=0, items_processed=1)
@@ -186,7 +186,7 @@ class ArmsApp(RobotApp):
 runtime3.install(ArmsApp())
 runtime3.start_app("com.test.arms")
 # Déclenche l'e-stop AVANT même de lancer la mission cette fois
-act3 = robot3.get_actuator("left_knee")
+act3 = robot3.get_actuator("left_knee_joint")
 act3._temperature = 85.0
 time.sleep(0.15)
 check("e-stop bien actif avant la mission", wd3.estop_fired)

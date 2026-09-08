@@ -106,15 +106,15 @@ model4.load("fake_model.onnx")
 correction5 = model4.compute_correction(make_imu(), {})
 check("Dict de feedback vide accepté sans erreur", correction5.is_stable)
 
-partial_feedback = {"left_knee": make_feedback("left_knee")}
+partial_feedback = {"left_knee_joint": make_feedback("left_knee_joint")}
 correction6 = model4.compute_correction(make_imu(), partial_feedback)
 check("Feedback partiel (1 seul joint) accepté sans erreur",
       correction6.is_stable)
 
 section("7 — BalanceCorrection : structure conforme au contrat de sécurité")
-c = BalanceCorrection(joint_corrections={"left_hip_pitch": 0.05}, confidence=0.9)
+c = BalanceCorrection(joint_corrections={"left_hip_pitch_joint": 0.05}, confidence=0.9)
 check("joint_corrections accessible en dict {joint_id: angle}",
-      c.joint_corrections["left_hip_pitch"] == 0.05)
+      c.joint_corrections["left_hip_pitch_joint"] == 0.05)
 check("is_stable == True par défaut (valeur sûre)", c.is_stable == True)
 check("confidence optionnel, None par défaut si non précisé",
       BalanceCorrection().confidence is None)

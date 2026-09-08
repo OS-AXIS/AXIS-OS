@@ -52,8 +52,8 @@ robot = make_robot()
 tracker = robot.get_motion_tracker()
 check("get_motion_tracker() retourne une instance, pas None",
       tracker is not None)
-check("Le tracker connaît les 24 joints du G1",
-      isinstance(tracker, MotionStateTracker) and len(tracker.joint_ids) == 24)
+check("Le tracker connaît les 23 joints du G1 (fichier URDF officiel)",
+      isinstance(tracker, MotionStateTracker) and len(tracker.joint_ids) == 23)
 robot.shutdown_all()
 
 section("2 — IRobotHAL générique : no-op sûr par défaut")
@@ -82,9 +82,9 @@ check("Un HAL qui n'implémente pas get_motion_tracker() hérite "
 section("3 — send_joint_commands() enregistre réellement dans le tracker")
 robot2 = make_robot()
 cmd = ActuatorCommand(ControlMode.POSITION, position=0.3)
-robot2.send_joint_commands({"left_elbow": cmd})
+robot2.send_joint_commands({"left_elbow_joint": cmd})
 tracker2 = robot2.get_motion_tracker()
-recorded = tracker2.get("left_elbow").last_command
+recorded = tracker2.get("left_elbow_joint").last_command
 check("La commande envoyée via le HAL est bien enregistrée dans le tracker",
       recorded is not None and recorded.position == 0.3)
 robot2.shutdown_all()
@@ -94,7 +94,7 @@ robot3 = make_robot()
 state = robot3.get_full_state()  # lit tous les joints, doit peupler le tracker
 tracker3 = robot3.get_motion_tracker()
 check("Au moins un feedback enregistré après get_full_state()",
-      tracker3.get("left_knee").last_feedback is not None)
+      tracker3.get("left_knee_joint").last_feedback is not None)
 robot3.shutdown_all()
 
 section("5 — Détection d'écart : moteur qui suit sa consigne → pas d'alerte")
@@ -105,9 +105,9 @@ wd4.start()
 time.sleep(0.05)
 
 robot4.send_joint_commands({
-    "left_knee": ActuatorCommand(ControlMode.POSITION, position=0.1)
+    "left_knee_joint": ActuatorCommand(ControlMode.POSITION, position=0.1)
 })
-act4 = robot4.get_actuator("left_knee")
+act4 = robot4.get_actuator("left_knee_joint")
 act4._position = 0.1  # le moteur suit correctement sa consigne
 time.sleep(0.15)
 
@@ -125,9 +125,9 @@ wd5.start()
 time.sleep(0.05)
 
 robot5.send_joint_commands({
-    "left_knee": ActuatorCommand(ControlMode.POSITION, position=0.5)
+    "left_knee_joint": ActuatorCommand(ControlMode.POSITION, position=0.5)
 })
-act5 = robot5.get_actuator("left_knee")
+act5 = robot5.get_actuator("left_knee_joint")
 act5._position = 0.0  # le moteur NE bouge PAS malgré la commande
 time.sleep(0.15)
 
@@ -146,9 +146,9 @@ wd6.start()
 time.sleep(0.02)
 
 robot6.send_joint_commands({
-    "left_knee": ActuatorCommand(ControlMode.POSITION, position=0.5)
+    "left_knee_joint": ActuatorCommand(ControlMode.POSITION, position=0.5)
 })
-act6 = robot6.get_actuator("left_knee")
+act6 = robot6.get_actuator("left_knee_joint")
 act6._position = 0.0
 time.sleep(0.03)  # 1 seul cycle écoulé — pas encore confirm_samples atteint
 early_state = wd6.health_state
@@ -166,9 +166,9 @@ wd7.start()
 time.sleep(0.05)
 
 robot7.send_joint_commands({
-    "left_knee": ActuatorCommand(ControlMode.POSITION, position=0.5)
+    "left_knee_joint": ActuatorCommand(ControlMode.POSITION, position=0.5)
 })
-act7 = robot7.get_actuator("left_knee")
+act7 = robot7.get_actuator("left_knee_joint")
 act7._position = float("nan")
 time.sleep(0.1)
 check("Aucun crash du Watchdog avec un feedback NaN", wd7.is_running)

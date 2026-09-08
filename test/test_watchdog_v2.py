@@ -83,7 +83,7 @@ cfg = WatchdogConfig.standard(); cfg.poll_interval_s = 0.01
 wd = WatchdogSystem(robot, cfg)
 wd.start()
 time.sleep(0.05)
-act = robot.get_actuator("left_knee")
+act = robot.get_actuator("left_knee_joint")
 act._temperature = 68.0  # > warning (65) mais < critical (80)
 time.sleep(0.1)
 check("health_state == WARNING", wd.health_state == RobotHealthState.WARNING)
@@ -97,8 +97,11 @@ cfg = WatchdogConfig.standard(); cfg.poll_interval_s = 0.01
 wd = WatchdogSystem(robot, cfg)
 wd.start()
 time.sleep(0.05)
-act = robot.get_actuator("left_knee")
-act._torque = 97.0  # > 88 * 1.10
+act = robot.get_actuator("left_knee_joint")
+# torque_max réel du fichier URDF officiel = 139.0 Nm (et non 88.0 Nm,
+# valeur de l'ancien codage manuel) — 155.0 dépasse le seuil de
+# surcharge réel (139 * 1.10 ≈ 152.9), 97.0 ne le dépassait plus.
+act._torque = 155.0  # > 139.0 * 1.10
 time.sleep(0.15)  # laisse le temps aux 3 échantillons de confirmation
 check("health_state == DEGRADED après confirmation", wd.health_state == RobotHealthState.DEGRADED)
 wd.stop()
@@ -112,7 +115,7 @@ col = AlertCollector()
 wd.subscribe(col)
 wd.start()
 time.sleep(0.02)
-act = robot.get_actuator("left_knee")
+act = robot.get_actuator("left_knee_joint")
 act._torque = 97.0
 time.sleep(0.03)   # 1 seul cycle écoulé — pas encore 3 confirmations
 alerts_early = col.has(AlertKind.TORQUE_OVERLOAD)
@@ -129,7 +132,7 @@ cfg = WatchdogConfig.standard(); cfg.poll_interval_s = 0.01
 wd = WatchdogSystem(robot, cfg)
 wd.start()
 time.sleep(0.05)
-act = robot.get_actuator("left_knee")
+act = robot.get_actuator("left_knee_joint")
 act._temperature = 85.0
 time.sleep(0.1)
 check("health_state == ESTOP", wd.health_state == RobotHealthState.ESTOP)
@@ -143,8 +146,8 @@ cfg = WatchdogConfig.standard(); cfg.poll_interval_s = 0.01
 wd = WatchdogSystem(robot, cfg)
 wd.start()
 time.sleep(0.05)
-act1 = robot.get_actuator("left_knee")
-act2 = robot.get_actuator("right_elbow")
+act1 = robot.get_actuator("left_knee_joint")
+act2 = robot.get_actuator("right_elbow_joint")
 act1._temperature = 85.0
 act2._temperature = 85.0  # deux joints en FATAL le même cycle
 time.sleep(0.15)
@@ -159,15 +162,15 @@ cfg = WatchdogConfig.standard(); cfg.poll_interval_s = 0.01
 wd = WatchdogSystem(robot, cfg)
 wd.start()
 time.sleep(0.05)
-act = robot.get_actuator("right_knee")
+act = robot.get_actuator("right_knee_joint")
 act._temperature = 85.0
 time.sleep(0.1)
 log = wd.estop_log
 check("1 entrée dans le journal", len(log) == 1)
 check("raison contient TEMP_CRITICAL", "TEMP_CRITICAL" in log[0].reason)
-check("joint_id renseigné", log[0].joint_id == "right_knee")
+check("joint_id renseigné", log[0].joint_id == "right_knee_joint")
 check("valeurs mesurées renseignées", log[0].measured is not None)
-check("snapshot de l'état du robot présent", len(log[0].robot_state_snapshot) == 24)
+check("snapshot de l'état du robot présent", len(log[0].robot_state_snapshot) == 23)
 wd.stop()
 robot.shutdown_all()
 
@@ -181,7 +184,7 @@ wd.subscribe(col)
 wd.start()
 time.sleep(0.03)
 # On force artificiellement une condition FATAL
-act = robot.get_actuator("left_knee")
+act = robot.get_actuator("left_knee_joint")
 from axis_os.hal.core.types import ActuatorState as AS
 act._state = AS.FAULT
 time.sleep(0.1)

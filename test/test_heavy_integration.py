@@ -121,8 +121,8 @@ check("Aucun e-stop déclenché pendant une charge normale",
 
 section("PHASE 3 — Injection de panne #1 : température critique en pleine mission")
 
-act = robot.get_actuator("right_knee")
-check("Actuateur right_knee accessible pour injection", act is not None)
+act = robot.get_actuator("right_knee_joint")
+check("Actuateur right_knee_joint accessible pour injection", act is not None)
 
 # On lance une mission dans un thread pendant qu'on injecte la panne
 # EN PARALLÈLE, pour simuler une vraie condition qui survient pendant
@@ -148,8 +148,8 @@ check("health_state == ESTOP après la panne", wd.health_state == RobotHealthSta
 log = wd.estop_log
 check("EstopLogEntry enregistrée avec la bonne raison",
       len(log) >= 1 and "TEMP_CRITICAL" in log[0].reason)
-check("Le joint concerné (right_knee) est identifié dans le journal",
-      log[0].joint_id == "right_knee")
+check("Le joint concerné (right_knee_joint) est identifié dans le journal",
+      log[0].joint_id == "right_knee_joint")
 
 section("PHASE 4 — Vérification : plus AUCUNE mission ne peut s'exécuter après e-stop")
 
@@ -179,7 +179,7 @@ section("PHASE 6 — Injection de panne #2 : perte de communication en pleine ro
 runtime2.install(SecurityPatrolApp())
 runtime2.start_app("com.axisos.security_patrol")
 
-act2 = robot2.get_actuator("left_hip_pitch")
+act2 = robot2.get_actuator("left_hip_pitch_joint")
 original_get_feedback = act2.get_feedback
 comm_cut = {"active": False}
 def cut_comm():

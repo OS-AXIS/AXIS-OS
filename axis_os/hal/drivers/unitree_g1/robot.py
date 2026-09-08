@@ -9,6 +9,7 @@ Licence : Apache 2.0 (open-source)
 """
 
 from __future__ import annotations
+from pathlib import Path
 from typing import Optional, Dict, List
 
 from axis_os.hal.core.interfaces import IRobotHAL, IActuator, IIMU, IForceTorqueSensor
@@ -19,73 +20,42 @@ from axis_os.hal.core.types import (
     JointDefinition, JointLimits, JointType,
     Vector3, Quaternion
 )
+from axis_os.hal.core.urdf_loader import load_urdf, URDFParseError
 from axis_os.hal.safety.limits import JointSafetyGuard
 from axis_os.hal.core.motion_state import MotionStateTracker
 import time
 
 
+# Fichier URDF officiel Unitree (23 DOF) — voir urdf/README.md pour la
+# provenance, la licence (BSD 3-Clause), et le détail des écarts que
+# ce fichier a corrigés par rapport à l'ancien codage manuel (torque_max
+# sous-estimé jusqu'à 37% sur hanches/genoux, waist_roll inexistant
+# dans cette variante, coude déjà correct en un seul joint contrairement
+# à ce que la session précédente supposait).
+_G1_URDF_PATH = Path(__file__).parent / "urdf" / "g1_23dof_rev_1_0.urdf"
+
+
 def _build_g1_joint_definitions() -> List[JointDefinition]:
-    """24 joints du Unitree G1 avec leurs limites hardware."""
+    """
+    23 joints du Unitree G1, chargés depuis le fichier URDF officiel
+    du fabricant (voir _G1_URDF_PATH) plutôt que recodés à la main.
 
-    def leg(pos_min, pos_max) -> JointLimits:
-        return JointLimits(pos_min=pos_min, pos_max=pos_max,
-                           vel_max=20.0, torque_max=88.0,
-                           current_max=20.0, temperature_max=80.0)
+    Remplace l'ancienne fonction qui construisait chaque JointDefinition
+    manuellement — approche abandonnée après la découverte (session du
+    2026-09-08) que le codage manuel comportait de vraies erreurs de
+    sécurité (limites de couple sous-estimées, pas seulement des noms
+    approximatifs) en plus des écarts déjà documentés sur le nombre de
+    joints du torse et du coude. Le fichier URDF du fabricant est
+    désormais l'unique source de vérité pour la géométrie et les
+    limites du G1 — voir urdf_loader.py pour le parseur et ses garanties
+    (rejet strict de tout joint actionné sans limites, par exemple).
 
-    def arm(pos_min, pos_max) -> JointLimits:
-        return JointLimits(pos_min=pos_min, pos_max=pos_max,
-                           vel_max=20.0, torque_max=25.0,
-                           current_max=10.0, temperature_max=80.0)
-
-    return [
-        # Jambe gauche
-        JointDefinition("left_hip_roll",    JointType.REVOLUTE, leg(-0.52, 0.52),  "pelvis",         "left_thigh"),
-        JointDefinition("left_hip_yaw",     JointType.REVOLUTE, leg(-0.52, 0.52),  "pelvis",         "left_thigh"),
-        JointDefinition("left_hip_pitch",   JointType.REVOLUTE, leg(-1.57, 2.09),  "left_thigh",     "left_upper_leg"),
-        JointDefinition("left_knee",        JointType.REVOLUTE, leg(-0.09, 2.53),  "left_upper_leg", "left_lower_leg"),
-        JointDefinition("left_ankle_pitch", JointType.REVOLUTE, leg(-0.87, 0.52),  "left_lower_leg", "left_foot"),
-        JointDefinition("left_ankle_roll",  JointType.REVOLUTE, leg(-0.26, 0.26),  "left_foot",      "left_sole"),
-        # Jambe droite
-        JointDefinition("right_hip_roll",    JointType.REVOLUTE, leg(-0.52, 0.52), "pelvis",          "right_thigh"),
-        JointDefinition("right_hip_yaw",     JointType.REVOLUTE, leg(-0.52, 0.52), "pelvis",          "right_thigh"),
-        JointDefinition("right_hip_pitch",   JointType.REVOLUTE, leg(-2.09, 1.57), "right_thigh",     "right_upper_leg"),
-        JointDefinition("right_knee",        JointType.REVOLUTE, leg(-2.53, 0.09), "right_upper_leg", "right_lower_leg"),
-        JointDefinition("right_ankle_pitch", JointType.REVOLUTE, leg(-0.52, 0.87), "right_lower_leg", "right_foot"),
-        JointDefinition("right_ankle_roll",  JointType.REVOLUTE, leg(-0.26, 0.26), "right_foot",      "right_sole"),
-        # Torse — ⚠️ ÉCART CONNU NON CORRIGÉ ICI (2026-09-06) : le vrai
-        # G1 dans Isaac Sim n'a qu'un seul joint de torse ("torso_joint"),
-        # pas deux (waist_yaw + waist_roll) comme supposé ci-dessous.
-        # conventions.py a déjà été corrigé pour utiliser "torso" à la
-        # place — mais PAS ce fichier, car fusionner waist_yaw+waist_roll
-        # en un seul joint change la CHAÎNE CINÉMATIQUE (pelvis→torso→
-        # chest) définie par les 3e/4e arguments de JointDefinition,
-        # pas juste un nom. Une correction ici doit être testée sur le
-        # vrai G1 avant d'être faite — non fait dans cette session pour
-        # éviter un changement structurel non vérifiable sans serveur
-        # Isaac Sim actif. Ce fichier (robot.py, notre stub interne
-        # UnitreeG1HAL) et backend.py (IsaacSimBackend, le vrai G1) sont
-        # donc actuellement DÉSYNCHRONISÉS sur ce point précis — le stub
-        # utilise encore waist_yaw/waist_roll, le vrai G1 utilise torso.
-        JointDefinition("waist_yaw",  JointType.REVOLUTE, leg(-1.05, 1.05), "pelvis", "torso"),
-        JointDefinition("waist_roll", JointType.REVOLUTE, leg(-0.52, 0.52), "torso",  "chest"),
-        # Bras gauche — ⚠️ MÊME ÉCART CONNU pour le coude : le vrai G1 a
-        # left_elbow_pitch_joint + left_elbow_roll_joint (2 joints),
-        # pas un seul left_elbow comme ci-dessous. Même raisonnement
-        # que pour le torse — non corrigé ici, désynchronisé avec
-        # backend.py volontairement plutôt que de deviner la bonne
-        # chaîne cinématique sans pouvoir tester.
-        JointDefinition("left_shoulder_pitch", JointType.REVOLUTE, arm(-3.14, 3.14), "chest",           "left_upper_arm"),
-        JointDefinition("left_shoulder_roll",  JointType.REVOLUTE, arm(-1.57, 1.57), "left_upper_arm",  "left_forearm"),
-        JointDefinition("left_shoulder_yaw",   JointType.REVOLUTE, arm(-1.57, 1.57), "left_forearm",    "left_elbow"),
-        JointDefinition("left_elbow",          JointType.REVOLUTE, arm(-1.57, 1.57), "left_elbow",      "left_lower_arm"),
-        JointDefinition("left_wrist_roll",     JointType.REVOLUTE, arm(-1.57, 1.57), "left_lower_arm",  "left_hand"),
-        # Bras droit — même écart connu
-        JointDefinition("right_shoulder_pitch", JointType.REVOLUTE, arm(-3.14, 3.14), "chest",            "right_upper_arm"),
-        JointDefinition("right_shoulder_roll",  JointType.REVOLUTE, arm(-1.57, 1.57), "right_upper_arm",  "right_forearm"),
-        JointDefinition("right_shoulder_yaw",   JointType.REVOLUTE, arm(-1.57, 1.57), "right_forearm",    "right_elbow"),
-        JointDefinition("right_elbow",          JointType.REVOLUTE, arm(-1.57, 1.57), "right_elbow",      "right_lower_arm"),
-        JointDefinition("right_wrist_roll",     JointType.REVOLUTE, arm(-1.57, 1.57), "right_lower_arm",  "right_hand"),
-    ]
+    Lève URDFParseError si le fichier est absent/corrompu — volontaire :
+    un HAL qui ne peut pas charger sa propre définition de joints ne
+    doit jamais démarrer avec des valeurs par défaut silencieuses.
+    """
+    model = load_urdf(_G1_URDF_PATH)
+    return model.get_joints()
 
 
 class G1SimulatedActuator(IActuator):

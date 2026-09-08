@@ -112,8 +112,8 @@ class WarehouseOpsApp(RobotApp):
         pour de vrai, pas juste déclaré dans le manifest sans être utilisé.
         """
         results = ctx.move_legs({
-            "left_hip_pitch":  ActuatorCommand(ControlMode.POSITION, position=0.08),
-            "right_hip_pitch": ActuatorCommand(ControlMode.POSITION, position=0.08),
+            "left_hip_pitch_joint":  ActuatorCommand(ControlMode.POSITION, position=0.08),
+            "right_hip_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.08),
         })
         return all(r is not None for r in results.values())
 
@@ -129,8 +129,8 @@ class WarehouseOpsApp(RobotApp):
         un objet plus lourd que prévu (poids mal déclaré).
         """
         ctx.move_arms({
-            "left_shoulder_pitch": ActuatorCommand(ControlMode.POSITION, position=0.4),
-            "left_elbow":           ActuatorCommand(ControlMode.POSITION, position=0.6),
+            "left_shoulder_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.4),
+            "left_elbow_joint":           ActuatorCommand(ControlMode.POSITION, position=0.6),
         })
 
         # STUB : simule le couple mesuré après la fermeture de la pince.

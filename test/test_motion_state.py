@@ -89,21 +89,21 @@ check("Écart commande/feedback calculé (1.8 - 1.0 = 0.8)",
       error is not None and abs(error - 0.8) < 1e-9)
 
 section("6 — MotionStateTracker : registre multi-joints")
-tracker = MotionStateTracker(["left_knee", "right_knee", "left_elbow"])
+tracker = MotionStateTracker(["left_knee_joint", "right_knee_joint", "left_elbow_joint"])
 check("3 joints enregistrés", len(tracker.joint_ids) == 3)
 check("get() retourne None pour un joint inconnu", tracker.get("unknown_joint") is None)
 check("get() retourne un JointMotionState pour un joint connu",
-      isinstance(tracker.get("left_knee"), JointMotionState))
+      isinstance(tracker.get("left_knee_joint"), JointMotionState))
 
-tracker.record_command("left_knee", ActuatorCommand(ControlMode.POSITION, position=0.3))
+tracker.record_command("left_knee_joint", ActuatorCommand(ControlMode.POSITION, position=0.3))
 check("record_command() via le tracker fonctionne",
-      tracker.get("left_knee").last_command.position == 0.3)
+      tracker.get("left_knee_joint").last_command.position == 0.3)
 
 section("7 — Rétrocompatibilité stricte : JointSafetyGuard SANS tracker (no-op)")
 limits_with_accel = JointLimits(pos_min=-1.0, pos_max=2.5, vel_max=20.0,
                                 torque_max=88.0, current_max=20.0,
                                 temperature_max=80.0, accel_max=1.0)
-guard_no_tracker = JointSafetyGuard("left_knee", limits_with_accel)  # pas de motion_tracker
+guard_no_tracker = JointSafetyGuard("left_knee_joint", limits_with_accel)  # pas de motion_tracker
 ok1, _ = guard_no_tracker.validate_command(
     ActuatorCommand(ControlMode.POSITION, position=0.0, velocity=0.0))
 ok2, _ = guard_no_tracker.validate_command(
@@ -116,13 +116,13 @@ check("Sans tracker injecté, aucune ACCELERATION_LIMIT n'est jamais levée",
       v3 is None or v3.rule != "ACCELERATION_LIMIT")
 
 section("8 — Rate limiting BLOCK : commande brutale rejetée (décision actée)")
-tracker2 = MotionStateTracker(["left_knee"])
-guard = JointSafetyGuard("left_knee", limits_with_accel, motion_tracker=tracker2)
+tracker2 = MotionStateTracker(["left_knee_joint"])
+guard = JointSafetyGuard("left_knee_joint", limits_with_accel, motion_tracker=tracker2)
 
 cmd_first = ActuatorCommand(ControlMode.POSITION, position=0.0, velocity=0.0)
 ok_first, _ = guard.validate_command(cmd_first)
 check("Première commande (sans historique) toujours acceptée", ok_first)
-tracker2.record_command("left_knee", cmd_first)
+tracker2.record_command("left_knee_joint", cmd_first)
 
 # Saut de vitesse brutal (0 -> 10 rad/s quasi instantané), accel_max=1.0
 cmd_brutal = ActuatorCommand(ControlMode.POSITION, position=0.5, velocity=10.0)
@@ -136,11 +136,11 @@ check("La commande rejetée N'EST PAS modifiée par le Guard (pure accept/reject
       cmd_brutal.velocity == 10.0)  # inchangée — le Guard ne "corrige" jamais
 
 section("9 — Rate limiting : commande douce toujours acceptée")
-tracker3 = MotionStateTracker(["left_knee"])
-guard3 = JointSafetyGuard("left_knee", limits_with_accel, motion_tracker=tracker3)
+tracker3 = MotionStateTracker(["left_knee_joint"])
+guard3 = JointSafetyGuard("left_knee_joint", limits_with_accel, motion_tracker=tracker3)
 cmd_a = ActuatorCommand(ControlMode.POSITION, position=0.0, velocity=0.0)
 guard3.validate_command(cmd_a)
-tracker3.record_command("left_knee", cmd_a)
+tracker3.record_command("left_knee_joint", cmd_a)
 time.sleep(0.05)  # laisse s'écouler du temps réel — réduit l'accel implicite
 cmd_b = ActuatorCommand(ControlMode.POSITION, position=0.005, velocity=0.02)
 # vel_delta=0.02, elapsed≈0.05s → accel≈0.4 rad/s², sous accel_max=1.0
@@ -151,11 +151,11 @@ section("10 — limits.accel_max=None → check désactivé même AVEC tracker i
 limits_no_accel = JointLimits(pos_min=-1.0, pos_max=2.5, vel_max=20.0,
                               torque_max=88.0, current_max=20.0,
                               temperature_max=80.0)  # accel_max=None (défaut)
-tracker4 = MotionStateTracker(["left_knee"])
-guard4 = JointSafetyGuard("left_knee", limits_no_accel, motion_tracker=tracker4)
+tracker4 = MotionStateTracker(["left_knee_joint"])
+guard4 = JointSafetyGuard("left_knee_joint", limits_no_accel, motion_tracker=tracker4)
 cmd_x = ActuatorCommand(ControlMode.POSITION, position=0.0, velocity=0.0)
 guard4.validate_command(cmd_x)
-tracker4.record_command("left_knee", cmd_x)
+tracker4.record_command("left_knee_joint", cmd_x)
 cmd_y = ActuatorCommand(ControlMode.POSITION, position=0.5, velocity=10.0)
 ok_y, v_y = guard4.validate_command(cmd_y)
 check("accel_max=None → ACCELERATION_LIMIT jamais déclenchée",

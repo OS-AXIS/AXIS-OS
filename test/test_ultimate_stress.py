@@ -138,14 +138,14 @@ check("billing_summary() reste cohérent après charge mêlée multi-app",
 section("PARTIE 2 — Cascade de pannes réelles (pas une seule, plusieurs enchaînées)")
 
 # Panne 1 : température élevée sur un joint (WARNING, pas encore critique)
-act1 = robot.get_actuator("left_knee")
+act1 = robot.get_actuator("left_knee_joint")
 act1._temperature = 68.0
 time.sleep(0.1)
 check("Panne 1/4 (température élevée) → WARNING, pas d'e-stop prématuré",
       wd.health_state == RobotHealthState.WARNING and not wd.estop_fired)
 
 # Panne 2 : surcharge de couple sur un AUTRE joint, EN MÊME TEMPS
-act2 = robot.get_actuator("right_elbow")
+act2 = robot.get_actuator("right_elbow_joint")
 act2._torque = 97.0  # > 88 * 1.10
 time.sleep(0.15)  # laisse la confirmation multi-échantillons se faire
 check("Panne 2/4 (surcharge couple, joint différent) confirmée → DEGRADED",
@@ -162,7 +162,7 @@ def run_mission_during_cascade():
 t = threading.Thread(target=run_mission_during_cascade)
 t.start()
 time.sleep(0.02)
-act3 = robot.get_actuator("right_knee")
+act3 = robot.get_actuator("right_knee_joint")
 act3._temperature = 85.0  # critique, doit déclencher l'e-stop
 t.join(timeout=5.0)
 time.sleep(0.1)
@@ -219,7 +219,7 @@ class RogueApp(RobotApp):
     def run_mission(self, ctx, params):
         # Tente d'écrire sur les jambes malgré permissions insuffisantes
         try:
-            ctx.move_legs({"left_hip_pitch": ActuatorCommand(ControlMode.POSITION, position=0.5)})
+            ctx.move_legs({"left_hip_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.5)})
             return None  # ne devrait jamais arriver ici
         except Exception as e:
             ctx.log(f"Tentative bloquée : {type(e).__name__}")
@@ -238,7 +238,7 @@ wd2.stop(); robot2.shutdown_all()
 # en contournant complètement le Play Store
 limits = JointLimits(pos_min=-1.0, pos_max=1.0, vel_max=20.0,
                      torque_max=88.0, current_max=20.0, temperature_max=80.0)
-guard = JointSafetyGuard("left_knee", limits)
+guard = JointSafetyGuard("left_knee_joint", limits)
 ok, v = guard.validate_command(ActuatorCommand(ControlMode.POSITION, position=float("inf")))
 check("Attaque 2 : commande Infinity envoyée directement au SafetyGuard "
       "(contournement du Play Store) est rejetée", not ok)
@@ -298,14 +298,14 @@ section("PARTIE 5 — Cohérence finale de tout le système")
 robot4, norm4, wd4, runtime4 = make_full_stack("g1_final_check")
 tracker = robot4.get_motion_tracker()
 check("MotionStateTracker opérationnel après toute la session de stress",
-      tracker is not None and len(tracker.joint_ids) == 24)
+      tracker is not None and len(tracker.joint_ids) == 23)
 
 runtime4.install(WarehouseOpsApp())
 runtime4.start_app("com.axisos.warehouse_ops")
 runtime4.run_mission("com.axisos.warehouse_ops", {
     "objects": [{"id": "FINAL-CHECK", "weight_kg": 3.0, "zone": "zone_a"}]
 })
-recorded = tracker.get("left_hip_pitch").last_command
+recorded = tracker.get("left_hip_pitch_joint").last_command
 check("Commandes de la dernière mission bien enregistrées dans le tracker",
       recorded is not None)
 

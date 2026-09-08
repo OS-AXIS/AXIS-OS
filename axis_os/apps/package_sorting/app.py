@@ -53,19 +53,19 @@ class Package:
 
 # Positions normalisées (positif = flexion — le normalizer gère les inversions G1)
 HOME = {
-    "left_shoulder_pitch": 0.0, "left_shoulder_roll": 0.0,
-    "left_elbow": 0.0, "left_wrist_roll": 0.0,
-    "right_shoulder_pitch": 0.0, "right_shoulder_roll": 0.0,
-    "right_elbow": 0.0, "right_wrist_roll": 0.0,
+    "left_shoulder_pitch_joint": 0.0, "left_shoulder_roll_joint": 0.0,
+    "left_elbow_joint": 0.0, "left_wrist_roll_joint": 0.0,
+    "right_shoulder_pitch_joint": 0.0, "right_shoulder_roll_joint": 0.0,
+    "right_elbow_joint": 0.0, "right_wrist_roll_joint": 0.0,
 }
-REACH_LEFT  = {"left_shoulder_pitch": 0.8, "left_shoulder_roll": 0.3,
-               "left_elbow": 0.4, "right_shoulder_pitch": 0.2}
-REACH_RIGHT = {"right_shoulder_pitch": 0.8, "right_shoulder_roll": 0.3,
-               "right_elbow": 0.4, "left_shoulder_pitch": 0.2}
-DEPOSIT_LEFT   = {"left_shoulder_pitch": 0.5,  "left_shoulder_roll": 0.8,  "left_elbow": 0.6}
-DEPOSIT_RIGHT  = {"right_shoulder_pitch": 0.5, "right_shoulder_roll": 0.8, "right_elbow": 0.6}
-DEPOSIT_CENTER = {"left_shoulder_pitch": 0.6,  "left_elbow": 0.5,
-                  "right_shoulder_pitch": 0.6, "right_elbow": 0.5}
+REACH_LEFT  = {"left_shoulder_pitch_joint": 0.8, "left_shoulder_roll_joint": 0.3,
+               "left_elbow_joint": 0.4, "right_shoulder_pitch_joint": 0.2}
+REACH_RIGHT = {"right_shoulder_pitch_joint": 0.8, "right_shoulder_roll_joint": 0.3,
+               "right_elbow_joint": 0.4, "left_shoulder_pitch_joint": 0.2}
+DEPOSIT_LEFT   = {"left_shoulder_pitch_joint": 0.5,  "left_shoulder_roll_joint": 0.8,  "left_elbow_joint": 0.6}
+DEPOSIT_RIGHT  = {"right_shoulder_pitch_joint": 0.5, "right_shoulder_roll_joint": 0.8, "right_elbow_joint": 0.6}
+DEPOSIT_CENTER = {"left_shoulder_pitch_joint": 0.6,  "left_elbow_joint": 0.5,
+                  "right_shoulder_pitch_joint": 0.6, "right_elbow_joint": 0.5}
 
 
 def _cmds(pos_dict: Dict, velocity: float = 1.5) -> Dict[str, ActuatorCommand]:

@@ -3,7 +3,7 @@ AXIS-OS — Test Conventions & Validation
 ==========================================
 Suite couvrant les points de la revue externe sur conventions.py :
 round-trip sur les 24 joints, tests dédiés aux inversions critiques,
-test de non-régression nommé pour le bug historique right_knee,
+test de non-régression nommé pour le bug historique right_knee_joint,
 rejet NaN/Infinity, validation de la table au démarrage.
 
     python test_conventions.py
@@ -50,9 +50,9 @@ TEST_ANGLES = [0.0, 0.1, -0.5, 1.0, -1.57, 2.0, math.pi / 4]
 
 # ══════════════════════════════════════════════════════════════════
 
-section("1 — Round-trip complet sur les 24 joints (point #3 revue externe)")
+section("1 — Round-trip complet sur les 23 joints (point #3 revue externe)")
 normalizer = build_g1_normalizer()
-check("24 joints présents dans la table", len(ALL_JOINT_IDS) == 24)
+check("23 joints présents dans la table (fichier URDF officiel)", len(ALL_JOINT_IDS) == 23)
 
 failures = []
 for jid in ALL_JOINT_IDS:
@@ -72,49 +72,49 @@ section("2 — Tests dédiés aux inversions critiques (point #4)")
 inverted = get_inverted_joints()
 check("9 joints inversés détectés", len(inverted) == 9)
 
-# right_hip_pitch — signalé "INVERSION G1 CRITIQUE" dans conventions.py
-raw = normalizer.normalized_to_raw("right_hip_pitch", 0.3)
-check("right_hip_pitch: normalized=+0.3 (flexion) → raw=-0.3 (sign inversé)",
+# right_hip_pitch_joint — signalé "INVERSION G1 CRITIQUE" dans conventions.py
+raw = normalizer.normalized_to_raw("right_hip_pitch_joint", 0.3)
+check("right_hip_pitch_joint: normalized=+0.3 (flexion) → raw=-0.3 (sign inversé)",
       abs(raw - (-0.3)) < 1e-9)
-back = normalizer.raw_to_normalized("right_hip_pitch", -0.3)
-check("right_hip_pitch: raw=-0.3 → normalized=+0.3 (retour cohérent)",
+back = normalizer.raw_to_normalized("right_hip_pitch_joint", -0.3)
+check("right_hip_pitch_joint: raw=-0.3 → normalized=+0.3 (retour cohérent)",
       abs(back - 0.3) < 1e-9)
 
-# right_knee — signalé "bug historique" dans conventions.py
-section("3 — Test de non-régression nommé : bug historique right_knee (point #13)")
-raw_knee = normalizer.normalized_to_raw("right_knee", 0.4)
+# right_knee_joint — signalé "bug historique" dans conventions.py
+section("3 — Test de non-régression nommé : bug historique right_knee_joint (point #13)")
+raw_knee = normalizer.normalized_to_raw("right_knee_joint", 0.4)
 check("test_regression_right_knee_flexion: normalized=+0.4 → raw=-0.4",
       abs(raw_knee - (-0.4)) < 1e-9)
 # Le bug original (Sprint 1) : commander normalized=+0.4 sur les deux genoux
-# faisait rejeter right_knee car le safety guard voyait raw=+0.4 (hors limite
+# faisait rejeter right_knee_joint car le safety guard voyait raw=+0.4 (hors limite
 # pos_max=0.09) au lieu de raw=-0.4 (valide). Reproduction exacte du scénario :
-sym_left  = normalizer.normalized_to_raw("left_knee", 0.4)
-sym_right = normalizer.normalized_to_raw("right_knee", 0.4)
+sym_left  = normalizer.normalized_to_raw("left_knee_joint", 0.4)
+sym_right = normalizer.normalized_to_raw("right_knee_joint", 0.4)
 check("test_regression_right_knee_symetrie: mêmes normalized (+0.4), "
       "raw différents (le fix)", sym_left == 0.4 and sym_right == -0.4)
 
 section("4 — Rejet NaN/Infinity (point #9, trou identifié)")
 try:
-    normalizer.normalized_to_raw("left_knee", float("nan"))
+    normalizer.normalized_to_raw("left_knee_joint", float("nan"))
     check("NaN rejeté avec InvalidAngleError", False)
 except InvalidAngleError as e:
     check("NaN rejeté avec InvalidAngleError", True)
     print(f"    → {e}")
 
 try:
-    normalizer.normalized_to_raw("left_knee", float("inf"))
+    normalizer.normalized_to_raw("left_knee_joint", float("inf"))
     check("Infinity rejeté avec InvalidAngleError", False)
 except InvalidAngleError:
     check("Infinity rejeté avec InvalidAngleError", True)
 
 try:
-    normalizer.raw_to_normalized("right_knee", float("-inf"))
+    normalizer.raw_to_normalized("right_knee_joint", float("-inf"))
     check("-Infinity rejeté côté raw_to_normalized", False)
 except InvalidAngleError:
     check("-Infinity rejeté côté raw_to_normalized", True)
 
 check("Valeur normale (0.5) toujours acceptée après ajout du check",
-      normalizer.normalized_to_raw("left_knee", 0.5) == 0.5)
+      normalizer.normalized_to_raw("left_knee_joint", 0.5) == 0.5)
 
 section("5 — Validation de la table au démarrage (point #5)")
 expected = [j.joint_id for j in _build_g1_joint_definitions()]
@@ -125,7 +125,7 @@ check("expected_joint_ids == clés de la table (24 == 24)",
 
 # Table cassée : joint manquant
 broken_table = dict(G1_JOINT_CONVENTIONS)
-del broken_table["right_knee"]
+del broken_table["right_knee_joint"]
 result_broken = validate_convention_table(broken_table, expected)
 check("Table avec joint manquant → invalide", not result_broken.valid)
 check("Erreur de type MISSING_JOINT détectée",
@@ -134,8 +134,8 @@ check("Erreur de type MISSING_JOINT détectée",
 # Table cassée : sign invalide
 from axis_os.hal.drivers.unitree_g1.conventions import JointConvention
 broken_table2 = dict(G1_JOINT_CONVENTIONS)
-broken_table2["left_knee"] = JointConvention(
-    "left_knee", sign=0.5, offset_rad=0.0,  # sign invalide : ni -1 ni +1
+broken_table2["left_knee_joint"] = JointConvention(
+    "left_knee_joint", sign=0.5, offset_rad=0.0,  # sign invalide : ni -1 ni +1
     positive_label="flexion", negative_label="extension",
     anatomical_note="test"
 )
@@ -155,9 +155,9 @@ section("RÉSUMÉ")
 total = PASS + FAIL
 print(f"  Résultats : {PASS}/{total} tests passés\n")
 if FAIL == 0:
-    print("  ✓ Round-trip validé sur les 24 joints (576 combinaisons)")
-    print("  ✓ Inversions critiques (right_hip_pitch, right_knee) confirmées")
-    print("  ✓ Bug historique right_knee : test de non-régression en place")
+    print("  ✓ Round-trip validé sur les 23 joints (fichier URDF officiel)")
+    print("  ✓ Inversions critiques (right_hip_pitch_joint, right_knee_joint) confirmées")
+    print("  ✓ Bug historique right_knee_joint : test de non-régression en place")
     print("  ✓ NaN/Infinity rejetés explicitement (trou de sécurité comblé)")
     print("  ✓ Validation de table au démarrage — branchée dans initialize_all()")
 else:

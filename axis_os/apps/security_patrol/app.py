@@ -193,8 +193,8 @@ class SecurityPatrolApp(RobotApp):
                 # sans Nav2 branché — ceci n'est qu'une commande de posture
                 # symbolique par checkpoint pour exercer le chemin HAL réel.
                 ctx.move_legs({
-                    "left_hip_pitch": ActuatorCommand(ControlMode.POSITION, position=0.05),
-                    "right_hip_pitch": ActuatorCommand(ControlMode.POSITION, position=0.05),
+                    "left_hip_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.05),
+                    "right_hip_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.05),
                 })
 
                 checkpoints_visited += 1
