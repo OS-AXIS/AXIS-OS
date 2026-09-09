@@ -8,6 +8,61 @@ cassant — voir `SemVer.is_compatible_with()`).
 Ce fichier documente les changements qui touchent le **contrat public**
 du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
+## [Non publié]
+
+### Ajouts
+
+- `docs/ai_vs_script_authority_notes.md` — piste (non implémentée) de
+  distinction entre commandes d'origine scriptée et commandes
+  d'origine IA (VLACppConnector/OpenVLAConnector) dans le modèle de
+  permissions, avec condition de reprise explicite.
+- **`VLACppConnector`** (`axis_os/store/sdk/ai/connector.py`) : nouveau
+  connecteur `IVLAConnector`, client ZeroMQ/Protobuf compatible avec
+  le protocole exact du serveur d'inférence
+  [vla.cpp](https://github.com/VinRobotics/vla.cpp) (licence Apache
+  2.0) — un moteur C++ (basé sur llama.cpp) qui fait tourner des
+  modèles VLA au format GGUF unifié (SmolVLA, π0, OpenVLA-OFT, GR00T
+  N1.x...), benchmarké publiquement sur NVIDIA Jetson (le même type
+  de module que le Jetson Orin NX du Unitree G1 EDU). Schéma protobuf
+  copié tel quel depuis le dépôt source
+  (`axis_os/store/sdk/ai/proto/vla.proto`), compilé avec `protoc`.
+  Coexiste avec `OpenVLAConnector` (stub de développement) sans le
+  remplacer — une app choisit le connecteur adapté à son déploiement.
+  Testé de bout en bout (`test_vla_cpp_connector.py`) contre un vrai
+  serveur ZeroMQ minimal parlant le protocole réel, pas un mock.
+- **Signature Ed25519 des apps** (`axis_os/store/sdk/signing.py`) :
+  comble le trou de sécurité identifié dès le début du projet — rien
+  n'empêchait jusqu'ici un fichier .py quelconque de se faire passer
+  pour une app AXIS-OS légitime. `AppManifest.code_signature` et
+  `.developer_public_key` (optionnels, rétrocompatibles) permettent à
+  un développeur de signer le code de son app ; `PlayStoreRuntime.
+  install()` vérifie cette signature avant installation et refuse
+  proprement si le code a été modifié après signature. Limite
+  documentée : Trust On First Use, pas d'autorité de certification
+  centrale (voir docstring du module).
+- `docs/fleet_manager_design.md` complété avec une section sur SROS2
+  (Secure ROS2 / DDS-Security) comme référence pour la sécurité
+  réseau du futur Fleet Manager.
+- `docs/sandboxing_hardening_notes.md` — pistes de renforcement futur
+  du sandboxing (AppArmor/seccomp/Firejail, puis gVisor/Firecracker
+  si nécessaire), non implémentées, avec justification de séquencement.
+- `test_app_signing.py` — tests de bout en bout pour la signature des
+  apps.
+- **Chaînage de hash pour `StructuredLogger`**
+  (`axis_os/hal/core/structured_log.py`) : chaque entrée de log inclut
+  désormais `hash` et `prev_hash` (SHA-256), formant une chaîne
+  vérifiable via `verify_chain()`. Motivation : l'EU AI Act impose des
+  obligations de transparence pour les systèmes d'IA à risque dès août
+  2026 — un journal d'incident de sécurité robotique n'a de valeur en
+  investigation que si son intégrité peut être prouvée, pas seulement
+  supposée (même logique que l'enregistreur de vol en aviation).
+  Rétrocompatible : les logs écrits avant ce changement restent lisibles
+  (`read_recent()` fonctionne toujours), `verify_chain()` signale
+  honnêtement leur absence de chaînage plutôt que de planter.
+- `test_structured_log_chain.py` — 19 tests (chaîne valide, détection
+  de modification, détection de suppression de ligne, continuité entre
+  redémarrages de process, rétrocompatibilité, thread-safety).
+
 ## [0.2.0] — 2026-09-08
 
 ### ⚠️ Changements cassants

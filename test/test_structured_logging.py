@@ -138,7 +138,7 @@ wd = WatchdogSystem(robot, cfg, logger=wd_logger)
 wd.start()
 time.sleep(0.05)
 
-act = robot.get_actuator("left_knee")
+act = robot.get_actuator("left_knee_joint")
 act._temperature = 85.0  # déclenche un e-stop réel
 time.sleep(0.15)
 
@@ -158,7 +158,7 @@ guard_logger = fresh_logger()
 from axis_os.hal.core.types import JointLimits
 limits = JointLimits(pos_min=-1.0, pos_max=1.0, vel_max=20.0,
                      torque_max=88.0, current_max=20.0, temperature_max=80.0)
-guard = JointSafetyGuard("left_knee", limits, logger=guard_logger)
+guard = JointSafetyGuard("left_knee_joint", limits, logger=guard_logger)
 
 ok_cmd, v = guard.validate_command(
     ActuatorCommand(ControlMode.POSITION, position=float("nan"))
@@ -173,7 +173,7 @@ check("rule == INVALID_VALUE dans l'entrée persistée",
       violation_entries[0]["data"]["rule"] == "INVALID_VALUE")
 
 section("8 — Rétrocompatibilité : logger=None utilise l'instance partagée par défaut")
-guard2 = JointSafetyGuard("left_elbow", limits)  # pas de logger fourni
+guard2 = JointSafetyGuard("left_elbow_joint", limits)  # pas de logger fourni
 try:
     guard2.validate_command(ActuatorCommand(ControlMode.POSITION, position=0.5))
     check("Construction et usage sans logger explicite fonctionnent "

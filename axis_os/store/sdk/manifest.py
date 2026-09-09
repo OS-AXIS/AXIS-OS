@@ -126,6 +126,20 @@ class AppManifest:
     # (stricte tant qu'on reste en version 0.x).
     sdk_version_min: Optional[str] = None
 
+    # Signature Ed25519 du code source de l'app (voir
+    # axis_os/store/sdk/signing.py) — optionnelle et laissée à None
+    # par défaut, pour ne jamais casser une app déjà écrite avant
+    # l'introduction de ce mécanisme. Quand code_signature ET
+    # developer_public_key sont TOUS LES DEUX renseignés,
+    # PlayStoreRuntime.install() vérifie que le code source fourni à
+    # l'installation correspond bien à cette signature — refuse
+    # sinon. Si un seul des deux est renseigné (signature sans clé,
+    # ou clé sans signature), c'est traité comme une erreur de
+    # manifest (voir validate()) : un développeur qui commence à
+    # signer ses apps doit le faire correctement, pas à moitié.
+    code_signature:        Optional[str] = None
+    developer_public_key:  Optional[str] = None
+
     COMMISSION_RATE = 0.30
 
     @property
@@ -160,4 +174,10 @@ class AppManifest:
                 SemVer.parse(self.sdk_version_min)
             except ValueError as e:
                 errors.append(f"sdk_version_min invalide : {e}")
+        if (self.code_signature is None) != (self.developer_public_key is None):
+            errors.append(
+                "code_signature et developer_public_key doivent être renseignés "
+                "ENSEMBLE ou pas du tout — un seul des deux ne permet aucune "
+                "vérification cohérente."
+            )
         return errors

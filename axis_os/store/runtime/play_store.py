@@ -146,6 +146,37 @@ class PlayStoreRuntime:
                 )
                 return False
 
+        # Vérification signature du code (voir axis_os/store/sdk/signing.py)
+        # — après le check de version SDK (une app dont le SDK est déjà
+        # incompatible n'a pas besoin d'aller plus loin), avant le check
+        # hardware (une signature invalide est une raison de refus plus
+        # fondamentale que des capacités manquantes).
+        if manifest.code_signature is not None:
+            from axis_os.store.sdk.signing import verify_app_signature, SignatureError
+            import inspect
+            try:
+                source = inspect.getsource(type(app))
+            except (OSError, TypeError) as exc:
+                print(
+                    f"  [ERREUR] Impossible de récupérer le code source de "
+                    f"l'app pour vérifier sa signature : {exc}"
+                )
+                return False
+            try:
+                valid = verify_app_signature(
+                    source, manifest.code_signature, manifest.developer_public_key
+                )
+            except SignatureError as exc:
+                print(f"  [ERREUR] Signature ou clé malformée : {exc}")
+                return False
+            if not valid:
+                print(
+                    "  [ERREUR] Signature invalide — le code de l'app ne "
+                    "correspond pas à sa signature déclarée (code modifié "
+                    "après signature, ou mauvaise clé)."
+                )
+                return False
+
         # Vérification hardware
         hw = manifest.hardware
         robot_info = self._robot.get_robot_info()

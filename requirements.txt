@@ -1,0 +1,22 @@
+# AXIS-OS — Dependencies
+# Core : stdlib Python uniquement (aucune dépendance externe pour la HAL)
+
+# Simulation (optionnel selon le backend)
+# pybullet>=3.2.5        # si vous utilisez PyBullet
+# isaacsim==4.2.0        # si vous utilisez Isaac Sim
+
+# IA (optionnel)
+# anthropic>=0.25.0      # Claude API backend
+# llama-cpp-python       # Llama local backend
+psutil>=5.9.0
+
+# Signature des apps (axis_os/store/sdk/signing.py) — requis
+# uniquement si une app publie/vérifie une signature Ed25519.
+cryptography>=42.0.0
+
+# VLACppConnector (axis_os/store/sdk/ai/connector.py) — requis
+# uniquement si une app utilise ce connecteur pour parler à un
+# serveur vla-server (protocole ZeroMQ/Protobuf, voir
+# axis_os/store/sdk/ai/proto/README.md).
+pyzmq>=26.0.0
+protobuf>=4.25.0

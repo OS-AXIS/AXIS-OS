@@ -99,7 +99,7 @@ check(f"Les {len(G1_JOINTS)} JointLimits réelles du G1 passent validate_limits(
       all_valid)
 
 section("4 — NaN/Infinity explicitement rejetés avec le bon diagnostic (#1)")
-guard = JointSafetyGuard("left_knee", G1_JOINTS[3].limits)  # left_knee
+guard = JointSafetyGuard("left_knee_joint", G1_JOINTS[3].limits)  # left_knee_joint
 
 ok, v = guard.validate_command(ActuatorCommand(ControlMode.POSITION, position=float("nan")))
 check("position=NaN rejetée", not ok)
@@ -153,26 +153,26 @@ if not all_joints_ok:
             print(f"    ✗ {jid}")
 
 section("6 — Fault injection : feedback incohérent (#10)")
-guard = JointSafetyGuard("right_knee", next(j.limits for j in G1_JOINTS if j.joint_id == "right_knee"))
+guard = JointSafetyGuard("right_knee_joint", next(j.limits for j in G1_JOINTS if j.joint_id == "right_knee_joint"))
 
-bad_fb = make_feedback("right_knee", temperature=float("nan"))
+bad_fb = make_feedback("right_knee_joint", temperature=float("nan"))
 violations = guard.check_feedback_health(bad_fb)
 check("Feedback avec température NaN détecté comme violation",
       len(violations) == 1 and violations[0].rule == "INVALID_VALUE")
 
-bad_fb2 = make_feedback("right_knee", torque=float("inf"))
+bad_fb2 = make_feedback("right_knee_joint", torque=float("inf"))
 violations2 = guard.check_feedback_health(bad_fb2)
 check("Feedback avec couple Infinity détecté",
       len(violations2) == 1 and violations2[0].kind == SafetyErrorKind.INVALID_VALUE)
 
 section("7 — Fault injection : capteur bloqué (valeur figée extrême) (#10)")
-stuck_fb = make_feedback("right_knee", temperature=999.0)  # capteur qui délire
+stuck_fb = make_feedback("right_knee_joint", temperature=999.0)  # capteur qui délire
 violations3 = guard.check_feedback_health(stuck_fb)
 check("Température=999°C (capteur défaillant) → TEMPERATURE_CRITICAL détectée",
       any(v.rule == "TEMPERATURE_CRITICAL" for v in violations3))
 
 section("8 — Fault injection : commande extrême dans un contexte normal (#10)")
-guard = JointSafetyGuard("left_elbow", next(j.limits for j in G1_JOINTS if j.joint_id == "left_elbow"))
+guard = JointSafetyGuard("left_elbow_joint", next(j.limits for j in G1_JOINTS if j.joint_id == "left_elbow_joint"))
 extreme_cmd = ActuatorCommand(ControlMode.POSITION, position=1e10)
 ok, v = guard.validate_command(extreme_cmd)
 check("Commande absurdement grande (1e10) rejetée proprement",
@@ -190,7 +190,7 @@ check("5 joints en violation simultanée, tous correctement détectés indépend
       all(simultaneous_results.values()))
 
 section("10 — Rétrocompatibilité : signature validate_command() inchangée")
-guard = JointSafetyGuard("left_knee", next(j.limits for j in G1_JOINTS if j.joint_id == "left_knee"))
+guard = JointSafetyGuard("left_knee_joint", next(j.limits for j in G1_JOINTS if j.joint_id == "left_knee_joint"))
 ok, v = guard.validate_command(ActuatorCommand(ControlMode.POSITION, position=0.5))
 check("Retourne toujours un tuple (bool, Optional[SafetyViolation])",
       isinstance(ok, bool) and (v is None or hasattr(v, "rule")))

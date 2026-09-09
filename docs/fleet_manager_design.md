@@ -115,6 +115,48 @@ répartir intelligemment les tâches entre robots hétérogènes, sans
 jamais supposer qu'un robot donné a telle ou telle capacité par
 défaut.
 
+### Sécurité réseau : le modèle SROS2 (Secure ROS2) comme référence
+
+Le futur Fleet Manager introduira nécessairement de la communication
+réseau entre plusieurs robots et un serveur central — exactement le
+sujet volontairement mis de côté ailleurs dans ce projet (voir plus
+haut). Quand ce chantier sera repris, **SROS2** (l'extension sécurité
+officielle de ROS2, construite sur la spécification OMG DDS-Security)
+est la référence à suivre plutôt qu'à réinventer :
+
+- **5 plugins DDS-Security**, chacun avec une responsabilité
+  distincte : Authentication (identité), Access Control (permissions
+  par domaine/topic), Cryptographic (chiffrement des échanges),
+  Logging (audit), Data Tagging (classification des données). ROS2
+  lui-même n'utilise que les 3 premiers en pratique (les 2 derniers
+  ne sont pas obligatoires dans la spec) — un bon signal de ce qui
+  est réellement indispensable versus optionnel.
+- **PKI avec Certificate Authority (CA) partagée** : chaque
+  participant (chaque robot, chaque composant du Fleet Manager) a une
+  identité prouvée par un certificat X.509 signé par une CA commune —
+  pas de mot de passe partagé, pas de confiance implicite au premier
+  contact.
+- **Concept d'"enclave"** : un ensemble de ressources qui opèrent dans
+  le même domaine de sécurité, avec leurs propres autorités
+  d'Identity CA et de Permissions CA. Directement transposable :
+  chaque robot pourrait être son "enclave", avec le Fleet Manager
+  comme autorité de confiance commune.
+- **Permissions exprimées en termes ROS familiers**, converties
+  automatiquement vers les primitives DDS bas niveau — un principe
+  d'ergonomie à reprendre : les permissions réseau du futur Fleet
+  Manager devraient s'exprimer avec le vocabulaire déjà existant
+  d'AXIS-OS (`Permission`, `RobotCapability`), pas un nouveau
+  formalisme réseau appris à part.
+
+Explicitement PAS à copier tel quel : la complexité de configuration
+de SROS2 est un défaut documenté et reconnu même par ses propres
+créateurs ("PKI, DDS governance and permissions files... may be
+unfamiliar to the average roboticist") — d'où l'existence d'outils
+(`ros2 security`) pour l'abstraire. Le futur Fleet Manager devrait
+viser le même NIVEAU de garantie de sécurité, avec une ergonomie
+pensée dès le départ pour rester simple, plutôt que d'exposer
+directement la complexité DDS aux développeurs d'apps AXIS-OS.
+
 ### Deux couches distinctes, jamais fusionnées
 
 ```
