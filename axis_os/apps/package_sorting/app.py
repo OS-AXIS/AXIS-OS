@@ -80,6 +80,7 @@ class PackageSortingApp(RobotApp):
             app_id="com.acme.package_sorting",
             name="Package Sorting Pro",
             version="1.0.0",
+            sdk_version_min="0.2.0",
             author="ACME Robotics Solutions",
             author_email="dev@acme-robotics.example.com",
             description=(

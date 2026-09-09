@@ -116,6 +116,16 @@ class AppManifest:
     website_url:   Optional[str] = None
     support_email: Optional[str] = None
 
+    # Version minimale d'AXIS-OS requise par cette app (SemVer, ex:
+    # "0.2.0"). Optionnelle et laissée à None par défaut pour ne
+    # jamais casser une app déjà écrite avant l'introduction de ce
+    # champ (voir axis_os/__init__.py pour la politique de version
+    # complète). Quand elle est renseignée, PlayStoreRuntime.install()
+    # la vérifie contre axis_os.__version__ avant d'installer — voir
+    # SemVer.is_compatible_with() pour la règle exacte appliquée
+    # (stricte tant qu'on reste en version 0.x).
+    sdk_version_min: Optional[str] = None
+
     COMMISSION_RATE = 0.30
 
     @property
@@ -144,4 +154,10 @@ class AppManifest:
             errors.append("Un modèle payant doit avoir un base_price_eur > 0")
         if not (0.0 < self.max_velocity_ratio <= 1.0):
             errors.append("max_velocity_ratio doit être dans ]0.0, 1.0]")
+        if self.sdk_version_min is not None:
+            from axis_os import SemVer
+            try:
+                SemVer.parse(self.sdk_version_min)
+            except ValueError as e:
+                errors.append(f"sdk_version_min invalide : {e}")
         return errors

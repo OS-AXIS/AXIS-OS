@@ -275,6 +275,7 @@ SECURITY_PATROL_MANIFEST = AppManifest(
     app_id="com.axisos.security_patrol",
     name="Security Patrol",
     version="1.0.0",
+    sdk_version_min="0.2.0",
     author="AXIS-OS Team",
     author_email="dev@axis-os.example",
     description=(

@@ -127,6 +127,25 @@ class PlayStoreRuntime:
             for e in errors: print(f"  [ERREUR] {e}")
             return False
 
+        # Vérification compatibilité SDK (voir axis_os/__init__.py) —
+        # avant toute autre vérification : une app codée pour une
+        # version incompatible d'AXIS-OS peut avoir des attentes sur
+        # le FORMAT même de HardwareRequirements/Capabilities qui
+        # suivent, donc autant échouer ici avec un message clair
+        # plutôt qu'une erreur confuse plus loin.
+        if manifest.sdk_version_min is not None:
+            from axis_os import __version__ as axis_os_version, SemVer
+            required = SemVer.parse(manifest.sdk_version_min)
+            current  = SemVer.parse(axis_os_version)
+            if not required.is_compatible_with(current):
+                print(
+                    f"  [ERREUR] Incompatible avec AXIS-OS {current} — "
+                    f"cette app requiert {required} (SDK mineur ou majeur "
+                    f"différent). Mettez à jour l'app ou installez-la sur "
+                    f"une version d'AXIS-OS compatible."
+                )
+                return False
+
         # Vérification hardware
         hw = manifest.hardware
         robot_info = self._robot.get_robot_info()

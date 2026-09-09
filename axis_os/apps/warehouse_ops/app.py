@@ -243,6 +243,7 @@ WAREHOUSE_OPS_MANIFEST = AppManifest(
     app_id="com.axisos.warehouse_ops",
     name="Warehouse Ops",
     version="1.0.0",
+    sdk_version_min="0.2.0",
     author="AXIS-OS Team",
     author_email="dev@axis-os.example",
     description=(
