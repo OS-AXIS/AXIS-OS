@@ -12,6 +12,17 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ### Ajouts
 
+- `docs/isaac_sim_headless_patches.md` — documentation des patches
+  nécessaires pour faire tourner Isaac Sim 4.5 en mode headless sur
+  un serveur sans affichage, issue de la session de validation du
+  2026-09-13. Confirme les 23 joints REVOLUTE du G1 et leurs limites
+  réelles via `URDFParseFile()` (parsing seul), avec `JointSafetyGuard`
+  testé sur les 23 joints individuellement contre ces vraies données.
+  Documente aussi une limite non résolue (segfault natif de
+  `URDFParseAndImportFile()`, bug connu de la communauté Isaac Sim).
+- `axis_os/hal/drivers/unitree_g1/urdf/meshes/README.md` — instructions
+  de récupération des fichiers `.STL` du G1 (non versionnés, 106MB,
+  source unitreerobotics/unitree_ros).
 - `docs/ai_vs_script_authority_notes.md` — piste (non implémentée) de
   distinction entre commandes d'origine scriptée et commandes
   d'origine IA (VLACppConnector/OpenVLAConnector) dans le modèle de
