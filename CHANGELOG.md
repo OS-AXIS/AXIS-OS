@@ -12,6 +12,24 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ### Ajouts
 
+- **`G1DDSActuator`** (`axis_os/hal/drivers/unitree_g1/g1_dds_actuator.py`) :
+  premier driver pour le VRAI matériel G1 physique, via le SDK
+  officiel Unitree (`unitree_sdk2py`, protocole DDS/Ethernet).
+  Comble un trou identifié lors d'un audit — jusqu'ici, aucun chemin
+  technique n'existait pour déployer AXIS-OS sur un G1 réel, seul
+  `G1SimulatedActuator` existait. Le commentaire précédent dans
+  `robot.py` ("remplacer par G1CANActuator") était lui-même erroné :
+  le G1 communique par DDS, pas par CAN direct. Mapping exact des 23
+  joints vers leurs index moteur officiels (`G1_JOINT_ID_TO_MOTOR_INDEX`,
+  vérifié contre l'exemple officiel `g1_low_level_example.py`),
+  intègre les points de sécurité documentés par le SDK officiel
+  (désactivation du mode sport intégré, CRC obligatoire par commande).
+  **⚠️ Non testé sur matériel physique** — écrit en suivant exactement
+  le code source et les exemples officiels, à valider sur un vrai G1
+  avant tout déploiement client.
+- `test/test_g1_dds_actuator.py` — 19 tests avec un hub DDS mocké
+  (mapping des 23 joints, aucun doublon d'index, commande dangereuse
+  qui n'atteint jamais le hub réel, comportement de l'arrêt d'urgence).
 - **Validation du prix minimum viable** (`AppManifest.validate()`) :
   comble un bug financier identifié lors d'un audit — avec un
   `base_price_eur` trop bas (ex: 0.01€), l'arrondi à 2 décimales de

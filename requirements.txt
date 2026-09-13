@@ -20,3 +20,12 @@ cryptography>=42.0.0
 # axis_os/store/sdk/ai/proto/README.md).
 pyzmq>=26.0.0
 protobuf>=4.25.0
+
+# G1DDSActuator (axis_os/hal/drivers/unitree_g1/g1_dds_actuator.py) —
+# requis UNIQUEMENT pour piloter un vrai G1 physique (pas la
+# simulation, qui utilise G1SimulatedActuator sans dépendance externe).
+# Nécessite aussi cyclonedds==0.10.2 — voir le README officiel du SDK
+# Unitree en cas d'erreur "Could not locate cyclonedds" à l'install.
+# unitree_sdk2py  # pip install unitree_sdk2py (pas encore publié sur PyPI
+#                 # au moment de l'écriture — installer depuis
+#                 # github.com/unitreerobotics/unitree_sdk2_python)

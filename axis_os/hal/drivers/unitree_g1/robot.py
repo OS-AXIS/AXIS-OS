@@ -2,8 +2,11 @@
 AXIS-OS — Driver Unitree G1
 ==============================
 Implémentation concrète de IRobotHAL pour le Unitree G1.
-En simulation : actionneurs mockés.
-En production  : remplacer G1SimulatedActuator par G1CANActuator.
+En simulation : actionneurs mockés (G1SimulatedActuator, ce fichier).
+En production : G1DDSActuator (voir g1_dds_actuator.py) — driver
+réel via le SDK officiel Unitree (unitree_sdk2py, protocole DDS),
+⚠️ non testé sur matériel physique, voir l'avertissement en tête de
+ce module.
 
 Licence : Apache 2.0 (open-source)
 """
