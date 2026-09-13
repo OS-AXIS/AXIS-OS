@@ -12,6 +12,19 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ### Ajouts
 
+- **Validation du prix minimum viable** (`AppManifest.validate()`) :
+  comble un bug financier identifié lors d'un audit — avec un
+  `base_price_eur` trop bas (ex: 0.01€), l'arrondi à 2 décimales de
+  `store_price_eur` pouvait ramener `platform_commission_eur` à
+  exactement 0.00€ — la plateforme ne touchant alors littéralement
+  rien sur une app pourtant déclarée payante à 30% de commission. Le
+  seuil minimum viable (0.02€ avec le taux actuel) est calculé
+  dynamiquement à partir de `COMMISSION_RATE`, pas codé en dur — reste
+  correct si le taux change. N'affecte jamais les apps `FREE`
+  (`commission=0.0€` y est normal, pas un bug).
+- `test/test_pricing_validation.py` — 16 tests (cas bug exact, seuil
+  minimum valide, non-régression sur les prix déjà utilisés par les
+  apps de référence, cohérence du taux de commission).
 - **Verrou global de mission** (`PlayStoreRuntime.run_mission()`) :
   comble un trou identifié lors d'un audit — rien n'empêchait
   jusqu'ici deux missions concurrentes (même app appelée deux fois,

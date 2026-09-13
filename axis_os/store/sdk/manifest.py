@@ -166,6 +166,24 @@ class AppManifest:
             errors.append("base_price_eur ne peut pas être négatif")
         if self.pricing_model != PricingModel.FREE and self.base_price_eur == 0:
             errors.append("Un modèle payant doit avoir un base_price_eur > 0")
+        # Trou identifié lors d'un audit : avec base_price_eur trop bas
+        # (ex: 0.01€), l'arrondi à 2 décimales de store_price_eur peut
+        # ramener platform_commission_eur à 0.00€ — la plateforme ne
+        # touche alors LITTÉRALEMENT rien sur la transaction, alors que
+        # le manifest prétend un modèle payant à 30% de commission. Se
+        # calcule dynamiquement à partir de COMMISSION_RATE plutôt qu'un
+        # seuil codé en dur, pour rester correct si le taux change un
+        # jour. Ne s'applique qu'aux modèles payants (FREE a toujours
+        # commission=0.0€ par conception, ce n'est pas une anomalie).
+        if self.pricing_model != PricingModel.FREE and self.base_price_eur > 0:
+            if self.platform_commission_eur <= 0:
+                errors.append(
+                    f"base_price_eur={self.base_price_eur}€ est trop bas : "
+                    f"la commission de plateforme calculée "
+                    f"({self.platform_commission_eur}€) est nulle après "
+                    f"arrondi — la plateforme ne serait jamais rémunérée "
+                    f"sur cette app malgré le modèle payant déclaré."
+                )
         if not (0.0 < self.max_velocity_ratio <= 1.0):
             errors.append("max_velocity_ratio doit être dans ]0.0, 1.0]")
         if self.sdk_version_min is not None:
