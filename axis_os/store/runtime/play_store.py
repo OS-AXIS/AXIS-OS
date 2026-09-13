@@ -25,6 +25,7 @@ from axis_os.store.runtime.hal_bridge import (
     HALBridgeServer, HALBridgeClient, HALCommand, HALResponse
 )
 import multiprocessing as mp
+import threading
 
 
 def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
@@ -110,6 +111,17 @@ class PlayStoreRuntime:
         self._apps:    Dict[str, InstalledApp] = {}
         self._billing: List[BillingReport]     = []
         self._id = str(uuid.uuid4())[:8]
+        # Verrou global de mission — trou identifié lors d'un audit :
+        # rien n'empêchait deux appels concurrents à run_mission()
+        # (deux apps différentes, ou la même app deux fois) d'envoyer
+        # des commandes contradictoires aux MÊMES actionneurs physiques
+        # en même temps. Un seul robot = une seule mission active à la
+        # fois, quelle que soit l'app — pas une file d'attente : un
+        # appel concurrent est REFUSÉ immédiatement (pas mis en attente
+        # silencieusement), pour rester prévisible et éviter qu'un
+        # appelant croie sa mission en cours d'exécution alors qu'elle
+        # patiente indéfiniment derrière une autre.
+        self._mission_lock = threading.Lock()
         print(f"\n[PlayStore] Runtime démarré | id={self._id} | robot={robot.robot_id}")
 
     # ── Installation ──────────────────────────────────────────────
@@ -258,6 +270,37 @@ class PlayStoreRuntime:
                 duration_s=0.0,
                 error_message="Robot en état E-STOP — aucune mission autorisée.",
             )
+
+        # Verrou global de mission — voir __init__ pour la justification.
+        # acquire(blocking=False) : un appel concurrent est refusé tout
+        # de suite avec un résultat explicite, jamais mis en attente
+        # silencieuse derrière une mission déjà en cours.
+        if not self._mission_lock.acquire(blocking=False):
+            mission_id = str(uuid.uuid4())[:8].upper()
+            print(f"  [SECURITY] Mission {mission_id} refusée : "
+                  f"une autre mission est déjà en cours sur ce robot — {app_id}")
+            return MissionResult(
+                success=False, mission_id=mission_id, app_id=app_id,
+                duration_s=0.0,
+                error_message=(
+                    "Une autre mission est déjà en cours d'exécution sur "
+                    "ce robot — un seul robot ne peut exécuter qu'une "
+                    "mission à la fois, quelle que soit l'app."
+                ),
+            )
+
+        try:
+            return self._run_mission_locked(entry, app_id, params)
+        finally:
+            self._mission_lock.release()
+
+    def _run_mission_locked(
+        self, entry: "InstalledApp", app_id: str, params: Optional[Dict[str, Any]]
+    ) -> Optional[MissionResult]:
+        """Corps réel de run_mission(), exécuté sous _mission_lock — voir
+        run_mission() pour le contexte. Extrait dans sa propre méthode
+        pour que le verrou couvre tout le corps existant via un simple
+        try/finally, sans dupliquer sa logique."""
 
         mission_id = str(uuid.uuid4())[:8].upper()
         params     = params or {}

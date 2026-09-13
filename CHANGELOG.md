@@ -12,6 +12,19 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ### Ajouts
 
+- **Verrou global de mission** (`PlayStoreRuntime.run_mission()`) :
+  comble un trou identifié lors d'un audit — rien n'empêchait
+  jusqu'ici deux missions concurrentes (même app appelée deux fois,
+  ou deux apps différentes) d'envoyer des commandes contradictoires
+  aux mêmes actionneurs physiques en même temps. Un seul robot = une
+  seule mission active à la fois. Un appel concurrent est refusé
+  immédiatement avec un `MissionResult` explicite (`success=False`),
+  jamais mis en attente silencieuse. Le verrou est toujours relâché
+  via `try/finally`, y compris si la mission échoue ou lève une
+  exception — pas de deadlock possible.
+- `test/test_mission_lock.py` — 8 tests (missions concurrentes même
+  app / apps différentes, relâchement du verrou après succès et
+  après échec).
 - `docs/isaac_sim_headless_patches.md` — documentation des patches
   nécessaires pour faire tourner Isaac Sim 4.5 en mode headless sur
   un serveur sans affichage, issue de la session de validation du
