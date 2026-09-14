@@ -12,6 +12,16 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ### Ajouts
 
+- `docs/isaac_lab_unitree_sim_status.md` — état détaillé d'une
+  tentative de faire tourner unitree_sim_isaaclab (simulation
+  physique G1 via Isaac Lab, même protocole DDS que le matériel
+  réel). Isaac Lab et unitree_sdk2py installés avec succès (4
+  problèmes de compatibilité en cascade résolus et documentés), mais
+  la simulation elle-même échoue sur un conflit de version entre
+  Isaac Lab et le code de tâche d'unitree_sim_isaaclab
+  (`KeyError: 'lin_vel'`). Non bloquant pour la suite — la validation
+  de sécurité déjà acquise (23 joints, vraies limites,
+  `JointSafetyGuard`) reste entièrement valide.
 - **`G1DDSActuator`** (`axis_os/hal/drivers/unitree_g1/g1_dds_actuator.py`) :
   premier driver pour le VRAI matériel G1 physique, via le SDK
   officiel Unitree (`unitree_sdk2py`, protocole DDS/Ethernet).
