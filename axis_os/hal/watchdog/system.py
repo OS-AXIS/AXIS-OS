@@ -21,6 +21,8 @@ import threading
 import time
 import queue
 import math
+import os
+import socket
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -74,6 +76,45 @@ class EstopLogEntry:
         val   = f" mesuré={self.measured:.2f}/seuil={self.threshold:.2f}" \
                 if self.measured is not None else ""
         return f"[ESTOP LOG] {self.reason}{joint}{val}"
+
+
+def _sd_notify_watchdog() -> None:
+    """
+    Envoie WATCHDOG=1 au chien de garde systemd via le protocole
+    sd_notify (socket Unix datagram désigné par la variable
+    d'environnement NOTIFY_SOCKET, documentée officiellement par
+    systemd — pas de dépendance à python-systemd, juste stdlib).
+
+    Ajouté suite à une recommandation externe (meilleur rapport gain/
+    effort de la liste) : si _monitor_loop() se fige complètement
+    (deadlock, boucle infinie dans une dépendance tierce — tout ce qui
+    échappe au try/except autour de _run_cycle()), rien dans le
+    process Python lui-même ne peut s'en apercevoir. Avec
+    `WatchdogSec=2s` dans l'unit file systemd et cette notification
+    envoyée après chaque cycle réussi, c'est l'INIT SYSTÈME — donc le
+    noyau, pas ce process — qui détecte l'absence de heartbeat et tue/
+    redémarre le service.
+
+    No-op silencieux si NOTIFY_SOCKET n'est pas défini (dev, tests,
+    lancé hors systemd, ou plateforme sans support) — ne lève jamais
+    d'exception, cet appel ne doit jamais pouvoir perturber la boucle
+    de surveillance elle-même.
+    """
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    try:
+        if addr.startswith("@"):
+            addr = "\0" + addr[1:]  # socket abstrait Linux
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(addr)
+            sock.sendall(b"WATCHDOG=1")
+    except OSError:
+        # Environnement inattendu (permissions, socket fermé...) —
+        # jamais fatal : l'absence de notification fera au pire
+        # redémarrer le service par systemd, jamais planter AXIS-OS
+        # lui-même depuis cette fonction.
+        pass
 
 
 class WatchdogSystem:
@@ -281,6 +322,21 @@ class WatchdogSystem:
                     message=f"[BUG INTERNE WATCHDOG] {type(exc).__name__}: {exc}",
                     value=None, threshold=None
                 ))
+            else:
+                # sd_notify(WATCHDOG=1) — chien de garde systemd, ajouté
+                # suite à une recommandation externe : si _monitor_loop()
+                # se fige (deadlock, boucle infinie dans une dépendance
+                # tierce, tout bug qui échappe au try/except ci-dessus),
+                # RIEN dans le process Python lui-même ne peut le
+                # détecter — c'est structurellement le rôle de l'init
+                # système (systemd), pas de l'application. Notifié
+                # uniquement après un cycle qui s'est TERMINÉ (dans le
+                # else du try, jamais si _run_cycle() a levé) : un
+                # heartbeat envoyé même en cas de blocage réel viderait
+                # cette protection de son sens. Voir axis-os-watchdog.
+                # service pour la config (WatchdogSec=2s) — sans elle,
+                # cet appel est un no-op silencieux (voir _sd_notify()).
+                _sd_notify_watchdog()
             elapsed = time.monotonic() - t0
             ms = elapsed * 1000
             if ms > self._stats["max_cycle_time_ms"]:

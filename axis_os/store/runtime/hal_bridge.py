@@ -314,6 +314,73 @@ class HALBridgeClient:
     def get_full_state(self) -> Dict[str, Any]:
         return self._call("get_full_state", {})
 
+    def move_to_pose(
+        self,
+        target: Dict[str, float],
+        duration_s: float = 2.0,
+        step_s: float = 0.05,
+    ) -> bool:
+        """
+        Équivalent de RobotContext.move_to_pose() (voir sa docstring
+        pour le contexte complet — correctif suivant C5, audit de
+        sécurité) — DIFFÈRE uniquement dans la lecture du feedback :
+        get_full_state() retourne ici un dict de dicts sérialisés
+        (fb["position"]), pas de vrais ActuatorFeedback (fb.position)
+        comme côté RobotContext non sandboxé. Toute app doit pouvoir
+        appeler move_to_pose() identiquement, sandboxée ou non — c'est
+        exactement le rôle de HALBridgeClient (même API de surface que
+        RobotContext, voir sa docstring de classe) ; réimplémenté ici
+        plutôt que factorisé pour ne pas introduire de dépendance
+        croisée entre process parent et enfant sur ce détail interne.
+        """
+        import time as _time
+
+        state = self.get_full_state()
+        current: Dict[str, float] = {}
+        for jid in target:
+            fb = state.get(jid)
+            if fb is None:
+                self.log(f"move_to_pose: joint '{jid}' introuvable — abandon.")
+                return False
+            current[jid] = fb["position"]
+
+        n_steps = max(1, int(duration_s / step_s))
+        for step in range(1, n_steps + 1):
+            fraction = step / n_steps
+            step_commands: Dict[str, ActuatorCommand] = {}
+            for jid, target_pos in target.items():
+                interpolated = current[jid] + (target_pos - current[jid]) * fraction
+                step_commands[jid] = ActuatorCommand(
+                    mode=ControlMode.POSITION, position=interpolated,
+                )
+
+            arm_cmds = {jid: c for jid, c in step_commands.items()
+                       if any(k in jid for k in ("shoulder", "elbow", "wrist"))}
+            leg_cmds = {jid: c for jid, c in step_commands.items()
+                       if any(k in jid for k in ("hip", "knee", "ankle"))}
+            unrouted = set(step_commands) - set(arm_cmds) - set(leg_cmds)
+            if unrouted:
+                self.log(f"move_to_pose: joint(s) non routable(s) (ni bras ni "
+                        f"jambe) : {sorted(unrouted)} — abandon.")
+                return False
+
+            results: Dict[str, HALStatus] = {}
+            if arm_cmds:
+                results.update(self.move_arms(arm_cmds))
+            if leg_cmds:
+                results.update(self.move_legs(leg_cmds))
+
+            failed = [jid for jid, s in results.items() if s != HALStatus.OK]
+            if failed:
+                self.log(f"move_to_pose: pas {step}/{n_steps} échoué pour "
+                        f"{failed} — abandon (interpolation trop agressive, "
+                        f"e-stop, ou autre violation de sécurité).")
+                return False
+
+            _time.sleep(step_s)
+
+        return True
+
     def get_imu(self) -> "Optional[_IMUProxy]":
         """
         Retourne un proxy exposant `.read() -> Optional[IMUData]`,

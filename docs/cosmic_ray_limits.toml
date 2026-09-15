@@ -1,0 +1,11 @@
+[cosmic-ray]
+module-path = "axis_os/hal/safety/limits.py"
+timeout = 30.0
+excluded-modules = []
+# Remplacer <repo> par le chemin absolu réel du repo avant usage —
+# cosmic-ray exécute ses workers depuis un dossier temporaire, un
+# chemin relatif ne fonctionnerait pas ici.
+test-command = "sh -c 'cd <repo> && python3 test/test_safety_v2.py && python3 test/test_audit_fixes_wave2.py && python3 test/test_audit_fixes_wave3.py && python3 test/test_g1_dds_actuator.py'"
+
+[cosmic-ray.distributor]
+name = "local"

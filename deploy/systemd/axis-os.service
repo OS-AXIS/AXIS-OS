@@ -1,0 +1,52 @@
+[Unit]
+Description=AXIS-OS — système d'exploitation robot humanoïde
+After=network.target
+
+[Service]
+Type=notify
+# WatchdogSec=2s — chien de garde systemd (point 2, recommandation
+# externe) : AXIS-OS doit envoyer WATCHDOG=1 (via sd_notify, voir
+# axis_os/hal/watchdog/system.py::_sd_notify_watchdog(), appelée
+# après chaque cycle de WatchdogSystem._monitor_loop() qui se
+# termine SANS exception) au moins une fois toutes les 2 secondes.
+# Si le heartbeat s'arrête (deadlock, boucle infinie, tout bug qui
+# échappe au try/except Python), c'est systemd (l'init système,
+# donc le noyau) qui détecte l'absence de notification et applique
+# WatchdogSignal= ci-dessous — pas AXIS-OS lui-même, qui ne peut
+# structurellement pas s'auto-diagnostiquer s'il est figé.
+WatchdogSec=2s
+
+# Sur timeout du chien de garde : SIGABRT (dump mémoire exploitable
+# pour diagnostiquer la cause du gel) plutôt que le SIGTERM par
+# défaut de systemd — un service figé ne réagit de toute façon pas
+# à un arrêt "poli".
+WatchdogSignal=SIGABRT
+
+# Redémarrage automatique après tout arrêt inattendu (crash, timeout
+# du chien de garde) — jamais après un arrêt volontaire (voir
+# systemctl stop). RestartSec laisse un court délai pour éviter une
+# boucle de redémarrage immédiate si la cause du crash persiste
+# (ex: matériel déconnecté).
+Restart=on-failure
+RestartSec=5s
+
+# Remplacer par le chemin réel d'installation et l'utilisateur
+# système dédié — ne JAMAIS lancer AXIS-OS en root sur du matériel
+# réel, un bug applicatif n'a alors aucune barrière supplémentaire
+# du système d'exploitation lui-même.
+User=axis-os
+WorkingDirectory=/opt/axis-os
+ExecStart=/opt/axis-os/venv/bin/python -m axis_os.main
+
+# Isolation système complémentaire (défense en profondeur, au-delà
+# du sandboxing applicatif déjà géré par SandboxRunner côté AXIS-OS
+# lui-même) — restreint ce que le PROCESS PRINCIPAL peut faire au
+# système, pas ce que les apps individuelles peuvent faire entre
+# elles (rôle différent, déjà couvert par store/runtime/sandbox.py).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/axis-os/logs
+
+[Install]
+WantedBy=multi-user.target

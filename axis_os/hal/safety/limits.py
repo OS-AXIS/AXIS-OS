@@ -292,7 +292,7 @@ class JointSafetyGuard:
                 if val < 0:
                     v = SafetyViolation(
                         joint_id=self.joint_id, rule=f"{field_name.upper()}_NEGATIVE",
-                        value=val, limit=0.0, kind=SafetyErrorKind.INVALID_VALUE,
+                        value=val, limit= -1.0, kind=SafetyErrorKind.INVALID_VALUE,
                     )
                     self._record_violation(v)
                     return False, v

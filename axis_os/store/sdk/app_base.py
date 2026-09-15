@@ -87,6 +87,96 @@ class RobotContext:
         commands = self._apply_velocity_cap(commands)
         return self._robot.send_joint_commands(commands)
 
+    def move_to_pose(
+        self,
+        target: Dict[str, float],
+        duration_s: float = 2.0,
+        step_s: float = 0.05,
+    ) -> bool:
+        """
+        Déplace progressivement vers `target` (dict joint_id -> position
+        cible) en interpolant depuis la position RÉELLE mesurée, par
+        petits pas restant sous JointLimits.position_delta_max de
+        chaque joint — comblant un trou identifié après le correctif
+        C5 (audit de sécurité) : `position_delta_max` protège
+        correctement contre un saut de position dangereux, mais
+        n'offre à une app AUCUN moyen d'atteindre une cible légitime
+        qui se trouve au-delà de cette limite en un seul appel. Concret
+        : les bras ont `position_delta_max ≈ 0.62 rad` ; si le G1
+        démarre bras repliés (~1.2 rad) et que `on_start()` commande
+        HOME (~0 rad) directement via `move_arms()`, le garde refuse à
+        raison ce saut — mais rien ne permettait alors à l'app
+        d'atteindre HOME du tout. `move_to_pose()` est ce chemin
+        manquant.
+
+        Lit la position réelle via `get_full_state()` (jamais une
+        position supposée ou mise en cache) avant chaque pas — si un
+        joint bouge de façon inattendue en cours de route (autre app,
+        perturbation physique), l'interpolation continue depuis sa
+        vraie position courante, pas depuis un trajet planifié à
+        l'avance et potentiellement obsolète.
+
+        Route chaque joint vers `move_arms()` ou `move_legs()` selon
+        son nom (même heuristique que ces méthodes elles-mêmes) — un
+        `target` qui mélange bras et jambes est géré correctement,
+        chaque famille recevant sa propre commande à chaque pas.
+
+        Retourne False dès qu'un pas échoue pour au moins un joint
+        (limite dépassée malgré l'interpolation, e-stop déclenché en
+        cours de route, joint introuvable) — s'arrête alors
+        immédiatement, ne continue jamais après un échec partiel.
+        Retourne True si la cible a été atteinte pour tous les joints
+        demandés.
+        """
+        import math as _math
+        import time as _time
+
+        state = self.get_full_state()
+        current: Dict[str, float] = {}
+        for jid in target:
+            fb = state.get(jid)
+            if fb is None:
+                self.log(f"move_to_pose: joint '{jid}' introuvable — abandon.")
+                return False
+            current[jid] = fb.position
+
+        n_steps = max(1, int(duration_s / step_s))
+        for step in range(1, n_steps + 1):
+            fraction = step / n_steps
+            step_commands: Dict[str, ActuatorCommand] = {}
+            for jid, target_pos in target.items():
+                interpolated = current[jid] + (target_pos - current[jid]) * fraction
+                step_commands[jid] = ActuatorCommand(
+                    mode=ControlMode.POSITION, position=interpolated,
+                )
+
+            arm_cmds = {jid: c for jid, c in step_commands.items()
+                       if any(k in jid for k in ("shoulder", "elbow", "wrist"))}
+            leg_cmds = {jid: c for jid, c in step_commands.items()
+                       if any(k in jid for k in ("hip", "knee", "ankle"))}
+            unrouted = set(step_commands) - set(arm_cmds) - set(leg_cmds)
+            if unrouted:
+                self.log(f"move_to_pose: joint(s) non routable(s) (ni bras ni "
+                        f"jambe) : {sorted(unrouted)} — abandon.")
+                return False
+
+            results: Dict[str, HALStatus] = {}
+            if arm_cmds:
+                results.update(self.move_arms(arm_cmds))
+            if leg_cmds:
+                results.update(self.move_legs(leg_cmds))
+
+            failed = [jid for jid, s in results.items() if s != HALStatus.OK]
+            if failed:
+                self.log(f"move_to_pose: pas {step}/{n_steps} échoué pour "
+                        f"{failed} — abandon (interpolation trop agressive, "
+                        f"e-stop, ou autre violation de sécurité).")
+                return False
+
+            _time.sleep(step_s)
+
+        return True
+
     def emergency_stop(self) -> HALStatus:
         """
         Déclenche un arrêt d'urgence global du robot — comble un trou

@@ -10,6 +10,85 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — 5 recommandations externes de renforcement (2026-09-15)
+
+Suite au second audit externe, une liste de 5 recommandations
+complémentaires (redondance, robustesse d'infrastructure) a été
+implémentée dans l'ordre de priorité recommandé :
+
+- **`RobotContext.move_to_pose()` / `HALBridgeClient.move_to_pose()`**
+  (point pratique urgent, priorité 1) — comble un vrai blocage créé
+  par le correctif C5 : `position_delta_max` protège correctement
+  contre un saut de position dangereux, mais aucune app ne pouvait
+  atteindre une cible légitime au-delà de cette limite en un seul
+  appel. Concret : `package_sorting.on_start()` commande directement
+  HOME (~0 rad) — si le G1 démarre bras repliés (~1.2 rad),
+  `JointSafetyGuard` refuse à raison ce saut, et l'app ne démarrait
+  jamais. `move_to_pose()` interpole progressivement depuis la
+  position réelle mesurée, par petits pas restant sous
+  `position_delta_max` à chaque itération. `package_sorting.on_start()`
+  mis à jour pour l'utiliser — testé avec le scénario exact décrit.
+- **Chien de garde systemd** (`_sd_notify_watchdog()` dans
+  `WatchdogSystem`, `deploy/systemd/axis-os.service`) — si
+  `_monitor_loop()` se fige complètement (deadlock, boucle infinie
+  échappant au `try/except`), rien dans le process Python ne peut
+  s'en apercevoir. `WatchdogSec=2s` + heartbeat envoyé après chaque
+  cycle réussi : c'est l'init système (le noyau), pas AXIS-OS
+  lui-même, qui détecte l'absence de notification et redémarre le
+  service. Testé avec un vrai socket Unix datagram (protocole
+  `sd_notify` réel), y compris en intégration avec `WatchdogSystem.
+  start()`.
+- **Moniteur de fraîcheur hors process** (`deploy/freshness_monitor/`,
+  en C) — protège spécifiquement contre la mort du process principal
+  AXIS-OS, la seule classe de panne que le chien de garde systemd
+  détecte mais ne prévient pas immédiatement (délai de `WatchdogSec`
+  + temps de redémarrage). Écrit en C, pas Python, pour ne partager
+  aucun mode de défaillance avec l'interpréteur qu'il surveille.
+  Intégration DDS réelle implémentée (pas un simple squelette) :
+  schéma `LowCmd_`/`MotorCmd_` reconstruit en `.idl` (Unitree ne
+  distribue pas de fichier `.idl` source, seulement des `.hpp` C++
+  déjà générés — reconstruit ici en comparant deux générations
+  officielles indépendantes, Python et C++, vérifiées identiques),
+  compilé avec le vrai `idlc` de CycloneDDS. CRC32 copié à l'identique
+  depuis l'algorithme officiel Unitree (`unitree_sdk2/include/
+  unitree/dds_wrapper/common/crc.h`). Compile sans aucun avertissement,
+  démon testé en conditions quasi réelles (abonnement DDS réel
+  confirmé) — bloqué uniquement par le multicast désactivé dans
+  l'environnement de développement (voir `deploy/freshness_monitor/
+  README.md` pour le détail complet de cette limite, non liée au
+  code lui-même).
+- **Moniteur de sécurité indépendant**
+  (`axis_os/hal/independent_monitor/`) — redondance DIVERSE (pas
+  duplication) : lit le feedback directement depuis `IRobotHAL.
+  get_full_state()`, sans jamais passer par `NormalizedRobotHAL` ni
+  `KinematicNormalizer`, et compare aux limites lues directement
+  depuis le fichier URDF officiel via `urdf_loader.py` — jamais via
+  `robot.py`. Conçu précisément pour attraper des bugs de CONCEPTION
+  du chemin de commande (comme C3, où `JointSafetyGuard` validait un
+  couple déjà inversé par le normalizer) que la redondance de
+  duplication ne peut pas attraper. Isolation architecturale vérifiée
+  **statiquement** par analyse des imports du module (pas seulement
+  par comportement observé) — un futur refactor qui réintroduirait le
+  couplage ferait échouer ce test immédiatement.
+- **Mutation testing** sur `axis_os/hal/safety/limits.py` (via
+  `cosmic-ray` — `mutmut` 3.x incompatible avec le style de nos
+  fichiers de test sans réécriture complète). Session partielle
+  (59/305 mutants exécutés avant timeout) mais réelle : a trouvé 5
+  vrais trous de couverture sur des cas limites exacts
+  (`TORQUE_OVERLOAD`, `TEMPERATURE_CRITICAL`, `position_delta_max`,
+  `accel_max`, validation de construction de `JointLimits`) —
+  fermés dans `test/test_mutation_boundary_cases.py`. Voir
+  `docs/mutation_testing_notes.md` pour le rapport complet et
+  comment reprendre une session plus exhaustive.
+- **`docs/hardware_estop_notes.md`** — point de fond, non codé :
+  rien dans ce dépôt (y compris les 4 ajouts ci-dessus) n'est une
+  fonction de sécurité au sens normatif (ISO 13849, IEC 61508). Un
+  bouton d'arrêt d'urgence matériel, câblé, qui coupe l'alimentation
+  de puissance des moteurs indépendamment de tout logiciel, reste la
+  seule vraie garantie avant tout déploiement à proximité d'humains
+  — AXIS-OS reste une couche de supervision intelligente au-dessus,
+  jamais à sa place.
+
 ### Corrections — suite au deuxième audit externe (2026-09-15)
 
 Un second audit externe (Claude Opus), qui a recloné et exécuté le

@@ -117,10 +117,17 @@ class PackageSortingApp(RobotApp):
             ctx.log("ERREUR : IMU ne répond pas.")
             return False
         ctx.log(f"IMU OK — gravity_z={imu_data.linear_acceleration.z:.2f} m/s²")
-        results = ctx.move_arms(_cmds(HOME))
-        failed  = [jid for jid, s in results.items() if s.value != 0]
-        if failed:
-            ctx.log(f"ERREUR joints : {failed}")
+        # move_to_pose() plutôt qu'un move_arms() direct — trouvé
+        # bloquant sur du vrai matériel : si le G1 démarre bras repliés
+        # (position réelle éloignée de HOME), JointSafetyGuard refuse à
+        # raison un saut de position trop grand en un seul appel
+        # (voir JointLimits.position_delta_max, correctif C5). Sans
+        # move_to_pose() pour interpoler depuis la position réelle,
+        # cette app ne pouvait jamais démarrer sur un vrai G1 dont les
+        # bras ne partent pas déjà de HOME.
+        reached = ctx.move_to_pose(HOME, duration_s=2.0)
+        if not reached:
+            ctx.log("ERREUR : impossible d'atteindre la position HOME.")
             return False
         ctx.log("Position HOME — prêt.")
         return True
