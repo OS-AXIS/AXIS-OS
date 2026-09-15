@@ -43,6 +43,22 @@ class NormalizedRobotHAL:
     def get_imu(self, imu_id: str = "base_imu") -> Optional[IIMU]:
         return self._hal.get_imu(imu_id)
 
+    def get_motion_tracker(self):
+        """
+        Délègue à IRobotHAL.get_motion_tracker() — trouvé manquant par
+        un test qui exerçait pour la première fois WatchdogSystem avec
+        un NormalizedRobotHAL (plutôt qu'un UnitreeG1HAL brut, le seul
+        chemin exercé jusqu'ici) : WatchdogSystem._check_acceleration()
+        appelle self._hal.get_motion_tracker(), et NormalizedRobotHAL
+        ne relayait jamais cet appel à son IRobotHAL sous-jacent —
+        levait AttributeError à chaque cycle, capturé silencieusement
+        comme un [BUG INTERNE WATCHDOG] plutôt que de jamais
+        apparaître en usage normal (chaque test existant utilisait
+        UnitreeG1HAL directement avec WatchdogSystem, sans jamais
+        passer par cette couche de normalisation).
+        """
+        return self._hal.get_motion_tracker()
+
     def get_robot_info(self) -> Dict[str, str]:
         info = self._hal.get_robot_info()
         info["hal_normalized"] = "true"

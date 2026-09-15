@@ -39,6 +39,13 @@ class Permission(Enum):
     ACTUATORS_WRITE_ARMS = auto()
     ACTUATORS_WRITE_LEGS = auto()
     ACTUATORS_WRITE_ALL  = auto()
+    # Commandes articulaires brutes (ControlMode.TORQUE inclus), sans
+    # passer par les routages move_arms/move_legs/move_all — réservée
+    # au niveau 1 du SDK à trois niveaux (voir docs/architecture, non
+    # implémenté ce soir). Volontairement ProtectionLevel.SIGNATURE
+    # (voir PERMISSION_LEVELS ci-dessous) : c'est le niveau avec
+    # lequel on casse du matériel, jamais accordé à une app tierce.
+    ACTUATORS_RAW        = auto()
     SENSORS_IMU          = auto()
     SENSORS_FORCE_TORQUE = auto()  # NON APPLIQUÉE — voir docstring de classe
     SENSORS_CAMERA       = auto()  # NON APPLIQUÉE — aucune API caméra dans RobotContext
@@ -48,6 +55,92 @@ class Permission(Enum):
     FLEET_BROADCAST      = auto()  # NON APPLIQUÉE — Fleet Manager non implémenté (voir docs/)
     NETWORK_CLOUD        = auto()  # NON APPLIQUÉE — sandbox ne filtre pas le réseau
     NETWORK_LOCAL        = auto()  # NON APPLIQUÉE — sandbox ne filtre pas le réseau
+
+
+class ProtectionLevel(Enum):
+    """
+    Niveau de protection d'une permission — calque du mécanisme
+    Android (une permission `signature` n'est accordée qu'à une app
+    signée avec la même clé que le système). S'appuie sur la
+    signature Ed25519 déjà existante (axis_os/store/sdk/signing.py),
+    pas un nouveau mécanisme : une app dont `code_signature` vérifie
+    contre la clé plateforme est une app système, sans liste blanche
+    codée en dur à maintenir séparément.
+    """
+    NORMAL    = auto()   # accordée automatiquement — ex. ACTUATORS_READ
+    DANGEROUS = auto()   # demande confirmation humaine — ex. ACTUATORS_WRITE_ALL
+    SIGNATURE = auto()   # réservée aux apps signées par la clé plateforme
+
+
+# Niveau de protection par permission — permissions absentes de ce
+# dict traitées comme NORMAL par défaut (voir get_protection_level()
+# plus bas). Volontairement une table statique, pas une méthode sur
+# Permission lui-même : garde la définition des permissions et leur
+# politique de protection séparées, cohérent avec la remarque de
+# conception "pas de découverte dynamique, une enum en dur suffit".
+PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
+    Permission.ACTUATORS_READ:       ProtectionLevel.NORMAL,
+    Permission.ACTUATORS_WRITE_ARMS: ProtectionLevel.DANGEROUS,
+    Permission.ACTUATORS_WRITE_LEGS: ProtectionLevel.DANGEROUS,
+    Permission.ACTUATORS_WRITE_ALL:  ProtectionLevel.DANGEROUS,
+    Permission.ACTUATORS_RAW:        ProtectionLevel.SIGNATURE,
+    # EMERGENCY_STOP délibérément DANGEROUS, pas SIGNATURE — décision
+    # prise en corrigeant une régression réelle : security_patrol et
+    # warehouse_ops (apps de référence déjà existantes, voir M11 dans
+    # CHANGELOG.md) déclarent légitimement cette permission pour
+    # pouvoir déclencher un arrêt d'urgence si elles détectent un
+    # danger (personne dans la trajectoire, anomalie de sécurité).
+    # SIGNATURE la réserverait aux seules apps plateforme, contredisant
+    # directement l'intention de M11 ("aucune app n'avait de moyen de
+    # déclencher elle-même un e-stop" — corrigé précisément pour
+    # PERMETTRE ça aux apps tierces, avec confirmation humaine).
+    Permission.EMERGENCY_STOP:       ProtectionLevel.DANGEROUS,
+    Permission.FLEET_BROADCAST:      ProtectionLevel.SIGNATURE,
+}
+
+
+def get_protection_level(permission: Permission) -> ProtectionLevel:
+    """Niveau de protection d'une permission — NORMAL si absente de
+    PERMISSION_LEVELS (permissions sans risque particulier, jamais
+    besoin d'être listées explicitement)."""
+    return PERMISSION_LEVELS.get(permission, ProtectionLevel.NORMAL)
+
+
+class Capability(Enum):
+    """
+    Capacités FONCTIONNELLES qu'une app peut exiger — distinct de
+    RobotCapability (axis_os/hal/core/capabilities.py), qui décrit le
+    MATÉRIEL physique d'un robot (ARMS, LEGS, CAMERA...) et alimente
+    déjà HardwareRequirements. Capability décrit ce qu'une app a
+    besoin de FAIRE, à une granularité parfois plus fine (CAMERA_RGB
+    vs CAMERA_DEPTH, que RobotCapability.CAMERA ne distingue pas) et
+    incluant des notions purement logicielles (MEMORY_PERSISTENT)
+    qu'aucun capteur ne représente.
+
+    Volontairement une enum plate, pas de découverte dynamique de
+    capacités à l'exécution — cohérent avec l'intention : le jour où
+    un service système existe vraiment pour l'une de ces valeurs, son
+    IService.capability (voir axis_os/services/base.py) la référence,
+    mais la liste elle-même reste statique.
+    """
+    WALK = auto(); GRASP_SINGLE = auto(); GRASP_DUAL = auto()
+    CAMERA_RGB = auto(); CAMERA_DEPTH = auto()
+    SPEECH_IN = auto();  SPEECH_OUT = auto()
+    NAVIGATION_MAP = auto();  MEMORY_PERSISTENT = auto()
+
+
+@dataclass(frozen=True)
+class IntentDecl:
+    """
+    Déclaration d'intention qu'une app sait servir — la brique de
+    base d'un futur registre d'intentions (orchestrateur, non
+    implémenté ce soir). Volontairement une simple dataclass de champ
+    de manifest, sans aucune logique de correspondance associée : le
+    manifest déclare, l'éventuel orchestrateur futur consomme.
+    """
+    intent_id:   str                 # "logistics.sort_packages"
+    description: str                 # "trier des colis par destination"
+    examples:    list[str] = field(default_factory=list)
 
 
 class AppCategory(Enum):
@@ -125,6 +218,15 @@ class AppManifest:
     permissions:   list[Permission]        = field(default_factory=list)
     hardware:      HardwareRequirements    = field(default_factory=HardwareRequirements)
     quota:         ResourceQuota           = field(default_factory=ResourceQuota)
+
+    # Capacités fonctionnelles et intentions déclarées — champs ajoutés
+    # maintenant, même vides pour la quasi-totalité des apps existantes
+    # (voir docs/architecture_services*.md) : le jour où des apps
+    # tierces existent en nombre, changer le format du manifest casse
+    # tout le catalogue. Ajouter ces deux champs aujourd'hui coûte
+    # quelques lignes ; le faire après coûterait une migration.
+    capabilities_required: list[Capability] = field(default_factory=list)
+    intents:                list[IntentDecl] = field(default_factory=list)
 
     pricing_model:  PricingModel = PricingModel.FREE
     base_price_eur: float        = 0.0

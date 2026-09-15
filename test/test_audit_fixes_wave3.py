@@ -39,8 +39,10 @@ def section(title: str) -> None:
 section("M1 — permissions non appliquées documentées explicitement")
 
 names = [p.name for p in Permission]
-check("Les 13 permissions existent toujours (enum rétrocompatible)",
-      len(names) == 13)
+check("Au moins les 13 permissions M1 existent toujours (enum rétrocompatible "
+      "— ACTUATORS_RAW ajoutée depuis pour le SDK à trois niveaux, voir "
+      "docs/architecture_services)",
+      len(names) >= 13)
 check("NETWORK_CLOUD et NETWORK_LOCAL toujours présentes",
       "NETWORK_CLOUD" in names and "NETWORK_LOCAL" in names)
 check("SENSORS_FORCE_TORQUE toujours présente",

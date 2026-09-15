@@ -162,6 +162,19 @@ class WatchdogSystem:
         self._dispatch_thread: Optional[threading.Thread] = None
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="wdg_cb")
         self._subscribers: List[Callable[[WatchdogAlert], None]] = []
+        # Buffer d'alertes consultable par polling — ajouté pour
+        # exposer subscribe_alerts() côté sandbox (HALBridgeClient) :
+        # un vrai Callable Python ne peut pas traverser une
+        # multiprocessing.Queue (pas sérialisable), donc le process
+        # enfant ne peut pas recevoir de callback en temps réel. Ce
+        # buffer permet un polling explicite (get_recent_alerts())
+        # comme alternative fonctionnellement équivalente pour ce cas
+        # précis — jamais utilisé par les abonnés callback normaux
+        # (self._subscribers ci-dessus), qui restent le mécanisme
+        # principal, synchrone et immédiat.
+        self._alert_buffer: List[WatchdogAlert] = []
+        self._alert_buffer_lock = threading.Lock()
+        self._alert_buffer_maxlen = 256
 
         # Queue normale bornée (INFO/WARNING/CRITICAL) — perte tolérée en cas
         # de saturation. Queue FATAL séparée, illimitée : point #18, une
@@ -180,6 +193,22 @@ class WatchdogSystem:
 
     def subscribe(self, callback: Callable[[WatchdogAlert], None]) -> None:
         self._subscribers.append(callback)
+
+    def get_recent_alerts(self, since_index: int = 0) -> List[WatchdogAlert]:
+        """
+        Retourne les alertes reçues depuis `since_index` (l'indice
+        dans le buffer interne, pas un timestamp — deux alertes
+        peuvent partager le même timestamp_ns, jamais le même indice).
+        Un appelant qui veut du polling continu garde le dernier indice
+        reçu (`len(result) + since_index`) et le repasse à l'appel
+        suivant, pour ne jamais retraiter une alerte déjà vue.
+
+        Voir HALBridgeClient.subscribe_alerts() pour le principal
+        consommateur de cette méthode — le mécanisme de polling qui
+        remplace un vrai callback à travers la frontière de process.
+        """
+        with self._alert_buffer_lock:
+            return list(self._alert_buffer[since_index:])
 
     @property
     def health_state(self) -> RobotHealthState:
@@ -641,6 +670,17 @@ class WatchdogSystem:
     # ── Système d'événements ──────────────────────────────────────
 
     def _emit(self, alert: WatchdogAlert) -> None:
+        # Alimente le buffer de polling — voir get_recent_alerts() et
+        # son contexte complet dans __init__. Fait ici, avant toute
+        # mise en queue FATAL/normale, pour qu'AUCUNE alerte (même
+        # FATAL, qui suit un chemin séparé ci-dessous) n'échappe au
+        # polling, même si elle peut être droppée de la queue normale
+        # en cas de saturation (voir plus bas).
+        with self._alert_buffer_lock:
+            self._alert_buffer.append(alert)
+            if len(self._alert_buffer) > self._alert_buffer_maxlen:
+                self._alert_buffer.pop(0)
+
         self._stats["alerts_total"] += 1
         if alert.severity == AlertSeverity.FATAL:
             self._stats["alerts_fatal"] += 1

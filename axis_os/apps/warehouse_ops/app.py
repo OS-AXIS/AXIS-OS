@@ -27,11 +27,14 @@ partie différente du HAL :
 Portée honnêtement limitée (cohérent avec le reste du projet) :
   - Caméra, IMU, force/torque : lus via le HAL mais leur contenu est
     un stub déterministe (aucun vrai capteur physique).
-  - RobotContext n'expose aujourd'hui ni emergency_stop() ni
-    send_cloud_event() — EMERGENCY_STOP et FLEET_BROADCAST sont donc
-    déclarées dans le manifest (l'app en a l'usage prévu) mais ne
-    sont pas exercées par du vrai code, exactement documenté ici
-    plutôt que simulé silencieusement.
+  - RobotContext expose désormais emergency_stop() (voir M11 dans
+    CHANGELOG.md) — EMERGENCY_STOP reste déclarée mais n'est pas
+    exercée par du vrai code dans cette app de démonstration.
+    FLEET_BROADCAST retirée (2026-09-15) : le Fleet Manager reste
+    non implémenté (voir docs/fleet_manager_design.md), et cette
+    permission est réservée aux apps système (ProtectionLevel.
+    SIGNATURE) — une app tierce qui la déclare sans jamais l'exercer
+    ne fait que se rendre non installable pour rien.
 
 Licence : proposée en exemple (comme PackageSorting, SecurityPatrol)
 """
@@ -265,7 +268,6 @@ WAREHOUSE_OPS_MANIFEST = AppManifest(
         Permission.SENSORS_CAMERA,
         Permission.WATCHDOG_READ,
         Permission.EMERGENCY_STOP,
-        Permission.FLEET_BROADCAST,
         Permission.NETWORK_CLOUD,
     ],
 

@@ -16,7 +16,11 @@ import traceback
 
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.watchdog.system import WatchdogSystem
-from axis_os.store.sdk.manifest import AppManifest, Permission, PricingModel
+from axis_os.hal.core.capabilities import RobotCapability
+from axis_os.store.sdk.manifest import (
+    AppManifest, Permission, PricingModel, Capability, ProtectionLevel,
+    get_protection_level,
+)
 from axis_os.store.sdk.app_base import (
     RobotApp, RobotContext, MissionResult, PermissionError, EstopActiveError
 )
@@ -176,6 +180,7 @@ class PlayStoreRuntime:
         robot: NormalizedRobotHAL,
         watchdog: WatchdogSystem,
         require_signed_apps: bool = False,
+        platform_public_key: Optional[str] = None,
     ):
         """
         `require_signed_apps` : si True, install() refuse toute app
@@ -190,6 +195,20 @@ class PlayStoreRuntime:
         une app légitime" — ce n'était vrai qu'une fois ce flag mis à
         True. À activer explicitement avant toute ouverture d'un vrai
         Play Store à des développeurs externes non vérifiés.
+
+        `platform_public_key` : clé publique Ed25519 (même format que
+        AppManifest.developer_public_key) qui distingue une app
+        SYSTÈME d'une app tierce — voir ProtectionLevel.SIGNATURE
+        (axis_os/store/sdk/manifest.py). Une app dont
+        developer_public_key correspond exactement à cette clé, ET
+        dont la signature vérifie, est traitée comme signée par la
+        plateforme : autorisée à déclarer des permissions
+        ProtectionLevel.SIGNATURE (ex: ACTUATORS_RAW). None par
+        défaut (rétrocompatible) : sans clé plateforme configurée,
+        AUCUNE app — même correctement signée par un vrai
+        développeur — n'est traitée comme système, et toute
+        permission SIGNATURE est refusée à l'installation (fail-safe,
+        pas fail-open).
         """
         self._robot   = robot
         self._watchdog = watchdog
@@ -197,6 +216,7 @@ class PlayStoreRuntime:
         self._billing: List[BillingReport]     = []
         self._id = str(uuid.uuid4())[:8]
         self._require_signed_apps = require_signed_apps
+        self._platform_public_key = platform_public_key
         # Verrou global de mission — trou identifié lors d'un audit :
         # rien n'empêchait deux appels concurrents à run_mission()
         # (deux apps différentes, ou la même app deux fois) d'envoyer
@@ -299,6 +319,46 @@ class PlayStoreRuntime:
                     "correspond pas à sa signature déclarée (code modifié "
                     "après signature, ou mauvaise clé)."
                 )
+                return False
+
+        # Vérification ProtectionLevel.SIGNATURE — trouvé nécessaire
+        # (§6.3 de la conception services) : une permission SIGNATURE
+        # (ex: ACTUATORS_RAW, EMERGENCY_STOP, FLEET_BROADCAST) ne doit
+        # être accordée qu'à une app dont la signature vérifiée
+        # correspond EXACTEMENT à self._platform_public_key — jamais à
+        # n'importe quelle app correctement signée par un développeur
+        # tiers quelconque. Fail-safe : si aucune clé plateforme n'est
+        # configurée (self._platform_public_key is None), TOUTE
+        # permission SIGNATURE est refusée, jamais accordée par défaut.
+        is_platform_app = (
+            self._platform_public_key is not None
+            and manifest.code_signature is not None
+            and manifest.developer_public_key == self._platform_public_key
+        )
+        for perm in manifest.permissions:
+            if get_protection_level(perm) == ProtectionLevel.SIGNATURE and not is_platform_app:
+                print(
+                    f"  [ERREUR] Permission '{perm.name}' réservée aux apps "
+                    f"système (ProtectionLevel.SIGNATURE) — cette app n'est "
+                    f"pas signée par la clé plateforme."
+                )
+                return False
+
+        # Vérification des capacités fonctionnelles (Capability, pas
+        # RobotCapability — voir docstring de Capability dans
+        # manifest.py pour la distinction). Bloquant, contrairement à
+        # hw.optional ci-dessous : une app qui déclare avoir besoin
+        # d'une Capability en a besoin, il n'existe pas ici de notion
+        # "optionnelle" comme pour HardwareRequirements — si une app
+        # veut un usage dégradé sans une capacité, elle ne la déclare
+        # simplement pas dans capabilities_required.
+        if manifest.capabilities_required:
+            available = self._available_capabilities()
+            missing_caps = [c for c in manifest.capabilities_required if c not in available]
+            if missing_caps:
+                names = sorted(c.name for c in missing_caps)
+                print(f"  [ERREUR] Capacité(s) fonctionnelle(s) requise(s) "
+                      f"absente(s) sur ce robot : {names}")
                 return False
 
         # Vérification hardware
@@ -584,6 +644,40 @@ class PlayStoreRuntime:
         }
 
     # ── Helpers ───────────────────────────────────────────────────
+
+    def _available_capabilities(self) -> set:
+        """
+        Dérive les Capability fonctionnelles disponibles à partir des
+        RobotCapability matérielles déjà exposées par le HAL
+        (get_capabilities()) — pas une nouvelle source de vérité
+        indépendante, pour ne jamais désynchroniser deux déclarations
+        du même robot.
+
+        Mapping délibérément CONSERVATEUR : RobotCapability.CAMERA
+        (générique, ne distingue pas RGB de profondeur) ne donne QUE
+        Capability.CAMERA_RGB, jamais CAMERA_DEPTH — affirmer la
+        profondeur disponible sans information plus précise serait
+        un mensonge à l'installation. Une app qui a vraiment besoin
+        de profondeur restera donc refusée sur le G1 actuel (qui
+        déclare seulement CAMERA) tant qu'un vrai driver caméra ne
+        précise pas explicitement le type — cohérent avec §2 de la
+        conception services (ICamera/CameraFrame, non implémenté ce
+        soir).
+
+        Aucune Capability de service (WALK, GRASP_*, SPEECH_*,
+        NAVIGATION_MAP, MEMORY_PERSISTENT) n'est dérivée ici tant
+        qu'aucun service système réel ne les fournit — un robot avec
+        des jambes n'implique pas qu'un service de marche existe.
+        """
+        robot_caps = self._robot.get_capabilities()
+        available = set()
+        if robot_caps.has(RobotCapability.CAMERA):
+            available.add(Capability.CAMERA_RGB)
+        if robot_caps.has(RobotCapability.MICROPHONE):
+            available.add(Capability.SPEECH_IN)
+        if robot_caps.has(RobotCapability.SPEAKER):
+            available.add(Capability.SPEECH_OUT)
+        return available
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
         return RobotContext(self._robot, self._watchdog, manifest)

@@ -10,6 +10,73 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — début de l'architecture services système (2026-09-15, session 1/2)
+
+Suite à une conception externe (docs/architecture_services*.md, non
+committée séparément — voir le document fourni), première partie de
+l'implémentation dans l'ordre demandé : le test de non-divergence
+d'abord, le contrat de service validé par une vraie implémentation
+ensuite. La suite (interfaces caméra/micro/haut-parleur, capacités
+sur les 3 apps de référence) reprend dans une session suivante.
+
+- **Test de non-divergence** (`test/test_context_parity.py`) — écrit
+  AVANT toute correction, a révélé que `RobotContext` exposait 11
+  méthodes et `HALBridgeClient` seulement 8 : `get_joint_state`,
+  `move_all`, `subscribe_alerts` manquantes côté sandbox. Sans lui,
+  une app se comporterait différemment selon qu'elle tourne
+  sandboxée ou non — c'est le test, pas une interface abstraite
+  commune, qui empêche ce problème de revenir.
+- **3 actions ajoutées au pont HAL** — `move_all` (sans elle,
+  `waist_yaw_joint` restait inatteignable en sandbox, n'étant ni un
+  bras ni une jambe), `get_joint_state`, `subscribe_alerts` (adapté
+  par polling en arrière-plan, un vrai `Callable` ne pouvant pas
+  traverser une `multiprocessing.Queue` — nouveau buffer
+  `WatchdogSystem.get_recent_alerts()`). Vérifié explicitement que la
+  permission `ACTUATORS_WRITE_ALL` pour `move_all` est contrôlée
+  côté SERVEUR (`HALBridgeServer._handle`, via le vrai
+  `RobotContext`), jamais côté client — le process enfant sandboxé
+  est non fiable, sa propre vérification ne compterait pour rien.
+- Bug préexistant corrigé au passage : `NormalizedRobotHAL` ne
+  délégait jamais `get_motion_tracker()` à son `IRobotHAL`
+  sous-jacent — révélé en testant `WatchdogSystem` avec
+  `NormalizedRobotHAL` pour la première fois.
+- **Manifest étendu** — `Capability` (WALK, GRASP_SINGLE/DUAL,
+  CAMERA_RGB/DEPTH, SPEECH_IN/OUT, NAVIGATION_MAP,
+  MEMORY_PERSISTENT), `IntentDecl`, `ProtectionLevel`
+  (NORMAL/DANGEROUS/SIGNATURE) avec `PERMISSION_LEVELS`, et les deux
+  champs `capabilities_required`/`intents` sur `AppManifest`.
+  `PlayStoreRuntime.install()` refuse désormais une app dont une
+  `Capability` manque sur ce robot (testé : refusé pour
+  `CAMERA_DEPTH`, le G1 ne déclarant que `CAMERA` générique — mapping
+  volontairement conservateur, `_available_capabilities()`), et
+  refuse une app tierce déclarant une permission `SIGNATURE` (ex:
+  nouvelle `ACTUATORS_RAW`, pour un futur niveau 1 du SDK) sauf si
+  réellement signée par une nouvelle clé plateforme
+  (`platform_public_key` sur `PlayStoreRuntime`, fail-safe : aucune
+  permission SIGNATURE accordée si cette clé n'est pas configurée).
+- Régression trouvée et corrigée en cours de route :
+  `EMERGENCY_STOP`/`FLEET_BROADCAST` classées `SIGNATURE` cassaient
+  les apps de référence existantes. `EMERGENCY_STOP` repassée en
+  `DANGEROUS` (contredisait directement l'intention de M11 — permettre
+  aux apps tierces de déclencher un e-stop, avec confirmation).
+  `FLEET_BROADCAST` reste `SIGNATURE` ; sa déclaration prospective et
+  jamais exercée dans `warehouse_ops` a été retirée à la place.
+- **`axis_os/services/`** — nouveau package. `IService`/
+  `ServiceResult`/`ServiceHealth` (`base.py`), et **`MemoryService`**,
+  premier service système réellement implémenté (pas une coquille) :
+  stockage clé-valeur persisté sur disque, `remember_place`/
+  `recall_place`, mémoire épisodique naïve, `app_store`/`app_load`
+  cloisonné par `app_id`. Corrige au passage, pour ce nouveau
+  service, le bug relevé par un audit externe sur l'état de
+  facturation perdu à chaque redémarrage (`PlayStoreRuntime` n'est
+  pas encore branché dessus — chantier séparé). Critère de succès
+  explicite confirmé par un vrai sous-process Python indépendant
+  (pas une simulation en mémoire) : un lieu nommé survit à un
+  redémarrage complet du process. Bug de collision de clé trouvé et
+  corrigé en testant un cas limite (`app_id` contenant le séparateur
+  utilisé en interne) — encodage JSON de la paire plutôt qu'une
+  simple concaténation.
+
 ### Ajouts — 5 recommandations externes de renforcement (2026-09-15)
 
 Suite au second audit externe, une liste de 5 recommandations
