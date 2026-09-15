@@ -55,6 +55,7 @@ class WebotsBackend(ISimBackend):
         try:
             from controller import Robot, Motor, PositionSensor, InertialUnit
             self._robot_node = Robot()
+            failed_joints = []
             for hal_name, wb_name in self._joint_map.items():
                 try:
                     motor = self._robot_node.getDevice(wb_name)
@@ -65,13 +66,39 @@ class WebotsBackend(ISimBackend):
                             sensor.enable(self._timestep_ms)
                             self._sensors[hal_name] = sensor
                         self._motors[hal_name] = motor
-                except Exception: pass
+                    else:
+                        failed_joints.append(hal_name)
+                except Exception as exc:
+                    failed_joints.append(hal_name)
+                    # Trouvé par un audit de sécurité (M6) : un joint qui
+                    # échoue à se lier disparaissait silencieusement de
+                    # _motors, et connect() retournait quand même True —
+                    # les commandes suivantes sur CE joint échouaient
+                    # ensuite en silence (send_command retourne juste
+                    # False), ce qui peut signifier une exécution
+                    # partielle d'un mouvement coordonné. Sur un bipède,
+                    # ça peut être une chute. Chaque échec est désormais
+                    # bruyant à la connexion, pour qu'un joint manquant
+                    # soit visible AVANT le premier mouvement, pas
+                    # découvert au milieu d'une mission.
+                    print(f"  [WARNING] WebotsBackend: liaison du joint "
+                          f"'{hal_name}' ('{wb_name}') échouée : {exc}")
+            if failed_joints:
+                print(f"  [WARNING] WebotsBackend: {len(failed_joints)}/"
+                      f"{len(self._joint_map)} joint(s) non liés : "
+                      f"{failed_joints} — les commandes sur ces joints "
+                      f"échoueront (send_command retourne False).")
             try:
                 imu = self._robot_node.getDevice("inertial_unit")
                 if imu: imu.enable(self._timestep_ms); self._imu_device = imu
-            except Exception: pass
+                else:
+                    print("  [WARNING] WebotsBackend: device 'inertial_unit' "
+                          "introuvable — get_imu_state() retournera None.")
+            except Exception as exc:
+                print(f"  [WARNING] WebotsBackend: échec activation IMU : {exc}")
             self._connected = True; self._stub_mode = False
-            print(f"[WebotsBackend] Connecté | timestep={self._timestep_ms}ms")
+            print(f"[WebotsBackend] Connecté | timestep={self._timestep_ms}ms | "
+                  f"{len(self._motors)}/{len(self._joint_map)} joints liés")
             return True
         except ImportError:
             return self._activate_stub("module 'controller' non trouvé.")
@@ -98,11 +125,23 @@ class WebotsBackend(ISimBackend):
         motor  = self._motors.get(joint_name)
         if sensor is None or motor is None: return None
         try:
+            torque = (motor.getTorqueFeedback()
+                     if hasattr(motor, "getTorqueFeedback") else 0.0)
+            # Trouvé par un audit de sécurité (M5) : Webots n'expose pas
+            # nativement de vrai capteur de température moteur — la
+            # version précédente retournait STUB_TEMP constant même en
+            # mode "production" (motors/sensors réellement liés), rendant
+            # le Watchdog structurellement aveugle à toute surchauffe
+            # réelle. Faute d'un vrai capteur, on applique la MÊME
+            # estimation corrélée au couple que le mode stub (plutôt
+            # qu'une constante pure) — un signal imparfait mais qui
+            # varie avec l'activité réelle du moteur, honnêtement
+            # documenté comme une estimation, jamais une vraie mesure.
+            temperature = self.STUB_TEMP + abs(torque) * 0.02
             return SimJointState(name=joint_name, position=sensor.getValue(),
                                  velocity=motor.getVelocity(),
-                                 torque=motor.getTorqueFeedback()
-                                        if hasattr(motor, "getTorqueFeedback") else 0.0,
-                                 temperature=self.STUB_TEMP, voltage=self.STUB_VOLTAGE)
+                                 torque=torque,
+                                 temperature=temperature, voltage=self.STUB_VOLTAGE)
         except Exception: return None
 
     def get_all_joint_states(self) -> Dict[str, SimJointState]:

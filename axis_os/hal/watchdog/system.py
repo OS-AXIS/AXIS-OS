@@ -111,6 +111,9 @@ class WatchdogSystem:
         # sur deux joints différents ; sans Lock, une race condition pouvait
         # théoriquement laisser passer un double-trigger incohérent).
         self._estop_lock   = threading.Lock()
+        # _estop_fired n'est JAMAIS remis à False automatiquement — voir
+        # sa propriété estop_fired ci-dessous (M9, audit de sécurité)
+        # pour la justification complète de ce choix de conception.
         self._estop_fired  = False
         self._estop_log: List[EstopLogEntry] = []
 
@@ -216,6 +219,25 @@ class WatchdogSystem:
 
     @property
     def estop_fired(self) -> bool:
+        """
+        True dès qu'un e-stop a été déclenché — JAMAIS remis à False
+        automatiquement, par aucun mécanisme du Watchdog lui-même.
+        Choix de sécurité explicite (documenté suite à un audit
+        externe, M9) : un e-stop signale qu'une condition jugée
+        dangereuse a été détectée (surcharge, communication perdue,
+        joint FAULT...). Permettre un réarmement automatique, même
+        après que la condition déclenchante ait disparu, risquerait
+        de relancer le mouvement sur un robot dont l'état physique
+        réel n'a jamais été vérifié par un humain — la cause de
+        l'e-stop peut avoir disparu du feedback sans que le problème
+        physique sous-jacent (jeu mécanique, capteur endommagé) soit
+        réellement résolu. Le seul recours actuel est le redémarrage
+        du process, ce qui force explicitement une réinitialisation
+        complète plutôt qu'un simple effacement de drapeau. Un
+        réarmement piloté et audité (ex: confirmation humaine explicite
+        avant reprise) reste un chantier futur légitime, mais ne doit
+        jamais devenir un comportement implicite ou automatique.
+        """
         with self._estop_lock:
             return self._estop_fired
 

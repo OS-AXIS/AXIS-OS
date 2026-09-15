@@ -120,8 +120,9 @@ class G1SimulatedActuator(IActuator):
         if current_feedback is not None:
             health_violations = self._guard.check_feedback_health(current_feedback)
             for v in health_violations:
-                if v.kind == SafetyErrorKind.TORQUE_OVERLOAD:
-                    print(f"  [SAFETY] Surcharge de couple détectée, arrêt d'urgence : {v}")
+                if v.kind in (SafetyErrorKind.TORQUE_OVERLOAD,
+                              SafetyErrorKind.CURRENT_OVERLOAD):
+                    print(f"  [SAFETY] Surcharge détectée, arrêt d'urgence : {v}")
                     self.emergency_stop()
                     return HALStatus.ERROR_FAULT
 

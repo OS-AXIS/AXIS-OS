@@ -49,6 +49,7 @@ class SafetyErrorKind(Enum):
     CURRENT_LIMIT           = auto()
     TEMPERATURE_CRITICAL      = auto()
     TORQUE_OVERLOAD             = auto()
+    CURRENT_OVERLOAD              = auto()  # M4 — feedback réel au-delà de current_max*1.1
     INVALID_LIMITS_CONFIG         = auto()  # JointLimits elle-même incohérente
     ACCELERATION_LIMIT              = auto()  # rate limiting — BLOCK, jamais lissé
 
@@ -268,6 +269,34 @@ class JointSafetyGuard:
                 self._record_violation(v)
                 return False, v
 
+        # Gains d'impédance (stiffness/damping) — trouvés jamais
+        # validés par un audit de sécurité (M7) : NaN et des valeurs
+        # aberrantes (ex: 1e9) passaient ce guard silencieusement. Pas
+        # de limite physique connue par joint (contrairement à
+        # torque_max/vel_max, l'URDF ne fournit rien de tel) — la
+        # validation se limite donc à ce qui est structurellement
+        # requis pour tout gain PD : fini et non-négatif (un gain
+        # négatif inverserait le sens de la correction du contrôleur).
+        # Rejeter ici, même sans borne supérieure connue, reste
+        # préférable à ne rien vérifier du tout.
+        for field_name, val in (("stiffness", command.stiffness),
+                                ("damping", command.damping)):
+            if val is not None:
+                if not math.isfinite(val):
+                    v = SafetyViolation(
+                        joint_id=self.joint_id, rule="INVALID_VALUE",
+                        value=val, limit=0.0, kind=SafetyErrorKind.INVALID_VALUE,
+                    )
+                    self._record_violation(v)
+                    return False, v
+                if val < 0:
+                    v = SafetyViolation(
+                        joint_id=self.joint_id, rule=f"{field_name.upper()}_NEGATIVE",
+                        value=val, limit=0.0, kind=SafetyErrorKind.INVALID_VALUE,
+                    )
+                    self._record_violation(v)
+                    return False, v
+
         # Température (feedback)
         if feedback is not None and math.isfinite(feedback.temperature):
             if feedback.temperature >= self.TEMPERATURE_CRITICAL_C:
@@ -331,6 +360,23 @@ class JointSafetyGuard:
                 joint_id=self.joint_id, rule="TORQUE_OVERLOAD",
                 value=abs(feedback.torque), limit=self.limits.torque_max * 1.1,
                 kind=SafetyErrorKind.TORQUE_OVERLOAD,
+            ))
+        # Courant mesuré — ajouté suite à un audit de sécurité (M4) :
+        # seule command.current (l'entrée) était vérifiée, jamais
+        # feedback.current (ce que le moteur consomme réellement) —
+        # asymétrie identique dans son principe à TORQUE_OVERLOAD
+        # ci-dessus, mais qui manquait côté courant. current_max
+        # étant une valeur par défaut identique pour les 23 joints
+        # (voir urdf_loader.py — le standard URDF ne modélise pas
+        # l'électronique de puissance), ce check reste une protection
+        # décorative tant qu'un intégrateur n'a pas renseigné les
+        # vraies valeurs par joint — mieux vaut cette limite présente
+        # mais imparfaite que totalement absente.
+        if abs(feedback.current) > self.limits.current_max * 1.1:
+            violations.append(SafetyViolation(
+                joint_id=self.joint_id, rule="CURRENT_OVERLOAD",
+                value=abs(feedback.current), limit=self.limits.current_max * 1.1,
+                kind=SafetyErrorKind.CURRENT_OVERLOAD,
             ))
         return violations
 

@@ -10,6 +10,54 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Corrections — audit externe, vague 3 (M1, M4-M7, M9, M12)
+
+Complète la liste MOYEN priorité du même audit externe (Claude Opus,
+2026-09-14) — seul M8 (déjà corrigé en vague 1) manquait à l'appel.
+Testés via `test/test_audit_fixes_wave3.py`, 26/26 fichiers de test
+passent, zéro régression :
+
+- **M1** — 7 permissions déclarées dans l'enum `Permission`
+  (`SENSORS_FORCE_TORQUE`, `SENSORS_CAMERA`, `SENSORS_MICROPHONE`,
+  `FLEET_BROADCAST`, `NETWORK_CLOUD`, `NETWORK_LOCAL`) sans qu'aucune
+  méthode de `RobotContext` ne les vérifie — documentées explicitement
+  comme non appliquées dans l'enum lui-même plutôt que silencieusement
+  trompeuses. Les retirer casserait la rétrocompatibilité des
+  manifests existants ; les implémenter à vide (ex: une fausse API
+  caméra) inventerait une fonctionnalité qui n'existe pas.
+- **M4** — le courant mesuré (feedback) n'était jamais vérifié, seul
+  `command.current` (l'entrée) l'était. `check_feedback_health()`
+  détecte désormais aussi `CURRENT_OVERLOAD` (> 110% de
+  `current_max`), déclenche un arrêt d'urgence comme
+  `TORQUE_OVERLOAD` (voir E4, vague 1).
+- **M5** — le backend Webots retournait une température moteur
+  constante (`STUB_TEMP`) même en mode production (motors/sensors
+  réellement liés), rendant le Watchdog structurellement aveugle à
+  toute surchauffe réelle. Webots n'exposant pas nativement de
+  capteur de température, applique désormais la même estimation
+  corrélée au couple qu'en mode stub — imparfait mais honnête et
+  variable avec l'activité réelle.
+- **M6** — `WebotsBackend.connect()` masquait silencieusement (`except
+  Exception: pass`) tout joint qui échoue à se lier, tout en
+  retournant `True` — les commandes suivantes sur ce joint échouaient
+  ensuite en silence. Chaque échec de liaison journalisé bruyamment
+  à la connexion, visible avant le premier mouvement.
+- **M7** — `stiffness`/`damping` n'étaient jamais validés (NaN et
+  valeurs aberrantes passaient le guard) ni transportés par le pont
+  HAL (`_serialize`/`_deserialize_commands` ne les incluaient pas, ni
+  `current`) — rendant le mode `IMPEDANCE` non fonctionnel dès qu'une
+  app tourne en sandbox (systématique depuis C4). Validation ajoutée
+  (fini, non-négatif) ; les trois champs désormais transportés.
+- **M9** — l'e-stop n'est jamais réarmable automatiquement
+  (`_estop_fired` ne repasse jamais à `False`), documenté
+  explicitement comme choix de sécurité assumé plutôt que comme un
+  oubli — un réarmement automatique risquerait de relancer un
+  mouvement sur un robot dont l'état physique réel n'a jamais été
+  vérifié.
+- **M12** — `requirments.txt` (faute de frappe), contenu périmé,
+  supprimé — `requirements.txt` (orthographe correcte) reste la seule
+  source de vérité.
+
 ### Corrections — audit externe, vague 2 (C5, E8-E10, M2-M3, M10-M11)
 
 Suite du même audit externe (Claude Opus, 2026-09-14) — le dernier des

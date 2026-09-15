@@ -228,7 +228,14 @@ class HALBridgeServer:
             jid: ActuatorCommand(
                 mode=ControlMode[c["mode"]],
                 position=c.get("position"), velocity=c.get("velocity"),
-                torque=c.get("torque"),
+                torque=c.get("torque"), current=c.get("current"),
+                # stiffness/damping — trouvés perdus à la traversée du
+                # pont par un audit de sécurité (M7) : ni sérialisés ni
+                # désérialisés, rendant le mode IMPEDANCE annoncé mais
+                # non fonctionnel une fois une app sandboxée (ce qui
+                # est TOUJOURS le cas pour run_mission()/on_start()/
+                # on_stop() depuis le correctif C4).
+                stiffness=c.get("stiffness"), damping=c.get("damping"),
             )
             for jid, c in raw.items()
         }
@@ -375,6 +382,8 @@ class HALBridgeClient:
     def _serialize(commands: Dict[str, ActuatorCommand]) -> Dict[str, dict]:
         return {
             jid: {"mode": c.mode.name, "position": c.position,
-                  "velocity": c.velocity, "torque": c.torque}
+                  "velocity": c.velocity, "torque": c.torque,
+                  "current": c.current, "stiffness": c.stiffness,
+                  "damping": c.damping}
             for jid, c in commands.items()
         }

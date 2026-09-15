@@ -15,19 +15,39 @@ from axis_os.hal.core.capabilities import RobotCapability
 
 
 class Permission(Enum):
+    """
+    ⚠️ Trouvé par un audit de sécurité (M1) : 7 des permissions
+    ci-dessous sont déclarées mais AUCUNE méthode de RobotContext ne
+    les vérifie via _require() — les marquer explicitement plutôt que
+    de laisser croire qu'elles protègent quelque chose aujourd'hui.
+    Retirer ces entrées casserait la rétrocompatibilité de tout
+    manifest existant qui les déclare déjà ; les laisser sans
+    documentation laisserait croire à une protection qui n'existe
+    pas. Choix retenu : documenter honnêtement, implémenter au fil
+    de l'eau quand la fonctionnalité correspondante existera vraiment
+    côté RobotContext (ex: SENSORS_FORCE_TORQUE dès qu'une méthode
+    get_force_torque() y sera exposée — le HAL l'a déjà, RobotContext
+    ne l'expose pas encore).
+
+    Les deux permissions NETWORK_* sont les plus significatives à ce
+    titre : rien n'empêche aujourd'hui une app sandboxée d'ouvrir une
+    socket réseau elle-même — le sandbox multiprocessing ne filtre
+    pas le réseau (voir docs/sandboxing_hardening_notes.md, qui
+    documente déjà ce trou plus large comme piste future).
+    """
     ACTUATORS_READ       = auto()
     ACTUATORS_WRITE_ARMS = auto()
     ACTUATORS_WRITE_LEGS = auto()
     ACTUATORS_WRITE_ALL  = auto()
     SENSORS_IMU          = auto()
-    SENSORS_FORCE_TORQUE = auto()
-    SENSORS_CAMERA       = auto()
-    SENSORS_MICROPHONE   = auto()
+    SENSORS_FORCE_TORQUE = auto()  # NON APPLIQUÉE — voir docstring de classe
+    SENSORS_CAMERA       = auto()  # NON APPLIQUÉE — aucune API caméra dans RobotContext
+    SENSORS_MICROPHONE   = auto()  # NON APPLIQUÉE — aucune API micro dans RobotContext
     WATCHDOG_READ        = auto()
     EMERGENCY_STOP       = auto()
-    FLEET_BROADCAST      = auto()
-    NETWORK_CLOUD        = auto()
-    NETWORK_LOCAL        = auto()
+    FLEET_BROADCAST      = auto()  # NON APPLIQUÉE — Fleet Manager non implémenté (voir docs/)
+    NETWORK_CLOUD        = auto()  # NON APPLIQUÉE — sandbox ne filtre pas le réseau
+    NETWORK_LOCAL        = auto()  # NON APPLIQUÉE — sandbox ne filtre pas le réseau
 
 
 class AppCategory(Enum):
