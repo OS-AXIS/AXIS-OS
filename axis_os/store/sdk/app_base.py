@@ -9,8 +9,9 @@ Licence : Apache 2.0 (open-source — SDK public)
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Dict, Any
+import math
 import time
 
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
@@ -68,7 +69,7 @@ class RobotContext:
         arm_joints = {jid for jid in commands
                       if any(k in jid for k in ["shoulder", "elbow", "wrist"])}
         filtered = {jid: cmd for jid, cmd in commands.items() if jid in arm_joints}
-        self._apply_velocity_cap(filtered)
+        filtered = self._apply_velocity_cap(filtered)
         return self._robot.send_joint_commands(filtered)
 
     def move_legs(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
@@ -77,13 +78,13 @@ class RobotContext:
         leg_joints = {jid for jid in commands
                       if any(k in jid for k in ["hip", "knee", "ankle"])}
         filtered = {jid: cmd for jid, cmd in commands.items() if jid in leg_joints}
-        self._apply_velocity_cap(filtered)
+        filtered = self._apply_velocity_cap(filtered)
         return self._robot.send_joint_commands(filtered)
 
     def move_all(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         self._require(Permission.ACTUATORS_WRITE_ALL)
         self._require_no_estop()
-        self._apply_velocity_cap(commands)
+        commands = self._apply_velocity_cap(commands)
         return self._robot.send_joint_commands(commands)
 
     def subscribe_alerts(self, callback) -> None:
@@ -120,11 +121,35 @@ class RobotContext:
                 f"robot — app '{self._manifest.app_id}'"
             )
 
-    def _apply_velocity_cap(self, commands: Dict[str, ActuatorCommand]) -> None:
+    def _apply_velocity_cap(
+        self, commands: Dict[str, ActuatorCommand]
+    ) -> Dict[str, ActuatorCommand]:
+        """
+        Plafonne la vitesse de chaque commande à max_velocity_ratio
+        de sa valeur d'origine — trouvé cassé par un audit de sécurité
+        (exécution réelle) : la version précédente faisait
+        `cmd.velocity *= ratio` EN PLACE sur les objets de l'appelant,
+        au lieu de plafonner. Une app qui construit son dict de
+        commandes une fois et le réutilise à chaque cycle (pattern
+        courant) voyait sa vitesse décroître géométriquement d'un
+        appel à l'autre (ratio^n) au lieu de rester plafonnée à une
+        valeur stable — un mouvement qui "traîne" de façon croissante
+        et silencieuse, sans qu'aucune erreur ne soit levée.
+
+        Retourne un NOUVEAU dict avec de nouveaux objets ActuatorCommand
+        plutôt que de muter ceux de l'appelant — une app ne doit jamais
+        voir ses propres objets modifiés par effet de bord après un
+        appel à move_arms/move_legs/move_all.
+        """
         ratio = self._manifest.max_velocity_ratio
-        for cmd in commands.values():
-            if cmd.velocity is not None:
-                cmd.velocity *= ratio
+        result = {}
+        for jid, cmd in commands.items():
+            if cmd.velocity is None or cmd.velocity == 0:
+                result[jid] = cmd
+                continue
+            capped_velocity = math.copysign(abs(cmd.velocity) * ratio, cmd.velocity)
+            result[jid] = replace(cmd, velocity=capped_velocity)
+        return result
 
 
 @dataclass

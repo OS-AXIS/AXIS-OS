@@ -62,6 +62,44 @@ def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
         )
 
 
+def _run_start_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
+                               response_queue: mp.Queue):
+    """
+    Équivalent de _run_app_in_sandbox() pour on_start() — trouvé
+    nécessaire par un audit de sécurité (C4) : start_app()/stop_app()
+    appelaient jusqu'ici entry.app.on_start()/on_stop() DIRECTEMENT
+    dans le process parent, avec un vrai RobotContext donnant un accès
+    HAL complet, sans quota, sans timeout, sans isolation mémoire —
+    exactement le trou que SandboxRunner/HALBridgeServer existent pour
+    combler côté run_mission(), mais jamais câblé ici. Concret et pas
+    théorique : axis_os/apps/package_sorting/app.py appelle
+    ctx.move_arms(...) directement dans son on_start() — le robot
+    bougeait physiquement pendant ce hook non sandboxé.
+
+    Retourne (bool, list[str]) plutôt qu'un simple bool : le journal
+    de mission du HALBridgeClient est perdu si on ne le renvoie pas
+    explicitement à travers la frontière de process.
+    """
+    bridge_ctx = HALBridgeClient(command_queue, response_queue)
+    try:
+        ready = app.on_start(bridge_ctx)
+        return ready, bridge_ctx.get_mission_log()
+    except (PermissionError, EstopActiveError) as exc:
+        return False, bridge_ctx.get_mission_log() + [f"on_start refusé : {exc}"]
+
+
+def _run_stop_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
+                              response_queue: mp.Queue):
+    """Équivalent de _run_start_hook_in_sandbox() pour on_stop() —
+    voir sa docstring pour le contexte complet (C4)."""
+    bridge_ctx = HALBridgeClient(command_queue, response_queue)
+    try:
+        app.on_stop(bridge_ctx)
+        return True, bridge_ctx.get_mission_log()
+    except (PermissionError, EstopActiveError) as exc:
+        return False, bridge_ctx.get_mission_log() + [f"on_stop refusé : {exc}"]
+
+
 @dataclass
 class InstalledApp:
     app:           RobotApp
@@ -105,12 +143,32 @@ class PlayStoreRuntime:
         result = runtime.run_mission("com.acme.package_sorting", params={})
     """
 
-    def __init__(self, robot: NormalizedRobotHAL, watchdog: WatchdogSystem):
+    def __init__(
+        self,
+        robot: NormalizedRobotHAL,
+        watchdog: WatchdogSystem,
+        require_signed_apps: bool = False,
+    ):
+        """
+        `require_signed_apps` : si True, install() refuse toute app
+        dont code_signature/developer_public_key ne sont pas renseignés
+        — False par défaut, rétrocompatible avec toutes les apps
+        existantes non signées. Trou identifié par un audit de
+        sécurité : la signature était jusqu'ici purement opt-in (les
+        deux champs valent None par défaut, une app malveillante omet
+        simplement le champ et s'installe sans aucune vérification).
+        Le CHANGELOG présentait la signature comme comblant "rien
+        n'empêchait un fichier .py quelconque de se faire passer pour
+        une app légitime" — ce n'était vrai qu'une fois ce flag mis à
+        True. À activer explicitement avant toute ouverture d'un vrai
+        Play Store à des développeurs externes non vérifiés.
+        """
         self._robot   = robot
         self._watchdog = watchdog
         self._apps:    Dict[str, InstalledApp] = {}
         self._billing: List[BillingReport]     = []
         self._id = str(uuid.uuid4())[:8]
+        self._require_signed_apps = require_signed_apps
         # Verrou global de mission — trou identifié lors d'un audit :
         # rien n'empêchait deux appels concurrents à run_mission()
         # (deux apps différentes, ou la même app deux fois) d'envoyer
@@ -163,11 +221,37 @@ class PlayStoreRuntime:
         # incompatible n'a pas besoin d'aller plus loin), avant le check
         # hardware (une signature invalide est une raison de refus plus
         # fondamentale que des capacités manquantes).
+        #
+        # Trouvé par un audit de sécurité : cette vérification était
+        # purement opt-in (uniquement si l'app a choisi de renseigner
+        # les deux champs) — self._require_signed_apps permet de la
+        # rendre obligatoire (voir __init__ pour le contexte complet).
+        if self._require_signed_apps and manifest.code_signature is None:
+            print(
+                "  [ERREUR] Ce Play Store exige des apps signées "
+                "(require_signed_apps=True) — code_signature et "
+                "developer_public_key doivent être renseignés."
+            )
+            return False
+
         if manifest.code_signature is not None:
             from axis_os.store.sdk.signing import verify_app_signature, SignatureError
             import inspect
             try:
-                source = inspect.getsource(type(app))
+                # Signe le FICHIER SOURCE ENTIER (module), pas
+                # seulement le texte de la classe — trouvé insuffisant
+                # par un audit de sécurité : inspect.getsource(type(app))
+                # ne couvre ni le module, ni ses imports, ni ses classes
+                # de base. Du code utile placé au niveau module (une
+                # fonction, une variable globale exécutée à l'import)
+                # pouvait être modifié après signature sans invalider
+                # cette dernière, puisqu'il ne faisait jamais partie du
+                # texte réellement signé/vérifié.
+                source_file = inspect.getsourcefile(type(app))
+                if source_file is None:
+                    raise OSError("aucun fichier source associé à cette classe")
+                with open(source_file, "r", encoding="utf-8") as f:
+                    source = f.read()
             except (OSError, TypeError) as exc:
                 print(
                     f"  [ERREUR] Impossible de récupérer le code source de "
@@ -236,16 +320,41 @@ class PlayStoreRuntime:
     def start_app(self, app_id: str) -> bool:
         entry = self._get(app_id)
         if entry is None: return False
-        ctx = self._make_ctx(entry.manifest)
+
+        # Sandboxé — voir _run_start_hook_in_sandbox() pour le contexte
+        # complet (correctif C4, audit de sécurité). Même pont
+        # HALBridgeServer/Client que run_mission(), même isolation par
+        # process séparé avec les quotas du manifest de l'app.
+        command_queue: mp.Queue  = mp.Queue()
+        response_queue: mp.Queue = mp.Queue()
+        ctx = self._make_ctx(entry.manifest)  # utilisé uniquement pour le log parent, pas passé à l'app
         ctx.log(f"Démarrage '{entry.manifest.name}'")
+        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
+        bridge_server.start()
+
         try:
-            ready = entry.app.on_start(ctx)
-            entry.is_started = ready
-            ctx.log("Prête." if ready else "Échec initialisation.")
-            return ready
+            runner = SandboxRunner(app_id, entry.manifest.quota)
+            sandbox_result = runner.run(
+                _run_start_hook_in_sandbox,
+                args=(entry.app, command_queue, response_queue),
+            )
+            if sandbox_result.success and sandbox_result.result is not None:
+                ready, _log = sandbox_result.result
+            else:
+                kind = sandbox_result.error_kind
+                reason = kind.name if kind else "INCONNU"
+                print(f"  [SANDBOX] on_start arrêté par l'isolation : "
+                      f"{sandbox_result.state.name} ({reason})")
+                ready = False
         except Exception as exc:
             print(f"  [ERREUR] on_start: {exc}")
-            return False
+            ready = False
+        finally:
+            bridge_server.stop()
+
+        entry.is_started = ready
+        ctx.log("Prête." if ready else "Échec initialisation.")
+        return ready
 
     def run_mission(
         self, app_id: str, params: Optional[Dict[str, Any]] = None
@@ -382,12 +491,32 @@ class PlayStoreRuntime:
     def stop_app(self, app_id: str) -> None:
         entry = self._get(app_id)
         if entry is None or not entry.is_started: return
+
+        # Sandboxé — voir _run_stop_hook_in_sandbox() (correctif C4,
+        # même contexte que start_app() ci-dessus).
+        command_queue: mp.Queue  = mp.Queue()
+        response_queue: mp.Queue = mp.Queue()
         ctx = self._make_ctx(entry.manifest)
+        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
+        bridge_server.start()
+
         try:
-            entry.app.on_stop(ctx)
-            entry.is_started = False
+            runner = SandboxRunner(app_id, entry.manifest.quota)
+            sandbox_result = runner.run(
+                _run_stop_hook_in_sandbox,
+                args=(entry.app, command_queue, response_queue),
+            )
+            if not (sandbox_result.success and sandbox_result.result is not None):
+                kind = sandbox_result.error_kind
+                reason = kind.name if kind else "INCONNU"
+                print(f"  [SANDBOX] on_stop arrêté par l'isolation : "
+                      f"{sandbox_result.state.name} ({reason})")
         except Exception as exc:
             print(f"  [ERREUR] on_stop: {exc}")
+        finally:
+            bridge_server.stop()
+
+        entry.is_started = False
 
     # ── Rapport financier ─────────────────────────────────────────
 

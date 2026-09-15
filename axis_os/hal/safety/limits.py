@@ -189,8 +189,19 @@ class JointSafetyGuard:
                 self._record_violation(v)
                 return False, v
 
-        # Position
-        if command.mode == ControlMode.POSITION and command.position is not None:
+        # Position — trouvé par un audit de sécurité (exécution
+        # réelle) : valider dès que command.position est non-None,
+        # INDÉPENDAMMENT de command.mode. La version précédente ne
+        # vérifiait la position que si mode == POSITION ; c'était le
+        # seul champ conditionné au mode (vitesse/couple/courant sont
+        # tous vérifiés inconditionnellement ci-dessous), alors que
+        # certains drivers transmettent q au moteur quel que soit le
+        # mode (voir G1DDSActuator.send_command — désormais corrigé
+        # en miroir de ce guard, mais le guard doit rester la barrière
+        # de référence : un futur driver ne doit pas pouvoir la
+        # contourner simplement en laissant une valeur non voulue
+        # dans un champ que ce mode-là n'utilise pas).
+        if command.position is not None:
             if not (self.limits.pos_min <= command.position <= self.limits.pos_max):
                 v = SafetyViolation(
                     joint_id=self.joint_id, rule="POSITION_LIMIT",

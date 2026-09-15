@@ -10,6 +10,76 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Corrections critiques et élevées (audit externe du 2026-09-14)
+
+Un audit indépendant (Claude Opus) a trouvé 5 problèmes CRITIQUES
+(pouvant blesser quelqu'un ou casser le matériel dès la première mise
+sous tension) et plusieurs problèmes ÉLEVÉS. Corrigés, testés, zéro
+régression sur les 24 fichiers de test existants :
+
+- **C1** — `JointSafetyGuard` ne validait `command.position` que si
+  `command.mode == POSITION`, alors que `G1DDSActuator` transmettait
+  `q` au moteur quel que soit le mode. Une commande en mode TORQUE/
+  VELOCITY avec un champ position resté à une valeur aberrante
+  atteignait le moteur sans jamais être vérifiée. Position validée
+  désormais dès qu'elle est non-None, indépendamment du mode.
+- **C2** — `G1DDSHub.send_motor_command()` n'écrit que dans un buffer
+  local ; sans `publish()`, aucune commande n'est jamais transmise au
+  réseau DDS — y compris l'arrêt d'urgence, qui écrivait
+  `kp=kd=0` dans un message jamais envoyé. `publish()` appelé
+  désormais après chaque `send_command()` et immédiatement, sans
+  condition, dans `emergency_stop()`.
+- **C3** — Le couple/courant n'étaient jamais inversés selon le signe
+  du joint en écriture (`command_to_raw`), alors que le feedback
+  l'est déjà en lecture. Sur les 9 joints à `sign=-1` du G1, une
+  commande de couple partait avec le signe inversé au moteur réel.
+- **C4** — `on_start()`/`on_stop()` s'exécutaient hors sandbox, avec
+  un accès HAL direct, aucun quota, aucun timeout — alors que
+  `run_mission()` isole correctement l'app. Concret : `package_sorting.
+  py` bouge physiquement le robot (`move_arms`) dans son `on_start()`.
+  Sandboxés désormais via le même `SandboxRunner`/`HALBridgeServer`
+  que `run_mission()`. A révélé au passage deux bugs préexistants du
+  pont HAL (`get_imu()` retournait un dict brut sans `.read()`,
+  `move_arms`/`move_legs` retournaient des chaînes au lieu de vrais
+  `HALStatus`) — jamais exercés avant que ce chemin de code soit
+  réellement utilisé pour la première fois.
+- **E1** — La signature des apps était purement opt-in (une app
+  malveillante omet simplement le champ). `PlayStoreRuntime` accepte
+  désormais `require_signed_apps=True` (`False` par défaut,
+  rétrocompatible) pour la rendre obligatoire. Signe aussi le fichier
+  source complet du module désormais, plus seulement le texte de la
+  classe (`inspect.getsourcefile` plutôt que `inspect.getsource`).
+- **E2** — `_apply_velocity_cap` faisait `cmd.velocity *= ratio` EN
+  PLACE sur les objets de l'app appelante — une app qui réutilise son
+  dict de commandes à chaque cycle voyait sa vitesse décroître
+  géométriquement (`ratio^n`). Retourne désormais un nouveau dict,
+  vitesse plafonnée sans mutation.
+- **E3** — Le tracker de mouvement enregistrait une commande même
+  rejetée par `JointSafetyGuard`, malgré un commentaire affirmant le
+  contraire — dangereux une fois une limite d'accélération basée sur
+  l'historique branchée (raisonnerait sur une référence falsifiée).
+  Enregistrement désormais conditionné à `HALStatus.OK`.
+- **E4** — `check_feedback_health()` (détecte notamment
+  `TORQUE_OVERLOAD`, signe qu'un moteur force contre un obstacle)
+  n'était appelée nulle part en production. Appelée désormais avant
+  chaque commande ; une surcharge de couple confirmée déclenche un
+  arrêt d'urgence immédiat du joint concerné.
+- **E5** — `UnitreeG1HAL` n'instanciait jamais `G1DDSActuator`, en dur
+  sur le simulé sans option — le driver matériel réel était du code
+  mort. `UnitreeG1HAL(backend="sim"|"dds", network_interface=...)`.
+- **E6** — Aucun verrou sur `G1DDSHub`, partagé par les 23 actionneurs
+  avec plusieurs écrivains concurrents possibles (mission, watchdog,
+  callback DDS) — un e-stop et une commande de mouvement pouvaient
+  s'entrelacer dans le même message DDS. `threading.RLock` ajouté.
+- **E7** — `_ensure_low_level_mode()` ignorait le code de retour de
+  `CheckMode()`/`ReleaseMode()` et bouclait sans limite. Statut
+  désormais vérifié, boucle bornée (10 tentatives), retourne un bool
+  explicite que l'appelant doit respecter avant de continuer.
+- **M8** — L'offset de position était appliqué à la vitesse
+  (`normalized_to_raw` utilisé pour les deux), sans effet tant que les
+  offsets du G1 sont à 0.0 mais dangereux pour le premier robot qui en
+  aurait un non nul. Vitesse traitée séparément, sign seul.
+
 ### Ajouts
 
 - `docs/isaac_lab_unitree_sim_status.md` — état détaillé d'une

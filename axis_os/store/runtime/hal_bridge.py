@@ -36,7 +36,9 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Any, Callable
 
-from axis_os.hal.core.types import ActuatorCommand, ControlMode
+from axis_os.hal.core.types import (
+    ActuatorCommand, ControlMode, HALStatus, IMUData, Vector3, Quaternion,
+)
 from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
 )
@@ -146,6 +148,9 @@ class HALBridgeServer:
                             data.linear_acceleration.z],
                     "gyro": [data.angular_velocity.x, data.angular_velocity.y,
                              data.angular_velocity.z],
+                    "orientation": [data.orientation.x, data.orientation.y,
+                                    data.orientation.z, data.orientation.w],
+                    "timestamp_ns": data.timestamp_ns,
                 })
 
             elif cmd.action == "log":
@@ -183,6 +188,35 @@ class HALBridgeServer:
 #  CÔTÉ ENFANT — proxy que l'app sandboxée utilise
 # ─────────────────────────────────────────────────────────────────
 
+class _IMUProxy:
+    """
+    Proxy local retourné par HALBridgeClient.get_imu(), compatible
+    avec le contrat IIMU (interfaces.py) — expose .read() -> Optional
+    [IMUData], au lieu de retourner directement un dict brut. Voir
+    HALBridgeClient.get_imu() pour le contexte complet du correctif.
+    """
+
+    def __init__(self, client: "HALBridgeClient"):
+        self._client = client
+
+    def read(self) -> Optional[IMUData]:
+        raw = self._client._call("get_imu", {})
+        if raw is None:
+            return None
+        acc = raw["acc"]
+        gyro = raw["gyro"]
+        orientation = raw["orientation"]
+        return IMUData(
+            linear_acceleration=Vector3(x=acc[0], y=acc[1], z=acc[2]),
+            angular_velocity=Vector3(x=gyro[0], y=gyro[1], z=gyro[2]),
+            orientation=Quaternion(
+                x=orientation[0], y=orientation[1],
+                z=orientation[2], w=orientation[3],
+            ),
+            timestamp_ns=raw["timestamp_ns"],
+        )
+
+
 class HALBridgeClient:
     """
     Tourne dans le process ENFANT (sandboxé). Remplace RobotContext
@@ -201,17 +235,48 @@ class HALBridgeClient:
         self._req_id   = 0
         self._local_log: list = []
 
-    def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, str]:
-        return self._call("move_arms", {"commands": self._serialize(commands)})
+    def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
+        """
+        Retourne de vrais HALStatus, pas les chaînes brutes — bug
+        trouvé en corrigeant C4 (sandboxing de on_start/on_stop) :
+        le serveur sérialise déjà HALStatus.name en chaîne pour le
+        transport IPC (nécessaire, les enums ne sont pas garantis
+        picklables tels quels selon le contexte), mais rien côté
+        client ne les reconstruisait. Une app qui teste
+        `status.value` ou `status == HALStatus.OK` sur le résultat
+        (comme package_sorting.py) échouait avec une AttributeError,
+        jamais exercé avant que on_start() soit réellement sandboxé.
+        """
+        raw = self._call("move_arms", {"commands": self._serialize(commands)})
+        return {jid: HALStatus[name] for jid, name in raw.items()}
 
-    def move_legs(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, str]:
-        return self._call("move_legs", {"commands": self._serialize(commands)})
+    def move_legs(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
+        raw = self._call("move_legs", {"commands": self._serialize(commands)})
+        return {jid: HALStatus[name] for jid, name in raw.items()}
 
     def get_full_state(self) -> Dict[str, Any]:
         return self._call("get_full_state", {})
 
-    def get_imu(self) -> Dict[str, Any]:
-        return self._call("get_imu", {})
+    def get_imu(self) -> "Optional[_IMUProxy]":
+        """
+        Retourne un proxy exposant `.read() -> Optional[IMUData]`,
+        cohérent avec le contrat `IIMU` réel (voir interfaces.py) —
+        bug trouvé par un audit de sécurité, révélé en corrigeant C4
+        (sandboxing de on_start/on_stop) : cette méthode retournait
+        directement un dict brut, alors que les apps existantes
+        (package_sorting.py notamment) appellent `ctx.get_imu().read()`
+        exactement comme avec le vrai RobotContext non sandboxé. Avant
+        ce correctif, ce chemin n'avait jamais été exercé en usage réel
+        (on_start n'était jamais sandboxé), donc l'incohérence était
+        restée invisible.
+
+        L'appel réseau réel (`_call("get_imu", {})`) n'a lieu qu'au
+        moment où `.read()` est appelé sur le proxy, pas à la
+        construction du proxy — cohérent avec IIMU.read(), qui peut
+        retourner None si le capteur ne répond pas au moment précis
+        de l'appel plutôt qu'une seule fois au début de la mission.
+        """
+        return _IMUProxy(self)
 
     def log(self, message: str) -> None:
         self._local_log.append(message)

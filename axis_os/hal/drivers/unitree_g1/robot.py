@@ -24,7 +24,7 @@ from axis_os.hal.core.types import (
     Vector3, Quaternion
 )
 from axis_os.hal.core.urdf_loader import load_urdf, URDFParseError
-from axis_os.hal.safety.limits import JointSafetyGuard
+from axis_os.hal.safety.limits import JointSafetyGuard, SafetyErrorKind
 from axis_os.hal.core.motion_state import MotionStateTracker
 import time
 
@@ -94,7 +94,28 @@ class G1SimulatedActuator(IActuator):
     def send_command(self, command: ActuatorCommand) -> HALStatus:
         if self._state == ActuatorState.EMERGENCY_STOP:
             return HALStatus.ERROR_FAULT
-        ok, violation = self._guard.validate_command(command, self.get_feedback())
+
+        current_feedback = self.get_feedback()
+
+        # Trouvé par un audit de sécurité : check_feedback_health()
+        # existait déjà (détecte notamment TORQUE_OVERLOAD — couple
+        # mesuré > 110% du max, signe qu'un moteur force contre un
+        # obstacle, ex: un bras coincé) mais n'était appelée nulle
+        # part en dehors des tests. Le watchdog fait un contrôle
+        # voisin mais le classe seulement CRITICAL (pas FATAL, qui
+        # seul déclenche un e-stop) — un bras qui pousse contre un
+        # humain continuait donc de pousser. Ici, un TORQUE_OVERLOAD
+        # déclenche un arrêt d'urgence immédiat de CE joint avant même
+        # de traiter la nouvelle commande.
+        if current_feedback is not None:
+            health_violations = self._guard.check_feedback_health(current_feedback)
+            for v in health_violations:
+                if v.kind == SafetyErrorKind.TORQUE_OVERLOAD:
+                    print(f"  [SAFETY] Surcharge de couple détectée, arrêt d'urgence : {v}")
+                    self.emergency_stop()
+                    return HALStatus.ERROR_FAULT
+
+        ok, violation = self._guard.validate_command(command, current_feedback)
         if not ok:
             print(f"  [SAFETY] {violation}")
             return HALStatus.ERROR_LIMIT
@@ -153,8 +174,42 @@ class UnitreeG1HAL(IRobotHAL):
 
     HAL_VERSION = "0.1.0"
 
-    def __init__(self, robot_id: str = "unitree_g1"):
+    def __init__(
+        self,
+        robot_id: str = "unitree_g1",
+        backend: str = "sim",
+        network_interface: Optional[str] = None,
+        domain_id: int = 0,
+    ):
+        """
+        `backend` : "sim" (défaut, rétrocompatible — G1SimulatedActuator,
+        aucune dépendance externe) ou "dds" (matériel réel, G1DDSActuator
+        via unitree_sdk2py — voir g1_dds_actuator.py, ⚠️ non testé sur
+        matériel physique). Trou identifié par un audit de sécurité :
+        jusqu'ici AUCUN chemin de code ne permettait de construire un
+        UnitreeG1HAL avec le driver réel — il était instancié en dur sur
+        G1SimulatedActuator, sans option, rendant G1DDSActuator
+        totalement inatteignable malgré son existence.
+
+        `network_interface` et `domain_id` : requis uniquement si
+        `backend="dds"` — transmis tels quels à G1DDSHub (voir sa
+        docstring). Ignorés pour `backend="sim"`.
+        """
         super().__init__(robot_id)
+        if backend not in ("sim", "dds"):
+            raise ValueError(
+                f"UnitreeG1HAL: backend doit être 'sim' ou 'dds', reçu '{backend}'."
+            )
+        if backend == "dds" and not network_interface:
+            raise ValueError(
+                "UnitreeG1HAL(backend='dds') requiert network_interface "
+                "(ex: 'eth0') — jamais deviné, voir G1DDSHub."
+            )
+        self._backend = backend
+        self._network_interface = network_interface
+        self._domain_id = domain_id
+        self._dds_hub = None  # créé dans initialize_all() si backend == "dds"
+
         self._joint_defs: List[JointDefinition] = _build_g1_joint_definitions()
         self._actuators:  Dict[str, IActuator]  = {}
         self._imu:        Optional[IIMU]         = None
@@ -169,7 +224,7 @@ class UnitreeG1HAL(IRobotHAL):
         )
 
     def initialize_all(self) -> HALStatus:
-        print(f"\n[AXIS-OS] Initialisation Unitree G1 — id={self.robot_id}")
+        print(f"\n[AXIS-OS] Initialisation Unitree G1 — id={self.robot_id} (backend={self._backend})")
 
         # Validation de la table de conventions AVANT tout mouvement possible.
         # Trou identifié par revue externe : sans ce check, un joint manquant
@@ -186,13 +241,34 @@ class UnitreeG1HAL(IRobotHAL):
             print("  [ERREUR] Table de conventions invalide — initialisation refusée.")
             return HALStatus.ERROR_FAULT
 
+        if self._backend == "dds":
+            from .g1_dds_actuator import G1DDSHub, G1DDSActuator
+            self._dds_hub = G1DDSHub(self._network_interface, self._domain_id)
+            hub_status = self._dds_hub.initialize()
+            if hub_status != HALStatus.OK:
+                print(f"  [ERREUR] Échec initialisation G1DDSHub : {hub_status}")
+                return hub_status
+
         for jdef in self._joint_defs:
-            act = G1SimulatedActuator(jdef)
+            if self._backend == "dds":
+                act = G1DDSActuator(jdef, self._dds_hub)
+            else:
+                act = G1SimulatedActuator(jdef)
             if act.initialize() != HALStatus.OK:
                 return HALStatus.ERROR_COMM
             self._actuators[jdef.joint_id] = act
-        self._imu = G1SimulatedIMU()
-        self._imu.initialize()
+
+        if self._backend == "dds":
+            # Pas d'IMU simulée en mode matériel réel — le vrai G1
+            # expose son IMU via G1DDSHub.read_imu_state(), pas via
+            # une classe IIMU séparée dans cette première version du
+            # driver. Documenté explicitement plutôt que de faire
+            # semblant avec une IMU simulée en contexte "réel".
+            self._imu = None
+        else:
+            self._imu = G1SimulatedIMU()
+            self._imu.initialize()
+
         self._initialized = True
         print(f"  ✓ {len(self._actuators)} joints | HAL v{self.HAL_VERSION}\n")
         return HALStatus.OK
@@ -227,11 +303,23 @@ class UnitreeG1HAL(IRobotHAL):
         for jid, cmd in commands.items():
             if jid in self._actuators:
                 status = self._actuators[jid].send_command(cmd)
-                # Enregistrement dans le tracker APRÈS l'envoi réel —
-                # reflète ce qui a effectivement été transmis au HAL,
-                # pas une commande hypothétique qui aurait pu être
-                # rejetée plus tôt dans le pipeline (SafetyGuard).
-                self._motion_tracker.record_command(jid, cmd)
+                # Enregistrement dans le tracker UNIQUEMENT si la
+                # commande a vraiment été acceptée — bug trouvé par un
+                # audit de sécurité (exécution réelle) : la version
+                # précédente enregistrait INCONDITIONNELLEMENT, malgré
+                # un commentaire affirmant le contraire ("reflète ce
+                # qui a effectivement été transmis... pas une commande
+                # hypothétique qui aurait pu être rejetée"). Une
+                # commande rejetée par JointSafetyGuard (ERROR_LIMIT)
+                # était quand même enregistrée comme dernière commande
+                # du joint — un garde-fou de sécurité qui utiliserait
+                # cet historique (limite d'accélération basée sur le
+                # delta entre commandes successives) raisonnerait alors
+                # sur une référence falsifiée, pouvant soit déclencher
+                # un faux positif sur la commande légitime suivante,
+                # soit masquer une vraie violation.
+                if status == HALStatus.OK:
+                    self._motion_tracker.record_command(jid, cmd)
                 results[jid] = status
             else:
                 results[jid] = HALStatus.ERROR_NOT_INIT

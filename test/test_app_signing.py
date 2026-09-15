@@ -175,7 +175,15 @@ _PUBLIC_KEY = "{kp.public_key_b64}"
 
 class SignedOkApp(RobotApp):
     def manifest(self):
-        source = inspect.getsource(type(self))
+        # Signe le FICHIER SOURCE ENTIER, pas seulement la classe —
+        # cohérent avec PlayStoreRuntime.install() qui vérifie
+        # désormais inspect.getsourcefile(type(app)) dans son
+        # intégralité (voir play_store.py, correctif E1 d'un audit
+        # de sécurité : signer uniquement la classe laissait tout
+        # code au niveau module hors de la portée de la signature).
+        source_file = inspect.getsourcefile(type(self))
+        with open(source_file, "r", encoding="utf-8") as f:
+            source = f.read()
         sig = sign_app_code(source, _PRIVATE_KEY)
         return AppManifest(
             app_id="com.test.signedok", name="SignedOkApp", version="1.0.0",

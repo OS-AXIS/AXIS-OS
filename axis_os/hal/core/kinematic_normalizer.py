@@ -82,20 +82,53 @@ class KinematicNormalizer:
     def command_to_raw(
         self, command: ActuatorCommand, joint_id: str
     ) -> ActuatorCommand:
+        entry = self._get(joint_id)
         raw = ActuatorCommand(
             mode=command.mode, position=command.position,
             velocity=command.velocity, torque=command.torque,
             current=command.current, stiffness=command.stiffness,
             damping=command.damping, timestamp_ns=command.timestamp_ns,
         )
+        # Position : sign ET offset s'appliquent (l'offset compense un
+        # zéro mécanique différent entre la convention AXIS-OS et le
+        # zéro raw du joint — n'a de sens QUE pour une position).
         if command.mode in (ControlMode.POSITION, ControlMode.IMPEDANCE):
             if command.position is not None:
                 raw.position = self.normalized_to_raw(joint_id, command.position)
+
+        # Vitesse : SIGN SEUL, jamais l'offset — bug trouvé par un audit
+        # de sécurité (exécution réelle). La version précédente
+        # appelait normalized_to_raw() pour la vitesse, qui ajoute
+        # entry.offset_rad. Un offset de position n'a aucun sens
+        # physique appliqué à une vitesse : "vitesse 0" aurait produit
+        # une consigne raw = offset_rad ≠ 0, donc un joint qui continue
+        # de bouger alors qu'on lui demande explicitement de s'arrêter.
+        # Latent tant que tous les offsets du G1 sont à 0.0 (c'est le
+        # cas aujourd'hui), mais une mine pour le premier robot/joint
+        # qui en aura un non nul.
+        if command.mode in (ControlMode.POSITION, ControlMode.IMPEDANCE, ControlMode.VELOCITY):
             if command.velocity is not None:
-                raw.velocity = self.normalized_to_raw(joint_id, command.velocity)
-        elif command.mode == ControlMode.VELOCITY:
-            if command.velocity is not None:
-                raw.velocity = self.normalized_to_raw(joint_id, command.velocity)
+                raw.velocity = command.velocity * entry.sign
+
+        # Couple et courant : SIGN SEUL — même bug que la vitesse,
+        # trouvé par le même audit, mais plus grave : contrairement à
+        # la vitesse (qui n'était qu'un no-op tant que offset=0), le
+        # couple/courant n'était ICI PAS DU TOUT converti — ni sign, ni
+        # offset (l'offset n'a de toute façon aucun sens pour un
+        # couple). Sur les 9 joints à sign=-1 du G1 (right_hip_*,
+        # right_knee, right_ankle_*, right_shoulder_roll/yaw,
+        # right_wrist_roll — voir conventions.py), une commande de
+        # couple était transmise avec le signe INVERSÉ au moteur réel
+        # par rapport à ce que l'app avait demandé, alors que le
+        # feedback (feedback_to_normalized ci-dessous) applique bien
+        # "* entry.sign" en lecture. Cette asymétrie lecture/écriture
+        # est corrigée en traitant l'écriture exactement comme la
+        # lecture le fait déjà.
+        if command.torque is not None:
+            raw.torque = command.torque * entry.sign
+        if command.current is not None:
+            raw.current = command.current * entry.sign
+
         return raw
 
     def feedback_to_normalized(self, feedback: ActuatorFeedback) -> ActuatorFeedback:
