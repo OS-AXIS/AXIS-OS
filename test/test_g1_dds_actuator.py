@@ -106,12 +106,30 @@ actuator, hub = make_actuator()
 result = actuator.send_command(ActuatorCommand(mode=ControlMode.POSITION, position=1.0))
 check("Commande dans les limites -> OK", result == HALStatus.OK)
 check("send_motor_command() du hub a bien été appelé", hub.send_motor_command.called)
+# Trouvé manquant par un second audit externe (2026-09-14) : aucun test
+# n'assertait publish(), le correctif le plus critique de la série
+# (C2 — sans lui, aucune commande n'atteint jamais le réseau DDS réel,
+# y compris l'arrêt d'urgence) n'était gardé par rien.
+check("publish() appelé par défaut (defer_publish=False)", hub.publish.called)
 
 call_kwargs = hub.send_motor_command.call_args.kwargs
 check("motor_index correct transmis (9 pour right_knee_joint)",
       call_kwargs["motor_index"] == 9)
 check("Position (q) correctement transmise", call_kwargs["q"] == 1.0)
 check("mode=1 (Enable) transmis, jamais 0", call_kwargs["mode"] == 1)
+
+# ══════════════════════════════════════════════════════════════════
+
+section("3bis — defer_publish=True : écrit dans le buffer sans publier")
+
+actuator_defer, hub_defer = make_actuator()
+result_defer = actuator_defer.send_command(
+    ActuatorCommand(mode=ControlMode.POSITION, position=1.0), defer_publish=True)
+check("Commande avec defer_publish=True -> OK", result_defer == HALStatus.OK)
+check("send_motor_command() appelé même avec defer_publish=True",
+      hub_defer.send_motor_command.called)
+check("publish() JAMAIS appelé quand defer_publish=True",
+      not hub_defer.publish.called)
 
 # ══════════════════════════════════════════════════════════════════
 
@@ -124,6 +142,8 @@ result_bad = actuator2.send_command(
 check("Commande hors limites -> ERROR_LIMIT", result_bad == HALStatus.ERROR_LIMIT)
 check("CRITIQUE : send_motor_command() JAMAIS appelé pour une commande dangereuse",
       not hub2.send_motor_command.called)
+check("CRITIQUE : publish() non plus JAMAIS appelé pour une commande dangereuse",
+      not hub2.publish.called)
 
 actuator3, hub3 = make_actuator()
 result_torque = actuator3.send_command(
@@ -141,6 +161,8 @@ actuator4, hub4 = make_actuator()
 result_estop = actuator4.emergency_stop()
 check("emergency_stop() -> OK", result_estop == HALStatus.OK)
 check("État passe bien à EMERGENCY_STOP", actuator4.state == ActuatorState.EMERGENCY_STOP)
+check("CRITIQUE : publish() appelé immédiatement et inconditionnellement par emergency_stop()",
+      hub4.publish.called)
 
 estop_kwargs = hub4.send_motor_command.call_args.kwargs
 check("kp=0.0 lors de l'e-stop (coupe le couple actif)", estop_kwargs["kp"] == 0.0)
@@ -171,6 +193,66 @@ check("Feedback None si le hub n'a pas encore reçu de LowState_",
 
 # ══════════════════════════════════════════════════════════════════
 
+section("8 — CRITIQUE : un cycle corps entier publie UNE SEULE FOIS, pas 23")
+
+# Trouvé manquant par un second audit externe : le correctif initial de
+# C2 (publish() ajouté partout où une commande atteint le hub) avait
+# lui-même introduit un nouveau problème — publier après CHAQUE joint
+# produit 22 messages LowCmd_ intermédiaires incohérents sur un cycle
+# de 23 joints, alors que LowCmd_ transporte les 35 moteurs dans UN
+# SEUL message. Ce test valide directement UnitreeG1HAL.
+# send_joint_commands() (pas G1DDSActuator seul) avec un hub mocké au
+# niveau du module, pour vérifier le VRAI nombre d'appels à publish()
+# sur un cycle réaliste.
+
+import unittest.mock as _mock
+import axis_os.hal.drivers.unitree_g1.g1_dds_actuator as _g1_mod
+from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
+from axis_os.hal.core.types import HALStatus as _HALStatus
+
+
+class _CountingMockHub:
+    def __init__(self, *a, **k):
+        self.publish_calls = 0
+        self.send_calls = 0
+        self.is_initialized = True
+
+    def initialize(self):
+        return _HALStatus.OK
+
+    def send_motor_command(self, **kwargs):
+        self.send_calls += 1
+
+    def publish(self, mode_pr=0):
+        self.publish_calls += 1
+
+    def read_motor_state(self, i):
+        return None
+
+
+_original_hub_cls = _g1_mod.G1DDSHub
+_mock_hub_instance = _CountingMockHub()
+_g1_mod.G1DDSHub = lambda *a, **k: _mock_hub_instance
+
+try:
+    hal_fullbody = UnitreeG1HAL("g1_wave2_fix", backend="dds", network_interface="eth0")
+    hal_fullbody.initialize_all()
+
+    fullbody_commands = {
+        jid: ActuatorCommand(mode=ControlMode.POSITION, position=0.1)
+        for jid in hal_fullbody._actuators.keys()
+    }
+    hal_fullbody.send_joint_commands(fullbody_commands)
+
+    check("23 joints commandés -> 23 appels à send_motor_command",
+          _mock_hub_instance.send_calls == 23)
+    check("CRITIQUE : 23 joints commandés -> UN SEUL appel à publish() (pas 23)",
+          _mock_hub_instance.publish_calls == 1)
+finally:
+    _g1_mod.G1DDSHub = _original_hub_cls
+
+# ══════════════════════════════════════════════════════════════════
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)
@@ -180,6 +262,8 @@ if FAIL == 0:
     print("  ✓ Aucun doublon d'index (erreur qui enverrait au mauvais moteur)")
     print("  ✓ Commande dangereuse : JAMAIS transmise au hub DDS réel")
     print("  ✓ Arrêt d'urgence coupe le couple actif sans risque de roue libre")
+    print("  ✓ publish() explicitement vérifié à chaque point critique")
+    print("  ✓ Un cycle corps entier publie UNE SEULE FOIS, pas par joint")
     print()
     print("  ⚠️  Rappel : ces tests valident la LOGIQUE (hub mocké), pas")
     print("     l'intégration matérielle réelle — à valider sur un vrai G1")

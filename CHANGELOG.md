@@ -10,6 +10,64 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Corrections — suite au deuxième audit externe (2026-09-15)
+
+Un second audit externe (Claude Opus), qui a recloné et exécuté le
+code (pas seulement lu les messages de commit), a confirmé les 5
+CRITIQUES, les 10 ÉLEVÉS et les 12 MOYEN précédents comme
+correctement corrigés — et trouvé 3 points supplémentaires, dont un
+**nouveau bug introduit par le correctif initial de C2 lui-même** :
+
+- **`publish()` par actionneur → 22 messages DDS incohérents par
+  cycle corps entier.** Le correctif initial de C2 (publier après
+  chaque `send_command()`) résolvait le problème d'origine (aucune
+  commande n'atteignait jamais le robot) mais en introduisait un
+  nouveau : sur un cycle de 23 joints, 22 messages `LowCmd_`
+  intermédiaires sont émis, chacun avec une partie des articulations
+  déjà sur la nouvelle consigne et l'autre encore sur l'ancienne —
+  `LowCmd_` transporte les 35 moteurs dans un seul message. Le
+  contrôleur du G1, plus rapide que la boucle de commande logicielle,
+  peut verrouiller une de ces poses incohérentes à kp=100 : sur un
+  bipède en appui, un déséquilibre transitoire à chaque cycle.
+  Corrigé : `send_command(cmd, defer_publish=True)` écrit dans le
+  buffer sans publier ; `UnitreeG1HAL.send_joint_commands()` appelle
+  `defer_publish=True` pour les 23 joints puis publie UNE SEULE fois
+  à la fin. `emergency_stop()` continue de publier immédiatement et
+  inconditionnellement, inchangé.
+- **Aucun test n'assertait `publish()`.** Le correctif le plus
+  critique de la série (C2) n'était gardé par aucun test — un
+  refactor aurait pu le supprimer sans faire échouer un seul test.
+  `test/test_g1_dds_actuator.py` vérifie désormais explicitement
+  `hub.publish.called` à chaque point critique (commande normale,
+  commande rejetée, e-stop, `defer_publish=True`), et un nouveau test
+  dédié confirme qu'un cycle corps entier de 23 joints ne publie
+  qu'une seule fois.
+- **`CURRENT_OVERLOAD` surveillait une valeur qui n'existe pas.**
+  `G1DDSActuator.get_feedback()` retourne toujours `current=0.0`
+  (`MotorState_` ne l'expose pas côté G1 réel) — le check ajouté en
+  M4 ne pouvait donc structurellement jamais se déclencher sur
+  matériel réel, tout en donnant l'apparence d'une protection active
+  (pire qu'absent : il rassure sans protéger). Nouveau
+  `JointLimits.current_is_measured` (False par défaut) : le check
+  n'est émis que si explicitement activé — vrai en simulation
+  (`G1SimulatedActuator`, où le courant est dérivé du couple simulé),
+  jamais sur `G1DDSActuator` tant qu'aucun vrai capteur n'y est
+  branché.
+
+Deux détails mineurs relevés au passage, également corrigés :
+- L'horloge de facturation `SUBSCRIPTION` utilisait
+  `time.monotonic()` — inadapté pour une fenêtre calendaire de 30
+  jours (n'a de sens qu'en différence dans le même process, epoch
+  arbitraire à chaque redémarrage). Remplacé par `time.time()`
+  (horloge murale). État de facturation (`one_time_billed`,
+  `last_subscription_bill_time_s`) documenté explicitement comme tenu
+  en mémoire uniquement, perdu à tout redémarrage — persistance
+  disque restant un chantier distinct.
+- `JointLimits.accel_max` conservé tel quel (pas retiré) : un vrai
+  fichier de test (`test_motion_state.py`) l'exerce explicitement ;
+  le risque de régression dépassait le gain (juste du code mort selon
+  l'audit, pas un danger).
+
 ### Corrections — audit externe, vague 3 (M1, M4-M7, M9, M12)
 
 Complète la liste MOYEN priorité du même audit externe (Claude Opus,

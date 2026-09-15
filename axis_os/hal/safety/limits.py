@@ -361,18 +361,16 @@ class JointSafetyGuard:
                 value=abs(feedback.torque), limit=self.limits.torque_max * 1.1,
                 kind=SafetyErrorKind.TORQUE_OVERLOAD,
             ))
-        # Courant mesuré — ajouté suite à un audit de sécurité (M4) :
-        # seule command.current (l'entrée) était vérifiée, jamais
-        # feedback.current (ce que le moteur consomme réellement) —
-        # asymétrie identique dans son principe à TORQUE_OVERLOAD
-        # ci-dessus, mais qui manquait côté courant. current_max
-        # étant une valeur par défaut identique pour les 23 joints
-        # (voir urdf_loader.py — le standard URDF ne modélise pas
-        # l'électronique de puissance), ce check reste une protection
-        # décorative tant qu'un intégrateur n'a pas renseigné les
-        # vraies valeurs par joint — mieux vaut cette limite présente
-        # mais imparfaite que totalement absente.
-        if abs(feedback.current) > self.limits.current_max * 1.1:
+        # Courant mesuré — ajouté suite à un audit de sécurité (M4),
+        # puis conditionné à limits.current_is_measured suite à un
+        # second audit externe : sur le G1 réel, feedback.current vaut
+        # TOUJOURS 0.0 (MotorState_ n'expose pas le courant) — sans ce
+        # garde, le check ne pouvait structurellement jamais se
+        # déclencher sur matériel réel tout en donnant l'apparence
+        # d'une protection active. Émis uniquement quand la source de
+        # cette valeur est explicitement documentée comme une vraie
+        # mesure (voir JointLimits.current_is_measured).
+        if self.limits.current_is_measured and abs(feedback.current) > self.limits.current_max * 1.1:
             violations.append(SafetyViolation(
                 joint_id=self.joint_id, rule="CURRENT_OVERLOAD",
                 value=abs(feedback.current), limit=self.limits.current_max * 1.1,

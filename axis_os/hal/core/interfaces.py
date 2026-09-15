@@ -42,7 +42,18 @@ class IActuator(ABC):
     def set_control_mode(self, mode: ControlMode) -> HALStatus: ...
 
     @abstractmethod
-    def send_command(self, command: ActuatorCommand) -> HALStatus: ...
+    def send_command(self, command: ActuatorCommand, defer_publish: bool = False) -> HALStatus:
+        """
+        `defer_publish` (ajouté par correctif de sécurité, voir
+        G1DDSActuator.send_command() pour la justification complète) :
+        toute implémentation qui publie sur un bus partagé transportant
+        plusieurs actionneurs dans un seul message (comme G1DDSHub)
+        DOIT le respecter — écrire dans le buffer sans publier quand
+        True. Les implémentations sans notion de "publication groupée"
+        (ex: G1SimulatedActuator) peuvent l'ignorer sans risque, la
+        commande étant de toute façon immédiatement effective.
+        """
+        ...
 
     @abstractmethod
     def emergency_stop(self) -> HALStatus: ...

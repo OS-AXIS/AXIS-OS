@@ -70,14 +70,32 @@ from axis_os.hal.core.types import ActuatorFeedback
 guard_m4 = JointSafetyGuard("test", JointLimits(
     pos_min=-1, pos_max=1, vel_max=10, torque_max=50,
     current_max=15.0, temperature_max=80.0,
+    # current_is_measured=True requis explicitement depuis le correctif
+    # du point 3 (second audit externe) : CURRENT_OVERLOAD ne se
+    # déclenche plus que si la source du courant est documentée comme
+    # une vraie mesure — voir JointLimits.current_is_measured.
+    current_is_measured=True,
 ))
 fb_over = ActuatorFeedback(
     joint_id="test", state=ActuatorState.ACTIVE, position=0.0, velocity=0.0,
     torque=0.0, current=20.0, temperature=25.0, voltage=48.0,
 )
 violations_m4 = guard_m4.check_feedback_health(fb_over)
-check("check_feedback_health() détecte CURRENT_OVERLOAD isolément",
+check("check_feedback_health() détecte CURRENT_OVERLOAD isolément (current_is_measured=True)",
       any(v.kind == SafetyErrorKind.CURRENT_OVERLOAD for v in violations_m4))
+
+# Non-régression : sans current_is_measured=True (défaut False), le
+# check ne se déclenche JAMAIS, même avec un courant en surcharge —
+# c'est précisément le comportement voulu pour G1DDSActuator, où
+# feedback.current vaut toujours 0.0 et ne doit jamais faussement
+# rassurer.
+guard_m4_unmeasured = JointSafetyGuard("test2", JointLimits(
+    pos_min=-1, pos_max=1, vel_max=10, torque_max=50,
+    current_max=15.0, temperature_max=80.0,
+))  # current_is_measured=False par défaut
+violations_m4_unmeasured = guard_m4_unmeasured.check_feedback_health(fb_over)
+check("Sans current_is_measured=True, CURRENT_OVERLOAD ne se déclenche jamais (comportement voulu pour DDS réel)",
+      not any(v.kind == SafetyErrorKind.CURRENT_OVERLOAD for v in violations_m4_unmeasured))
 
 # ══════════════════════════════════════════════════════════════════
 

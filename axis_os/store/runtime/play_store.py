@@ -117,8 +117,26 @@ class InstalledApp:
     # trackent l'état de facturation par app installée, nécessaire pour
     # que _bill() applique enfin la bonne règle par modèle — voir sa
     # docstring pour le détail par pricing_model.
-    one_time_billed:      bool            = False
-    last_subscription_bill_monotonic: Optional[float] = None
+    #
+    # ⚠️ État tenu EN MÉMOIRE uniquement, perdu à tout redémarrage du
+    # process — trouvé par un second audit externe : un redémarrage
+    # refacture une app ONE_TIME comme neuve, et relance la fenêtre
+    # SUBSCRIPTION de 30 jours à zéro. Une vraie persistance disque
+    # (ou base de données) reste un chantier distinct, hors de portée
+    # de ce correctif — documenté honnêtement ici plutôt que laissé
+    # implicite. À traiter avant tout déploiement où un redémarrage
+    # de PlayStoreRuntime est un événement réaliste en production.
+    #
+    # last_subscription_bill_time_s utilise time.time() (horloge
+    # murale, wall-clock) — corrigé après un audit externe qui a
+    # relevé que time.monotonic() ne représente PAS une date
+    # calendaire : monotonic() n'a de sens que comme différence entre
+    # deux appels dans le MÊME process, jamais comme "il y a 30 jours"
+    # au sens propre, et son epoch de référence est arbitraire et
+    # change à chaque redémarrage — la aggravant, pas seulement
+    # symbolique, dans le cas de la persistance déjà absente ci-dessus.
+    one_time_billed:              bool            = False
+    last_subscription_bill_time_s: Optional[float] = None
 
     @property
     def commission_due(self) -> float:
@@ -606,11 +624,15 @@ class PlayStoreRuntime:
             entry.one_time_billed = True
 
         elif m.pricing_model == PricingModel.SUBSCRIPTION:
-            now = time.monotonic()
-            last = entry.last_subscription_bill_monotonic
+            # time.time() (horloge murale), pas time.monotonic() — voir
+            # la docstring de InstalledApp.last_subscription_bill_time_s
+            # pour le contexte complet (correctif suite à un second
+            # audit externe).
+            now = time.time()
+            last = entry.last_subscription_bill_time_s
             if last is not None and (now - last) < self.SUBSCRIPTION_PERIOD_S:
                 return None
-            entry.last_subscription_bill_monotonic = now
+            entry.last_subscription_bill_time_s = now
 
         return BillingReport(
             mission_id=mission_id, app_id=m.app_id,

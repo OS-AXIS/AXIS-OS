@@ -75,6 +75,12 @@ class G1SimulatedActuator(IActuator):
         limits_with_delta = replace(
             definition.limits,
             position_delta_max=definition.limits.torque_max / 40.0,
+            # current_is_measured=True UNIQUEMENT ici — ce simulé dérive
+            # bien son courant du couple simulé (voir get_feedback()
+            # ci-dessous), à la différence de G1DDSActuator où
+            # feedback.current vaut toujours 0.0 sur le G1 réel (voir
+            # JointLimits.current_is_measured pour le contexte complet).
+            current_is_measured=True,
         )
         self._guard       = JointSafetyGuard(definition.joint_id, limits_with_delta)
         self._position    = 0.0
@@ -101,7 +107,10 @@ class G1SimulatedActuator(IActuator):
         self.definition.default_control_mode = mode
         return HALStatus.OK
 
-    def send_command(self, command: ActuatorCommand) -> HALStatus:
+    def send_command(self, command: ActuatorCommand, defer_publish: bool = False) -> HALStatus:
+        # defer_publish ignoré : pas de notion de publication groupée
+        # sur un bus partagé en simulation pure — voir IActuator.
+        # send_command() pour le contexte complet.
         if self._state == ActuatorState.EMERGENCY_STOP:
             return HALStatus.ERROR_FAULT
 
@@ -314,7 +323,17 @@ class UnitreeG1HAL(IRobotHAL):
         results = {}
         for jid, cmd in commands.items():
             if jid in self._actuators:
-                status = self._actuators[jid].send_command(cmd)
+                # defer_publish=True en mode dds — correctif d'un
+                # second audit de sécurité (après la correction
+                # initiale de C2) : publier après CHAQUE joint plutôt
+                # qu'une fois pour les 23 produisait des messages
+                # LowCmd_ intermédiaires incohérents (une partie des
+                # articulations sur la nouvelle consigne, l'autre sur
+                # l'ancienne) — voir G1DDSActuator.send_command() pour
+                # la justification physique complète. En mode "sim",
+                # G1SimulatedActuator ignore ce paramètre sans risque
+                # (pas de notion de publication groupée).
+                status = self._actuators[jid].send_command(cmd, defer_publish=True)
                 # Enregistrement dans le tracker UNIQUEMENT si la
                 # commande a vraiment été acceptée — bug trouvé par un
                 # audit de sécurité (exécution réelle) : la version
@@ -335,6 +354,15 @@ class UnitreeG1HAL(IRobotHAL):
                 results[jid] = status
             else:
                 results[jid] = HALStatus.ERROR_NOT_INIT
+
+        # Publication groupée UNIQUE, après avoir rempli le buffer pour
+        # les 23 joints — voir defer_publish ci-dessus. Aucune commande
+        # normale n'atteint le réseau DDS avant cette ligne ; seul
+        # emergency_stop() (sur chaque actionneur) publie immédiatement
+        # et indépendamment de ce chemin.
+        if self._backend == "dds" and self._dds_hub is not None:
+            self._dds_hub.publish()
+
         return results
 
     def get_full_state(self) -> Dict[str, ActuatorFeedback]:

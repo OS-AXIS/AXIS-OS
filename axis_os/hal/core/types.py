@@ -101,6 +101,23 @@ class JointLimits:
     (comportement historique inchangé — rétrocompatible avec tout
     JointLimits existant qui ne spécifie pas ce champ).
     """
+    current_is_measured: bool = False
+    """
+    True si `feedback.current` provient d'une vraie mesure matérielle,
+    False si c'est une valeur estimée ou codée en dur — trouvé
+    nécessaire par un second audit externe (2026-09-14) : le check
+    `CURRENT_OVERLOAD` (ajouté en M4) surveillait sur le G1 réel une
+    valeur TOUJOURS égale à 0.0 (`MotorState_` n'expose pas le
+    courant — voir `G1DDSActuator.get_feedback()`), donc un garde-fou
+    qui ne peut STRUCTURELLEMENT jamais se déclencher — pire qu'absent,
+    car il rassure sans jamais protéger. `False` par défaut
+    (rétrocompatible) : `JointSafetyGuard.check_feedback_health()`
+    n'émet `CURRENT_OVERLOAD` QUE si ce champ est explicitement `True`,
+    ce qui n'est le cas qu'en simulation (`G1SimulatedActuator`, où le
+    courant est dérivé du couple simulé — voir `robot.py`), jamais sur
+    le driver matériel réel tant qu'aucun vrai capteur de courant n'y
+    est branché.
+    """
     position_delta_max: Optional[float] = None
     """
     Écart maximal autorisé, en une seule commande, entre la position

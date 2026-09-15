@@ -349,6 +349,11 @@ class G1DDSActuator(IActuator):
         limits_with_delta = replace(
             definition.limits,
             position_delta_max=definition.limits.torque_max / self._kp,
+            # current_is_measured reste False (défaut) — feedback.current
+            # vaut toujours 0.0 sur ce driver (voir get_feedback()
+            # ci-dessous, et JointLimits.current_is_measured pour le
+            # contexte complet, second audit externe) : émettre
+            # CURRENT_OVERLOAD ici rassurerait sans jamais protéger.
         )
         self._guard = JointSafetyGuard(definition.joint_id, limits_with_delta)
 
@@ -373,7 +378,28 @@ class G1DDSActuator(IActuator):
         self.definition.default_control_mode = mode
         return HALStatus.OK
 
-    def send_command(self, command: ActuatorCommand) -> HALStatus:
+    def send_command(self, command: ActuatorCommand, defer_publish: bool = False) -> HALStatus:
+        """
+        `defer_publish` : si True, écrit dans le buffer LowCmd_ partagé
+        SANS appeler hub.publish() — l'appelant est alors responsable
+        de publier explicitement une fois, après avoir rempli les 23
+        joints (voir UnitreeG1HAL.send_joint_commands()). False par
+        défaut, pour qu'un appel isolé à send_command() (hors du
+        chemin normal via send_joint_commands, ex: un test ou un
+        script de debug) reste immédiatement effectif, comme avant.
+
+        Correctif trouvé par un second audit de sécurité, après la
+        correction initiale de C2 : publier après CHAQUE joint plutôt
+        qu'une fois pour les 23 produisait 22 messages LowCmd_
+        intermédiaires par cycle corps entier — chacun avec une partie
+        des articulations déjà sur la nouvelle consigne et l'autre
+        encore sur l'ancienne. LowCmd_ transporte les 35 moteurs dans
+        UN SEUL message (voir sa structure officielle en tête de
+        module) — le contrôleur du G1, plus rapide que la boucle de
+        commande logicielle, peut verrouiller une de ces poses
+        incohérentes à kp=100 : sur un bipède en appui, un déséquilibre
+        transitoire à chaque cycle de commande complet.
+        """
         if self._state == ActuatorState.EMERGENCY_STOP:
             return HALStatus.ERROR_FAULT
 
@@ -420,7 +446,8 @@ class G1DDSActuator(IActuator):
             kp=self._kp,
             kd=self._kd,
         )
-        self._hub.publish()
+        if not defer_publish:
+            self._hub.publish()
         self._state = ActuatorState.ACTIVE
         return HALStatus.OK
 
