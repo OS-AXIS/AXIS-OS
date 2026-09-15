@@ -102,6 +102,45 @@ class IRobotHAL(ABC):
     def __init__(self, robot_id: str):
         self.robot_id     = robot_id
         self._initialized = False
+        # État e-stop partagé — correctif E10, audit de sécurité :
+        # avant ce champ, seul WatchdogSystem._estop_fired existait, et
+        # Supervisor.emergency_stop_all() (déclenché précisément quand
+        # le watchdog est mort ou bloqué) ne le positionnait jamais.
+        # PlayStoreRuntime.run_mission() et RobotContext._require_no_estop()
+        # lisaient watchdog.estop_fired et continuaient d'accepter des
+        # missions après un e-stop du Supervisor — le matériel restait
+        # protégé (chaque actionneur refuse individuellement en
+        # ERROR_FAULT une fois lui-même en EMERGENCY_STOP), mais les
+        # trois couches au-dessus (Watchdog, PlayStore, apps) affichaient
+        # un état faux. Porté par le HAL — le seul composant dont
+        # WatchdogSystem ET Supervisor détiennent tous deux une
+        # référence — plutôt que par le Watchdog lui-même.
+        self._estop_active = False
+
+    @property
+    def estop_active(self) -> bool:
+        """
+        État e-stop global, positionné par emergency_stop_all() —
+        indépendant de WatchdogSystem.estop_fired (qui persiste après un
+        e-stop DÉCLENCHÉ PAR le watchdog lui-même, avec son propre cycle
+        de vie). Toute couche qui décide d'autoriser ou non une action
+        doit consulter CELUI-CI en plus de watchdog.estop_fired — voir
+        RobotContext._require_no_estop() et PlayStoreRuntime.run_mission().
+        """
+        return self._estop_active
+
+    def _mark_estop_active(self) -> None:
+        """
+        Appelé par emergency_stop_all() dans CHAQUE implémentation
+        concrète (voir UnitreeG1HAL.emergency_stop_all()) — jamais
+        automatique, pour que ce soit un geste explicite et visible dans
+        chaque driver plutôt qu'un comportement caché dans la classe de
+        base. Volontairement pas de méthode symétrique "unmark" publique
+        ici : le réarmement, s'il doit exister, est une décision de
+        sécurité à formaliser séparément (voir M9 dans l'audit), pas un
+        effet de bord silencieux de ce correctif.
+        """
+        self._estop_active = True
 
     @abstractmethod
     def initialize_all(self) -> HALStatus: ...

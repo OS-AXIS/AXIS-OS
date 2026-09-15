@@ -87,6 +87,27 @@ class RobotContext:
         commands = self._apply_velocity_cap(commands)
         return self._robot.send_joint_commands(commands)
 
+    def emergency_stop(self) -> HALStatus:
+        """
+        Déclenche un arrêt d'urgence global du robot — comble un trou
+        identifié par un audit de sécurité (M11) : aucune app n'avait
+        jusqu'ici de moyen de déclencher elle-même un e-stop, malgré
+        l'existence de la permission Permission.EMERGENCY_STOP dans
+        l'enum. Concret : une app de patrouille qui détecte un humain
+        dans la trajectoire du robot n'avait aucun moyen d'arrêter le
+        mouvement en cours — seuls le Watchdog et le Supervisor
+        pouvaient le faire, tous deux invisibles et non pilotables par
+        la logique applicative.
+
+        Requiert Permission.EMERGENCY_STOP — délibérément PAS incluse
+        dans les permissions accordées par défaut ni requise par les
+        autres méthodes de mouvement : c'est un pouvoir à part, qu'une
+        app doit demander explicitement dans son manifest.
+        """
+        self._require(Permission.EMERGENCY_STOP)
+        self.log("EMERGENCY STOP déclenché par l'app")
+        return self._robot.emergency_stop_all()
+
     def subscribe_alerts(self, callback) -> None:
         self._require(Permission.WATCHDOG_READ)
         self._watchdog.subscribe(callback)
@@ -114,8 +135,17 @@ class RobotContext:
         Une mission déjà en cours doit s'arrêter net à la PROCHAINE
         commande de mouvement dès qu'un e-stop survient, pas continuer
         jusqu'à la fin de sa boucle applicative.
+
+        Consulte DEUX sources — correctif E10, audit de sécurité :
+        watchdog.estop_fired (positionné par le Watchdog lui-même) ET
+        self._robot.estop_active (positionné par IRobotHAL.
+        emergency_stop_all(), donc aussi par le Supervisor quand il
+        appelle cette méthode directement). Avant ce correctif, un
+        e-stop déclenché par le Supervisor — précisément le cas où le
+        Watchdog est mort ou bloqué — restait invisible ici : les apps
+        continuaient de voir le robot comme disponible.
         """
-        if self._watchdog.estop_fired:
+        if self._watchdog.estop_fired or self._robot.estop_active:
             raise EstopActiveError(
                 f"Commande de mouvement refusée : e-stop actif sur le "
                 f"robot — app '{self._manifest.app_id}'"

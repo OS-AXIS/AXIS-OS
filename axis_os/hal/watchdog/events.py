@@ -54,6 +54,7 @@ class AlertKind(Enum):
     WATCHDOG_STARTED     = auto()
     WATCHDOG_STOPPED     = auto()
     HEARTBEAT            = auto()
+    POSITION_LIMIT_BREACH = auto()  # M10 — feedback réel hors [pos_min, pos_max]
 
 
 @dataclass

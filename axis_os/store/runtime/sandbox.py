@@ -108,10 +108,38 @@ class SandboxRunner:
         print(result.state, result.success)
     """
 
-    def __init__(self, app_id: str, quota: Optional[ResourceQuota] = None):
+    def __init__(self, app_id: str, quota: Optional[ResourceQuota] = None,
+                strict: bool = False):
+        """
+        `strict` : si True, refuse de démarrer (lève RuntimeError) si
+        `psutil` n'est pas disponible — False par défaut, rétrocompatible
+        avec tout appelant existant. Trouvé nécessaire par un audit de
+        sécurité (E9) : sans psutil, `_monitor_loop()` retourne
+        immédiatement et silencieusement (voir son code) — les quotas
+        CPU/RAM ne sont alors plus du tout appliqués, mais `run()`
+        continue de rapporter des exécutions "réussies" sans qu'aucune
+        de ces protections ne soit en vigueur. Le timeout dur (via
+        `proc.join(timeout=...)`) reste couvert même sans psutil — seuls
+        les quotas CPU/RAM en cours d'exécution dépendent de lui.
+        À activer explicitement dès qu'une app non vérifiée (développeur
+        externe) est exécutée.
+        """
         self._app_id = app_id
         self._quota  = quota or ResourceQuota()
         self._psutil = _try_import_psutil()
+        if self._psutil is None:
+            print(
+                f"  [SECURITY] psutil indisponible — les quotas CPU/RAM "
+                f"de '{app_id}' ne seront PAS appliqués (seul le timeout "
+                f"dur reste en vigueur). Installez psutil pour une "
+                f"isolation complète."
+            )
+            if strict:
+                raise RuntimeError(
+                    f"SandboxRunner(strict=True) refuse de démarrer sans "
+                    f"psutil — app '{app_id}'."
+                )
+        self._strict = strict
         self._state  = SandboxState.CREATED
         self._lock       = threading.Lock()
         self._violations: list[SandboxViolation] = []

@@ -88,6 +88,22 @@ class HALBridgeServer:
         self._resp_q  = response_queue
         self._running = False
         self._thread: Optional[Any] = None
+        # Trouvé nécessaire par un audit de sécurité (M3) : la
+        # facturation reposait uniquement sur result.success, construit
+        # par l'app elle-même dans le process ENFANT — une app
+        # malveillante retourne toujours success=True sans jamais
+        # bouger le robot, et déclenche quand même la facturation
+        # client. Ce compteur, tenu côté PARENT (donc hors de portée de
+        # l'app), enregistre chaque commande move_arms/move_legs qui a
+        # RÉELLEMENT abouti (au moins un HALStatus.OK dans le résultat)
+        # — une preuve indépendante que PlayStoreRuntime peut exiger en
+        # plus de result.success avant de facturer (voir
+        # _run_mission_locked()).
+        self.successful_motor_commands = 0
+
+    @property
+    def had_any_motor_success(self) -> bool:
+        return self.successful_motor_commands > 0
 
     def start(self) -> None:
         import threading
@@ -109,7 +125,30 @@ class HALBridgeServer:
                 continue
             if raw is None:  # poison pill
                 break
-            response = self._handle(HALCommand(**raw))
+
+            # Trouvé par un audit de sécurité (E8) : HALCommand(**raw)
+            # vivait hors de tout try/except — raw vient du process
+            # ENFANT (côté non fiable de la frontière de sécurité, une
+            # app potentiellement bogguée ou malveillante). Un message
+            # malformé (clé manquante, clé en trop) levait un TypeError
+            # non rattrapé qui tuait ce thread daemon SILENCIEUSEMENT :
+            # plus aucune commande n'était servie ensuite, l'app ne
+            # voyait que des TimeoutError sans jamais savoir pourquoi,
+            # et aucune alerte ne remontait nulle part.
+            try:
+                cmd = HALCommand(**raw)
+            except TypeError as exc:
+                print(f"  [SECURITY] Message HAL bridge malformé ignoré "
+                      f"(thread reste vivant) : {exc} | raw={raw!r}")
+                request_id = raw.get("request_id") if isinstance(raw, dict) else None
+                if request_id is not None:
+                    self._resp_q.put(asdict(HALResponse(
+                        request_id, False,
+                        error=f"MALFORMED_COMMAND: {exc}",
+                    )))
+                continue
+
+            response = self._handle(cmd)
             self._resp_q.put(asdict(response))
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
@@ -117,12 +156,17 @@ class HALBridgeServer:
             if cmd.action == "move_arms":
                 commands = self._deserialize_commands(cmd.payload["commands"])
                 result = self._ctx.move_arms(commands)
+                # Compteur indépendant — voir __init__ (M3).
+                if any(status == HALStatus.OK for status in result.values()):
+                    self.successful_motor_commands += 1
                 return HALResponse(cmd.request_id, True,
                                    data={k: v.name for k, v in result.items()})
 
             elif cmd.action == "move_legs":
                 commands = self._deserialize_commands(cmd.payload["commands"])
                 result = self._ctx.move_legs(commands)
+                if any(status == HALStatus.OK for status in result.values()):
+                    self.successful_motor_commands += 1
                 return HALResponse(cmd.request_id, True,
                                    data={k: v.name for k, v in result.items()})
 
@@ -156,6 +200,12 @@ class HALBridgeServer:
             elif cmd.action == "log":
                 self._ctx.log(cmd.payload.get("message", ""))
                 return HALResponse(cmd.request_id, True)
+
+            elif cmd.action == "emergency_stop":
+                # Voir RobotContext.emergency_stop() (correctif M11,
+                # audit de sécurité) pour le contexte complet.
+                status = self._ctx.emergency_stop()
+                return HALResponse(cmd.request_id, True, data={"status": status.name})
 
             else:
                 return HALResponse(cmd.request_id, False,
@@ -281,6 +331,12 @@ class HALBridgeClient:
     def log(self, message: str) -> None:
         self._local_log.append(message)
         self._call("log", {"message": message})
+
+    def emergency_stop(self) -> HALStatus:
+        """Voir RobotContext.emergency_stop() (correctif M11, audit de
+        sécurité) — même surface d'API, transmise via le pont IPC."""
+        raw = self._call("emergency_stop", {})
+        return HALStatus[raw["status"]]
 
     def get_mission_log(self) -> list:
         """

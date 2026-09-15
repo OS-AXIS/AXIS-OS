@@ -43,6 +43,7 @@ class SafetyErrorKind(Enum):
     """Taxonomie cohérente avec SandboxErrorKind et ConventionErrorKind."""
     INVALID_VALUE      = auto()   # NaN / Infinity
     POSITION_LIMIT      = auto()
+    POSITION_DELTA_LIMIT = auto()  # C5 — saut de position trop grand vs feedback (couple PD)
     VELOCITY_LIMIT       = auto()
     TORQUE_LIMIT          = auto()
     CURRENT_LIMIT           = auto()
@@ -212,6 +213,27 @@ class JointSafetyGuard:
                 )
                 self._record_violation(v)
                 return False, v
+
+            # Delta de position vs feedback — ajouté suite à un audit
+            # de sécurité (C5). Voir JointLimits.position_delta_max pour
+            # la justification physique complète (couple réel du PD
+            # embarqué, pas command.torque, en contrôle de position).
+            # Ne s'applique QUE si un feedback réel est disponible (pas
+            # au tout premier appel, avant toute lecture capteur) et
+            # que la limite est configurée — sinon no-op, comportement
+            # inchangé (rétrocompatible avec tout appelant existant).
+            if (self.limits.position_delta_max is not None
+                    and feedback is not None
+                    and math.isfinite(feedback.position)):
+                delta = abs(command.position - feedback.position)
+                if delta > self.limits.position_delta_max:
+                    v = SafetyViolation(
+                        joint_id=self.joint_id, rule="POSITION_DELTA_LIMIT",
+                        value=delta, limit=self.limits.position_delta_max,
+                        kind=SafetyErrorKind.POSITION_DELTA_LIMIT,
+                    )
+                    self._record_violation(v)
+                    return False, v
 
         # Vitesse
         if command.velocity is not None:

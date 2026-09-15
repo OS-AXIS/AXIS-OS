@@ -14,6 +14,7 @@ Licence : Apache 2.0 (open-source)
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, List
+from dataclasses import replace
 
 from axis_os.hal.core.interfaces import IRobotHAL, IActuator, IIMU, IForceTorqueSensor
 from axis_os.hal.core.capabilities import CapabilitySet, RobotCapability
@@ -66,7 +67,16 @@ class G1SimulatedActuator(IActuator):
 
     def __init__(self, definition: JointDefinition):
         super().__init__(definition.joint_id, definition)
-        self._guard       = JointSafetyGuard(definition.joint_id, definition.limits)
+        # Borne sur le delta de position (correctif C5, audit de
+        # sécurité) — même logique que G1DDSActuator, avec un kp de
+        # référence conservateur (40.0, cohérent avec le défaut de
+        # _DEFAULT_KP côté driver réel) puisque le simulé n'a pas de
+        # vrai contrôleur PD dont dériver cette valeur.
+        limits_with_delta = replace(
+            definition.limits,
+            position_delta_max=definition.limits.torque_max / 40.0,
+        )
+        self._guard       = JointSafetyGuard(definition.joint_id, limits_with_delta)
         self._position    = 0.0
         self._velocity    = 0.0
         self._torque      = 0.0
@@ -281,6 +291,7 @@ class UnitreeG1HAL(IRobotHAL):
 
     def emergency_stop_all(self) -> HALStatus:
         print(f"[AXIS-OS] ⚠️  E-STOP — {self.robot_id}")
+        self._mark_estop_active()
         for a in self._actuators.values(): a.emergency_stop()
         return HALStatus.OK
 

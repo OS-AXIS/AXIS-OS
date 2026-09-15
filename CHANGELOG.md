@@ -10,6 +10,62 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Corrections — audit externe, vague 2 (C5, E8-E10, M2-M3, M10-M11)
+
+Suite du même audit externe (Claude Opus, 2026-09-14) — le dernier des
+5 problèmes CRITIQUES, les 3 problèmes ÉLEVÉS restants, et 4 points de
+la liste MOYEN priorité les plus significatifs. Testés individuellement
+puis via `test/test_audit_fixes_wave2.py`, 25/25 fichiers de test
+passent, zéro régression :
+
+- **C5** (le dernier CRITIQUE) — le couple réel produit en contrôle de
+  position n'était borné par rien : une commande parfaitement dans
+  `[pos_min, pos_max]` mais brutale (loin de la position actuelle)
+  peut commander, via le PD embarqué du moteur, un couple bien
+  au-delà de `torque_max`. Nouveau champ `JointLimits.
+  position_delta_max`, calculé comme `torque_max / kp` dans
+  `G1DDSActuator`/`G1SimulatedActuator` et vérifié par
+  `JointSafetyGuard` contre le feedback réel avant chaque commande.
+- **E8** — le thread du pont HAL mourait silencieusement sur un
+  message malformé venant du process enfant (`HALCommand(**raw)`
+  hors de tout `try`). Message malformé désormais ignoré avec un log
+  `[SECURITY]`, le thread reste vivant et continue de servir de
+  vraies requêtes.
+- **E9** — sans `psutil`, les quotas CPU/RAM du sandbox étaient
+  silencieusement désactivés alors que `run()` continuait de
+  rapporter des exécutions "réussies". `SandboxRunner(strict=True)`
+  refuse désormais de démarrer sans `psutil` ; avertissement bruyant
+  sinon.
+- **E10** — un e-stop déclenché par le Supervisor (précisément quand
+  le Watchdog est mort ou bloqué) ne positionnait jamais
+  `watchdog.estop_fired`, laissant `PlayStoreRuntime.run_mission()`
+  et les apps croire le robot disponible. Nouvel état
+  `IRobotHAL.estop_active`, positionné par `emergency_stop_all()`,
+  consulté en plus de `watchdog.estop_fired` partout où c'était
+  nécessaire.
+- **M2** — `_bill()` facturait le prix complet à chaque mission quel
+  que soit `pricing_model` : une app `ONE_TIME` facturait à chaque
+  mission au lieu d'une seule fois, une app `SUBSCRIPTION` facturait
+  l'abonnement mensuel entier à chaque mission. Chaque modèle
+  applique désormais sa vraie règle (`ONE_TIME` : une fois par
+  installation ; `SUBSCRIPTION` : une fois par période de 30 jours).
+- **M3** — la facturation reposait uniquement sur `result.success`,
+  construit par l'app elle-même dans le process enfant — une app
+  malveillante retourne toujours `success=True` sans jamais bouger
+  le robot. `HALBridgeServer` compte désormais, côté process PARENT
+  (hors de portée de l'app), les commandes motrices réellement
+  abouties ; la facturation exige les deux signaux.
+- **M10** — le watchdog ne surveillait jamais si la position mesurée
+  restait dans `[pos_min, pos_max]` (distinct de `POSITION_DRIFT`,
+  qui compare commande et feedback). Nouvelle alerte
+  `AlertKind.POSITION_LIMIT_BREACH`, avec confirmation
+  multi-échantillons comme les autres checks mécaniques.
+- **M11** — aucune app ne pouvait déclencher elle-même un e-stop,
+  malgré l'existence de `Permission.EMERGENCY_STOP` dans l'enum.
+  `RobotContext.emergency_stop()` ajouté (requiert cette permission
+  explicitement), branché sur le pont HAL pour rester accessible en
+  sandbox.
+
 ### Corrections critiques et élevées (audit externe du 2026-09-14)
 
 Un audit indépendant (Claude Opus) a trouvé 5 problèmes CRITIQUES

@@ -109,6 +109,16 @@ class InstalledApp:
     mission_count: int   = 0
     total_revenue: float = 0.0
     is_started:    bool  = False
+    # Trouvé par un audit de sécurité (M2) : _bill() facturait le prix
+    # complet à CHAQUE mission, quel que soit pricing_model — une app
+    # ONE_TIME facturait son prix à chaque mission (pas une seule fois),
+    # une app SUBSCRIPTION facturait l'abonnement mensuel entier à
+    # chaque mission (pas une fois par période). Ces deux champs
+    # trackent l'état de facturation par app installée, nécessaire pour
+    # que _bill() applique enfin la bonne règle par modèle — voir sa
+    # docstring pour le détail par pricing_model.
+    one_time_billed:      bool            = False
+    last_subscription_bill_monotonic: Optional[float] = None
 
     @property
     def commission_due(self) -> float:
@@ -370,7 +380,12 @@ class PlayStoreRuntime:
         # une fois qu'un e-stop global a été déclenché — sans ce check,
         # une app qui ne consulte jamais elle-même le Watchdog pouvait
         # continuer indéfiniment après une condition de sécurité FATAL).
-        if self._watchdog.estop_fired:
+        #
+        # Consulte aussi self._robot.estop_active — correctif E10, audit
+        # de sécurité : un e-stop déclenché par le Supervisor (le cas
+        # précis où le Watchdog est mort ou bloqué) ne positionnait pas
+        # watchdog.estop_fired, donc restait invisible ici.
+        if self._watchdog.estop_fired or self._robot.estop_active:
             mission_id = str(uuid.uuid4())[:8].upper()
             print(f"  [SECURITY] Mission {mission_id} refusée : "
                   f"e-stop actif sur le robot — {app_id}")
@@ -476,8 +491,18 @@ class PlayStoreRuntime:
             result.app_id     = app_id
             result.duration_s = time.monotonic() - t_start
 
-        # Facturation
-        if result and result.success:
+        # Facturation — correctif M3, audit de sécurité : exige
+        # désormais qu'au moins une commande motrice ait RÉELLEMENT
+        # abouti (bridge_server.had_any_motor_success, tenu côté
+        # process PARENT, hors de portée de l'app) EN PLUS de
+        # result.success (auto-déclaré par l'app dans le process
+        # enfant). Élimine le cas le plus grave : une app qui ne bouge
+        # jamais le robot mais retourne toujours success=True pour
+        # forcer la facturation client. Ne couvre pas tous les cas de
+        # mensonge possibles (une app pourrait bouger un joint sans
+        # rapport avec sa mission déclarée) mais élimine la fraude la
+        # plus simple et la plus rentable à automatiser.
+        if result and result.success and bridge_server.had_any_motor_success:
             entry.mission_count += 1
             billing = self._bill(entry, mission_id)
             if billing:
@@ -551,9 +576,42 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] App '{app_id}' non installée.")
         return entry
 
+    SUBSCRIPTION_PERIOD_S = 30 * 24 * 3600  # 30 jours — voir _bill()
+
     def _bill(self, entry: InstalledApp, mission_id: str) -> Optional[BillingReport]:
+        """
+        Facture selon pricing_model — correctif M2, audit de sécurité :
+        avant ce correctif, TOUS les modèles étaient facturés comme
+        PAY_PER_MISSION (le prix complet à chaque mission), un bug
+        financier direct côté client :
+          - FREE : jamais facturé (inchangé).
+          - PAY_PER_MISSION : facturé à chaque mission (comportement
+            historique, correct pour ce modèle précis).
+          - ONE_TIME : facturé une SEULE fois, à la première mission
+            réussie après installation — jamais à nouveau ensuite,
+            quel que soit le nombre de missions suivantes.
+          - SUBSCRIPTION : facturé une fois par période de 30 jours
+            glissants depuis la dernière facturation, jamais à chaque
+            mission individuelle. Une mission qui tombe dans la même
+            période qu'une facturation déjà émise ne génère aucun
+            BillingReport supplémentaire.
+        """
         m = entry.manifest
-        if m.pricing_model == PricingModel.FREE: return None
+        if m.pricing_model == PricingModel.FREE:
+            return None
+
+        if m.pricing_model == PricingModel.ONE_TIME:
+            if entry.one_time_billed:
+                return None
+            entry.one_time_billed = True
+
+        elif m.pricing_model == PricingModel.SUBSCRIPTION:
+            now = time.monotonic()
+            last = entry.last_subscription_bill_monotonic
+            if last is not None and (now - last) < self.SUBSCRIPTION_PERIOD_S:
+                return None
+            entry.last_subscription_bill_monotonic = now
+
         return BillingReport(
             mission_id=mission_id, app_id=m.app_id,
             pricing_model=m.pricing_model,

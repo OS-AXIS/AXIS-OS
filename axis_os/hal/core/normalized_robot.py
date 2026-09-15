@@ -97,5 +97,11 @@ class NormalizedRobotHAL:
         return self._hal.robot_id
 
     @property
+    def estop_active(self) -> bool:
+        """Délègue à IRobotHAL.estop_active — voir son ajout (correctif
+        E10, audit de sécurité) pour le contexte complet."""
+        return self._hal.estop_active
+
+    @property
     def is_initialized(self) -> bool:
         return self._hal.is_initialized

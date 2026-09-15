@@ -55,6 +55,7 @@ Licence : Apache 2.0 (open-source)
 
 from __future__ import annotations
 from typing import Optional, Dict
+from dataclasses import replace
 import threading
 import time
 
@@ -336,9 +337,20 @@ class G1DDSActuator(IActuator):
             )
         self._motor_index = G1_JOINT_ID_TO_MOTOR_INDEX[definition.joint_id]
         self._hub = hub
-        self._guard = JointSafetyGuard(definition.joint_id, definition.limits)
         self._kp = _DEFAULT_KP.get(self._motor_index, 40.0)
         self._kd = _DEFAULT_KD.get(self._motor_index, 1.0)
+
+        # Borne sur le delta de position (correctif C5, audit de
+        # sécurité) : torque_max / kp — voir JointLimits.
+        # position_delta_max pour la justification physique complète.
+        # Calculée ici (kp est propre à ce driver, pas à JointLimits
+        # lui-même) et injectée via dataclasses.replace() plutôt que de
+        # muter definition.limits, potentiellement partagé.
+        limits_with_delta = replace(
+            definition.limits,
+            position_delta_max=definition.limits.torque_max / self._kp,
+        )
+        self._guard = JointSafetyGuard(definition.joint_id, limits_with_delta)
 
     def initialize(self) -> HALStatus:
         if not self._hub.is_initialized:

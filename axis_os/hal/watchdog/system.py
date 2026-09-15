@@ -41,7 +41,7 @@ class JointMonitorState:
         "temp_warning_active", "temp_critical_active",
         "comm_timeout_active", "comm_lost_active",
         "torque_over_count", "velocity_over_count",
-        "drift_over_count",
+        "drift_over_count", "position_breach_count",
     )
 
     def __init__(self, joint_id: str, limits: JointLimits):
@@ -55,6 +55,7 @@ class JointMonitorState:
         self.comm_lost_active      = False
         self.torque_over_count     = 0   # échantillons consécutifs (#12)
         self.velocity_over_count   = 0
+        self.position_breach_count = 0   # M10 — audit de sécurité
         self.drift_over_count      = 0
 
 
@@ -444,6 +445,29 @@ class WatchdogSystem:
                 severity = AlertSeverity.CRITICAL
         else:
             jstate.velocity_over_count = 0
+
+        # Position hors des vraies limites physiques — correctif M10,
+        # audit de sécurité. Distinct de POSITION_DRIFT (qui compare
+        # commande vs feedback, "le moteur suit-il sa consigne") : ici
+        # on compare le feedback RÉEL à pos_min/pos_max — butée
+        # mécanique franchie, encodeur qui dérive, aucun rapport avec
+        # une commande envoyée. Rien ne surveillait ce cas avant ce
+        # correctif.
+        if math.isfinite(fb.position) and not (lim.pos_min <= fb.position <= lim.pos_max):
+            jstate.position_breach_count += 1
+            if jstate.position_breach_count >= self._config.confirm_samples:
+                self._emit(WatchdogAlert(
+                    kind=AlertKind.POSITION_LIMIT_BREACH, severity=AlertSeverity.CRITICAL,
+                    joint_id=fb.joint_id,
+                    message=(f"Position mesurée hors limites confirmée "
+                             f"({jstate.position_breach_count} échantillons) : "
+                             f"{fb.position:.3f} rad (limites [{lim.pos_min:.3f}, "
+                             f"{lim.pos_max:.3f}]) — butée mécanique ou dérive capteur ?"),
+                    value=fb.position, threshold=(lim.pos_min if fb.position < lim.pos_min else lim.pos_max),
+                ))
+                severity = AlertSeverity.CRITICAL
+        else:
+            jstate.position_breach_count = 0
 
         return severity
 

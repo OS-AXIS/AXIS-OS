@@ -101,6 +101,26 @@ class JointLimits:
     (comportement historique inchangé — rétrocompatible avec tout
     JointLimits existant qui ne spécifie pas ce champ).
     """
+    position_delta_max: Optional[float] = None
+    """
+    Écart maximal autorisé, en une seule commande, entre la position
+    consigne et la position mesurée actuelle (rad ou m) — ajouté suite
+    à un audit de sécurité (C5) : en contrôle de position, le couple
+    physique réellement produit n'est PAS command.torque (souvent None
+    dans ce mode) mais celui du contrôleur PD embarqué du moteur,
+    τ ≈ kp × (q_consigne − q_mesuré) + ... Une commande de position
+    parfaitement dans [pos_min, pos_max] peut donc commander un couple
+    bien au-delà de torque_max si l'écart avec la position actuelle
+    est trop grand.
+
+    Se calcule comme `torque_max / kp` (borne directement le couple
+    produit par le terme proportionnel du PD, en ignorant le terme
+    dérivé — approximation conservatrice qui suffit à éliminer le
+    risque décrit ci-dessus) — voir g1_dds_actuator.py pour le calcul
+    réel à partir des gains Kp utilisés. None = non contrainte
+    (rétrocompatible : tout JointLimits existant continue de fonctionner
+    à l'identique tant que ce champ n'est pas renseigné).
+    """
 
 
 @dataclass
