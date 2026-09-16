@@ -28,6 +28,7 @@ from axis_os.store.runtime.sandbox import SandboxRunner, SandboxState, SandboxEr
 from axis_os.store.runtime.hal_bridge import (
     HALBridgeServer, HALBridgeClient, HALCommand, HALResponse
 )
+from axis_os.services.memory.service import MemoryService
 import multiprocessing as mp
 import threading
 
@@ -181,6 +182,7 @@ class PlayStoreRuntime:
         watchdog: WatchdogSystem,
         require_signed_apps: bool = False,
         platform_public_key: Optional[str] = None,
+        memory_service: Optional[MemoryService] = None,
     ):
         """
         `require_signed_apps` : si True, install() refuse toute app
@@ -209,6 +211,18 @@ class PlayStoreRuntime:
         développeur — n'est traitée comme système, et toute
         permission SIGNATURE est refusée à l'installation (fail-safe,
         pas fail-open).
+
+        `memory_service` : si fourni (démarré — voir MemoryService.
+        start(), axis_os/services/memory/service.py), l'état de
+        facturation (one_time_billed, last_subscription_bill_time_s)
+        est lu depuis lui à l'installation et réécrit dedans à chaque
+        mise à jour — comble le trou documenté depuis deux audits
+        externes : cet état était tenu EN MÉMOIRE uniquement, perdu à
+        tout redémarrage (une app ONE_TIME refacturée comme neuve, une
+        fenêtre SUBSCRIPTION de 30 jours relancée à zéro). None par
+        défaut (rétrocompatible) : sans service fourni, comportement
+        strictement inchangé — état en mémoire seule, comme avant ce
+        paramètre.
         """
         self._robot   = robot
         self._watchdog = watchdog
@@ -217,6 +231,7 @@ class PlayStoreRuntime:
         self._id = str(uuid.uuid4())[:8]
         self._require_signed_apps = require_signed_apps
         self._platform_public_key = platform_public_key
+        self._memory_service = memory_service
         # Verrou global de mission — trou identifié lors d'un audit :
         # rien n'empêchait deux appels concurrents à run_mission()
         # (deux apps différentes, ou la même app deux fois) d'envoyer
@@ -399,7 +414,27 @@ class PlayStoreRuntime:
                   f"| Dev : {manifest.developer_revenue_eur:.2f}€ "
                   f"| Commission : {manifest.platform_commission_eur:.2f}€ (30%)")
 
-        self._apps[app_id] = InstalledApp(app=app, manifest=manifest)
+        # État de facturation repris depuis MemoryService s'il est
+        # fourni — voir le paramètre memory_service dans __init__()
+        # pour le contexte complet. Sans lui (None), comportement
+        # strictement inchangé : one_time_billed=False,
+        # last_subscription_bill_time_s=None, comme avant ce
+        # paramètre — une app ONE_TIME/SUBSCRIPTION redémarrée sans
+        # memory_service configuré reste facturée comme neuve,
+        # exactement le comportement documenté et assumé quand la
+        # persistance n'est pas branchée.
+        one_time_billed = False
+        last_subscription_bill_time_s = None
+        if self._memory_service is not None:
+            one_time_billed = self._read_billing_flag(app_id, "one_time_billed", False)
+            last_subscription_bill_time_s = self._read_billing_flag(
+                app_id, "last_subscription_bill_time_s", None)
+
+        self._apps[app_id] = InstalledApp(
+            app=app, manifest=manifest,
+            one_time_billed=one_time_billed,
+            last_subscription_bill_time_s=last_subscription_bill_time_s,
+        )
         print(f"  ✓ '{manifest.name}' installée.")
         return True
 
@@ -698,6 +733,32 @@ class PlayStoreRuntime:
 
     SUBSCRIPTION_PERIOD_S = 30 * 24 * 3600  # 30 jours — voir _bill()
 
+    def _read_billing_flag(self, app_id: str, key: str, default):
+        """
+        Lit un flag de facturation depuis MemoryService — jamais
+        appelée si self._memory_service is None (voir install()).
+        Retourne `default` sur tout échec de lecture (clé absente,
+        service en erreur) plutôt que de lever — un problème de
+        lecture de l'état persisté ne doit jamais empêcher une app de
+        s'installer, au pire elle est traitée comme neuve pour cette
+        app_id précise, jamais pire que le comportement sans
+        memory_service configuré du tout.
+        """
+        result = self._memory_service.app_load(f"billing::{app_id}", key)
+        return result.value if result.ok else default
+
+    def _write_billing_flag(self, app_id: str, key: str, value) -> None:
+        """Écrit un flag de facturation dans MemoryService — no-op si
+        self._memory_service is None. Erreur d'écriture jamais
+        propagée : la facturation en mémoire (InstalledApp, déjà mise
+        à jour par l'appelant AVANT ce helper) reste correcte pour la
+        session en cours même si la persistance échoue — seule la
+        survie au PROCHAIN redémarrage serait perdue, pas la session
+        actuelle."""
+        if self._memory_service is None:
+            return
+        self._memory_service.app_store(f"billing::{app_id}", key, value)
+
     def _bill(self, entry: InstalledApp, mission_id: str) -> Optional[BillingReport]:
         """
         Facture selon pricing_model — correctif M2, audit de sécurité :
@@ -715,6 +776,12 @@ class PlayStoreRuntime:
             mission individuelle. Une mission qui tombe dans la même
             période qu'une facturation déjà émise ne génère aucun
             BillingReport supplémentaire.
+
+        Persiste désormais one_time_billed/last_subscription_bill_time_s
+        via MemoryService quand il est fourni (voir _write_billing_flag)
+        — comble le trou documenté depuis deux audits externes : sans
+        ce branchement, l'état ne survivait jamais à un redémarrage du
+        process (voir InstalledApp pour l'historique complet du bug).
         """
         m = entry.manifest
         if m.pricing_model == PricingModel.FREE:
@@ -724,6 +791,7 @@ class PlayStoreRuntime:
             if entry.one_time_billed:
                 return None
             entry.one_time_billed = True
+            self._write_billing_flag(m.app_id, "one_time_billed", True)
 
         elif m.pricing_model == PricingModel.SUBSCRIPTION:
             # time.time() (horloge murale), pas time.monotonic() — voir
@@ -735,6 +803,7 @@ class PlayStoreRuntime:
             if last is not None and (now - last) < self.SUBSCRIPTION_PERIOD_S:
                 return None
             entry.last_subscription_bill_time_s = now
+            self._write_billing_flag(m.app_id, "last_subscription_bill_time_s", now)
 
         return BillingReport(
             mission_id=mission_id, app_id=m.app_id,

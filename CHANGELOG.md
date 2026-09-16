@@ -10,6 +10,36 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — persistance de la facturation via MemoryService (2026-09-16)
+
+Referme le trou documenté depuis deux audits externes : l'état de
+facturation (`InstalledApp.one_time_billed`,
+`last_subscription_bill_time_s`) était tenu EN MÉMOIRE uniquement,
+perdu à tout redémarrage du process — une app `ONE_TIME` refacturée
+comme neuve, une fenêtre `SUBSCRIPTION` de 30 jours relancée à zéro.
+`MemoryService` (écrit et testé dans une session précédente,
+`axis_os/services/memory/service.py`) existait déjà pour combler
+précisément ce trou — ce commit termine le branchement.
+
+- **`PlayStoreRuntime` accepte un `memory_service: Optional[
+  MemoryService] = None`** (nouveau paramètre du constructeur, `None`
+  par défaut — rétrocompatible). Quand fourni : `install()` lit
+  l'état de facturation persisté pour l'`app_id` installé (au lieu
+  des valeurs par défaut `False`/`None`) ; `_bill()` réécrit chaque
+  mise à jour via `MemoryService.app_store()` (cloisonné par
+  `"billing::<app_id>"`, jamais accessible aux vraies apps
+  elles-mêmes, dont les clés utilisent directement leur propre
+  `app_id`). Sans `memory_service` configuré : comportement en
+  mémoire strictement inchangé, testé explicitement en
+  non-régression.
+- **Critère de succès explicite confirmé** (`test/
+  test_billing_persistence.py`) : une app `ONE_TIME`/`SUBSCRIPTION`
+  n'est jamais refacturée après un vrai redémarrage — vérifié avec
+  de nouvelles instances complètement séparées de
+  `NormalizedRobotHAL`/`PlayStoreRuntime`/`MemoryService`, partageant
+  uniquement le répertoire disque, exactement ce qu'un vrai
+  redémarrage de process produirait.
+
 ### Ajouts — fin de l'architecture services système (2026-09-15, session 2/2)
 
 Complète la session précédente (test de non-divergence, pont HAL,
