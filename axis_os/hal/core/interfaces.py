@@ -18,7 +18,7 @@ from typing import Optional, List, Dict
 from .types import (
     ActuatorCommand, ActuatorFeedback, ActuatorState,
     ControlMode, HALStatus, IMUData, ForceTorqueData,
-    JointDefinition, SensorType
+    JointDefinition, SensorType, CameraFrame, AudioChunk
 )
 from .capabilities import CapabilitySet
 
@@ -102,6 +102,51 @@ class IForceTorqueSensor(ISensor, ABC):
 
     @abstractmethod
     def tare(self) -> HALStatus: ...
+
+
+class ICamera(ISensor, ABC):
+    """
+    Point de sécurité central (voir docs/architecture_services*.md
+    §2) : ICamera n'expose AUCUN moyen de commander un actionneur —
+    c'est un pur capteur en lecture, exactement comme IIMU/
+    IForceTorqueSensor ci-dessus. Aucun service ou app ne peut
+    « voir puis agir » en un seul appel à travers cette interface ;
+    voir toujours, agir toujours via NormalizedRobotHAL séparément —
+    cohérent avec l'invariant de sécurité documenté sur IService
+    (axis_os/services/base.py) : un service ne commande jamais un
+    actionneur directement, et ce même principe s'applique déjà ici,
+    au niveau HAL, avant même qu'un service existe.
+    """
+    @abstractmethod
+    def capture(self) -> Optional[CameraFrame]: ...
+
+
+class IMicrophone(ISensor, ABC):
+    @abstractmethod
+    def capture(self, duration_s: float) -> Optional[AudioChunk]: ...
+
+
+class ISpeaker(ABC):
+    """
+    Pas de sous-classe de ISensor — un haut-parleur EXPOSE le monde
+    physique (son), il ne le PERÇOIT pas, contrairement à ICamera/
+    IMicrophone/IIMU/IForceTorqueSensor ci-dessus. `speaker_id` reste
+    cohérent avec la convention de nommage `sensor_id` des autres
+    interfaces, mais ISpeaker ne prétend pas être un capteur qu'il
+    n'est pas.
+    """
+    def __init__(self, speaker_id: str):
+        self.speaker_id = speaker_id
+        self._initialized = False
+
+    @abstractmethod
+    def initialize(self) -> HALStatus: ...
+
+    @abstractmethod
+    def shutdown(self) -> HALStatus: ...
+
+    @abstractmethod
+    def play(self, audio: AudioChunk) -> HALStatus: ...
 
 
 class IRobotHAL(ABC):

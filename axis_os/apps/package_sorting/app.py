@@ -19,7 +19,7 @@ from enum import Enum
 
 from axis_os.store.sdk.manifest import (
     AppManifest, Permission, AppCategory,
-    PricingModel, HardwareRequirements
+    PricingModel, HardwareRequirements, Capability
 )
 from axis_os.store.sdk.app_base import RobotApp, RobotContext, MissionResult
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
@@ -95,6 +95,12 @@ class PackageSortingApp(RobotApp):
                 Permission.WATCHDOG_READ,
                 Permission.NETWORK_CLOUD,
             ],
+            # Capacité fonctionnelle réelle — un colis à la fois, avec
+            # UN SEUL bras (gauche OU droit selon la destination,
+            # jamais les deux simultanément — voir DEPOSIT_LEFT/
+            # DEPOSIT_RIGHT plus haut dans ce fichier). GRASP_DUAL
+            # serait un mensonge sur ce que fait vraiment cette app.
+            capabilities_required=[Capability.GRASP_SINGLE],
             hardware=HardwareRequirements(
                 required=[RobotCapability.ARMS, RobotCapability.IMU],
                 min_dof=10,

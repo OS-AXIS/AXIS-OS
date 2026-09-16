@@ -182,6 +182,38 @@ class ForceTorqueData:
 
 
 @dataclass
+class CameraFrame:
+    """
+    Une image capturée — largeur/hauteur/canaux explicites plutôt
+    qu'implicites dans la forme d'un tableau, pour rester agnostique
+    à toute bibliothèque de traitement d'image précise (numpy, PIL...)
+    au niveau du contrat HAL lui-même. `data` : octets bruts, format
+    et encodage définis par `encoding` (ex: "rgb8", "bgr8", "depth16")
+    — même esprit que sensor_msgs/Image en ROS, pas réinventé
+    différemment sans raison.
+    """
+    width:        int
+    height:       int
+    encoding:     str
+    data:         bytes
+    timestamp_ns: int = field(default_factory=time.time_ns)
+
+
+@dataclass
+class AudioChunk:
+    """
+    Segment audio brut — sample_rate/channels/sample_width explicites
+    plutôt qu'un format fichier (WAV, etc.), pour rester un vrai
+    contrat HAL de flux temps réel, pas un format d'échange fichier.
+    """
+    sample_rate:  int
+    channels:     int
+    sample_width: int    # octets par échantillon (2 = 16-bit PCM)
+    data:         bytes
+    timestamp_ns: int = field(default_factory=time.time_ns)
+
+
+@dataclass
 class JointDefinition:
     joint_id:             str
     joint_type:           JointType

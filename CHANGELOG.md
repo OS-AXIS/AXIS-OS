@@ -10,6 +10,50 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — fin de l'architecture services système (2026-09-15, session 2/2)
+
+Complète la session précédente (test de non-divergence, pont HAL,
+manifest étendu, MemoryService) — dernière étape de l'ordre demandé :
+interfaces perception, puis capacités réelles sur les 3 apps de
+référence.
+
+- **`ICamera`/`IMicrophone`/`ISpeaker`** (`axis_os/hal/core/
+  interfaces.py`) + `CameraFrame`/`AudioChunk` (`types.py`). `ICamera`/
+  `IMicrophone` héritent de `ISensor` (capteurs en lecture) ;
+  `ISpeaker` n'en hérite pas (émet le monde, ne le perçoit pas).
+  Aucune des trois n'expose de moyen de commander un actionneur —
+  cohérent avec l'invariant déjà posé pour `IService`
+  (`axis_os/services/base.py`).
+- **Faux drivers** (`axis_os/hal/drivers/sim_common/sim_perception.py`)
+  — pas de driver caméra réel pour le G1 (décision explicite, pas une
+  limite technique). `FakeCamera` **rejoue de vraies images PPM
+  depuis un dossier disque** (décodage P6 minimal, sans dépendance
+  externe), en boucle — pas des données synthétiques générées en
+  mémoire. `FakeMicrophone`/`FakeSpeaker` restent synthétiques
+  (silence déterministe), faute de source d'enregistrements de
+  référence dans ce dépôt.
+- **Capacités réelles déclarées sur les 3 apps de référence** —
+  dérivées de ce qu'elles font vraiment dans leur code, pas
+  supposées : `PackageSortingApp` → `GRASP_SINGLE` (un seul bras à la
+  fois, jamais les deux — voir `DEPOSIT_LEFT`/`DEPOSIT_RIGHT`) ;
+  `SecurityPatrolApp` → `WALK`, `CAMERA_RGB` (`SPEECH_IN` explicitement
+  PAS déclarée : le G1 ne déclare pas `RobotCapability.MICROPHONE`,
+  et aucune ligne du fichier n'exerce réellement le micro) ;
+  `WarehouseOpsApp` → `WALK`, `GRASP_SINGLE`, `CAMERA_RGB`.
+- Bug trouvé et corrigé en testant l'installation réelle des 3 apps :
+  `_available_capabilities()` ne dérivait jamais `WALK`/`GRASP_SINGLE`
+  depuis `RobotCapability.LEGS`/`ARMS` — les 3 apps échouaient à
+  s'installer avec leurs propres capacités fraîchement déclarées.
+  Corrigé : ces deux `Capability` de mouvement DE BASE sont bien
+  dérivées du matériel (les apps bougent déjà bras/jambes directement
+  via `move_arms()`/`move_legs()`, un mouvement physique réel, pas
+  hypothétique) — distinct d'un futur SERVICE intelligent de haut
+  niveau (planification de marche, préhension guidée par vision),
+  qui lui reste effectivement inexistant.
+- `test/test_perception_interfaces.py`,
+  `test/test_reference_apps_capabilities.py` — 37/37 fichiers de
+  test passent au total, aucune régression.
+
 ### Ajouts — début de l'architecture services système (2026-09-15, session 1/2)
 
 Suite à une conception externe (docs/architecture_services*.md, non

@@ -1,0 +1,155 @@
+"""
+AXIS-OS — Tests ICamera/IMicrophone/ISpeaker et faux drivers
+==================================================================
+Valide les 3 nouvelles interfaces HAL (axis_os/hal/core/interfaces.py)
+et FakeCamera/FakeMicrophone/FakeSpeaker (axis_os/hal/drivers/
+sim_common/sim_perception.py) — dernière étape de l'ordre demandé
+pour cette session sur l'architecture services système.
+
+Point testé explicitement en section 1 : FakeCamera rejoue de VRAIES
+images PPM écrites sur disque, pas des données synthétiques générées
+en mémoire — conforme à la consigne "pas de driver caméra réel pour
+le G1, seulement le faux qui rejoue des images depuis le disque".
+"""
+
+import sys
+import tempfile
+import shutil
+sys.path.insert(0, ".")
+
+from pathlib import Path
+from axis_os.hal.core.interfaces import ICamera, IMicrophone, ISpeaker
+from axis_os.hal.core.types import CameraFrame, AudioChunk, HALStatus
+from axis_os.hal.drivers.sim_common.sim_perception import (
+    FakeCamera, FakeMicrophone, FakeSpeaker,
+)
+
+FAIL = 0
+TMP_DIR = tempfile.mkdtemp(prefix="axis_os_perception_test_")
+
+
+def check(description: str, condition: bool) -> None:
+    global FAIL
+    status = "✓" if condition else "✗"
+    print(f"  [{status}] {description}")
+    if not condition:
+        FAIL += 1
+
+
+def section(title: str) -> None:
+    print(f"\n{'=' * 66}\n  {title}\n{'=' * 66}")
+
+
+def write_ppm(path: Path, width: int, height: int, color: tuple) -> None:
+    with open(path, "wb") as f:
+        f.write(b"P6\n")
+        f.write(f"{width} {height}\n".encode())
+        f.write(b"255\n")
+        f.write(bytes(color) * (width * height))
+
+
+# ══════════════════════════════════════════════════════════════════
+
+section("0 — Les 3 interfaces sont abstraites, ICamera/IMicrophone restent des ISensor")
+
+from axis_os.hal.core.interfaces import ISensor
+check("ICamera hérite de ISensor (capteur en lecture, pas d'actionneur)",
+      issubclass(ICamera, ISensor))
+check("IMicrophone hérite de ISensor", issubclass(IMicrophone, ISensor))
+check("ISpeaker n'hérite PAS de ISensor (émet le monde, ne le perçoit pas)",
+      not issubclass(ISpeaker, ISensor))
+
+for cls in (ICamera, IMicrophone, ISpeaker):
+    try:
+        cls("test")
+        check(f"{cls.__name__} correctement abstraite", False)
+    except TypeError:
+        check(f"{cls.__name__} correctement abstraite", True)
+
+# ══════════════════════════════════════════════════════════════════
+
+section("1 — FakeCamera rejoue de VRAIES images depuis le disque (pas synthétique)")
+
+img_dir = Path(TMP_DIR) / "images"
+img_dir.mkdir()
+write_ppm(img_dir / "001_red.ppm", 4, 4, (255, 0, 0))
+write_ppm(img_dir / "002_blue.ppm", 4, 4, (0, 0, 255))
+write_ppm(img_dir / "003_green.ppm", 4, 4, (0, 255, 0))
+
+cam = FakeCamera("test_cam", img_dir)
+check("initialize() réussit", cam.initialize() == HALStatus.OK)
+check("is_healthy() vrai avec des images présentes", cam.is_healthy() is True)
+
+frame1 = cam.capture()
+check("Frame 1 : dimensions correctes (4x4)", frame1.width == 4 and frame1.height == 4)
+check("Frame 1 : encodage rgb8", frame1.encoding == "rgb8")
+check("Frame 1 : premier pixel EXACTEMENT celui écrit sur disque (rouge)",
+      frame1.data[:3] == bytes([255, 0, 0]))
+
+frame2 = cam.capture()
+check("Frame 2 : deuxième vraie image (bleue), pas la même que la 1ère",
+      frame2.data[:3] == bytes([0, 0, 255]))
+
+frame3 = cam.capture()
+check("Frame 3 : troisième vraie image (verte)",
+      frame3.data[:3] == bytes([0, 255, 0]))
+
+frame4 = cam.capture()
+check("Frame 4 : boucle bien, revient à la 1ère image (rouge)",
+      frame4.data[:3] == bytes([255, 0, 0]))
+
+# ══════════════════════════════════════════════════════════════════
+
+section("2 — FakeCamera : robustesse (dossier absent, fichier corrompu)")
+
+cam_missing = FakeCamera("missing_cam", Path(TMP_DIR) / "dossier_absent")
+cam_missing.initialize()
+check("Dossier absent : is_healthy() == False", cam_missing.is_healthy() is False)
+check("Dossier absent : capture() retourne None (pas d'exception)",
+      cam_missing.capture() is None)
+
+corrupt_dir = Path(TMP_DIR) / "corrupt"
+corrupt_dir.mkdir()
+with open(corrupt_dir / "bad.ppm", "wb") as f:
+    f.write(b"CECI N'EST PAS UN FICHIER PPM VALIDE")
+cam_corrupt = FakeCamera("corrupt_cam", corrupt_dir)
+cam_corrupt.initialize()
+check("Fichier PPM corrompu : capture() échoue proprement, pas d'exception",
+      cam_corrupt.capture() is None)
+
+# ══════════════════════════════════════════════════════════════════
+
+section("3 — FakeMicrophone / FakeSpeaker")
+
+mic = FakeMicrophone("test_mic", sample_rate=16000)
+mic.initialize()
+chunk = mic.capture(0.5)
+check("AudioChunk : sample_rate correct", chunk.sample_rate == 16000)
+check("AudioChunk : durée correcte (0.5s à 16kHz, 16-bit)",
+      len(chunk.data) == int(16000 * 0.5) * 2)
+
+spk = FakeSpeaker("test_speaker")
+spk.initialize()
+status = spk.play(chunk)
+check("play() réussit", status == HALStatus.OK)
+check("play() enregistre bien le chunk pour inspection", spk.last_played is chunk)
+check("play_count incrémenté", spk.play_count == 1)
+
+status_uninit = FakeSpeaker("uninit_speaker").play(chunk)
+check("play() sur un haut-parleur non initialisé échoue proprement",
+      status_uninit == HALStatus.ERROR_NOT_INIT)
+
+# ══════════════════════════════════════════════════════════════════
+
+shutil.rmtree(TMP_DIR, ignore_errors=True)
+
+print(f"\n{'=' * 66}")
+print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
+print("=" * 66)
+
+if FAIL == 0:
+    print("\n  ✓ ICamera/IMicrophone/ISpeaker correctement définies et abstraites")
+    print("  ✓ FakeCamera rejoue de VRAIES images PPM depuis le disque")
+    print("  ✓ Robuste à un dossier absent ou un fichier corrompu")
+
+sys.exit(0 if FAIL == 0 else 1)

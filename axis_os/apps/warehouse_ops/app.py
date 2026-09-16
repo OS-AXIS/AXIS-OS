@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional
 from axis_os.store.sdk.app_base import RobotApp, RobotContext, MissionResult
 from axis_os.store.sdk.manifest import (
     AppManifest, AppCategory, Permission, PricingModel,
-    ResourceQuota, HardwareRequirements,
+    ResourceQuota, HardwareRequirements, Capability,
 )
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
 from axis_os.hal.core.capabilities import RobotCapability
@@ -269,6 +269,15 @@ WAREHOUSE_OPS_MANIFEST = AppManifest(
         Permission.WATCHDOG_READ,
         Permission.EMERGENCY_STOP,
         Permission.NETWORK_CLOUD,
+    ],
+
+    # Capacités fonctionnelles réelles — WALK (move_legs, se déplace
+    # entre postes), GRASP_SINGLE (move_arms n'utilise jamais que le
+    # bras gauche, jamais les deux simultanément — voir _pick_item
+    # plus haut dans ce fichier), CAMERA_RGB (SENSORS_CAMERA
+    # ci-dessus, jamais de profondeur exercée).
+    capabilities_required=[
+        Capability.WALK, Capability.GRASP_SINGLE, Capability.CAMERA_RGB,
     ],
 
     hardware=HardwareRequirements(

@@ -653,21 +653,25 @@ class PlayStoreRuntime:
         indépendante, pour ne jamais désynchroniser deux déclarations
         du même robot.
 
-        Mapping délibérément CONSERVATEUR : RobotCapability.CAMERA
-        (générique, ne distingue pas RGB de profondeur) ne donne QUE
-        Capability.CAMERA_RGB, jamais CAMERA_DEPTH — affirmer la
-        profondeur disponible sans information plus précise serait
-        un mensonge à l'installation. Une app qui a vraiment besoin
-        de profondeur restera donc refusée sur le G1 actuel (qui
-        déclare seulement CAMERA) tant qu'un vrai driver caméra ne
-        précise pas explicitement le type — cohérent avec §2 de la
-        conception services (ICamera/CameraFrame, non implémenté ce
-        soir).
+        Mapping délibérément CONSERVATEUR pour la perception :
+        RobotCapability.CAMERA (générique, ne distingue pas RGB de
+        profondeur) ne donne QUE Capability.CAMERA_RGB, jamais
+        CAMERA_DEPTH — affirmer la profondeur disponible sans
+        information plus précise serait un mensonge à l'installation.
 
-        Aucune Capability de service (WALK, GRASP_*, SPEECH_*,
-        NAVIGATION_MAP, MEMORY_PERSISTENT) n'est dérivée ici tant
-        qu'aucun service système réel ne les fournit — un robot avec
-        des jambes n'implique pas qu'un service de marche existe.
+        WALK/GRASP_SINGLE dérivées de LEGS/ARMS — corrigé après un
+        test réel sur les 3 apps de référence (elles bougent déjà
+        bras/jambes directement via move_arms()/move_legs(), un
+        mouvement PHYSIQUE réel via le HAL, pas hypothétique) : une
+        version précédente de ce mapping les excluait au nom d'un
+        « aucun service système ne les fournit encore », confondant
+        la capacité de MOUVEMENT DE BASE (déjà réelle, exercée par
+        les apps existantes) et un futur SERVICE intelligent de haut
+        niveau (planification de marche, préhension guidée par
+        vision — celui-là effectivement inexistant). GRASP_DUAL
+        nécessite les deux bras coordonnés — non dérivée d'un simple
+        ARMS générique, aucune app de référence actuelle ne
+        l'exerce ni n'en a besoin.
         """
         robot_caps = self._robot.get_capabilities()
         available = set()
@@ -677,6 +681,10 @@ class PlayStoreRuntime:
             available.add(Capability.SPEECH_IN)
         if robot_caps.has(RobotCapability.SPEAKER):
             available.add(Capability.SPEECH_OUT)
+        if robot_caps.has(RobotCapability.LEGS):
+            available.add(Capability.WALK)
+        if robot_caps.has(RobotCapability.ARMS):
+            available.add(Capability.GRASP_SINGLE)
         return available
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:

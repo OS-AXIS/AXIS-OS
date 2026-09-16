@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 from axis_os.store.sdk.app_base import RobotApp, RobotContext, MissionResult
 from axis_os.store.sdk.manifest import (
     AppManifest, AppCategory, Permission, PricingModel,
-    ResourceQuota, HardwareRequirements,
+    ResourceQuota, HardwareRequirements, Capability,
 )
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
 from axis_os.hal.core.capabilities import RobotCapability
@@ -294,6 +294,21 @@ SECURITY_PATROL_MANIFEST = AppManifest(
         Permission.SENSORS_MICROPHONE,       # interaction vocale (badge)
         Permission.WATCHDOG_READ,
         Permission.NETWORK_CLOUD,             # transmission d'alerte
+    ],
+
+    # Capacités fonctionnelles réelles — WALK (se déplace entre
+    # checkpoints, ACTUATORS_WRITE_LEGS ci-dessus), CAMERA_RGB
+    # (détection de personne, jamais de profondeur exercée dans ce
+    # fichier — voir _search_for_intruder ci-dessous). SPEECH_IN
+    # volontairement PAS déclarée malgré SENSORS_MICROPHONE ci-dessus
+    # : le G1 ne déclare pas RobotCapability.MICROPHONE (pas de vrai
+    # micro modélisé côté HAL aujourd'hui), et aucune ligne de ce
+    # fichier n'exerce réellement le micro — cohérent avec
+    # Permission.SENSORS_MICROPHONE, déjà marquée "NON APPLIQUÉE"
+    # dans manifest.py. La déclarer causerait un refus d'installation
+    # pour une capacité jamais réellement utilisée.
+    capabilities_required=[
+        Capability.WALK, Capability.CAMERA_RGB,
     ],
 
     hardware=HardwareRequirements(
