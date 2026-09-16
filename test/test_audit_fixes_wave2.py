@@ -97,7 +97,7 @@ robot_e8 = NormalizedRobotHAL(UnitreeG1HAL("g1_e8_w2"), build_g1_normalizer())
 robot_e8.initialize_all()
 wd_e8 = WatchdogSystem(robot_e8)
 manifest_e8 = PackageSortingApp().manifest()
-ctx_e8 = RobotContext(robot_e8, wd_e8, manifest_e8)
+ctx_e8 = RobotContext.for_testing(robot_e8, wd_e8, manifest_e8)
 
 cq, rq = mp.Queue(), mp.Queue()
 server_e8 = HALBridgeServer(ctx_e8, cq, rq)
@@ -290,7 +290,7 @@ manifest_no_perm = AppManifest(
     app_id="com.test.noperm_w2", name="T", version="1.0.0", author="T",
     author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
 )
-ctx_no_perm = RobotContext(robot_m11, wd_m11, manifest_no_perm)
+ctx_no_perm = RobotContext.for_testing(robot_m11, wd_m11, manifest_no_perm)
 try:
     ctx_no_perm.emergency_stop()
     check("Sans Permission.EMERGENCY_STOP → refusé", False)
@@ -302,7 +302,7 @@ manifest_with_perm = AppManifest(
     author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
     permissions=[Permission.EMERGENCY_STOP],
 )
-ctx_with_perm = RobotContext(robot_m11, wd_m11, manifest_with_perm)
+ctx_with_perm = RobotContext.for_testing(robot_m11, wd_m11, manifest_with_perm)
 status_m11 = ctx_with_perm.emergency_stop()
 check("Avec la permission → emergency_stop() réussit (HALStatus.OK)",
       status_m11 == HALStatus.OK)

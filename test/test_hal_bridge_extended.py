@@ -52,7 +52,7 @@ def make_bridge(permissions):
         author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
         permissions=permissions,
     )
-    ctx = RobotContext(robot, wd, manifest)
+    ctx = RobotContext.for_testing(robot, wd, manifest)
     cq, rq = mp.Queue(), mp.Queue()
     server = HALBridgeServer(ctx, cq, rq)
     server.start()
@@ -115,7 +115,7 @@ manifest4 = AppManifest(
     author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
     permissions=[Permission.WATCHDOG_READ],
 )
-ctx4 = RobotContext(robot4, wd4, manifest4)
+ctx4 = RobotContext.for_testing(robot4, wd4, manifest4)
 cq4, rq4 = mp.Queue(), mp.Queue()
 server4 = HALBridgeServer(ctx4, cq4, rq4)
 server4.start()

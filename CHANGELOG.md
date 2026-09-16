@@ -10,6 +10,44 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — verrouillage RobotContext au vrai Play Store (2026-09-16)
+
+Empêche qu'une app tourne accidentellement hors d'AXIS-OS : jusqu'ici,
+rien n'empêchait quiconque disposant d'un `NormalizedRobotHAL`/
+`WatchdogSystem` réel de construire son propre `RobotContext` avec un
+`AppManifest` arbitraire — n'importe quelles permissions, sans jamais
+passer par `install()` ni la vérification de signature.
+
+- **`RobotContext` ne peut plus être construit directement** —
+  `RobotContext(robot, watchdog, manifest)`, l'appel évident, lève
+  désormais `UnauthorizedContextError`. Seul
+  `PlayStoreRuntime._make_ctx()` détient un `_RuntimeSessionToken`
+  valide.
+- Le mécanisme a été attaqué contre lui-même avant d'être considéré
+  fini : deux premières versions (comparaison de valeur, registre
+  d'instances module-level) se sont révélées contournables, corrigées
+  après des tests dédiés qui les cassaient délibérément. La version
+  finale vérifie l'identité d'objet (`candidate is self`) — un jeton
+  forgé par un attaquant, même comparé au vrai jeton d'un runtime
+  existant, échoue toujours.
+- **Limite assumée et documentée honnêtement** dans le code : en
+  Python pur, aucune barrière n'est absolue contre un développeur qui
+  lit le code source et écrit délibérément pour la contourner. Ce
+  mécanisme empêche l'usage accidentel ou évident, pas un
+  contournement actif et informé.
+- **`RobotContext.for_testing()`** — classmethod explicite pour les
+  tests unitaires qui ont besoin d'un contexte isolé sans
+  `PlayStoreRuntime` complet, sans réintroduire le trou de sécurité.
+  `test_context_parity.py` exclut explicitement cette méthode de la
+  comparaison de surface (pas une méthode d'API runtime qu'une app
+  appelle, un point d'entrée de construction réservé aux tests).
+- Avertissement d'exécution (pas seulement documenté) quand
+  `require_signed_apps=False` (le défaut, pour rester compatible
+  développement) — visible à chaque démarrage de `PlayStoreRuntime`,
+  pour qu'un déploiement de production ne l'oublie pas silencieusement.
+- `test/test_context_lockdown.py` — 39/39 fichiers de test passent au
+  total, aucune régression.
+
 ### Ajouts — persistance de la facturation via MemoryService (2026-09-16)
 
 Referme le trou documenté depuis deux audits externes : l'état de

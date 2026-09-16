@@ -22,7 +22,8 @@ from axis_os.store.sdk.manifest import (
     get_protection_level,
 )
 from axis_os.store.sdk.app_base import (
-    RobotApp, RobotContext, MissionResult, PermissionError, EstopActiveError
+    RobotApp, RobotContext, MissionResult, PermissionError, EstopActiveError,
+    _RuntimeSessionToken,
 )
 from axis_os.store.runtime.sandbox import SandboxRunner, SandboxState, SandboxErrorKind
 from axis_os.store.runtime.hal_bridge import (
@@ -230,8 +231,33 @@ class PlayStoreRuntime:
         self._billing: List[BillingReport]     = []
         self._id = str(uuid.uuid4())[:8]
         self._require_signed_apps = require_signed_apps
+        if not require_signed_apps:
+            # Avertissement d'exécution, pas seulement documenté —
+            # trouvé nécessaire pour rendre visible à chaque démarrage
+            # un choix qui, silencieux, se retrouve facilement oublié
+            # en configuration de production : sans require_signed_apps
+            # =True, n'importe quel fichier .py qui hérite de RobotApp
+            # s'installe sans aucune vérification d'identité. Un
+            # simple appel install() ne fait alors QUE vérifier les
+            # permissions/capacités déclarées, jamais qui a écrit le
+            # code — voir la docstring de ce paramètre pour le
+            # contexte complet.
+            print(
+                "  [SECURITY] PlayStoreRuntime démarré avec "
+                "require_signed_apps=False — toute app non signée "
+                "s'installe sans vérification d'identité. Adapté au "
+                "développement, à activer explicitement avant "
+                "d'ouvrir ce Play Store à des développeurs externes."
+            )
         self._platform_public_key = platform_public_key
         self._memory_service = memory_service
+        # Jeton de session — voir _RuntimeSessionToken (axis_os/store/
+        # sdk/app_base.py) et UnauthorizedContextError pour le contexte
+        # complet : seule cette instance de PlayStoreRuntime peut
+        # construire un RobotContext utilisable, empêchant qu'une app
+        # (ou tout code tiers) contourne install() en construisant son
+        # propre RobotContext avec un AppManifest arbitraire.
+        self._session_token = _RuntimeSessionToken()
         # Verrou global de mission — trou identifié lors d'un audit :
         # rien n'empêchait deux appels concurrents à run_mission()
         # (deux apps différentes, ou la même app deux fois) d'envoyer
@@ -723,7 +749,11 @@ class PlayStoreRuntime:
         return available
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
-        return RobotContext(self._robot, self._watchdog, manifest)
+        return RobotContext(
+            self._robot, self._watchdog, manifest,
+            _session_token=self._session_token,
+            _runtime_token_holder=self._session_token,
+        )
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:
         entry = self._apps.get(app_id)

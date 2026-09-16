@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Optional, Dict, Any
 import math
+import secrets
 import time
 
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
@@ -41,15 +42,113 @@ class EstopActiveError(Exception):
     pass
 
 
-class RobotContext:
-    """Interface sécurisée entre une app et le robot."""
+class UnauthorizedContextError(Exception):
+    """
+    Levée quand RobotContext est construit sans un jeton de session
+    valide — trouvé nécessaire pour fermer un vrai trou : dans le code
+    précédent, RIEN n'empêchait quiconque disposant d'un objet
+    NormalizedRobotHAL/WatchdogSystem réel (ex: du code qui importe
+    axis_os directement, hors de tout Play Store) de construire son
+    PROPRE RobotContext avec un AppManifest arbitraire — donc
+    n'importe quelles permissions, sans jamais passer par install()
+    ni par la vérification de signature (signing.py). Une app dont le
+    code entier ne fonctionne QU'À TRAVERS RobotContext (voir
+    RobotApp, entièrement abstraite — sans ctx.move_arms() etc., le
+    code d'une app ne fait littéralement rien) devient alors
+    réellement inutilisable hors d'AXIS-OS : le seul chemin légitime
+    de construction est PlayStoreRuntime._make_ctx(), qui fournit ce
+    jeton — voir _SESSION_TOKEN ci-dessous.
+    """
+    pass
 
-    def __init__(self, robot: NormalizedRobotHAL, watchdog: WatchdogSystem, manifest: AppManifest):
+
+class _RuntimeSessionToken:
+    """
+    Jeton d'identité — généré une fois par instance de
+    PlayStoreRuntime (voir PlayStoreRuntime.__init__), transmis par
+    RÉFÉRENCE D'OBJET (jamais par valeur comparable) à chaque
+    RobotContext qu'elle construit.
+
+    Limite assumée, honnête : en Python pur, sans extension compilée,
+    AUCUNE barrière n'empêche un attaquant qui LIT ce code source
+    d'importer _RuntimeSessionToken et d'en instancier une lui-même —
+    deux tentatives précédentes de ce mécanisme (comparaison de
+    valeur, registre module-level) ont chacune semblé fermer ce trou
+    sans y parvenir réellement, la classe elle-même restant
+    accessible à l'import dans les deux cas.
+
+    Ce mécanisme ne prétend donc PAS empêcher un développeur qui lit
+    activement le code source d'AXIS-OS et écrit délibérément du code
+    pour le contourner — objectif hors de portée en Python pur (voir
+    docs/hardware_estop_notes.md pour la même limite de fond
+    appliquée à la sécurité physique : aucune barrière logicielle
+    n'est jamais absolue). Ce que ce mécanisme empêche réellement :
+    qu'une app INNOCENTE, ou du code qui importe RobotContext sans
+    intention malveillante particulière (le cas visé par la demande
+    d'origine — qu'une app ne « marche » que dans AXIS-OS), obtienne
+    un RobotContext fonctionnel par accident ou en suivant l'API
+    publique évidente — RobotContext(robot, watchdog, manifest) sans
+    rien de plus échoue maintenant explicitement, avec un message
+    clair, plutôt que de sembler fonctionner.
+    """
+    __slots__ = ()
+
+    def _verify(self, candidate: object) -> bool:
+        return candidate is self
+
+
+class RobotContext:
+    """
+    Interface sécurisée entre une app et le robot.
+
+    ⚠️ Ne JAMAIS instancier directement hors de
+    PlayStoreRuntime._make_ctx() — voir UnauthorizedContextError pour
+    le contexte complet. `_session_token` est requis et vérifié dès
+    la construction, jamais optionnel : un appelant qui n'a pas
+    accès au jeton d'une vraie instance de PlayStoreRuntime ne peut
+    pas produire de RobotContext utilisable, quelles que soient les
+    permissions qu'il tenterait de déclarer dans un AppManifest
+    construit à la main.
+    """
+
+    def __init__(
+        self,
+        robot: NormalizedRobotHAL,
+        watchdog: WatchdogSystem,
+        manifest: AppManifest,
+        _session_token: Optional[_RuntimeSessionToken] = None,
+        _runtime_token_holder: Optional[_RuntimeSessionToken] = None,
+    ):
+        if _runtime_token_holder is None or not _runtime_token_holder._verify(_session_token):
+            raise UnauthorizedContextError(
+                "RobotContext ne peut être construit que par "
+                "PlayStoreRuntime._make_ctx() — voir UnauthorizedContextError. "
+                "Pour un test qui a besoin d'un RobotContext isolé, sans "
+                "PlayStoreRuntime complet, voir RobotContext.for_testing()."
+            )
         self._robot    = robot
         self._watchdog = watchdog
         self._manifest = manifest
         self._log_entries: list[str] = []
         self._t0 = time.monotonic()
+
+    @classmethod
+    def for_testing(
+        cls, robot: NormalizedRobotHAL, watchdog: WatchdogSystem, manifest: AppManifest,
+    ) -> "RobotContext":
+        """
+        Construit un RobotContext SANS passer par un PlayStoreRuntime
+        complet — nommé explicitement `for_testing` pour que son
+        usage soit toujours visible et intentionnel dans le code
+        appelant (jamais un contournement accidentel de
+        UnauthorizedContextError). Réservé aux tests unitaires qui
+        veulent isoler RobotContext sans construire tout un
+        PlayStoreRuntime — jamais destiné à du code de production ni
+        à une app réelle, qui doivent toujours passer par
+        PlayStoreRuntime.install()/run_mission().
+        """
+        token = _RuntimeSessionToken()
+        return cls(robot, watchdog, manifest, _session_token=token, _runtime_token_holder=token)
 
     def get_joint_state(self, joint_id: str) -> Optional[ActuatorFeedback]:
         self._require(Permission.ACTUATORS_READ)

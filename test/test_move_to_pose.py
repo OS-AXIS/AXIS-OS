@@ -49,7 +49,7 @@ def make_ctx():
         author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
         permissions=[Permission.ACTUATORS_READ, Permission.ACTUATORS_WRITE_ARMS],
     )
-    ctx = RobotContext(robot, wd, manifest)
+    ctx = RobotContext.for_testing(robot, wd, manifest)
     return robot, ctx
 
 
@@ -127,7 +127,7 @@ robot5.initialize_all()
 robot5._hal._actuators["left_elbow_joint"]._position = 1.2
 wd5 = WatchdogSystem(robot5)
 manifest5 = PackageSortingApp().manifest()
-ctx5 = RobotContext(robot5, wd5, manifest5)
+ctx5 = RobotContext.for_testing(robot5, wd5, manifest5)
 
 cq, rq = mp.Queue(), mp.Queue()
 server5 = HALBridgeServer(ctx5, cq, rq)

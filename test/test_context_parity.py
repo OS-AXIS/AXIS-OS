@@ -52,10 +52,23 @@ def public_methods(cls) -> set:
     exclut délibérément les attributs de données, propriétés non
     callable, et tout ce qui commence par un underscore (détails
     d'implémentation internes, jamais partie du contrat public que
-    les apps consomment)."""
+    les apps consomment).
+
+    Exclut aussi EXPLICITEMENT for_testing (classmethod ajoutée sur
+    RobotContext seul) — pas une méthode d'API que le CODE d'une app
+    appelle au runtime, contrairement à move_arms/get_imu/etc. C'est
+    un point d'entrée de CONSTRUCTION réservé aux tests unitaires
+    (voir sa docstring), qui n'existe délibérément QUE côté
+    RobotContext puisque HALBridgeClient n'a jamais besoin d'un
+    équivalent (les tests qui exercent le pont HAL construisent déjà
+    HALBridgeClient directement, sans barrière de sécurité
+    équivalente à celle de RobotContext — voir UnauthorizedContextError).
+    """
+    EXCLUDED = {"for_testing"}
     return {
         name for name in dir(cls)
-        if not name.startswith("_") and callable(getattr(cls, name, None))
+        if not name.startswith("_") and name not in EXCLUDED
+        and callable(getattr(cls, name, None))
     }
 
 
