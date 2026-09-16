@@ -14,6 +14,17 @@ psutil>=5.9.0
 # uniquement si une app publie/vérifie une signature Ed25519.
 cryptography>=42.0.0
 
+# Chiffrement des apps (axis_os/store/sdk/encryption.py) — requis
+# uniquement pour chiffrer/déchiffrer une app livrée au Play Store
+# (HPKE, RFC 9180). Version épinglée précisément (pas de >=) : les
+# identifiants d'algorithme HPKE (KEMId/KDFId/AEADId) et les noms
+# d'exception utilisés (pyhpke.exceptions.OpenError, PyHPKEError)
+# font partie de l'API interne consommée directement par
+# encryption.py — une montée de version majeure mérite une
+# validation explicite avant adoption, pas une mise à jour
+# silencieuse.
+pyhpke==0.6.5
+
 # VLACppConnector (axis_os/store/sdk/ai/connector.py) — requis
 # uniquement si une app utilise ce connecteur pour parler à un
 # serveur vla-server (protocole ZeroMQ/Protobuf, voir

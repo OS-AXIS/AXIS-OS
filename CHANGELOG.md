@@ -10,6 +10,41 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — chiffrement des apps livrées au Play Store (2026-09-16)
+
+Comble une demande explicite, distincte de la signature (`signing.py`,
+inchangée) : une app, une fois livrée au Play Store, ne doit être
+lisible que par AXIS-OS lui-même — pas par n'importe qui qui
+obtiendrait le fichier publié.
+
+- **`axis_os/store/sdk/encryption.py`** — `generate_platform_keypair()`,
+  `encrypt_app_code()`/`decrypt_app_code()` (+ raccourcis fichier).
+  HPKE (RFC 9180), cipher suite DHKEM(X25519, HKDF-SHA256) /
+  HKDF-SHA256 / AES-256-GCM — la configuration recommandée par Google
+  Tink pour la plupart des usages. Seule la clé privée plateforme
+  (jamais distribuée) permet de déchiffrer ; n'importe qui peut
+  chiffrer avec la clé publique, personne ne peut déchiffrer avec
+  elle.
+- Implémentation via la bibliothèque tierce `pyhpke`, conforme et
+  testée contre les vecteurs de test officiels du RFC 9180 — pas une
+  composition manuelle des primitives. Une première version composait
+  X25519+HKDF+AES-GCM à la main (primitives individuellement
+  correctes, mais un vrai risque d'erreur d'assemblage qu'aucune
+  primitive isolément solide ne neutralise) ; remplacée après avoir
+  confirmé que le module HPKE natif de `cryptography` (≥50.0.1)
+  exige un backend AWS-LC/BoringSSL indisponible ici sans recompiler
+  tout le paquet — `pyhpke` fonctionne avec l'installation OpenSSL
+  standard.
+- 23 tests (`test/test_app_encryption.py`), chaque propriété de
+  sécurité vérifiée par exécution réelle, pas seulement documentée :
+  contenu original absent de l'enveloppe chiffrée (mémoire et
+  disque), seule la vraie clé privée déchiffre, toute altération du
+  fichier chiffré est détectée (authenticité AEAD), deux chiffrements
+  du même contenu sont non corrélables, robustesse aux entrées
+  malformées, cycle complet via de vrais fichiers disque.
+- 44/44 fichiers de test du projet passent au total, aucune
+  régression.
+
 ### Ajouts — verrouillage RobotContext au vrai Play Store (2026-09-16)
 
 Empêche qu'une app tourne accidentellement hors d'AXIS-OS : jusqu'ici,
