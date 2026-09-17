@@ -10,6 +10,40 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — chargement d'apps depuis un fichier .axisapp chiffré (2026-09-16)
+
+Complète le chiffrement HPKE (`encryption.py`, commit précédent) avec
+le vrai chemin d'installation : `axis_os/store/runtime/packaging.py`.
+
+- **`load_app_from_encrypted_bytes()`/`load_app_from_encrypted_file()`**
+  — déchiffre un fichier `.axisapp` en mémoire, exécute le code
+  déchiffré dans un module dédié pour en extraire la classe
+  `RobotApp`, l'instancie, et retourne une instance prête pour
+  `PlayStoreRuntime.install()`. Le code déchiffré n'est jamais
+  réécrit en clair sur disque à aucune étape.
+- Bug trouvé en testant le cycle complet de bout en bout (chiffrer
+  une vraie app, la charger, l'installer via un vrai
+  `PlayStoreRuntime`) : une classe créée par `exec()` dans un
+  namespace transitoire n'est PAS picklable — `SandboxRunner`
+  (correctif C4) pickle l'app pour la transmettre à son sous-process
+  sandboxé, donc `on_start()`/`run_mission()` échouaient
+  systématiquement pour toute app chargée ainsi. Corrigé en
+  enregistrant chaque app chargée comme un vrai module dans
+  `sys.modules` (nom unique par chargement), avec nettoyage garanti
+  en cas d'échec (aucune fuite de module fantôme, vérifié
+  explicitement).
+- Limite de sécurité assumée et documentée, cohérente avec
+  `signing.py` : le chargement dynamique exécute le code déchiffré
+  avec les mêmes privilèges que le process appelant (comme un
+  `import` normal) — le vrai sandboxing (process séparé, quotas) a
+  lieu ensuite, dans `PlayStoreRuntime.install()`, inchangé.
+- `test/test_encrypted_app_packaging.py` — 11 tests, dont le cycle
+  complet à travers le sandboxing réel (`install`/`start_app`/
+  `run_mission`, tous sandboxés), l'absence de fuite dans
+  `sys.modules`, l'isolation entre deux apps chargées dans le même
+  process, et le chargement depuis un vrai fichier `.axisapp`.
+- 45/45 fichiers de test du projet passent, aucune régression.
+
 ### Ajouts — chiffrement des apps livrées au Play Store (2026-09-16)
 
 Comble une demande explicite, distincte de la signature (`signing.py`,
