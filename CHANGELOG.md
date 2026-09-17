@@ -10,6 +10,45 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Ajouts — mise à jour d'une app déjà installée (2026-09-16)
+
+Comble un trou trouvé en testant le comportement réel d'`install()` :
+rien n'empêchait d'écraser silencieusement une app déjà installée
+(même `app_id`) — sans l'arrêter proprement si elle tournait, sans
+vérifier le sens de la mise à jour, et en remettant à zéro l'état de
+facturation (`one_time_billed`, `last_subscription_bill_time_s`)
+comme pour une toute nouvelle installation.
+
+- **`PlayStoreRuntime.update_app(new_app, allow_downgrade=False)`**
+  — inspiré du cycle de vie réel d'Android (`PackageManager`) :
+  - Refuse tout downgrade par défaut (`INSTALL_FAILED_VERSION_
+    DOWNGRADE` d'Android — protection de sécurité connue, revenir à
+    une ancienne version peut réintroduire une faille déjà
+    corrigée). `allow_downgrade=True` lève ce refus explicitement.
+  - Refuse la mise à jour si une mission tourne actuellement sur ce
+    robot (`self._mission_lock` déjà pris, quelle que soit l'app
+    concernée) — testé avec un vrai thread concurrent, pas
+    seulement en théorie.
+  - Arrête proprement l'ancienne version si elle est démarrée
+    (réutilise `stop_app()` tel quel, mêmes garanties de
+    sandboxing).
+  - Réinstalle via `install()` — réutilise toutes les vérifications
+    déjà en place (signature, permissions, capacités,
+    `ProtectionLevel.SIGNATURE`) pour la nouvelle version ; une mise
+    à jour n'est jamais un chemin plus permissif qu'une installation
+    neuve.
+  - Restaure l'état de facturation de l'ancienne entrée sur la
+    nouvelle — une mise à jour n'est pas une réinstallation au sens
+    commercial.
+  - Ne redémarre jamais automatiquement l'app après mise à jour
+    (cohérent avec `ACTION_MY_PACKAGE_REPLACED` d'Android, qui
+    notifie sans redémarrer) — reste la responsabilité explicite de
+    l'appelant.
+- `test/test_app_update.py` — 6 sections, dont le cas le plus
+  critique testé avec un vrai thread concurrent (mise à jour refusée
+  pendant qu'une mission tourne réellement, pas seulement supposée).
+  46/46 fichiers de test du projet passent, aucune régression.
+
 ### Ajouts — chargement d'apps depuis un fichier .axisapp chiffré (2026-09-16)
 
 Complète le chiffrement HPKE (`encryption.py`, commit précédent) avec

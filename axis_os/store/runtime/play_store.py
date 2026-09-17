@@ -14,6 +14,7 @@ import time
 import uuid
 import traceback
 
+from axis_os import SemVer
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.core.capabilities import RobotCapability
@@ -681,6 +682,130 @@ class PlayStoreRuntime:
             bridge_server.stop()
 
         entry.is_started = False
+
+    def update_app(
+        self, new_app: RobotApp, *, allow_downgrade: bool = False,
+    ) -> bool:
+        """
+        Met à jour une app déjà installée — même app_id, nouvelle
+        instance/version. Trouvé nécessaire : avant cette méthode,
+        rien n'empêchait install() d'écraser SILENCIEUSEMENT une app
+        déjà installée (même app_id) — sans arrêter proprement une
+        version en cours d'exécution, sans vérifier le sens de la
+        mise à jour (une version PLUS ANCIENNE pouvait remplacer une
+        plus récente sans avertissement), et l'état de facturation
+        (one_time_billed, last_subscription_bill_time_s) se serait
+        remis à zéro comme pour une toute nouvelle installation —
+        une app ONE_TIME déjà payée aurait été refacturée à sa
+        prochaine mission après une simple mise à jour.
+
+        Comportement, inspiré du cycle de vie réel d'une mise à jour
+        Android (PackageManager) :
+          1. Refuse tout downgrade par défaut (nouvelle version <
+             version installée) — exactement INSTALL_FAILED_
+             VERSION_DOWNGRADE d'Android, une protection de sécurité
+             connue : sans elle, un attaquant pourrait faire
+             "mettre à jour" une app vers une ancienne version
+             contenant une faille corrigée depuis. `allow_downgrade=
+             True` lève ce refus explicitement (équivalent du flag
+             `-d` d'`adb install`), jamais le comportement par défaut.
+          2. Refuse la mise à jour si une mission est actuellement en
+             cours sur CE ROBOT (self._mission_lock déjà pris) — quelle
+             que soit l'app concernée, cohérent avec le principe déjà
+             appliqué à run_mission() : un seul robot, une seule
+             activité à la fois. Remplacer le code d'une app PENDANT
+             qu'une mission (même d'une AUTRE app) contrôle
+             physiquement le robot serait dangereux.
+          3. Arrête proprement l'ancienne version si elle est démarrée
+             (réutilise stop_app() tel quel — mêmes garanties de
+             sandboxing que l'arrêt normal, jamais un raccourci qui
+             sauterait on_stop()).
+          4. Réinstalle via install() — réutilise TOUTES les
+             vérifications déjà en place (signature, permissions,
+             capacités, compatibilité SDK, ProtectionLevel.SIGNATURE)
+             pour la NOUVELLE version, exactement comme une première
+             installation. Une mise à jour n'est jamais un chemin
+             plus permissif qu'une installation neuve.
+          5. Restaure l'état de facturation de l'ANCIENNE entrée sur
+             la NOUVELLE (one_time_billed, last_subscription_bill_
+             time_s) — une mise à jour n'est PAS une réinstallation
+             au sens commercial, l'app reste "la même" pour un
+             utilisateur qui a déjà payé.
+
+        Ne redémarre PAS automatiquement l'app après la mise à jour,
+        même si l'ancienne version était démarrée — décision
+        délibérée, cohérente avec le comportement Android réel
+        (ACTION_MY_PACKAGE_REPLACED notifie l'app remplacée, mais
+        c'est à elle, ou à l'appelant ici, de décider explicitement
+        de redémarrer) : appeler start_app(app_id) reste la
+        responsabilité de l'appelant après update_app().
+        """
+        new_manifest = new_app.manifest()
+        app_id = new_manifest.app_id
+
+        existing_entry = self._get(app_id)
+        if existing_entry is None:
+            print(f"  [ERREUR] update_app() : aucune app installée avec "
+                  f"l'app_id '{app_id}' — utilisez install() pour une "
+                  f"première installation.")
+            return False
+
+        try:
+            new_version = SemVer.parse(new_manifest.version)
+            old_version = SemVer.parse(existing_entry.manifest.version)
+        except ValueError as e:
+            print(f"  [ERREUR] update_app() : version invalide — {e}")
+            return False
+
+        if new_version < old_version and not allow_downgrade:
+            print(
+                f"  [ERREUR] update_app() : la nouvelle version "
+                f"({new_version}) est ANTÉRIEURE à la version installée "
+                f"({old_version}) — downgrade refusé par défaut (risque "
+                f"de sécurité connu : revenir à une version contenant une "
+                f"faille déjà corrigée). Passez allow_downgrade=True pour "
+                f"forcer ce remplacement explicitement."
+            )
+            return False
+
+        if not self._mission_lock.acquire(blocking=False):
+            print(
+                f"  [ERREUR] update_app() : une mission est actuellement "
+                f"en cours sur ce robot — impossible de mettre à jour "
+                f"'{app_id}' tant qu'elle n'est pas terminée."
+            )
+            return False
+        self._mission_lock.release()
+
+        was_started = existing_entry.is_started
+        if was_started:
+            print(f"  [PlayStore] Arrêt de l'ancienne version de "
+                  f"'{app_id}' (v{old_version}) avant mise à jour...")
+            self.stop_app(app_id)
+
+        # Préserve l'état de facturation AVANT que install() ne
+        # construise une nouvelle InstalledApp par défaut (voir sa
+        # docstring de section 5 ci-dessus pour la justification).
+        preserved_one_time_billed = existing_entry.one_time_billed
+        preserved_last_subscription_bill_time_s = existing_entry.last_subscription_bill_time_s
+
+        print(f"  [PlayStore] Mise à jour de '{app_id}' : "
+              f"v{old_version} → v{new_version}")
+        installed = self.install(new_app)
+        if not installed:
+            print(f"  [ERREUR] update_app() : la nouvelle version de "
+                  f"'{app_id}' a échoué aux vérifications d'install() — "
+                  f"l'ANCIENNE version reste installée mais ARRÊTÉE "
+                  f"(voir ci-dessus). Réinstallez-la explicitement ou "
+                  f"corrigez la nouvelle version avant de réessayer.")
+            return False
+
+        new_entry = self._get(app_id)
+        if new_entry is not None:
+            new_entry.one_time_billed = preserved_one_time_billed
+            new_entry.last_subscription_bill_time_s = preserved_last_subscription_bill_time_s
+
+        return True
 
     # ── Rapport financier ─────────────────────────────────────────
 
