@@ -1,9 +1,13 @@
 # Isaac Lab + unitree_sim_isaaclab — état et point de blocage (2026-09-13)
 
-**Statut : INSTALLATION RÉUSSIE, SIMULATION EN ÉCHEC.** Ce document
-capture précisément où s'arrête la progression, avec toutes les
-étapes de résolution déjà validées, pour reprendre directement à ce
-point plutôt que de repartir de zéro.
+**Statut : PERCÉE RÉELLE LE 2026-09-18 (voir tout en bas), sur une
+approche DIFFÉRENTE de celle documentée ici.** Ce document capture
+d'abord la tentative Isaac Lab + `unitree_sim_isaaclab` (2026-09-13,
+toujours bloquée telle quelle), puis, en fin de fichier, une vraie
+réussite obtenue le 2026-09-18 par un chemin plus simple : Isaac Sim
+seul (pas Isaac Lab), via le conteneur Docker officiel NVIDIA, avec
+notre propre `JointSafetyGuard` connecté en direct à un vrai G1
+physiquement simulé.
 
 ## Objectif de ce chantier
 
@@ -157,3 +161,111 @@ suffisante pour continuer le développement. À reprendre soit :
 - Miniconda, environnement conda `unitree_sim_env` (Python 3.10)
 - Isaac Sim 4.5.0.0, Isaac Lab au commit `91ad4944f2b7fad29d52c04a5264a082bcaad71d`
 - `unitree_sdk2py` 1.0.1, `cyclonedds` 0.10.2
+
+---
+
+## PERCÉE — Isaac Sim (sans Isaac Lab) via Docker officiel, JointSafetyGuard validé contre un vrai G1 physique (2026-09-18)
+
+Chemin entièrement différent de la tentative ci-dessus — abandon
+d'Isaac Lab et de `unitree_sim_isaaclab` (toujours bloqués comme
+documenté plus haut, jamais repris), au profit d'**Isaac Sim seul**,
+via le **conteneur Docker officiel NVIDIA** (`nvcr.io/nvidia/
+isaac-sim:6.1.0`) plutôt qu'une installation native — beaucoup plus
+simple à faire fonctionner, avec un vrai résultat obtenu en une
+session, contrairement aux blocages en cascade rencontrés plus haut.
+
+### Ce qui a été validé, pour de vrai
+
+1. **Isaac Sim 6.1.0 complet** (pas headless, interface graphique
+   complète) tourne dans un conteneur Docker, streamé vers un
+   navigateur via WebRTC (port `8210`) — `docker compose` avec deux
+   services (`isaac-sim`, `web-viewer`), tous deux `healthy`.
+2. **Le G1 se charge et réagit correctement à la physique** — chute
+   sous gravité, reste stable une fois posé sur un vrai plan de sol
+   physique (`Create > Physics > Ground Plane`, nécessaire : la
+   grille par défaut d'Isaac Sim n'a AUCUNE collision, un G1 posé
+   dessus tombe à travers).
+3. **Deux variantes du G1 trouvées dans le Nucleus cloud NVIDIA**
+   (`https://omniverse-content-production.s3-us-west-2.amazonaws.com/
+   Assets/Isaac/6.1/Isaac/Robots/Unitree/`) :
+   - `G1/g1.usd` — 29 DOF avec mains articulées (doigts séparés).
+   - `G1_23dof/g1.usd` — **37 DOF en réalité** (torse + bras/jambes +
+     doigts individuels comme `left_five_joint`), pas 23 malgré le
+     nom du dossier.
+4. **Divergence de nommage trouvée entre le G1 NVIDIA et notre
+   mapping AXIS-OS** (`G1_JOINT_ID_TO_MOTOR_INDEX`, construit à
+   partir du vrai SDK Unitree) — **18 des 23 nos joints
+   correspondent exactement** (mêmes noms), 5 diffèrent :
+   - `torso_joint` (Isaac Sim) vs `waist_yaw_joint` (AXIS-OS)
+   - `left_elbow_pitch_joint`/`right_elbow_pitch_joint` (Isaac Sim)
+     vs `left_elbow_joint`/`right_elbow_joint` (AXIS-OS)
+   - `left_wrist_roll_joint`/`right_wrist_roll_joint` : absents de
+     ce modèle Isaac Sim (pas de rotation de poignet dans cette
+     variante précise, ou nom différent non identifié)
+
+   Pas une erreur de notre part — vraisemblablement une différence
+   de convention entre le fichier URDF Unitree source utilisé pour
+   construire `G1_JOINT_ID_TO_MOTOR_INDEX` et la conversion USD
+   réalisée par NVIDIA pour Isaac Sim. **À corriger avant un usage
+   plus poussé** : soit un dictionnaire de traduction de noms entre
+   les deux conventions, soit vérifier si un fichier URDF/USD source
+   différent du même G1 23dof officiel résout la divergence.
+
+5. **`JointSafetyGuard` (le vrai code AXIS-OS, pas un mock) connecté
+   en direct à Isaac Sim et testé avec succès sur un des 18 joints
+   qui correspondent** (`right_knee_joint`) :
+   - Une commande hors limites (`position=99.0`, limite réelle
+     `2.8798`) a été **rejetée**, jamais transmise au robot.
+   - Une commande valide (`position=1.0`) a été **acceptée**, puis
+     réellement appliquée via `robot.apply_action()` — position
+     finale mesurée après simulation : `0.9827 rad` (écart de
+     `0.017 rad` avec la cible, cohérent avec l'inertie physique sur
+     un nombre fini de pas de simulation, pas une anomalie).
+
+   **Première fois depuis le début du projet que le vrai code de
+   sécurité AXIS-OS est validé contre un G1 avec une vraie physique
+   simulée** — jusqu'ici, tout avait été soit des tests unitaires en
+   Python pur (acteurs mockés), soit bloqué par l'installation
+   Isaac Lab documentée plus haut.
+
+### Comment reproduire
+
+```bash
+# Dans ~/IsaacLab/IsaacSim (ou équivalent) — suppose docker-compose.yml
+# déjà en place pour isaac-sim + web-viewer (nvcr.io/nvidia/isaac-sim:6.1.0)
+docker compose -p isim up -d
+docker compose -p isim ps   # vérifier "healthy" sur les deux services
+
+# Accès web : http://<IP_PUBLIQUE_INSTANCE>:8210/
+# (l'IP publique change à chaque redémarrage d'instance AWS sans IP
+# élastique fixe — vérifier l'IP courante avant de se connecter)
+```
+
+Dans l'interface web : `Window > Robot Examples > Unitree > G1_23dof`
+pour charger le bon fichier (pinces simples, pas de doigts articulés
+visuellement — malgré les 37 DOF réels détectés par script).
+`Create > Physics > Ground Plane` avant tout test de chute, la grille
+seule n'a pas de collision.
+
+Script de test end-to-end (AXIS-OS + Isaac Sim) :
+```bash
+docker cp ~/AXIS-OS/axis_os isim-isaac-sim-1:/isaac-sim/axis_os
+# puis lancer un script Python qui importe
+# axis_os.hal.safety.limits.JointSafetyGuard avec
+# sys.path.insert(0, "/isaac-sim"), charge G1_23dof/g1.usd via
+# isaacsim.core.api.robots.Robot, et applique une ActuatorCommand
+# validée par le guard via robot.apply_action(ArticulationAction(...))
+```
+
+### Prochaines étapes possibles, non faites ce soir
+
+- Résoudre la divergence de nommage sur les 5 joints manquants
+  (torse, coudes, poignets) — dictionnaire de traduction, ou
+  fichier source alternatif.
+- Étendre le test à un cycle corps entier (23 joints, pas un seul)
+  pour valider aussi `position_delta_max` (C5) en conditions
+  physiques réelles, pas seulement en mocks.
+- Reprendre la piste Isaac Lab documentée plus haut (toujours
+  bloquée) — moins prioritaire maintenant qu'Isaac Sim seul donne
+  déjà un vrai résultat exploitable pour la validation de sécurité.
+

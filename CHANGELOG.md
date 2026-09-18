@@ -10,6 +10,25 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Documentation — JointSafetyGuard validé contre un vrai G1 dans Isaac Sim (2026-09-18)
+
+`docs/isaac_lab_unitree_sim_status.md` complété avec une vraie
+percée, sur un chemin différent de la tentative Isaac Lab +
+`unitree_sim_isaaclab` documentée précédemment (toujours bloquée,
+inchangée) : Isaac Sim seul, via le conteneur Docker officiel NVIDIA,
+avec `JointSafetyGuard` (le vrai code, pas un mock) connecté en
+direct à un G1 physiquement simulé — une commande hors limites
+rejetée, une commande valide acceptée et réellement appliquée au
+robot, position finale mesurée après simulation cohérente avec la
+cible demandée. Première fois depuis le début du projet que le code
+de sécurité est validé contre une vraie physique simulée plutôt que
+des acteurs mockés en tests unitaires.
+
+Divergence de nommage trouvée et documentée entre le G1 du Nucleus
+NVIDIA et `G1_JOINT_ID_TO_MOTOR_INDEX` (18/23 joints correspondent
+exactement, 5 diffèrent — torse, coudes, poignets) — pas encore
+corrigée, prochaine étape possible listée dans le document.
+
 ### Ajouts — mise à jour d'une app déjà installée (2026-09-16)
 
 Comble un trou trouvé en testant le comportement réel d'`install()` :
