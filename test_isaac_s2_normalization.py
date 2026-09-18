@@ -11,7 +11,7 @@ lire une ligne de code.
 import sys
 sys.path.insert(0, "/isaac-sim")
 
-from axis_os.hal.drivers.isaac_sim.bridge import IsaacSimBridge
+from axis_os.hal.drivers.isaac_sim.bridge import IsaacSimBridge, start_simulation_app
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
 from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 
@@ -23,6 +23,14 @@ INVERTED_JOINTS = {  # sign=-1 dans conventions.py — candidats au piège
 
 
 def main():
+    # OBLIGATOIRE en premier : Isaac Sim (Carbonite) exige que SimulationApp
+    # soit instancié avant tout autre import isaacsim.* dans tout le process.
+    # Sans ça : ModuleNotFoundError sur isaacsim.core, même si le module
+    # existe bien — c'est un piège classique d'Isaac Sim, pas un bug côté
+    # axis_os. headless=False : conforme à la config web-viewer/WebRTC
+    # déjà en place sur ce conteneur (port 8210).
+    simulation_app = start_simulation_app(headless=False)
+
     bridge = IsaacSimBridge()
     bridge.setup()
     hal = bridge.build_hal()
@@ -72,8 +80,10 @@ def main():
     print(f"\n{23 - fail}/23 cohérents entre position et couple.")
     if fail:
         print("ÉCHEC — ne pas continuer vers S3 avant d'avoir corrigé.")
+        simulation_app.close()
         sys.exit(1)
     print("S2 validée sur les 23 joints.")
+    simulation_app.close()
 
 
 if __name__ == "__main__":

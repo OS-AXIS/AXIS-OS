@@ -31,6 +31,28 @@ from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL, _build_g1_joint_d
 USD_PATH = "/isaac-sim/g1_axisos.usd"
 URDF_PATH = "/isaac-sim/g1_23dof_rev_1_0.urdf"
 
+_simulation_app = None  # référence gardée pour éviter le garbage-collect
+
+
+def start_simulation_app(headless: bool = False):
+    """À appeler EN PREMIER, avant tout autre usage de ce module et avant
+    tout import isaacsim.* dans le process. Contrainte du framework
+    Carbonite d'Isaac Sim, pas une particularité d'axis_os : sans ça,
+    `from isaacsim.core.api import World` échoue avec
+    `ModuleNotFoundError: No module named 'isaacsim.core'` même si le
+    module est bien installé — l'extension n'est simplement pas encore
+    chargée en mémoire.
+
+    Retourne l'objet SimulationApp : garde-le en vie (ne le laisse pas
+    être ramassé par le GC) et appelle .close() en fin de script.
+    """
+    global _simulation_app
+    if _simulation_app is not None:
+        return _simulation_app
+    from isaacsim import SimulationApp
+    _simulation_app = SimulationApp({"headless": headless})
+    return _simulation_app
+
 
 def import_g1_urdf(force_reimport: bool = True):
     """Importe le G1 depuis le vrai URDF officiel AXIS-OS (pas la variante
@@ -80,6 +102,11 @@ class IsaacSimBridge:
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
 
     def setup(self):
+        if _simulation_app is None:
+            raise RuntimeError(
+                "IsaacSimBridge.setup() appelé sans avoir d'abord appelé "
+                "start_simulation_app() — obligatoire, voir sa docstring."
+            )
         from isaacsim.core.api import World
         from isaacsim.core.api.robots import Robot
         from isaacsim.core.api.objects import GroundPlane
