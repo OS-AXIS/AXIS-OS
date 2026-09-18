@@ -65,9 +65,17 @@ def import_g1_urdf(force_reimport: bool = True):
     présent sur disque.
     """
     from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
+    import shutil
 
     if force_reimport and os.path.exists(USD_PATH):
-        os.remove(USD_PATH)
+        # L'importateur URDF peut laisser une arborescence (textures,
+        # payload) plutôt qu'un simple fichier plat au chemin usd_path —
+        # constaté en exécution réelle (IsADirectoryError). On gère les
+        # deux cas plutôt que de supposer l'un ou l'autre.
+        if os.path.isdir(USD_PATH):
+            shutil.rmtree(USD_PATH)
+        else:
+            os.remove(USD_PATH)
 
     config = URDFImporterConfig()
     config.urdf_path = URDF_PATH
