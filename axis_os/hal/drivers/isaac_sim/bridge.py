@@ -258,13 +258,15 @@ class IsaacSimBridge:
     def reset_all_joints(self, position: float = 0.0) -> None:
         """Téléporte les 23 joints à une position donnée d'un coup —
         même avertissement que reset_joint() : outil de simulation pur,
-        jamais un équivalent réel."""
+        jamais un équivalent réel. Réaligne aussi les 23 cibles PD."""
         import numpy as np
+        from isaacsim.core.utils.types import ArticulationAction
         n = self._robot.num_dof
         positions = np.full(n, position)
         velocities = np.zeros(n)
         self._robot.set_joint_positions(positions)
         self._robot.set_joint_velocities(velocities)
+        self._robot.apply_action(ArticulationAction(joint_positions=positions))
 
     def reset_joint(self, joint_id: str, position: float = 0.0) -> None:
         """Téléporte un joint à une position donnée, EN CONTOURNANT
@@ -277,12 +279,24 @@ class IsaacSimBridge:
         commande de mouvement réelle.
         """
         import numpy as np
+        from isaacsim.core.utils.types import ArticulationAction
         idx = self._joint_index[joint_id]
         positions = np.array(self._robot.get_joint_positions())
         velocities = np.zeros_like(positions)
         positions[idx] = position
         self._robot.set_joint_positions(positions)
         self._robot.set_joint_velocities(velocities)
+        # Réaligner aussi la CIBLE du contrôleur PD, pas seulement l'état
+        # physique. Sinon, une fois les gains de maintien restaurés
+        # (hold_all_except), le PD reprend sa poursuite vers une ancienne
+        # cible résiduelle (ex : le dernier 'cible' de S2.1, ou rien de
+        # jamais fixé pendant une commande TORQUE pure) — provoquant un
+        # mouvement parasite pendant qu'on teste un AUTRE joint. Constaté
+        # en exécution réelle : left_hip_yaw_joint lisait avant=-0.226
+        # juste après son propre reset, alors qu'aucun couple ne lui
+        # avait jamais été appliqué.
+        self._robot.apply_action(ArticulationAction(
+            joint_positions=[position], joint_indices=[idx]))
 
     def step(self, n: int = 1):
         for _ in range(n):
