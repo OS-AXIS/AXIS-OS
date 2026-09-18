@@ -229,6 +229,43 @@ class IsaacSimBridge:
         controller = self._robot.get_articulation_controller()
         controller.set_gains(kps=[0.0] * n, kds=[1.0] * n)
 
+    def hold_all_except(self, free_joint_id: str, kp_hold: float = 80.0,
+                         kd_hold: float = 8.0, kd_free: float = 1.0) -> None:
+        """Maintient les 23 joints en position SAUF free_joint_id, laissé
+        en couple pur (gain de position nul).
+
+        NÉCESSAIRE pour isoler la réponse d'UN SEUL joint à un couple
+        commandé. set_pure_torque_mode() met les 23 joints à zéro
+        d'un coup — pendant qu'on teste le joint N dans la boucle, les
+        joints 1..N-1 déjà « remis à zéro » retombent sous la gravité
+        faute de tenue, et comme le squelette est une chaîne
+        cinématique, un parent déplacé change l'orientation effective
+        de gravité vue par ses enfants. Constaté en exécution réelle :
+        right_hip_roll_joint lisait avant=+0.524 au lieu de 0.0 juste
+        après son propre reset, parce que right_hip_pitch_joint (son
+        parent dans la chaîne, testé juste avant) avait dérivé à
+        1.49 rad entre-temps.
+        """
+        n = self._robot.num_dof
+        free_idx = self._joint_index[free_joint_id]
+        kps = [kp_hold] * n
+        kds = [kd_hold] * n
+        kps[free_idx] = 0.0
+        kds[free_idx] = kd_free
+        controller = self._robot.get_articulation_controller()
+        controller.set_gains(kps=kps, kds=kds)
+
+    def reset_all_joints(self, position: float = 0.0) -> None:
+        """Téléporte les 23 joints à une position donnée d'un coup —
+        même avertissement que reset_joint() : outil de simulation pur,
+        jamais un équivalent réel."""
+        import numpy as np
+        n = self._robot.num_dof
+        positions = np.full(n, position)
+        velocities = np.zeros(n)
+        self._robot.set_joint_positions(positions)
+        self._robot.set_joint_velocities(velocities)
+
     def reset_joint(self, joint_id: str, position: float = 0.0) -> None:
         """Téléporte un joint à une position donnée, EN CONTOURNANT
         DÉLIBÉRÉMENT AXIS-OS (guard, tracker, pont HAL). Ce n'est PAS un

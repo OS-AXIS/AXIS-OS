@@ -71,9 +71,13 @@ def main():
         print(f"  {joint_id:32} avant={before:+.3f} cible={target:+.3f} "
               f"après={after:+.3f}  {tag} {flag}")
 
-    print(f"\n=== S2.2 — direction en mode TORQUE (+10 Nm, gains à zéro) ===")
-    bridge.set_pure_torque_mode()
+    print(f"\n=== S2.2 — direction en mode TORQUE (+10 Nm, un seul joint "
+          f"libéré à la fois, les 22 autres tenus) ===")
+    bridge.set_holding_gains()   # tout tenu par défaut
+    bridge.reset_all_joints(0.0)
+    bridge.step(20)
     for joint_id in bridge._joint_index:
+        bridge.hold_all_except(joint_id)  # SEUL ce joint passe en couple pur
         bridge.reset_joint(joint_id, 0.0)
         bridge.step(5)
         before = bridge.read_position(joint_id)
@@ -87,7 +91,8 @@ def main():
         flag = "INVERSÉ" if joint_id in INVERTED_JOINTS else ""
         tag = "REJETÉ" if rejected else ("mouvement +" if moved_positive else "mouvement - ***")
         print(f"  {joint_id:32} avant={before:+.3f} après={after:+.3f}  {tag} {flag}")
-        # Neutraliser le couple ET remettre à zéro avant le joint suivant.
+        # Neutraliser le couple ET remettre à zéro avant le joint suivant —
+        # hold_all_except() du prochain tour le retiendra alors à 0.
         hal.send_joint_commands({joint_id: ActuatorCommand(mode=ControlMode.TORQUE, torque=0.0)})
         bridge.reset_joint(joint_id, 0.0)
         bridge.step(5)
