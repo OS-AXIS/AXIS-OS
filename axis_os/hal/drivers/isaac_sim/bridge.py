@@ -109,16 +109,22 @@ class IsaacSimBridge:
             )
         from isaacsim.core.api import World
         from isaacsim.core.api.robots import Robot
-        from isaacsim.core.api.objects import GroundPlane
+        from isaacsim.core.utils.stage import add_reference_to_stage
 
         self._world = World(stage_units_in_meters=1.0)
-        # La grille par défaut d'Isaac Sim n'a AUCUNE collision — un G1
-        # posé dessus tombe à travers. Plan de sol physique obligatoire.
-        GroundPlane(prim_path="/World/Ground", z_position=0.0)
-
-        usd_path = import_g1_urdf()
+        # Un seul plan de sol physique — add_default_ground_plane() suffit
+        # et évite le doublon de prim rencontré avec un GroundPlane() en
+        # plus au même endroit. La grille par défaut d'Isaac Sim n'a
+        # AUCUNE collision : sans ce plan, le G1 tombe à travers.
         self._world.scene.add_default_ground_plane()
-        self._robot = Robot(prim_path="/World/g1", name="g1_axisos", usd_path=usd_path)
+
+        # Dans isaacsim.core.api 5.3.2, Robot() n'accepte plus usd_path
+        # directement (TypeError constaté en exécution réelle) : il faut
+        # d'abord référencer le USD dans le stage, puis créer Robot sur
+        # ce prim déjà peuplé.
+        usd_path = import_g1_urdf()
+        add_reference_to_stage(usd_path=usd_path, prim_path="/World/g1")
+        self._robot = Robot(prim_path="/World/g1", name="g1_axisos")
         self._world.scene.add(self._robot)
         self._world.reset()
 
