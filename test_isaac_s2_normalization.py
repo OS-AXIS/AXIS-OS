@@ -1,19 +1,32 @@
 """
-Suite S2 — normalisation contre la physique réelle.
+Suite S2 — normalisation contre la physique réelle. VERSION CORRIGÉE.
+
+La première version (voir historique git) avait trois défauts de
+méthodologie découverts en exécution réelle, PAS des régressions
+d'AXIS-OS :
+  1. Le pont n'appliquait jamais le couple à Isaac Sim (ArticulationAction
+     vide en mode TORQUE) — corrigé dans bridge.py (apply_command accepte
+     maintenant `effort`).
+  2. Le test commandait une position ABSOLUE (0.2) plutôt qu'un DELTA
+     relatif à la position courante — sur un G1 sans gains PD ni tenue,
+     ça déclenchait le rejet légitime de position_delta_max (C5) plutôt
+     que de tester un vrai mouvement.
+  3. Base flottante (fix_base=False) : le G1 s'effondre sous la gravité
+     entre l'import et la première commande, faute de couple de maintien
+     — positions de départ incohérentes d'un joint à l'autre.
+
+Cette version : fix_base=True (isole la convention de signe de la
+dynamique corps entier — même principe que "robot suspendu" pour la
+mise sous tension réelle), deltas relatifs, couple réellement appliqué.
+
 À exécuter DANS le conteneur Isaac Sim :
   docker exec isim-isaac-sim-1 /isaac-sim/python.sh /isaac-sim/axis_os/test_isaac_s2_normalization.py
-
-Fait exactement ce que dit campagne_validation_isaac_axis_os.md §3 :
-S2.1 (direction en position) et S2.2 (direction en couple), sur les 23
-joints. C'est la suite qui aurait attrapé le bug de signe du couple sans
-lire une ligne de code.
 """
 import sys
 sys.path.insert(0, "/isaac-sim")
 
 from axis_os.hal.drivers.isaac_sim.bridge import IsaacSimBridge, start_simulation_app
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
-from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 
 INVERTED_JOINTS = {  # sign=-1 dans conventions.py — candidats au piège
     "right_hip_roll_joint", "right_hip_yaw_joint", "right_hip_pitch_joint",
@@ -21,68 +34,73 @@ INVERTED_JOINTS = {  # sign=-1 dans conventions.py — candidats au piège
     "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_wrist_roll_joint",
 }
 
+DELTA = 0.15       # rad, delta RELATIF — sous position_delta_max pour tous les joints
+SETTLE_STEPS = 40  # pas de physique laissés pour que le mouvement se stabilise
+
 
 def main():
-    # OBLIGATOIRE en premier : Isaac Sim (Carbonite) exige que SimulationApp
-    # soit instancié avant tout autre import isaacsim.* dans tout le process.
-    # Sans ça : ModuleNotFoundError sur isaacsim.core, même si le module
-    # existe bien — c'est un piège classique d'Isaac Sim, pas un bug côté
-    # axis_os. headless=False : conforme à la config web-viewer/WebRTC
-    # déjà en place sur ce conteneur (port 8210).
-    simulation_app = start_simulation_app(headless=False)
-
+    simulation_app = start_simulation_app(headless=True)
     bridge = IsaacSimBridge()
-    bridge.setup()
+    # fix_base=True : isole la convention de signe de la dynamique corps
+    # entier. On teste "est-ce que +delta normalisé bouge dans le bon
+    # sens", pas "est-ce que le G1 tient debout" — ce dernier point est
+    # couvert par les suites S4/S5, avec fix_base=False.
+    bridge.setup(fix_base=True)
     hal = bridge.build_hal()
     hal.initialize_all()
-    normalizer = build_g1_normalizer()
 
-    results = {"S2.1": [], "S2.2": []}
+    results = {"S2.1": {}, "S2.2": {}}
 
-    print("\n=== S2.1 — direction en mode POSITION (+0.2 rad normalisé) ===")
+    print(f"\n=== S2.1 — direction en mode POSITION (delta relatif +{DELTA} rad) ===")
     for joint_id in bridge._joint_index:
-        before = bridge.read_feedback(joint_id).position
-        cmd = ActuatorCommand(mode=ControlMode.POSITION, position=0.2)
-        hal.send_joint_commands({joint_id: cmd})
-        bridge.step(30)
-        after = bridge.read_feedback(joint_id).position
+        before = bridge.read_position(joint_id)
+        target = before + DELTA
+        cmd = ActuatorCommand(mode=ControlMode.POSITION, position=target)
+        status = hal.send_joint_commands({joint_id: cmd})
+        bridge.step(SETTLE_STEPS)
+        after = bridge.read_position(joint_id)
+        rejected = status[joint_id].name != "OK"
         moved_positive = (after - before) > 0.01
-        expected_positive = True  # +0.2 normalisé doit toujours donner +delta normalisé
-        ok = moved_positive == expected_positive
-        results["S2.1"].append((joint_id, ok, before, after))
+        ok = moved_positive and not rejected
+        results["S2.1"][joint_id] = ok
         flag = "INVERSÉ" if joint_id in INVERTED_JOINTS else ""
-        print(f"  {joint_id:32} avant={before:+.3f} après={after:+.3f} "
-              f"{'OK' if ok else 'ÉCHEC ***'} {flag}")
+        tag = "REJETÉ" if rejected else ("OK" if ok else "ÉCHEC ***")
+        print(f"  {joint_id:32} avant={before:+.3f} cible={target:+.3f} "
+              f"après={after:+.3f}  {tag} {flag}")
 
-    print("\n=== S2.2 — direction en mode TORQUE (+10 Nm normalisé) ===")
-    print("    (relire les positions de départ, le robot a bougé au test précédent)")
+    print(f"\n=== S2.2 — direction en mode TORQUE (+10 Nm normalisé) ===")
     for joint_id in bridge._joint_index:
-        before = bridge.read_feedback(joint_id).position
+        before = bridge.read_position(joint_id)
         cmd = ActuatorCommand(mode=ControlMode.TORQUE, torque=10.0)
-        hal.send_joint_commands({joint_id: cmd})
-        bridge.step(30)
-        after = bridge.read_feedback(joint_id).position
+        status = hal.send_joint_commands({joint_id: cmd})
+        bridge.step(SETTLE_STEPS)
+        after = bridge.read_position(joint_id)
+        rejected = status[joint_id].name != "OK"
         moved_positive = (after - before) > 0.005
-        results["S2.2"].append((joint_id, moved_positive, before, after))
+        results["S2.2"][joint_id] = moved_positive and not rejected
         flag = "INVERSÉ" if joint_id in INVERTED_JOINTS else ""
-        print(f"  {joint_id:32} avant={before:+.3f} après={after:+.3f} "
-              f"{'mouvement +' if moved_positive else 'mouvement - ***'} {flag}")
+        tag = "REJETÉ" if rejected else ("mouvement +" if moved_positive else "mouvement - ***")
+        print(f"  {joint_id:32} avant={before:+.3f} après={after:+.3f}  {tag} {flag}")
+        # Neutraliser le couple avant le joint suivant pour ne pas
+        # accumuler de rotation continue entre deux itérations.
+        hal.send_joint_commands({joint_id: ActuatorCommand(mode=ControlMode.TORQUE, torque=0.0)})
+        bridge.step(5)
 
     print("\n=== S2.2 vs S2.1 : cohérence de signe ===")
     fail = 0
-    s21 = {r[0]: r[1] for r in results["S2.1"]}
-    s22 = {r[0]: r[1] for r in results["S2.2"]}
     for joint_id in bridge._joint_index:
-        if s21[joint_id] != s22[joint_id]:
-            print(f"  *** INCOHÉRENCE {joint_id} : position OK={s21[joint_id]} "
-                  f"mais couple OK={s22[joint_id]} — même bug que C3, à corriger ***")
+        s21, s22 = results["S2.1"][joint_id], results["S2.2"][joint_id]
+        if s21 != s22:
+            print(f"  *** INCOHÉRENCE {joint_id} : position OK={s21} mais couple OK={s22} ***")
             fail += 1
-    print(f"\n{23 - fail}/23 cohérents entre position et couple.")
+
+    n = len(bridge._joint_index)
+    print(f"\n{n - fail}/{n} cohérents entre position et couple.")
     if fail:
-        print("ÉCHEC — ne pas continuer vers S3 avant d'avoir corrigé.")
+        print("ÉCHEC — inspecter conventions.py pour ces joints précis avant de continuer.")
         simulation_app.close()
         sys.exit(1)
-    print("S2 validée sur les 23 joints.")
+    print("S2 validée.")
     simulation_app.close()
 
 

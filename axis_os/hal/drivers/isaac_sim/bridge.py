@@ -54,10 +54,20 @@ def start_simulation_app(headless: bool = False):
     return _simulation_app
 
 
-def import_g1_urdf(force_reimport: bool = True):
+def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False):
     """Importe le G1 depuis le vrai URDF officiel AXIS-OS (pas la variante
     générique NVIDIA — évite la divergence de nommage à 5 joints déjà
     rencontrée). Retourne le usd_path généré.
+
+    fix_base : True épingle la base au monde (pas de dynamique de corps
+    entier). Nécessaire pour tester la CONVENTION DE SIGNE d'un joint
+    (suite S2) sans que le G1, sans gains PD ni couple de maintien,
+    s'effondre sous la gravité entre l'import et la première commande —
+    constaté en exécution réelle (positions de départ très dispersées,
+    incohérentes d'un joint à l'autre). Mettre False pour les suites qui
+    testent la dynamique corps entier (S4, S5). Le principe est le même
+    que le protocole de mise sous tension réel (§9 de la campagne) :
+    robot suspendu, pas debout, pour isoler ce qu'on teste vraiment.
 
     force_reimport=True supprime le .usd existant avant d'importer : c'est
     le correctif au blocage `AttributeError: 'NoneType' object has no
@@ -80,7 +90,7 @@ def import_g1_urdf(force_reimport: bool = True):
     config = URDFImporterConfig()
     config.urdf_path = URDF_PATH
     config.usd_path = USD_PATH
-    config.fix_base = False
+    config.fix_base = fix_base
     config.merge_fixed_joints = False
     config.self_collision = False
 
@@ -109,7 +119,7 @@ class IsaacSimBridge:
         self._joint_defs = _build_g1_joint_definitions()
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
 
-    def setup(self):
+    def setup(self, fix_base: bool = False):
         if _simulation_app is None:
             raise RuntimeError(
                 "IsaacSimBridge.setup() appelé sans avoir d'abord appelé "
@@ -122,7 +132,7 @@ class IsaacSimBridge:
 
         # Référencer le USD importé AVANT de créer World() — l'ordre compte,
         # voir plus bas.
-        usd_path = import_g1_urdf()
+        usd_path = import_g1_urdf(fix_base=fix_base)
         add_reference_to_stage(usd_path=usd_path, prim_path="/World/g1")
 
         # ÉTAPE RÉELLEMENT MANQUANTE (trouvée par test direct, pas par
@@ -194,15 +204,32 @@ class IsaacSimBridge:
             self._world.step(render=False)
 
     def apply_command(self, joint_id: str, position: Optional[float] = None,
-                       velocity: Optional[float] = None) -> None:
+                       velocity: Optional[float] = None,
+                       effort: Optional[float] = None) -> None:
+        """BUG RÉEL corrigé : cette méthode n'acceptait auparavant que
+        position et velocity — un ActuatorCommand en ControlMode.TORQUE
+        produisait une ArticulationAction totalement vide (les trois champs
+        à None), donc RIEN n'était appliqué à Isaac Sim pour les commandes
+        de couple. Constaté en exécution réelle (suite S2.2) : les petits
+        mouvements observés étaient du bruit physique résiduel, pas l'effet
+        du couple commandé — la suite S2.2 telle qu'exécutée n'a jamais
+        testé le couple.
+        """
         from isaacsim.core.utils.types import ArticulationAction
         idx = self._joint_index[joint_id]
         action = ArticulationAction(
             joint_positions=[position] if position is not None else None,
             joint_velocities=[velocity] if velocity is not None else None,
+            joint_efforts=[effort] if effort is not None else None,
             joint_indices=[idx],
         )
         self._robot.apply_action(action)
+
+    def read_position(self, joint_id: str) -> float:
+        """Lecture rapide de la position seule — pratique pour construire
+        des commandes en DELTA relatif plutôt qu'en absolu (voir S2)."""
+        idx = self._joint_index[joint_id]
+        return float(self._robot.get_joint_positions()[idx])
 
     def read_feedback(self, joint_id: str) -> ActuatorFeedback:
         """État réel lu depuis le solveur physique Isaac Sim — POSITION,
@@ -241,7 +268,8 @@ class IsaacSimBridge:
             statuses = original_send(commands)  # applique le guard + tracker AXIS-OS
             for joint_id, cmd in commands.items():
                 if statuses.get(joint_id) == HALStatus.OK:
-                    bridge.apply_command(joint_id, position=cmd.position, velocity=cmd.velocity)
+                    bridge.apply_command(joint_id, position=cmd.position,
+                                          velocity=cmd.velocity, effort=cmd.torque)
             bridge.step(1)
             return statuses
 
