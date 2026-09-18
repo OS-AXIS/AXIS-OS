@@ -118,7 +118,6 @@ class IsaacSimBridge:
         self._world = None
         self._joint_defs = _build_g1_joint_definitions()
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
-
     def setup(self, fix_base: bool = False):
         if _simulation_app is None:
             raise RuntimeError(
@@ -198,6 +197,55 @@ class IsaacSimBridge:
                 f"la validation du 18/09 — ne pas continuer sans corriger."
             )
         print(f"[bridge] {len(self._joint_index)}/23 joints mappés avec Isaac Sim.")
+
+    def set_holding_gains(self, kp: float = 80.0, kd: float = 8.0) -> None:
+        """Règle des gains PD de maintien sur les 23 joints.
+
+        NÉCESSAIRE : l'URDF officiel AXIS-OS ne fournit aucune donnée
+        stiffness/damping (confirmé en exécution réelle — le warning
+        Isaac Sim 'actuator will be created without gain parameters'
+        apparaît sur les 23 joints à chaque import). Sans gains, une
+        commande POSITION ne tient rien du tout : le joint devient un
+        pendule libre sous la gravité dès la commande suivante, ce qui
+        a produit des résultats de test entièrement dominés par le bruit
+        gravitationnel plutôt que par la direction réellement commandée.
+
+        kp=80.0, kd=8.0 sont des valeurs GÉNÉRIQUES DE TEST, choisies
+        pour tenir une position sans osciller violemment — PAS les gains
+        réels du G1 (AXIS-OS n'en connaît pas ; ce sont ceux du firmware
+        Unitree, propriétaires). Ne jamais réutiliser ces valeurs comme
+        référence de contrôle réel.
+        """
+        n = self._robot.num_dof
+        controller = self._robot.get_articulation_controller()
+        controller.set_gains(kps=[kp] * n, kds=[kd] * n)
+
+    def set_pure_torque_mode(self) -> None:
+        """Gains à zéro (kd résiduel faible pour éviter l'instabilité
+        numérique) — nécessaire avant de tester le mode TORQUE en isolant
+        le couple commandé, sans qu'un gain de position résiduel ne
+        s'y oppose ou ne s'y ajoute."""
+        n = self._robot.num_dof
+        controller = self._robot.get_articulation_controller()
+        controller.set_gains(kps=[0.0] * n, kds=[1.0] * n)
+
+    def reset_joint(self, joint_id: str, position: float = 0.0) -> None:
+        """Téléporte un joint à une position donnée, EN CONTOURNANT
+        DÉLIBÉRÉMENT AXIS-OS (guard, tracker, pont HAL). Ce n'est PAS un
+        équivalent de ce qui existe sur un robot réel — aucun robot ne
+        peut « téléporter » un joint. C'est un outil de simulation pur,
+        pour ramener chaque joint à une pose de référence connue entre
+        deux essais et empêcher la dérive gravitationnelle de s'accumuler
+        d'un joint testé au suivant. Ne jamais confondre avec une
+        commande de mouvement réelle.
+        """
+        import numpy as np
+        idx = self._joint_index[joint_id]
+        positions = np.array(self._robot.get_joint_positions())
+        velocities = np.zeros_like(positions)
+        positions[idx] = position
+        self._robot.set_joint_positions(positions)
+        self._robot.set_joint_velocities(velocities)
 
     def step(self, n: int = 1):
         for _ in range(n):
