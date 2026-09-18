@@ -118,55 +118,56 @@ class IsaacSimBridge:
         from isaacsim.core.api import World
         from isaacsim.core.api.robots import Robot
         from isaacsim.core.utils.stage import add_reference_to_stage
+        import omni.usd
 
-        self._world = World(stage_units_in_meters=1.0)
+        # Référencer le USD importé AVANT de créer World() — l'ordre compte,
+        # voir plus bas.
+        usd_path = import_g1_urdf()
+        add_reference_to_stage(usd_path=usd_path, prim_path="/World/g1")
+
+        # ÉTAPE RÉELLEMENT MANQUANTE (trouvée par test direct, pas par
+        # déduction) : l'URDF importer d'Isaac Sim 6.1.0 génère un
+        # VariantSet nommé "Physics" sur le prim référencé. Tant qu'aucune
+        # variante n'y est sélectionnée, AUCUN joint physique n'est
+        # composé dans le stage — ce n'était ni un problème de timing
+        # (mes tentatives précédentes avec simulation_app.update() en
+        # boucle ne servaient à rien), ni un problème lié à l'API
+        # dépréciée isaacsim.core.api : c'est cette sélection de variante
+        # qui manquait, avant même la création de World().
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath("/World/g1")
+        variant_set = prim.GetVariantSet("Physics")
+        available = variant_set.GetVariantNames()
+        if "physx" in available:
+            variant_set.SetVariantSelection("physx")
+        elif available:
+            # Le nom de variante pourrait changer selon la version de
+            # l'importateur URDF — ne pas planter dans ce cas, mais le
+            # signaler clairement plutôt que d'échouer en silence.
+            print(f"[bridge] AVERTISSEMENT : variante 'physx' absente, "
+                  f"disponibles : {available} — pas de sélection automatique, "
+                  f"'{available[0]}' pourrait convenir selon le contexte.")
+        else:
+            print("[bridge] AVERTISSEMENT : pas de VariantSet 'Physics' sur "
+                  "/World/g1 — comportement différent de la version "
+                  "d'Isaac Sim testée, l'articulation risque d'être "
+                  "introuvable au world.reset() suivant.")
+
         # Un seul plan de sol physique — add_default_ground_plane() suffit
         # et évite le doublon de prim rencontré avec un GroundPlane() en
         # plus au même endroit. La grille par défaut d'Isaac Sim n'a
         # AUCUNE collision : sans ce plan, le G1 tombe à travers.
+        self._world = World(stage_units_in_meters=1.0)
         self._world.scene.add_default_ground_plane()
-
-        # Dans isaacsim.core.api 5.3.2, Robot() n'accepte plus usd_path
-        # directement (TypeError constaté en exécution réelle) : il faut
-        # d'abord référencer le USD dans le stage, puis créer Robot sur
-        # ce prim déjà peuplé.
-        usd_path = import_g1_urdf()
-        add_reference_to_stage(usd_path=usd_path, prim_path="/World/g1")
-
-        # Laisser le stage se composer avant d'interroger la physique.
-        # `AttributeError: 'NoneType' object has no attribute
-        # 'is_homogeneous'` / `Pattern '/World/g1' did not match any
-        # articulations` constaté en exécution réelle juste après un
-        # add_reference_to_stage() suivi immédiatement de world.reset() —
-        # symptôme classique d'une référence pas encore composée dans le
-        # stage au moment où PhysX cherche la racine d'articulation.
-        for _ in range(5):
-            _simulation_app.update()
-
-        self._robot = Robot(prim_path="/World/g1", name="g1_axisos")
-        self._world.scene.add(self._robot)
+        self._robot = self._world.scene.add(Robot(prim_path="/World/g1", name="g1_axisos"))
         self._world.reset()
+        self._robot.initialize()
 
-        if self._robot.num_dof is None or self._robot.num_dof == 0:
-            # Le correctif ci-dessus n'a pas suffi. Diagnostic plutôt que
-            # de recoller un troisième correctif à l'aveugle : on liste ce
-            # qui existe réellement sous /World/g1 pour trouver où PhysX
-            # a placé la racine d'articulation, probablement pas
-            # exactement à ce chemin.
-            from pxr import Usd
-            stage = self._world.stage
-            print("[bridge] DIAGNOSTIC — articulation introuvable à /World/g1.")
-            print("[bridge] Arborescence sous /World/g1 :")
-            root_prim = stage.GetPrimAtPath("/World/g1")
-            for prim in Usd.PrimRange(root_prim):
-                has_articulation = prim.HasAPI("PhysxSchemaPhysxArticulationAPI") \
-                    or prim.HasAPI("UsdPhysicsArticulationRootAPI")
-                print(f"    {prim.GetPath()}  articulation_root={has_articulation}")
+        if not self._robot.num_dof:
             raise RuntimeError(
-                "IsaacSimBridge.setup() : articulation introuvable à "
-                "/World/g1 même après composition du stage — voir le "
-                "diagnostic ci-dessus pour le VRAI chemin de la racine "
-                "d'articulation, et corriger prim_path en conséquence."
+                "IsaacSimBridge.setup() : articulation toujours introuvable "
+                "après sélection de variante — voir les avertissements "
+                "ci-dessus sur le VariantSet."
             )
 
         # Table de correspondance nom AXIS-OS -> index DOF Isaac. Avec
