@@ -269,3 +269,124 @@ docker cp ~/AXIS-OS/axis_os isim-isaac-sim-1:/isaac-sim/axis_os
   bloquée) — moins prioritaire maintenant qu'Isaac Sim seul donne
   déjà un vrai résultat exploitable pour la validation de sécurité.
 
+---
+
+## SUITE — import du vrai URDF officiel AXIS-OS, 23/23 joints validés (2026-09-18, session 2)
+
+Reprend la percée ci-dessus et résout directement le point 4 (la
+divergence de nommage à 5 joints) — pas en corrigeant un
+dictionnaire de traduction comme envisagé, mais en éliminant la
+divergence à la racine : **au lieu de charger le G1 générique de
+NVIDIA, on importe directement notre propre fichier URDF officiel**
+(`axis_os/hal/drivers/unitree_g1/urdf/g1_23dof_rev_1_0.urdf`, celui
+que `G1_JOINT_ID_TO_MOTOR_INDEX` prend déjà comme référence) via
+l'importateur URDF natif d'Isaac Sim.
+
+### API réelle de l'importateur URDF, Isaac Sim 6.1.0
+
+Différente de la commande `omni.kit.commands.execute("URDFParseFile",
+...)` utilisée dans les versions/tutoriels précédents — cette
+version expose directement `isaacsim.asset.importer.urdf.
+URDFImporter` :
+
+```python
+from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
+
+config = URDFImporterConfig()
+config.urdf_path = "/isaac-sim/g1_23dof_rev_1_0.urdf"
+config.usd_path = "/isaac-sim/g1_axisos.usd"
+config.fix_base = False
+config.merge_fixed_joints = False
+config.self_collision = False
+
+importer = URDFImporter(config)
+usd_path = importer.import_urdf()  # retourne le chemin du .usd généré
+```
+
+Pas de fichiers de maillage (`.STL`) — volontairement non committés
+dans le dépôt (106MB, voir `axis_os/hal/drivers/unitree_g1/urdf/
+meshes/README.md`). Pas bloquant : `URDFImporter` importe la
+**structure physique** (joints, limites, masses) sans eux ; le robot
+apparaît en formes géométriques simples, pas avec son apparence
+visuelle réelle — suffisant pour valider la sécurité, pas pour un
+rendu visuel fidèle.
+
+### Résultat : 23/23, aucune divergence
+
+```
+=== Notre G1 (URDF officiel AXIS-OS) charge avec succes ===
+Nombre de joints (DOF): 23
+```
+
+Exactement 23 — ni 29, ni 37 comme les variantes NVIDIA testées en
+session 1. Test complet ensuite sur les 23 joints avec
+`JointSafetyGuard` (une commande hors limites par joint, une
+commande sûre par joint, appliquée réellement via
+`robot.apply_action()`) :
+
+```
+=== RESULTATS ===
+Joints presents et testes: 23/23
+Commandes dangereuses rejetees: 23/23
+Joints absents d'Isaac Sim: 0
+```
+
+**Chaque limite de sécurité réelle (`JointLimits`, une par joint,
+définie dans `_build_g1_joint_definitions()`) validée contre le
+vrai robot physique simulé — plus un sous-ensemble, le système de
+sécurité complet.** Aucune commande dangereuse acceptée, aucune
+commande valide refusée à tort, sur l'intégralité des 23 joints.
+
+### En cours, non résolu ce soir : test d'une vraie app (package_sorting)
+
+Tentative de connecter `PackageSortingApp` (via `PlayStoreRuntime`,
+`NormalizedRobotHAL`, `UnitreeG1HAL`) à ce même G1 importé, en
+interceptant `UnitreeG1HAL.send_joint_commands()` pour répercuter
+chaque commande validée vers `robot.apply_action()` côté Isaac Sim
+— un vrai "pont" entre notre pile logicielle complète et la
+simulation physique, pas seulement `JointSafetyGuard` isolé.
+
+Bloqué sur une erreur de ré-import :
+```
+AttributeError: 'NoneType' object has no attribute 'is_homogeneous'
+```
+survenue lors du second appel à `URDFImporter.import_urdf()` avec le
+même `usd_path` déjà généré par la session précédente — probablement
+un conflit avec le fichier `.usd` déjà présent sur disque dans le
+conteneur (`/isaac-sim/g1_axisos.usd`), pas encore confirmé. Piste
+de reprise immédiate : supprimer ce fichier avant de relancer
+(`docker exec isim-isaac-sim-1 rm -f /isaac-sim/g1_axisos.usd`) puis
+relancer le script de test app — non vérifié, la session s'est
+arrêtée avant de pouvoir confirmer que ça résout l'erreur.
+
+### Comment reproduire (import URDF officiel)
+
+```bash
+# Copier notre URDF officiel dans le conteneur (une fois par session
+# de conteneur — perdu si le conteneur est recréé, pas juste redémarré)
+docker cp ~/AXIS-OS/axis_os/hal/drivers/unitree_g1/urdf/g1_23dof_rev_1_0.urdf \
+    isim-isaac-sim-1:/isaac-sim/g1_23dof_rev_1_0.urdf
+
+# Script complet (import + test des 23 joints) — voir le script
+# décrit ci-dessus, reproductible en l'écrivant dans un fichier .py
+# local puis `docker cp` + `docker exec ... /isaac-sim/python.sh ...`
+```
+
+### Prochaines étapes, mises à jour
+
+- **Immédiat** : débloquer le test `package_sorting` (supprimer
+  `g1_axisos.usd` avant réimport, confirmer que l'erreur
+  `is_homogeneous` disparaît).
+- Étendre le "pont" HAL↔Isaac Sim (actuellement un simple
+  intercepteur de fonction sur `send_joint_commands`, écrit pour
+  cette session) en un vrai composant réutilisable, si d'autres apps
+  doivent être testées de la même façon.
+- Résoudre la divergence de nommage n'est plus nécessaire pour le G1
+  23dof officiel (éliminée par l'import URDF direct) — reste
+  pertinente uniquement si un test contre le G1 générique NVIDIA
+  (29/37 DOF) est un jour repris pour une autre raison (comparaison
+  visuelle, par exemple).
+- Les points de la session précédente (rotation de clé, apparence
+  visuelle avec maillages, reprise d'Isaac Lab) restent d'actualité,
+  inchangés.
+

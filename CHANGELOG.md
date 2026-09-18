@@ -10,6 +10,31 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Documentation — 23/23 joints validés contre notre propre URDF officiel dans Isaac Sim (2026-09-18, session 2)
+
+Complète `docs/isaac_lab_unitree_sim_status.md` — résout directement
+la divergence de nommage trouvée en session 1 (5 des 23 joints
+différaient du G1 générique NVIDIA) en éliminant sa cause : au lieu
+de charger le G1 de NVIDIA, import direct de notre propre fichier
+URDF officiel (`g1_23dof_rev_1_0.urdf`) via `isaacsim.asset.
+importer.urdf.URDFImporter` (API native d'Isaac Sim 6.1.0). Résultat
+: exactement 23 DOF, correspondance parfaite avec
+`G1_JOINT_ID_TO_MOTOR_INDEX` par construction.
+
+`JointSafetyGuard` testé sur l'intégralité des 23 joints (pas un
+sous-ensemble comme en session 1) : 23/23 commandes dangereuses
+rejetées, 23/23 commandes valides acceptées et réellement appliquées
+au robot physiquement simulé. Premier test complet du système de
+sécurité AXIS-OS contre une vraie physique simulée, sur tous les
+joints réels.
+
+Tentative de connecter une vraie app (`PackageSortingApp`, via
+`PlayStoreRuntime` complet) à ce même G1 — en cours, non résolue :
+bloquée sur une erreur `AttributeError: 'NoneType' object has no
+attribute 'is_homogeneous'` au second import URDF dans la même
+session de conteneur, piste de reprise documentée (supprimer le
+`.usd` généré avant réimport) mais pas encore vérifiée.
+
 ### Documentation — JointSafetyGuard validé contre un vrai G1 dans Isaac Sim (2026-09-18)
 
 `docs/isaac_lab_unitree_sim_status.md` complété avec une vraie
