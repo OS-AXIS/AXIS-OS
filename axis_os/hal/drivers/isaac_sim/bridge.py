@@ -132,9 +132,42 @@ class IsaacSimBridge:
         # ce prim déjà peuplé.
         usd_path = import_g1_urdf()
         add_reference_to_stage(usd_path=usd_path, prim_path="/World/g1")
+
+        # Laisser le stage se composer avant d'interroger la physique.
+        # `AttributeError: 'NoneType' object has no attribute
+        # 'is_homogeneous'` / `Pattern '/World/g1' did not match any
+        # articulations` constaté en exécution réelle juste après un
+        # add_reference_to_stage() suivi immédiatement de world.reset() —
+        # symptôme classique d'une référence pas encore composée dans le
+        # stage au moment où PhysX cherche la racine d'articulation.
+        for _ in range(5):
+            _simulation_app.update()
+
         self._robot = Robot(prim_path="/World/g1", name="g1_axisos")
         self._world.scene.add(self._robot)
         self._world.reset()
+
+        if self._robot.num_dof is None or self._robot.num_dof == 0:
+            # Le correctif ci-dessus n'a pas suffi. Diagnostic plutôt que
+            # de recoller un troisième correctif à l'aveugle : on liste ce
+            # qui existe réellement sous /World/g1 pour trouver où PhysX
+            # a placé la racine d'articulation, probablement pas
+            # exactement à ce chemin.
+            from pxr import Usd
+            stage = self._world.stage
+            print("[bridge] DIAGNOSTIC — articulation introuvable à /World/g1.")
+            print("[bridge] Arborescence sous /World/g1 :")
+            root_prim = stage.GetPrimAtPath("/World/g1")
+            for prim in Usd.PrimRange(root_prim):
+                has_articulation = prim.HasAPI("PhysxSchemaPhysxArticulationAPI") \
+                    or prim.HasAPI("UsdPhysicsArticulationRootAPI")
+                print(f"    {prim.GetPath()}  articulation_root={has_articulation}")
+            raise RuntimeError(
+                "IsaacSimBridge.setup() : articulation introuvable à "
+                "/World/g1 même après composition du stage — voir le "
+                "diagnostic ci-dessus pour le VRAI chemin de la racine "
+                "d'articulation, et corriger prim_path en conséquence."
+            )
 
         # Table de correspondance nom AXIS-OS -> index DOF Isaac. Avec
         # l'URDF officiel importé directement, les noms coïncident
