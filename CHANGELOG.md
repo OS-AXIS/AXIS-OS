@@ -10,6 +10,31 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### fix(package_sorting) — durée de mouvement restaurée à 0.3s, jamais sacrifiée pour la vitesse des tests
+
+Correction d'une décision prise trop vite dans le commit précédent :
+`MOVE_DURATION_S` avait été réduite de 0.3s à 0.15s pour faire passer
+`test_heavy_integration.py` sous un timeout de test — un mauvais
+compromis, signalé et corrigé : le temps d'exécution d'un test n'est
+qu'un coût de développement, alors que réduire le nombre de pas
+d'interpolation entame la seule vraie marge de sécurité disponible.
+
+Raison supplémentaire de ne jamais grignoter cette marge :
+`position_delta_max = torque_max / 40.0` dans le HAL simulé (voir
+`UnitreeG1HAL._build_g1_joint_definitions()`) utilise une constante
+UNIQUE de `kp=40` pour tous les joints, alors que le vrai driver
+(`g1_dds_actuator.py::_DEFAULT_KP`) a un `kp` variable par moteur
+(jusqu'à 100 sur certains genoux/chevilles) — un facteur 5 d'écart
+entre bras (0.625 rad/cycle) et jambes (jusqu'à 3.475 rad/cycle). Un
+mouvement validé comme sûr en simulation n'est donc pas
+automatiquement sûr sur le vrai G1 : la vraie limite matérielle peut
+être plus serrée que celle mesurée en sim sur les joints à `kp` élevé.
+
+`MOVE_DURATION_S` restaurée à 0.3s. `test_heavy_integration.py`
+(138s, 23/23) et le reste de la suite (43/43 fichiers au total)
+passent toujours — le seul coût réel de cette correction est un
+temps d'exécution de test plus long, jamais un vrai problème.
+
 ### fix(package_sorting) — mouvements de travail passés par move_to_pose(), 3 vraies violations éliminées
 
 Trouvé en investiguant les 3 violations `POSITION_DELTA_LIMIT`

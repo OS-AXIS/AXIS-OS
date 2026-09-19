@@ -205,7 +205,7 @@ class PackageSortingApp(RobotApp):
         # depuis REACH_* : deux sauts qui franchissent chacun
         # position_delta_max (0.625) avec un move_arms() direct.
         #
-        # duration_s FIXE (0.15s), jamais `delay` — trouvé nécessaire
+        # duration_s FIXE (0.3s), jamais `delay` — trouvé nécessaire
         # après un premier essai qui réutilisait `delay` (0.02 à 0.08s
         # selon speed_mode) comme duration_s : avec step_s=0.05 par
         # défaut, ça donne int(duration_s/step_s) = 1 SEUL pas
@@ -215,13 +215,24 @@ class PackageSortingApp(RobotApp):
         # durée d'un mouvement physique réel — les deux notions ne
         # doivent jamais partager la même valeur.
         #
-        # 0.15s choisi après un test réel contre test_heavy_integration.py
-        # (40 missions enchaînées) : une première version à 0.3s
-        # (6 pas) faisait dépasser son timeout — 0.15s (2 pas) garde
-        # une marge de sécurité confortable (delta max mesuré 0.8 rad
-        # / 2 pas = 0.4 rad/pas, bien sous position_delta_max=0.625)
-        # tout en restant rapide à l'exécution.
-        MOVE_DURATION_S = 0.15
+        # 0.3s délibérément CONSERVÉ, pas réduit pour accélérer les
+        # tests — revenu en arrière après une première tentative à
+        # 0.15s (2 pas) : le temps d'exécution d'un test n'est qu'un
+        # coût de développement, alors qu'un delta par pas plus grand
+        # entame la seule vraie marge de sécurité disponible. De plus,
+        # position_delta_max = torque_max / 40.0 dans ce HAL simulé
+        # (voir UnitreeG1HAL._build_g1_joint_definitions) utilise une
+        # constante UNIQUE de kp=40 pour tous les joints — le vrai
+        # driver (g1_dds_actuator.py::_DEFAULT_KP) a un kp variable
+        # par moteur (jusqu'à 100 sur certains genoux/chevilles), donc
+        # une limite RÉELLE plus serrée que celle mesurée ici en
+        # simulation sur ces joints précis. Un mouvement validé comme
+        # sûr en sim n'est pas automatiquement sûr sur le vrai G1 —
+        # raison de plus de garder de la marge maintenant. Un timeout
+        # de test plus généreux (pas une durée de mouvement réduite)
+        # est la bonne réponse si un test enchaînant de nombreuses
+        # missions dépasse son délai.
+        MOVE_DURATION_S = 0.3
         reach = REACH_LEFT if pkg.side == "left" else REACH_RIGHT
         ctx.move_to_pose(reach, duration_s=MOVE_DURATION_S)
         ctx.log(f"  Saisie {pkg.package_id}")
