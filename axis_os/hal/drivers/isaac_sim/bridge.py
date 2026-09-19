@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import os
 import sys
+import queue
+import threading
+import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 sys.path.insert(0, "/isaac-sim")
 
@@ -118,6 +121,7 @@ class IsaacSimBridge:
         self._world = None
         self._joint_defs = _build_g1_joint_definitions()
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
+        self._pump: Optional["MainThreadSimPump"] = None
     def setup(self, fix_base: bool = False):
         if _simulation_app is None:
             raise RuntimeError(
@@ -330,9 +334,45 @@ class IsaacSimBridge:
         idx = self._joint_index[joint_id]
         return float(self._robot.get_joint_positions()[idx])
 
+    def read_all_raw(self) -> Dict[str, tuple]:
+        """Lit les 23 joints d'un coup : {joint_id: (pos, vel, effort)}.
+        THREAD PRINCIPAL UNIQUEMENT — c'est cette méthode que
+        MainThreadSimPump appelle pour publier son instantané. Une
+        lecture groupée par pas de simulation, plutôt que 23 lectures
+        séparées potentiellement incohérentes entre elles."""
+        positions = self._robot.get_joint_positions()
+        velocities = self._robot.get_joint_velocities()
+        try:
+            efforts = self._robot.get_applied_joint_efforts()
+        except AttributeError:
+            efforts = None
+        out = {}
+        for joint_id, idx in self._joint_index.items():
+            out[joint_id] = (
+                float(positions[idx]),
+                float(velocities[idx]),
+                float(efforts[idx]) if efforts is not None else float("nan"),
+            )
+        return out
+
     def read_feedback(self, joint_id: str) -> ActuatorFeedback:
         """État réel lu depuis le solveur physique Isaac Sim — POSITION,
-        VITESSE ET COUPLE RÉELLEMENT APPLIQUÉ (pas le couple commandé)."""
+        VITESSE ET COUPLE RÉELLEMENT APPLIQUÉ (pas le couple commandé).
+
+        Si une pompe est attachée (mode sandbox / multi-thread), lit son
+        INSTANTANÉ plutôt que d'appeler Isaac Sim : cette méthode est
+        invoquée par JointSafetyGuard depuis le thread du pont, et
+        get_joint_positions() y serait tout aussi non-thread-safe qu'un
+        step()."""
+        if self._pump is not None and self._pump.is_running():
+            snap = self._pump.snapshot()
+            if joint_id in snap:
+                pos, vel, eff = snap[joint_id]
+                return ActuatorFeedback(
+                    joint_id=joint_id, state=ActuatorState.ACTIVE,
+                    position=pos, velocity=vel, torque=eff,
+                    current=0.0, temperature=25.0, voltage=48.0,
+                )
         idx = self._joint_index[joint_id]
         pos = float(self._robot.get_joint_positions()[idx])
         vel = float(self._robot.get_joint_velocities()[idx])
@@ -353,6 +393,13 @@ class IsaacSimBridge:
             voltage=48.0,
         )
 
+    def attach_pump(self, pump: "MainThreadSimPump") -> None:
+        """Active le mode multi-thread : à partir de là, send_joint_commands
+        dépose dans la pompe au lieu d'appeler Isaac Sim directement, et
+        read_feedback lit l'instantané. Obligatoire dès que l'app tourne
+        via PlayStoreRuntime (sandbox + HALBridgeServer)."""
+        self._pump = pump
+
     def build_hal(self) -> UnitreeG1HAL:
         """Retourne un UnitreeG1HAL dont send_joint_commands() écrit
         réellement vers Isaac Sim via ce pont, au lieu du simulateur
@@ -365,12 +412,197 @@ class IsaacSimBridge:
 
         def send_via_isaac(commands):
             statuses = original_send(commands)  # applique le guard + tracker AXIS-OS
-            for joint_id, cmd in commands.items():
-                if statuses.get(joint_id) == HALStatus.OK:
-                    bridge.apply_command(joint_id, position=cmd.position,
-                                          velocity=cmd.velocity, effort=cmd.torque)
+            accepted = {jid: cmd for jid, cmd in commands.items()
+                        if statuses.get(jid) == HALStatus.OK}
+            if not accepted:
+                return statuses
+
+            if bridge._pump is not None:
+                # Chemin multi-thread : on DÉPOSE et on attend le thread
+                # principal. Ne jamais appeler apply_command/step ici —
+                # send_via_isaac s'exécute dans le thread HALBridgeServer
+                # dès que l'app tourne en sandbox.
+                if not bridge._pump.submit(accepted):
+                    for jid in accepted:
+                        statuses[jid] = HALStatus.ERROR_COMM
+                return statuses
+
+            # Chemin mono-thread (scripts de test directs, sans sandbox) :
+            # on est déjà sur le thread principal.
+            for joint_id, cmd in accepted.items():
+                bridge.apply_command(joint_id, position=cmd.position,
+                                      velocity=cmd.velocity, effort=cmd.torque)
             bridge.step(1)
             return statuses
 
         hal.send_joint_commands = send_via_isaac  # type: ignore[method-assign]
         return hal
+
+
+# ---------------------------------------------------------------------------
+# Pompe thread principal — obligatoire dès que l'app tourne dans le sandbox
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _SimRequest:
+    """Une demande d'actuation à exécuter sur le THREAD PRINCIPAL."""
+    commands: Dict[str, Any]
+    done: "threading.Event"
+    error: Optional[BaseException] = None
+    applied: bool = False
+
+
+class MainThreadSimPump:
+    """Fait exécuter tous les appels Isaac Sim sur le thread principal.
+
+    POURQUOI : World.step() et apply_action() ne sont PAS thread-safe et
+    bloquent dans du code C SANS RELÂCHER LE GIL. Appelés depuis un
+    thread secondaire (par ex. HALBridgeServer._loop()), ils gèlent le
+    process ENTIER — aucun autre thread Python ne peut plus s'exécuter,
+    y compris le thread principal attendant un join(timeout=...). Il n'y
+    a donc pas de version « prudente avec timeout » de cet appel : la
+    seule issue est de ne jamais le faire hors du thread principal.
+
+    ARCHITECTURE RÉSULTANTE :
+      - thread principal  : run_forever() — applique les commandes,
+                            appelle world.step(), publie un instantané
+      - thread du pont    : submit() — dépose et attend, ne touche
+                            JAMAIS une API Isaac
+      - thread « mission » : lance PlayStoreRuntime (voir run_mission_in_thread)
+      - sous-process      : l'app sandboxée, inchangée
+
+    Ce découpage rapproche d'ailleurs la simulation du matériel réel :
+    sur un vrai G1, la publication DDS se fait aussi depuis une boucle
+    dédiée que les threads applicatifs alimentent — le pont devient donc
+    PLUS fidèle au driver réel, pas moins.
+    """
+
+    def __init__(self, bridge: "IsaacSimBridge"):
+        self._bridge = bridge
+        self._queue: "queue.Queue[_SimRequest]" = queue.Queue()
+        self._state_lock = threading.Lock()
+        self._snapshot: Dict[str, tuple] = {}
+        self._running = False
+        self._main_thread_id: Optional[int] = None
+
+    # ---- appelé depuis N'IMPORTE QUEL thread -----------------------------
+
+    def submit(self, commands: Dict[str, Any], timeout_s: float = 5.0) -> bool:
+        """Dépose des commandes et ATTEND leur application par le thread
+        principal. Retourne False si la pompe est arrêtée ou si le délai
+        expire — jamais d'attente infinie, sinon l'arrêt de la boucle
+        principale laisserait le thread du pont bloqué pour toujours."""
+        if not self._running:
+            return False
+        req = _SimRequest(commands=commands, done=threading.Event())
+        self._queue.put(req)
+        if not req.done.wait(timeout=timeout_s):
+            return False
+        return req.error is None and req.applied
+
+    def snapshot(self) -> Dict[str, tuple]:
+        """(position, vitesse, couple) par joint, publié par le thread
+        principal. C'est la SEULE source de feedback autorisée pour un
+        thread secondaire : lire robot.get_joint_positions() depuis le
+        thread du pont referait le même appel non-thread-safe, en
+        lecture."""
+        with self._state_lock:
+            return dict(self._snapshot)
+
+    def is_running(self) -> bool:
+        return self._running
+
+    # ---- THREAD PRINCIPAL UNIQUEMENT -------------------------------------
+
+    def run_forever(self, should_stop, max_seconds: float = 600.0,
+                    idle_sleep_s: float = 0.0) -> None:
+        """Boucle de simulation. À APPELER DEPUIS LE THREAD PRINCIPAL,
+        celui où SimulationApp a été instanciée. Tourne jusqu'à ce que
+        should_stop() renvoie True ou que max_seconds soit atteint."""
+        self._main_thread_id = threading.get_ident()
+        self._running = True
+        t0 = time.time()
+        try:
+            while not should_stop() and (time.time() - t0) < max_seconds:
+                self._tick()
+                if idle_sleep_s:
+                    time.sleep(idle_sleep_s)
+        finally:
+            self._running = False
+            # Libérer tout thread encore en attente, sinon il reste
+            # bloqué jusqu'à son timeout après l'arrêt de la boucle.
+            self._drain_pending()
+
+    def _tick(self) -> None:
+        pending = []
+        while True:
+            try:
+                req = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                for joint_id, cmd in req.commands.items():
+                    self._bridge.apply_command(
+                        joint_id,
+                        position=getattr(cmd, "position", None),
+                        velocity=getattr(cmd, "velocity", None),
+                        effort=getattr(cmd, "torque", None),
+                    )
+                req.applied = True
+            except BaseException as exc:      # noqa: BLE001 — remonté au demandeur
+                req.error = exc
+            pending.append(req)
+
+        # UN SEUL step pour tout le lot : appeler step() par commande
+        # ferait avancer la physique 23 fois pour un mouvement corps
+        # entier, avec des états intermédiaires incohérents — même
+        # raisonnement que la publication DDS groupée du driver réel.
+        self._bridge.step(1)
+        self._publish_snapshot()
+
+        for req in pending:
+            req.done.set()
+
+    def _publish_snapshot(self) -> None:
+        snap = self._bridge.read_all_raw()
+        with self._state_lock:
+            self._snapshot = snap
+
+    def _drain_pending(self) -> None:
+        while True:
+            try:
+                req = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            req.error = RuntimeError("pompe arrêtée avant application")
+            req.done.set()
+
+
+def run_mission_in_thread(fn, *args, **kwargs):
+    """Lance fn (typiquement PlayStoreRuntime.start_app / run_mission)
+    dans un thread annexe, et retourne (thread, holder).
+
+    NÉCESSAIRE : le thread principal doit rester libre pour faire
+    tourner MainThreadSimPump.run_forever(). Si la mission est lancée
+    directement depuis le thread principal, celui-ci reste bloqué
+    dedans, la queue de la pompe n'est jamais vidée, et le thread du
+    pont attend une application qui n'arrivera jamais — un deadlock
+    différent, pas une correction.
+
+    holder est un dict rempli à la fin : {"done": bool, "result": ...,
+    "error": ...}. Utiliser holder["done"] comme should_stop() de la
+    pompe.
+    """
+    holder: Dict[str, Any] = {"done": False, "result": None, "error": None}
+
+    def _runner():
+        try:
+            holder["result"] = fn(*args, **kwargs)
+        except BaseException as exc:          # noqa: BLE001
+            holder["error"] = exc
+        finally:
+            holder["done"] = True
+
+    t = threading.Thread(target=_runner, name="axis-mission", daemon=True)
+    t.start()
+    return t, holder
