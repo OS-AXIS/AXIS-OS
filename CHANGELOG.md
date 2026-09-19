@@ -10,6 +10,22 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Documentation — les 3 apps de référence validées contre Isaac Sim (2026-09-19, session 4)
+
+Complète `docs/isaac_lab_unitree_sim_status.md`. `SecurityPatrolApp`
+et `WarehouseOpsApp` testées d'abord en Python pur sur 50 graines
+aléatoires chacune (0 violation trouvée), puis confirmées contre
+Isaac Sim (`deploy/isaac_sim_validation/test_s5_security_patrol.py`,
+`test_s5_warehouse_ops.py`, même architecture `MainThreadSimPump`) :
+SecurityPatrolApp (7 checkpoints, 2 détections de personne gérées
+correctement, facturation 70.00€), WarehouseOpsApp (2 objets
+manipulés avec succès, facturation 5.00€) — aucune violation de
+sécurité dans les deux cas.
+
+Les 3 apps de référence du Play Store AXIS-OS tournent désormais de
+bout en bout — sandboxing complet, `JointSafetyGuard`, facturation —
+contre un G1 physiquement simulé, sans aucune violation de sécurité.
+
 ### fix(package_sorting) — durée de mouvement restaurée à 0.3s, jamais sacrifiée pour la vitesse des tests
 
 Correction d'une décision prise trop vite dans le commit précédent :

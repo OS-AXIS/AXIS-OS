@@ -534,3 +534,98 @@ docker exec -it isim-isaac-sim-1 grep -c "MainThreadSimPump" /isaac-sim/axis_os/
   qui précède valide la LOGIQUE de contrôle et de sécurité, jamais le
   vrai protocole DDS ni du matériel réel.
 
+---
+
+## SUITE — les 3 apps de référence validées contre Isaac Sim (2026-09-19, session 4)
+
+Reprend les deux points ouverts de la session précédente.
+
+### Point 1 — investigation des 3 violations POSITION_DELTA_LIMIT
+
+Cause trouvée précisément (voir CHANGELOG.md, commits `501f8e6` et
+`306e7cf`) : `move_to_pose()` (déjà utilisée dans `on_start()` pour
+atteindre HOME au démarrage) n'avait jamais été appliquée aux
+mouvements de TRAVAIL de la mission (`_sort()`) ni au retour final
+vers HOME (`run_mission()`, `on_stop()`) — ces trois points
+utilisaient encore `move_arms()` direct. `REACH_LEFT`/`REACH_RIGHT`
+(0.8 rad) depuis HOME (0.0 rad) franchit `position_delta_max` (0.625)
+en un seul appel — invisible en tests unitaires purs, révélé
+uniquement en conditions physiques réelles.
+
+Corrigé en remplaçant chaque `move_arms()` direct par
+`move_to_pose()`, avec une constante dédiée
+(`MOVE_DURATION_S = 0.3`, jamais réduite pour accélérer les tests —
+voir la note importante ci-dessous sur la marge de sécurité réelle).
+
+**Note de marge de sécurité, importante pour toute app future** :
+`position_delta_max = torque_max / 40.0` dans le HAL simulé
+(`UnitreeG1HAL._build_g1_joint_definitions()`) utilise une constante
+UNIQUE de `kp=40` pour tous les joints, alors que le vrai driver
+(`g1_dds_actuator.py::_DEFAULT_KP`) a un `kp` variable par moteur
+(jusqu'à 100 sur certains genoux/chevilles) — un facteur 5 d'écart
+entre bras (0.625 rad/cycle) et jambes (jusqu'à 3.475 rad/cycle). Un
+mouvement validé comme sûr en simulation n'est donc pas
+automatiquement sûr sur le vrai G1 sur ces joints précis — toute
+future app doit garder cette marge, jamais la réduire pour accélérer
+un test.
+
+### Point 2 — les 3 apps de référence validées
+
+`SecurityPatrolApp` et `WarehouseOpsApp` testées d'abord en Python
+pur (sans Isaac Sim) sur 50 graines aléatoires chacune : **0
+violation trouvée** — contrairement à `package_sorting`, leurs
+mouvements (deltas de 0.05-0.08 rad sur les hanches, 0.4-0.6 rad sur
+les bras depuis le repos) restent déjà sous les limites réelles sans
+nécessiter `move_to_pose()`.
+
+Confirmé ensuite contre Isaac Sim (`test_s5_security_patrol.py`,
+`test_s5_warehouse_ops.py`, même architecture `MainThreadSimPump` que
+`test_s5_full_stack.py`) :
+
+```
+SecurityPatrolApp : 7 checkpoints visités, 2 détections de personne
+(badge invalide → alerte CRITICAL correcte, badge valide → accès
+autorisé), facturation 70.00€, AUCUNE violation.
+
+WarehouseOpsApp : 2 objets scannés et manipulés avec succès (couple
+mesuré cohérent avec le poids réel), facturation 5.00€, AUCUNE
+violation.
+```
+
+**Les 3 apps de référence du Play Store AXIS-OS tournent désormais de
+bout en bout — sandboxing complet, `JointSafetyGuard`, facturation —
+contre un G1 physiquement simulé, sans aucune violation de
+sécurité.**
+
+### Piège rencontré cette session, à ajouter à la liste déjà documentée
+
+Un `git pull` peut échouer si un fichier a été modifié directement
+dans le clone local (ex: via un `sed` appliqué en urgence en cours de
+session précédente, jamais reporté dans le commit). Toujours vérifier
+`git status --short` avant de investiguer un échec de synchronisation
+— un `git checkout -- <fichier>` suivi d'un nouveau `git pull` suffit
+si la version distante est la bonne référence à garder.
+
+### Comment reproduire
+
+```bash
+docker cp ~/AXIS-OS/deploy/isaac_sim_validation/test_s5_security_patrol.py \
+    isim-isaac-sim-1:/isaac-sim/test_s5_security_patrol.py
+docker cp ~/AXIS-OS/deploy/isaac_sim_validation/test_s5_warehouse_ops.py \
+    isim-isaac-sim-1:/isaac-sim/test_s5_warehouse_ops.py
+docker exec -it isim-isaac-sim-1 timeout 200 /isaac-sim/python.sh /isaac-sim/test_s5_security_patrol.py
+docker exec -it isim-isaac-sim-1 timeout 200 /isaac-sim/python.sh /isaac-sim/test_s5_warehouse_ops.py
+```
+
+### Prochaines étapes
+
+- Un vrai G1 physique reste hors de portée de cette suite — tout ce
+  qui précède valide la LOGIQUE de contrôle et de sécurité, jamais le
+  vrai protocole DDS ni du matériel réel.
+- Intégration d'un modèle VLA/VLM (NVIDIA Isaac GR00T N1.7, choisi
+  après recherche — ouvert, licence Apache 2.0, validé sur le
+  Unitree G1 par NVIDIA lui-même) pour remplacer les mouvements codés
+  en dur des 3 apps de référence par de vraies décisions IA — chantier
+  distinct et important, pas commencé, prochaine grande étape du
+  projet une fois cette base de sécurité jugée suffisamment solide.
+
