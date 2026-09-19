@@ -10,6 +10,39 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### fix(isaac) — quota mémoire du script de validation S5 corrigé (2026-09-19)
+
+`deploy/isaac_sim_validation/test_s5_full_stack.py` : le quota mémoire
+utilisé pour tester `PackageSortingApp` était resté à `2048` Mo dans
+le fichier committé, alors que `8192` Mo s'était révélé nécessaire en
+exécution réelle (voir la session documentée juste en dessous) —
+perdu entre la correction en conteneur et le commit initial. Corrigé,
+plus une vraie sous-classe picklable (`PackageSortingAppBigQuota`,
+définie au niveau module) remplace le patch de méthode d'instance
+fragile utilisé initialement.
+
+### Documentation — pile complète validée de bout en bout dans Isaac Sim (2026-09-19, session 3)
+
+Complète `docs/isaac_lab_unitree_sim_status.md` — résout le deadlock
+PhysX identifié en fin de session précédente : `World.step()`/
+`apply_action()` d'Isaac Sim ne sont pas thread-safe et bloquent dans
+du code C sans relâcher le GIL, gelant tout le process (confirmé par
+un test isolé — même `thread.join(timeout=15.0)` ne rend jamais la
+main). `axis_os/hal/drivers/isaac_sim/bridge.py` : nouvelle classe
+`MainThreadSimPump` — tous les appels Isaac Sim ont désormais lieu
+exclusivement sur le thread principal, qui devient la boucle de
+simulation pendant que la mission AXIS-OS tourne dans un thread
+annexe. Corrige aussi la lecture (`JointSafetyGuard` lit un instantané
+publié par le thread principal, jamais l'API Isaac Sim directement).
+
+Premier test de bout en bout d'une vraie app AXIS-OS
+(`PackageSortingApp`, via `PlayStoreRuntime` complet — sandboxing,
+facturation, `JointSafetyGuard`) contre un G1 physiquement simulé :
+mission réussie, 5/5 colis triés, 3 vraies violations
+`POSITION_DELTA_LIMIT` détectées en cours de mission par
+`JointSafetyGuard` en conditions physiques réelles, facturation
+calculée correctement.
+
 ### Documentation — 23/23 joints validés contre notre propre URDF officiel dans Isaac Sim (2026-09-18, session 2)
 
 Complète `docs/isaac_lab_unitree_sim_status.md` — résout directement

@@ -390,3 +390,147 @@ docker cp ~/AXIS-OS/axis_os/hal/drivers/unitree_g1/urdf/g1_23dof_rev_1_0.urdf \
   visuelle avec maillages, reprise d'Isaac Lab) restent d'actualité,
   inchangés.
 
+---
+
+## SUITE — pile complète validée de bout en bout : deadlock PhysX résolu, mission package_sorting réussie (2026-09-19, session 3)
+
+Reprend le point bloquant de la session précédente (`is_homogeneous`)
+et va bien au-delà : `axis_os/hal/drivers/isaac_sim/bridge.py`
+devient un vrai pont réutilisable (`IsaacSimBridge`), et une **vraie
+app AXIS-OS complète** (`PackageSortingApp`, via `PlayStoreRuntime`)
+tourne pour la première fois de bout en bout contre un G1
+physiquement simulé — sandboxing réel compris, pas seulement
+`JointSafetyGuard` isolé comme en session 2.
+
+### Bug de fond trouvé et résolu : deadlock PhysX sur thread secondaire
+
+Le premier pont (interception simple de `send_joint_commands`, écrit
+en session 2) fonctionnait en usage mono-thread (scripts de test
+directs), mais bloquait indéfiniment dès qu'une vraie app tournait
+via `PlayStoreRuntime.start_app()` — sandbox multiprocess,
+`HALBridgeServer` dans un thread du process parent.
+
+Diagnostic confirmé par un test isolé et minimal :
+
+```python
+def call_step_from_thread():
+    world.step(render=False)
+
+t = threading.Thread(target=call_step_from_thread, daemon=True)
+t.start()
+t.join(timeout=15.0)
+```
+
+Résultat : le process entier reste bloqué indéfiniment, **même le
+`join(timeout=15.0)` ne rend jamais la main** — signe que PhysX
+bloque dans du code C sans relâcher le GIL, gelant tous les threads
+Python du process, y compris celui qui attend son timeout. Pas un
+problème de lenteur : un vrai deadlock structurel, sans version
+« prudente avec timeout » possible depuis un thread secondaire.
+
+### Solution : `MainThreadSimPump`, inversion de contrôle
+
+Architecture retenue (voir `bridge.py` pour l'implémentation
+complète et sa documentation) :
+- **thread principal** : `MainThreadSimPump.run_forever()` — seul
+  endroit où `world.step()`/`apply_action()` sont appelés.
+- **thread « mission »** : `PlayStoreRuntime.start_app()`/
+  `run_mission()`, lancé via `run_mission_in_thread()` — le thread
+  principal ne doit jamais y entrer, sinon il ne peut plus vider la
+  queue de la pompe (un deadlock différent, pas une correction).
+- **thread du pont** : `HALBridgeServer._loop()` (inchangé, créé par
+  AXIS-OS) — `send_joint_commands` patché dépose une requête
+  (`submit()`, avec un timeout de 5s, jamais une attente infinie) et
+  attend, sans jamais toucher directement une API Isaac Sim.
+- **lecture aussi concernée** : `JointSafetyGuard` lit le feedback
+  (`position_delta_max`) depuis le thread du pont — `read_feedback()`
+  lit désormais un instantané publié par le thread principal à chaque
+  pas (`read_all_raw()`), jamais l'API Isaac Sim directement.
+
+Un seul `step()` par lot de commandes, pas un par commande —
+cohérent avec la publication DDS groupée du driver réel (même
+raisonnement déjà appliqué à `move_to_pose()` dans le SDK).
+
+Cette architecture rapproche le pont du driver matériel réel plutôt
+que de l'en éloigner : sur un vrai G1, la publication DDS se fait
+aussi depuis une boucle dédiée alimentée par les threads applicatifs.
+
+### Deux bugs supplémentaires trouvés en testant le pont contre une vraie app
+
+- **Quota mémoire du sandbox systématiquement dépassé**
+  (`VIOLATED (MEMORY_QUOTA)`) — `psutil` mesure `memory_info().rss`
+  du sous-process, qui hérite par `fork()` de toute la mémoire déjà
+  chargée par Isaac Sim dans le process parent (plusieurs Go). Pas un
+  vrai dépassement causé par l'app — un artefact de mesure propre à
+  ce contexte de test. 2048 Mo restait insuffisant, 8192 Mo suffit.
+- **Un patch de méthode d'instance rend l'app non picklable** —
+  `app.manifest = lambda: ...` fait échouer silencieusement la
+  sérialisation que `SandboxRunner` doit faire pour transmettre l'app
+  au sous-process (`CRASHED`/`SANDBOX_ERROR`, sans message clair).
+  Corrigé par une vraie sous-classe définie au niveau module
+  (`PackageSortingAppBigQuota`), qui reste parfaitement picklable —
+  même famille de problème que celle déjà rencontrée dans
+  `axis_os/store/runtime/packaging.py`.
+
+### Résultat final : mission réussie de bout en bout
+
+```
+[T+004.68s] Position HOME — prêt.
+[Mission] lot=5 | mode=normal
+  Colis PKG-0001..0005 — 5/5 triés
+  [SAFETY VIOLATION] joint=right_shoulder_pitch_joint | rule=POSITION_DELTA_LIMIT | value=0.8 | limit=0.625
+  [SAFETY VIOLATION] joint=left_shoulder_roll_joint | rule=POSITION_DELTA_LIMIT | value=0.8 | limit=0.625
+  [SAFETY VIOLATION] joint=left_shoulder_roll_joint | rule=POSITION_DELTA_LIMIT | value=0.8 | limit=0.625
+[BILLING] total=2.00€ | commission=0.60€ (30%) | dev=1.40€ (70%)
+[Mission] ✓ SUCCESS | durée=2.73s | items=5
+```
+
+**Premier test de bout en bout d'une vraie app AXIS-OS — logique
+métier, sandboxing, `JointSafetyGuard`, facturation — contre un G1
+physiquement simulé.** Les 3 violations `POSITION_DELTA_LIMIT`
+détectées en cours de mission confirment que `JointSafetyGuard`
+fonctionne réellement en conditions physiques (pas seulement contre
+des valeurs mockées) et que la mission continue malgré une violation
+individuelle plutôt que de s'arrêter brutalement — comportement
+voulu, pas encore expliqué pourquoi `package_sorting` déclenche ces
+mouvements trop rapides à ces moments précis (piste ouverte,
+ci-dessous).
+
+### Comment reproduire
+
+```bash
+docker exec -u root -it isim-isaac-sim-1 rm -rf /isaac-sim/axis_os
+docker cp ~/AXIS-OS/axis_os isim-isaac-sim-1:/isaac-sim/axis_os
+docker cp ~/AXIS-OS/axis_os/hal/drivers/unitree_g1/urdf/g1_23dof_rev_1_0.urdf \
+    isim-isaac-sim-1:/isaac-sim/g1_23dof_rev_1_0.urdf
+docker cp ~/AXIS-OS/deploy/isaac_sim_validation/test_s5_full_stack.py \
+    isim-isaac-sim-1:/isaac-sim/test_s5_full_stack.py
+docker exec -it isim-isaac-sim-1 timeout 200 /isaac-sim/python.sh /isaac-sim/test_s5_full_stack.py
+```
+
+⚠️ Piège rencontré deux fois cette session : si le conteneur a été
+**recréé** (pas juste redémarré, ex. `docker compose up --build`),
+tout ce qui a été copié via `docker cp` disparaît avec lui. Un
+`docker cp` qui semble réussir peut aussi écraser un dossier
+partiellement (constaté : un ancien `/isaac-sim/axis_os/axis_os/...`
+imbriqué, laissant un vieux fichier actif) — en cas de doute,
+toujours vérifier le nombre de lignes ou un `grep` sur une classe
+récente plutôt que de faire confiance au message de succès de
+`docker cp` seul :
+```bash
+docker exec -it isim-isaac-sim-1 grep -c "MainThreadSimPump" /isaac-sim/axis_os/hal/drivers/isaac_sim/bridge.py
+```
+
+### Prochaines étapes
+
+- Étendre ce test aux deux autres apps de référence
+  (`SecurityPatrolApp`, `WarehouseOpsApp`) pour confirmer que le pont
+  fonctionne au-delà de `package_sorting`.
+- Investiguer pourquoi `package_sorting` déclenche ces 3 violations
+  `POSITION_DELTA_LIMIT` précises — vrai bug de l'app (mouvement trop
+  brusque entre deux positions) ou limite trop stricte pour ce
+  contexte de simulation particulier, pas encore déterminé.
+- Un vrai G1 physique reste hors de portée de cette suite — tout ce
+  qui précède valide la LOGIQUE de contrôle et de sécurité, jamais le
+  vrai protocole DDS ni du matériel réel.
+
