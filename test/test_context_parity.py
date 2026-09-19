@@ -91,6 +91,41 @@ check(f"Aucune méthode présente UNIQUEMENT dans HALBridgeClient "
 
 # ══════════════════════════════════════════════════════════════════
 
+section("Non-divergence des TYPES DE RETOUR (méthodes de lecture)")
+
+# La comparaison de surfaces ci-dessus compare des NOMS de méthodes.
+# Elle a rattrapé move_all/get_joint_state/subscribe_alerts, mais elle
+# est aveugle aux types : get_full_state() existait des deux côtés et
+# rendait des ActuatorFeedback d'un côté, des dicts sérialisés de
+# l'autre. Une app écrite contre la doc de RobotContext plantait alors
+# UNIQUEMENT en sandbox — donc uniquement sur le vrai robot.
+# Constaté réellement : AttributeError: 'dict' object has no attribute
+# 'position'. D'où ce second contrôle.
+
+from axis_os.hal.core.types import ActuatorFeedback, ActuatorState
+from axis_os.store.runtime.hal_bridge import (
+    _serialize_feedback, _deserialize_feedback,
+)
+
+_fb = ActuatorFeedback("right_knee_joint", ActuatorState.ACTIVE,
+                       1.23, 0.5, 42.0, 3.1, 37.5, 48.2, 7)
+_round = _deserialize_feedback("right_knee_joint", _serialize_feedback(_fb))
+
+check("Le pont reconstruit un ActuatorFeedback, pas un dict",
+      isinstance(_round, ActuatorFeedback))
+
+_fields = ["joint_id", "state", "position", "velocity", "torque",
+           "current", "temperature", "voltage", "error_code"]
+_lost = [f for f in _fields if getattr(_fb, f) != getattr(_round, f)]
+check(f"Aller-retour sérialisation sans perte sur les {len(_fields)} champs "
+      f"(perdus: {_lost or 'aucun'})", not _lost)
+
+check("get_full_state() annote Dict[str, ActuatorFeedback] des deux côtés",
+      "ActuatorFeedback" in str(
+          HALBridgeClient.get_full_state.__annotations__.get("return", "")))
+
+# ══════════════════════════════════════════════════════════════════
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

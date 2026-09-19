@@ -38,7 +38,8 @@ from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Any, Callable
 
 from axis_os.hal.core.types import (
-    ActuatorCommand, ControlMode, HALStatus, IMUData, Vector3, Quaternion,
+    ActuatorCommand, ActuatorFeedback, ActuatorState, ControlMode, HALStatus,
+    IMUData, Vector3, Quaternion,
 )
 from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
@@ -70,6 +71,47 @@ class HALResponse:
 # ─────────────────────────────────────────────────────────────────
 #  CÔTÉ PARENT — exécute réellement sur le HAL
 # ─────────────────────────────────────────────────────────────────
+
+def _serialize_feedback(fb: ActuatorFeedback) -> Dict[str, Any]:
+    """ActuatorFeedback -> dict transportable par multiprocessing.Queue."""
+    return {
+        "joint_id": fb.joint_id, "state": fb.state.name,
+        "position": fb.position, "velocity": fb.velocity,
+        "torque": fb.torque, "current": fb.current,
+        "temperature": fb.temperature, "voltage": fb.voltage,
+        "error_code": fb.error_code, "timestamp_ns": fb.timestamp_ns,
+    }
+
+
+def _deserialize_feedback(jid: str, d: Dict[str, Any]) -> ActuatorFeedback:
+    """dict -> ActuatorFeedback réel.
+
+    Ferme une divergence de TYPE DE RETOUR entre les deux chemins :
+    RobotContext.get_full_state() rendait des ActuatorFeedback
+    (fb.position) tandis que HALBridgeClient rendait des dicts
+    (fb["position"]). Une app écrite contre la documentation de
+    RobotContext fonctionnait en test direct et plantait UNIQUEMENT en
+    sandbox — donc uniquement sur le vrai robot, au pire moment pour
+    s'en apercevoir. Constaté réellement (AttributeError: 'dict' object
+    has no attribute 'position').
+
+    Tolère les dicts partiels d'une version antérieure du protocole
+    (champs absents -> valeurs neutres) plutôt que de lever : une app
+    qui tourne ne doit pas mourir sur une incompatibilité de version du
+    pont.
+    """
+    return ActuatorFeedback(
+        joint_id=d.get("joint_id", jid),
+        state=ActuatorState[d["state"]] if "state" in d else ActuatorState.IDLE,
+        position=float(d.get("position", 0.0)),
+        velocity=float(d.get("velocity", 0.0)),
+        torque=float(d.get("torque", 0.0)),
+        current=float(d.get("current", 0.0)),
+        temperature=float(d.get("temperature", 0.0)),
+        voltage=float(d.get("voltage", 0.0)),
+        error_code=int(d.get("error_code", 0)),
+    )
+
 
 class HALBridgeServer:
     """
@@ -195,12 +237,13 @@ class HALBridgeServer:
 
             elif cmd.action == "get_full_state":
                 state = self._ctx.get_full_state()
-                data = {
-                    jid: {"position": fb.position, "velocity": fb.velocity,
-                          "torque": fb.torque, "temperature": fb.temperature,
-                          "state": fb.state.name}
-                    for jid, fb in state.items()
-                }
+                # Sérialise TOUS les champs d'ActuatorFeedback, pas un
+                # sous-ensemble : le client reconstruit désormais de vrais
+                # ActuatorFeedback (voir _deserialize_feedback), et une
+                # reconstruction partielle mentirait silencieusement sur
+                # current/voltage/error_code en les remplaçant par des
+                # valeurs par défaut plausibles.
+                data = {jid: _serialize_feedback(fb) for jid, fb in state.items()}
                 return HALResponse(cmd.request_id, True, data=data)
 
             elif cmd.action == "get_joint_state":
@@ -396,8 +439,12 @@ class HALBridgeClient:
         raw = self._call("move_all", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
 
-    def get_full_state(self) -> Dict[str, Any]:
-        return self._call("get_full_state", {})
+    def get_full_state(self) -> Dict[str, ActuatorFeedback]:
+        """Identique à RobotContext.get_full_state(), Y COMPRIS LE TYPE
+        DE RETOUR : de vrais ActuatorFeedback, pas des dicts sérialisés.
+        Le transport par dict reste interne au pont."""
+        raw = self._call("get_full_state", {})
+        return {jid: _deserialize_feedback(jid, d) for jid, d in raw.items()}
 
     def get_joint_state(self, joint_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -413,7 +460,8 @@ class HALBridgeClient:
         ou EstopActiveError qui doivent, eux, remonter normalement.
         """
         try:
-            return self._call("get_joint_state", {"joint_id": joint_id})
+            d = self._call("get_joint_state", {"joint_id": joint_id})
+            return _deserialize_feedback(joint_id, d) if d else None
         except RuntimeError:
             return None
 
@@ -427,8 +475,8 @@ class HALBridgeClient:
         Équivalent de RobotContext.move_to_pose() (voir sa docstring
         pour le contexte complet — correctif suivant C5, audit de
         sécurité) — DIFFÈRE uniquement dans la lecture du feedback :
-        get_full_state() retourne ici un dict de dicts sérialisés
-        (fb["position"]), pas de vrais ActuatorFeedback (fb.position)
+        get_full_state() retourne désormais de vrais ActuatorFeedback
+        des deux côtés du pont (fb.position)
         comme côté RobotContext non sandboxé. Toute app doit pouvoir
         appeler move_to_pose() identiquement, sandboxée ou non — c'est
         exactement le rôle de HALBridgeClient (même API de surface que
@@ -445,7 +493,7 @@ class HALBridgeClient:
             if fb is None:
                 self.log(f"move_to_pose: joint '{jid}' introuvable — abandon.")
                 return False
-            current[jid] = fb["position"]
+            current[jid] = fb.position
 
         n_steps = max(1, int(duration_s / step_s))
         for step in range(1, n_steps + 1):

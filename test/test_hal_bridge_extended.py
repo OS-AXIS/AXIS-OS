@@ -91,8 +91,17 @@ section("2 — get_joint_state()")
 
 robot3, wd3, server3, client3 = make_bridge([Permission.ACTUATORS_READ])
 state = client3.get_joint_state("left_knee_joint")
-check("get_joint_state() retourne un dict avec les bons champs",
-      state is not None and all(k in state for k in
+# Contrat mis à jour : le pont reconstruit désormais de vrais
+# ActuatorFeedback au lieu de rendre les dicts sérialisés du transport.
+# Ce test vérifiait l'ancien comportement, qui était précisément la
+# divergence à fermer — une app écrite contre RobotContext plantait
+# uniquement en sandbox (AttributeError: 'dict' object has no attribute
+# 'position'). Voir test_context_parity.py, section types de retour.
+from axis_os.hal.core.types import ActuatorFeedback
+check("get_joint_state() retourne un ActuatorFeedback (pas un dict)",
+      isinstance(state, ActuatorFeedback))
+check("get_joint_state() expose les champs en attributs",
+      state is not None and all(hasattr(state, a) for a in
       ("position", "velocity", "torque", "temperature", "state")))
 
 state_missing = client3.get_joint_state("joint_inexistant")

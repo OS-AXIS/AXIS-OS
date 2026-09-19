@@ -28,16 +28,6 @@ from axis_os.store.sdk.manifest import (
     AppCategory, AppManifest, Permission, ResourceQuota,
 )
 
-def _pos(fb) -> float:
-    """Position d'un feedback, quelle que soit sa forme.
-
-    Rend l'app portable entre les deux chemins : ActuatorFeedback
-    (direct) ou dict sérialisé (sandbox). Tant que les deux ne sont pas
-    unifiés côté OS, toute app qui lit l'état doit faire ça — ce qui
-    est précisément le problème à corriger dans le SDK."""
-    return fb["position"] if isinstance(fb, dict) else fb.position
-
-
 N_CALLS = 200
 DELTA = 0.01          # minuscule : on mesure le CHEMIN, pas le mouvement
 # Uniquement des joints de BRAS : l'app ne déclare que
@@ -88,19 +78,9 @@ class LatencyProbeApp(RobotApp):
                 fb = state.get(jid)
                 if fb is None:
                     continue
-                # DIVERGENCE RÉELLE entre les deux chemins, pas un détail
-                # de ce test : RobotContext.get_full_state() rend des
-                # ActuatorFeedback (fb.position), mais HALBridgeClient —
-                # ce que reçoit une app SANDBOXÉE — rend des dicts
-                # sérialisés (fb["position"]), puisqu'ils traversent deux
-                # multiprocessing.Queue. Une app écrite contre la doc de
-                # RobotContext plante donc UNIQUEMENT en sandbox, donc
-                # uniquement sur le vrai robot. Déjà contourné au cas par
-                # cas dans hal_bridge.move_to_pose(), jamais exposé aux
-                # apps. Voir _pos() ci-dessous.
                 cmds[jid] = ActuatorCommand(
                     mode=ControlMode.POSITION,
-                    position=_pos(fb) + (DELTA if i % 2 == 0 else -DELTA),
+                    position=fb.position + (DELTA if i % 2 == 0 else -DELTA),
                 )
             if not cmds:
                 return MissionResult(
