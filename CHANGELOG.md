@@ -10,6 +10,37 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### fix(package_sorting) — mouvements de travail passés par move_to_pose(), 3 vraies violations éliminées
+
+Trouvé en investiguant les 3 violations `POSITION_DELTA_LIMIT`
+observées lors du premier test réussi contre Isaac Sim (voir
+`docs/isaac_lab_unitree_sim_status.md`) : `move_to_pose()` (déjà
+utilisée dans `on_start()` pour atteindre HOME au démarrage) n'avait
+jamais été appliquée aux mouvements de TRAVAIL de la mission
+(`_sort()`) ni au retour final vers HOME (`run_mission()`,
+`on_stop()`) — ces trois points utilisaient encore `move_arms()`
+direct. `REACH_LEFT`/`REACH_RIGHT` (0.8 rad) depuis HOME (0.0 rad),
+puis `DEPOSIT_*` (0.8 rad sur un autre joint) depuis `REACH_*` :
+chaque saut franchit `position_delta_max` (0.625) en un seul appel —
+invisible en tests unitaires purs (jamais un vrai enchaînement de
+positions successives), révélé uniquement en conditions physiques
+réelles.
+
+Premier essai (`duration_s=delay`, réutilisant le délai de tempo de
+simulation de la mission comme durée de mouvement physique) a
+lui-même révélé un second bug : `delay` vaut 0.02 à 0.08s selon
+`speed_mode`, donnant `int(duration_s/step_s)=1` seul pas
+d'interpolation avec le `step_s=0.05` par défaut de `move_to_pose()`
+— revient exactement au saut direct qu'on cherche à éviter. Une
+constante dédiée (`MOVE_DURATION_S=0.15`, 2 pas, marge de sécurité
+confortable — 0.4 rad/pas contre une limite de 0.625) sépare
+proprement les deux notions.
+
+48/48 fichiers de test passent, aucune régression — y compris
+`test_heavy_integration.py` (40 missions enchaînées), qui avait
+d'abord dépassé son timeout avec une première valeur de
+`MOVE_DURATION_S=0.3` plus prudente mais trop lente à l'échelle.
+
 ### fix(isaac) — quota mémoire du script de validation S5 corrigé (2026-09-19)
 
 `deploy/isaac_sim_validation/test_s5_full_stack.py` : le quota mémoire

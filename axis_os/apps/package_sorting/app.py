@@ -161,7 +161,18 @@ class PackageSortingApp(RobotApp):
                 errors.append(str(exc))
                 ctx.log(f"ERREUR {pkg.package_id}: {exc}")
 
-        ctx.move_arms(_cmds(HOME))
+        # move_to_pose() plutôt qu'un move_arms() direct — même
+        # raisonnement que dans on_start() ci-dessus (voir sa
+        # docstring pour le contexte complet sur position_delta_max).
+        # Trouvé manquant ici précisément en testant cette app contre
+        # une vraie physique simulée (Isaac Sim) : 3 vraies violations
+        # POSITION_DELTA_LIMIT déclenchées en cours de mission,
+        # jamais visibles en tests unitaires purs (qui ne valident
+        # jamais un enchaînement RÉEL de positions successives). Le
+        # retour final vers HOME peut franchir un delta de 0.8 rad
+        # (ex: REACH_RIGHT.right_shoulder_pitch_joint = 0.8 → HOME =
+        # 0.0), largement au-delà de position_delta_max (0.625).
+        ctx.move_to_pose(HOME, duration_s=1.0)
         ctx.log(f"Terminé : {sorted_count}/{batch_size} triés")
 
         return MissionResult(
@@ -181,23 +192,49 @@ class PackageSortingApp(RobotApp):
 
     def on_stop(self, ctx: RobotContext) -> None:
         ctx.log("Arrêt — retour HOME")
-        ctx.move_arms(_cmds(HOME))
+        # move_to_pose() — voir la docstring de run_mission() (juste
+        # avant son "Terminé : ...") pour le contexte complet sur
+        # cette même correction.
+        ctx.move_to_pose(HOME, duration_s=1.0)
 
     def _sort(self, ctx: RobotContext, pkg: Package, delay: float) -> None:
+        # move_to_pose() partout dans cette méthode — voir la
+        # docstring de run_mission() (juste avant son "Terminé : ...")
+        # pour le contexte complet. REACH_LEFT/RIGHT (0.8 rad) depuis
+        # HOME (0.0 rad), puis DEPOSIT_* (0.8 rad sur un autre joint)
+        # depuis REACH_* : deux sauts qui franchissent chacun
+        # position_delta_max (0.625) avec un move_arms() direct.
+        #
+        # duration_s FIXE (0.15s), jamais `delay` — trouvé nécessaire
+        # après un premier essai qui réutilisait `delay` (0.02 à 0.08s
+        # selon speed_mode) comme duration_s : avec step_s=0.05 par
+        # défaut, ça donne int(duration_s/step_s) = 1 SEUL pas
+        # d'interpolation pour delay <= 0.05 — revient exactement au
+        # saut direct qu'on cherche à éviter. `delay` régit le TEMPO
+        # de simulation de la mission (attente entre étapes), pas la
+        # durée d'un mouvement physique réel — les deux notions ne
+        # doivent jamais partager la même valeur.
+        #
+        # 0.15s choisi après un test réel contre test_heavy_integration.py
+        # (40 missions enchaînées) : une première version à 0.3s
+        # (6 pas) faisait dépasser son timeout — 0.15s (2 pas) garde
+        # une marge de sécurité confortable (delta max mesuré 0.8 rad
+        # / 2 pas = 0.4 rad/pas, bien sous position_delta_max=0.625)
+        # tout en restant rapide à l'exécution.
+        MOVE_DURATION_S = 0.15
         reach = REACH_LEFT if pkg.side == "left" else REACH_RIGHT
-        ctx.move_arms(_cmds(reach))
-        time.sleep(delay)
+        ctx.move_to_pose(reach, duration_s=MOVE_DURATION_S)
         ctx.log(f"  Saisie {pkg.package_id}")
         time.sleep(delay * 0.5)
 
         if pkg.destination == Destination.CONVEYOR_A:
-            ctx.move_arms(_cmds(DEPOSIT_LEFT))
+            ctx.move_to_pose(DEPOSIT_LEFT, duration_s=MOVE_DURATION_S)
             ctx.log("  → Convoyeur A")
         elif pkg.destination == Destination.CONVEYOR_B:
-            ctx.move_arms(_cmds(DEPOSIT_RIGHT))
+            ctx.move_to_pose(DEPOSIT_RIGHT, duration_s=MOVE_DURATION_S)
             ctx.log("  → Convoyeur B")
         else:
-            ctx.move_arms(_cmds(DEPOSIT_CENTER))
+            ctx.move_to_pose(DEPOSIT_CENTER, duration_s=MOVE_DURATION_S)
             ctx.log("  → Retour")
 
         time.sleep(delay)
