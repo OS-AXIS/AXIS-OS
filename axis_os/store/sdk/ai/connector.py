@@ -30,6 +30,7 @@ Licence : Apache 2.0 (SDK public)
 """
 
 from __future__ import annotations
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -46,10 +47,20 @@ class VLAAction:
                     pour éviter toute ambiguïté sur l'ordre des joints.
     gripper_closed : consigne de préhension simple (ouvert/fermé).
     confidence     : score de confiance du modèle, si disponible (0.0-1.0).
+    timestamp_ns   : instant (time.monotonic_ns) où la POLITIQUE a produit
+                    cette action — PAS celui où on la reçoit. La distinction
+                    est le fondement de l'échéance de fraîcheur de
+                    SetpointFollower (axis_os/services/policy/) : horodater
+                    à la réception mesurerait la latence réseau au lieu de
+                    l'âge réel de la décision, et une politique figée dont
+                    les paquets arrivent encore passerait pour fraîche.
+                    0 signifie "non horodatée" — le suiveur retombe alors
+                    sur l'instant de réception, avec cette imprécision.
     """
     target_angles:  Dict[str, float] = field(default_factory=dict)
     gripper_closed: bool             = False
     confidence:     Optional[float]  = None
+    timestamp_ns:   int              = 0
 
     def to_commands(self, velocity: float = 1.0) -> Dict[str, ActuatorCommand]:
         """
@@ -146,6 +157,7 @@ class OpenVLAConnector(IVLAConnector):
             target_angles={},   # neutre : le stub ne bouge rien par défaut
             gripper_closed=should_grasp,
             confidence=1.0 if should_grasp else 0.5,
+            timestamp_ns=time.monotonic_ns(),
         )
 
 
@@ -373,7 +385,8 @@ class VLACppConnector(IVLAConnector):
         appelante l'ait explicitement demandé.
         """
         if resp.chunk_size == 0 or resp.action_dim == 0:
-            return VLAAction(target_angles={}, confidence=None)
+            return VLAAction(target_angles={}, confidence=None,
+                             timestamp_ns=time.monotonic_ns())
 
         first_step = list(resp.action_chunk[:resp.action_dim])
 
@@ -390,4 +403,10 @@ class VLACppConnector(IVLAConnector):
         else:
             target_angles = {f"joint_{i}": v for i, v in enumerate(first_step)}
 
-        return VLAAction(target_angles=target_angles, confidence=None)
+        # Horodaté à la RÉCEPTION de la réponse serveur, faute de mieux :
+        # le protocole vla-server ne transporte pas l'instant d'inférence.
+        # Majore donc l'âge réel de la latence réseau — conservateur dans
+        # le bon sens (on croit l'action plus vieille qu'elle n'est), mais
+        # à corriger si le protocole expose un jour ce champ.
+        return VLAAction(target_angles=target_angles, confidence=None,
+                         timestamp_ns=time.monotonic_ns())

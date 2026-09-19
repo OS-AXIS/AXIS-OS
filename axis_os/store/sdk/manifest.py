@@ -55,6 +55,16 @@ class Permission(Enum):
     FLEET_BROADCAST      = auto()  # NON APPLIQUÉE — Fleet Manager non implémenté (voir docs/)
     NETWORK_CLOUD        = auto()  # NON APPLIQUÉE — sandbox ne filtre pas le réseau
     NETWORK_LOCAL        = auto()  # NON APPLIQUÉE — sandbox ne filtre pas le réseau
+    # Mouvements dont les consignes proviennent d'une POLITIQUE
+    # APPRISE (GR00T, VLA...) plutôt que d'un script. Ne remplace pas
+    # ACTUATORS_WRITE_* : une app pilotée par IA déclare les DEUX, ce
+    # qui rend le pilotage IA visible à l'installation plutôt
+    # qu'implicite. Le profil de risque justifie la distinction : les
+    # mouvements d'une app scriptée sont auditables à l'avance, ceux
+    # d'une politique apprise ne le sont pas. Tranche la question
+    # explicitement reportée dans docs/ ("distinction IA/script dans
+    # les permissions").
+    ACTUATORS_AI_DRIVEN  = auto()
 
 
 class ProtectionLevel(Enum):
@@ -96,6 +106,14 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # PERMETTRE ça aux apps tierces, avec confirmation humaine).
     Permission.EMERGENCY_STOP:       ProtectionLevel.DANGEROUS,
     Permission.FLEET_BROADCAST:      ProtectionLevel.SIGNATURE,
+    # DANGEROUS et non SIGNATURE, pour la même raison qu'EMERGENCY_STOP
+    # ci-dessus : réserver le pilotage par IA aux seules apps
+    # plateforme fermerait le Play Store aux développeurs tiers
+    # travaillant sur des politiques apprises, ce qui est justement
+    # l'usage visé. La confirmation humaine à l'installation est le
+    # bon niveau — l'utilisateur doit savoir qu'une IA commandera le
+    # robot, pas en être protégé par interdiction.
+    Permission.ACTUATORS_AI_DRIVEN:  ProtectionLevel.DANGEROUS,
 }
 
 
@@ -127,6 +145,14 @@ class Capability(Enum):
     CAMERA_RGB = auto(); CAMERA_DEPTH = auto()
     SPEECH_IN = auto();  SPEECH_OUT = auto()
     NAVIGATION_MAP = auto();  MEMORY_PERSISTENT = auto()
+    # Le robot peut faire tourner une politique apprise (GR00T, VLA) —
+    # exige un GPU embarqué capable de l'inférence, ou un accès réseau
+    # à un serveur de politique. Sépare volontairement la CAPACITÉ
+    # (le robot en est-il matériellement capable) de la PERMISSION
+    # ACTUATORS_AI_DRIVEN (l'app a-t-elle le droit de s'en servir) :
+    # une app refusée à l'installation faute de GPU est un message
+    # clair, une app installée qui échoue à l'exécution ne l'est pas.
+    AI_POLICY = auto()
 
 
 @dataclass(frozen=True)
