@@ -92,6 +92,13 @@ def main():
     result = holder["result"]
     if result is None or not getattr(result, "success", False):
         print("ÉCHEC — mission non réussie :", result)
+        # error_message porte l'exception réelle levée DANS le sandbox
+        # (play_store.py y recopie sandbox_result.error). Sans cet
+        # affichage, un APPLICATION_ERROR ne dit rien de sa cause et on
+        # en est réduit à deviner.
+        msg = getattr(result, "error_message", None) if result else None
+        if msg:
+            print(f"\n  CAUSE RÉELLE : {msg}")
         simulation_app.close()
         sys.exit(1)
 

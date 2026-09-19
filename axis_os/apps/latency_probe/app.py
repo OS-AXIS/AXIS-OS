@@ -30,6 +30,10 @@ from axis_os.store.sdk.manifest import (
 
 N_CALLS = 200
 DELTA = 0.01          # minuscule : on mesure le CHEMIN, pas le mouvement
+# Uniquement des joints de BRAS : l'app ne déclare que
+# ACTUATORS_WRITE_ARMS, et move_arms() filtre sur ces mots-clés
+# (shoulder/elbow/wrist). Un joint hors de cette famille serait
+# silencieusement écarté du routage, faussant la mesure.
 JOINTS = ["left_shoulder_pitch_joint", "left_elbow_joint",
           "right_shoulder_pitch_joint", "right_elbow_joint"]
 
@@ -89,7 +93,12 @@ class LatencyProbeApp(RobotApp):
             results = ctx.move_arms(cmds)
             t2 = time.perf_counter()
 
-            rejected += sum(1 for s in results.values() if s.name != "OK")
+            # getattr plutôt que s.name : si move_arms renvoie autre chose
+            # qu'un HALStatus pour un joint (None, str), un accès direct à
+            # .name ferait planter la mission sur un détail de forme, pas
+            # sur ce qu'on mesure.
+            rejected += sum(1 for s in results.values()
+                            if getattr(s, "name", str(s)) != "OK")
             state_ms.append((t1 - t0) * 1000)
             move_ms.append((t2 - t1) * 1000)
             total_ms.append((t2 - t0) * 1000)
