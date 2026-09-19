@@ -109,6 +109,24 @@ def main():
     print(_fmt("move_arms()", m["move_arms_ms"]))
     print(_fmt("cycle complet", m["total_per_cycle_ms"]))
 
+    # Décomposition côté pompe : combien de ces millisecondes sont du
+    # TRANSPORT (files + threads = le coût réel de l'isolation), et
+    # combien sont un PAS DE PHYSIQUE Isaac Sim ? Le second n'existe PAS
+    # sur un robot réel — la physique y est le monde, elle ne coûte rien
+    # au logiciel. Les confondre reviendrait à imputer à l'architecture
+    # un coût qui appartient au simulateur.
+    from axis_os.hal.drivers.isaac_sim.bridge import _stats
+    st_apply = _stats(pump.tick_apply_ms)
+    st_step = _stats(pump.tick_step_ms)
+    if st_apply and st_step:
+        print(f"\n  --- décomposition côté pompe ({st_apply['n']} ticks "
+              f"porteurs de commandes) ---")
+        print(_fmt("application cmds", st_apply))
+        print(_fmt("pas de physique", st_step))
+        print(f"\n  Le pas de physique n'existe PAS sur un robot réel : "
+              f"{st_step['mean']:.2f} ms de ces mesures sont imputables au "
+              f"SIMULATEUR, pas à l'isolation.")
+
     sandbox_ms = m["total_per_cycle_ms"]["mean"]
     p95 = m["total_per_cycle_ms"]["p95"]
     overhead = sandbox_ms - DIRECT_MS

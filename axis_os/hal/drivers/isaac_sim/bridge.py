@@ -484,6 +484,14 @@ class MainThreadSimPump:
         self._snapshot: Dict[str, tuple] = {}
         self._running = False
         self._main_thread_id: Optional[int] = None
+        # Décomposition du coût d'un tick, pour distinguer le TRANSPORT
+        # (files, threads — le vrai coût de l'isolation) du PAS DE
+        # SIMULATION (bridge.step(), qui n'existe pas sur un robot réel :
+        # la physique y est le monde, elle ne coûte rien au logiciel).
+        # Sans cette séparation, on attribue à l'architecture un coût qui
+        # est en réalité celui du simulateur.
+        self.tick_apply_ms: list = []
+        self.tick_step_ms: list = []
 
     # ---- appelé depuis N'IMPORTE QUEL thread -----------------------------
 
@@ -534,6 +542,7 @@ class MainThreadSimPump:
             self._drain_pending()
 
     def _tick(self) -> None:
+        _t_apply = time.perf_counter()
         pending = []
         while True:
             try:
@@ -552,13 +561,18 @@ class MainThreadSimPump:
             except BaseException as exc:      # noqa: BLE001 — remonté au demandeur
                 req.error = exc
             pending.append(req)
+        if pending:
+            self.tick_apply_ms.append((time.perf_counter() - _t_apply) * 1000)
 
         # UN SEUL step pour tout le lot : appeler step() par commande
         # ferait avancer la physique 23 fois pour un mouvement corps
         # entier, avec des états intermédiaires incohérents — même
         # raisonnement que la publication DDS groupée du driver réel.
+        _t_step = time.perf_counter()
         self._bridge.step(1)
         self._publish_snapshot()
+        if pending:
+            self.tick_step_ms.append((time.perf_counter() - _t_step) * 1000)
 
         for req in pending:
             req.done.set()
@@ -606,3 +620,11 @@ def run_mission_in_thread(fn, *args, **kwargs):
     t = threading.Thread(target=_runner, name="axis-mission", daemon=True)
     t.start()
     return t, holder
+
+
+def _stats(xs):
+    if not xs:
+        return None
+    s = sorted(xs)
+    return {"mean": sum(xs) / len(xs), "p50": s[len(s) // 2],
+            "p95": s[int(len(s) * 0.95)], "max": s[-1], "n": len(s)}
