@@ -492,6 +492,8 @@ class MainThreadSimPump:
         # est en réalité celui du simulateur.
         self.tick_apply_ms: list = []
         self.tick_step_ms: list = []
+        self.submit_wait_ms: list = []
+        self.idle_ticks: int = 0
 
     # ---- appelé depuis N'IMPORTE QUEL thread -----------------------------
 
@@ -503,8 +505,16 @@ class MainThreadSimPump:
         if not self._running:
             return False
         req = _SimRequest(commands=commands, done=threading.Event())
+        _t0 = time.perf_counter()
         self._queue.put(req)
-        if not req.done.wait(timeout=timeout_s):
+        ok = req.done.wait(timeout=timeout_s)
+        # Attente vue DU THREAD APPELANT : dépôt -> application par le
+        # thread principal. C'est le coût que subit réellement l'app, à
+        # distinguer du travail effectué (tick_apply_ms + tick_step_ms).
+        # Un écart important entre les deux signifie du temps de
+        # RÉVEIL DE THREAD, pas du travail.
+        self.submit_wait_ms.append((time.perf_counter() - _t0) * 1000)
+        if not ok:
             return False
         return req.error is None and req.applied
 
@@ -532,34 +542,38 @@ class MainThreadSimPump:
         t0 = time.time()
         try:
             while not should_stop() and (time.time() - t0) < max_seconds:
-                self._tick()
-                if idle_sleep_s:
-                    time.sleep(idle_sleep_s)
+                # Attendre l'arrivée d'une commande plutôt que de boucler
+                # à vide. Une boucle sans pause monopolise le GIL : le
+                # thread HALBridgeServer et le sous-process n'obtiennent
+                # la main qu'au bon vouloir de l'ordonnanceur Python, ce
+                # qui ajoute des dizaines de ms d'attente PURE (ni
+                # transport, ni physique) à chaque aller-retour.
+                # Queue.get(timeout=) relâche le GIL pendant l'attente,
+                # laissant les autres threads progresser immédiatement.
+                try:
+                    first = self._queue.get(timeout=idle_sleep_s or 0.002)
+                except queue.Empty:
+                    first = None
+                    self.idle_ticks += 1
+                self._tick(first=first)
         finally:
             self._running = False
             # Libérer tout thread encore en attente, sinon il reste
             # bloqué jusqu'à son timeout après l'arrêt de la boucle.
             self._drain_pending()
 
-    def _tick(self) -> None:
+    def _tick(self, first: "Optional[_SimRequest]" = None) -> None:
         _t_apply = time.perf_counter()
         pending = []
+        if first is not None:
+            self._apply_one(first)
+            pending.append(first)
         while True:
             try:
                 req = self._queue.get_nowait()
             except queue.Empty:
                 break
-            try:
-                for joint_id, cmd in req.commands.items():
-                    self._bridge.apply_command(
-                        joint_id,
-                        position=getattr(cmd, "position", None),
-                        velocity=getattr(cmd, "velocity", None),
-                        effort=getattr(cmd, "torque", None),
-                    )
-                req.applied = True
-            except BaseException as exc:      # noqa: BLE001 — remonté au demandeur
-                req.error = exc
+            self._apply_one(req)
             pending.append(req)
         if pending:
             self.tick_apply_ms.append((time.perf_counter() - _t_apply) * 1000)
@@ -576,6 +590,19 @@ class MainThreadSimPump:
 
         for req in pending:
             req.done.set()
+
+    def _apply_one(self, req: "_SimRequest") -> None:
+        try:
+            for joint_id, cmd in req.commands.items():
+                self._bridge.apply_command(
+                    joint_id,
+                    position=getattr(cmd, "position", None),
+                    velocity=getattr(cmd, "velocity", None),
+                    effort=getattr(cmd, "torque", None),
+                )
+            req.applied = True
+        except BaseException as exc:      # noqa: BLE001 — remonté au demandeur
+            req.error = exc
 
     def _publish_snapshot(self) -> None:
         snap = self._bridge.read_all_raw()

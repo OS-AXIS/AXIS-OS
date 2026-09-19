@@ -118,6 +118,11 @@ def main():
     from axis_os.hal.drivers.isaac_sim.bridge import _stats
     st_apply = _stats(pump.tick_apply_ms)
     st_step = _stats(pump.tick_step_ms)
+    st_wait = _stats(pump.submit_wait_ms)
+    if st_wait:
+        print(f"\n  --- attente vue du thread du pont ---")
+        print(_fmt("submit -> appliqué", st_wait))
+        print(f"    ticks à vide (file vide) : {pump.idle_ticks}")
     if st_apply and st_step:
         print(f"\n  --- décomposition côté pompe ({st_apply['n']} ticks "
               f"porteurs de commandes) ---")
