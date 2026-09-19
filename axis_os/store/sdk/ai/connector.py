@@ -405,8 +405,13 @@ class VLACppConnector(IVLAConnector):
 
         # Horodaté à la RÉCEPTION de la réponse serveur, faute de mieux :
         # le protocole vla-server ne transporte pas l'instant d'inférence.
-        # Majore donc l'âge réel de la latence réseau — conservateur dans
-        # le bon sens (on croit l'action plus vieille qu'elle n'est), mais
-        # à corriger si le protocole expose un jour ce champ.
+        # ATTENTION, l'erreur va dans le MAUVAIS sens : l'action paraît
+        # plus JEUNE qu'elle n'est (de toute la latence réseau), donc
+        # SetpointFollower la conserve légèrement trop longtemps avant de
+        # la déclarer périmée. Écart faible en pratique (quelques dizaines
+        # de ms contre un max_age_s de 500 ms, ~10 % de marge rognée),
+        # mais ce n'est PAS conservateur. À corriger dès qu'un protocole
+        # expose l'instant d'inférence ; sinon, compenser en raccourcissant
+        # max_age_s côté suiveur.
         return VLAAction(target_angles=target_angles, confidence=None,
                          timestamp_ns=time.monotonic_ns())
