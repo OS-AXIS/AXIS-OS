@@ -212,6 +212,87 @@ class IsaacSimCamera(ICamera):
             distortion=(),
         )
 
+    def look_at(self, target=(0.0, 0.0, 0.0)) -> bool:
+        """Oriente la caméra vers un point du monde.
+
+        NÉCESSAIRE, et constaté en diagnostic : sans orientation
+        explicite, le prim caméra garde son axe par défaut, qui ne
+        pointe PAS vers la scène. Symptôme trompeur — quatre caméras
+        placées à quatre endroits différents rendaient des images
+        quasi identiques (moyenne 192, écart-type 43), c'est-à-dire le
+        même fond, parce qu'aucune ne regardait le robot.
+
+        Deviner le bon quaternion à la main est une perte de temps :
+        Isaac Sim fournit set_world_pose avec une cible, qui fait le
+        calcul correctement.
+        """
+        if self._camera is None:
+            return False
+        try:
+            import numpy as np
+            self._camera.set_world_pose(
+                position=np.array(self._position),
+                target=np.array(target),
+                camera_axes="usd",
+            )
+            return True
+        except TypeError:
+            # Signature différente selon la version : certaines
+            # n'acceptent pas `target`. On calcule alors le quaternion
+            # nous-même plutôt que d'abandonner.
+            return self._look_at_manual(target)
+        except Exception as exc:        # noqa: BLE001
+            print(f"  [{self.sensor_id}] look_at échoué : {exc}")
+            return False
+
+    def _look_at_manual(self, target) -> bool:
+        """Repli : construit la rotation à la main.
+
+        Convention USD d'une caméra : elle regarde selon -Z, avec +Y
+        vers le haut de l'image. On construit la base orthonormée
+        correspondante puis on la convertit en quaternion.
+        """
+        import numpy as np
+        try:
+            eye = np.array(self._position, dtype=float)
+            tgt = np.array(target, dtype=float)
+            fwd = tgt - eye
+            n = np.linalg.norm(fwd)
+            if n < 1e-9:
+                return False
+            fwd = fwd / n
+            world_up = np.array([0.0, 0.0, 1.0])
+            if abs(float(np.dot(fwd, world_up))) > 0.999:
+                world_up = np.array([0.0, 1.0, 0.0])
+            right = np.cross(fwd, world_up)
+            right = right / np.linalg.norm(right)
+            up = np.cross(right, fwd)
+            # Colonnes = (right, up, -forward) : la caméra USD regarde
+            # selon -Z.
+            m = np.column_stack((right, up, -fwd))
+            tr = float(np.trace(m))
+            if tr > 0:
+                s = math.sqrt(tr + 1.0) * 2.0
+                q = [0.25 * s,
+                     (m[2, 1] - m[1, 2]) / s,
+                     (m[0, 2] - m[2, 0]) / s,
+                     (m[1, 0] - m[0, 1]) / s]
+            else:
+                i = int(np.argmax([m[0, 0], m[1, 1], m[2, 2]]))
+                j, k = (i + 1) % 3, (i + 2) % 3
+                s = math.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) * 2.0
+                q = [0.0, 0.0, 0.0, 0.0]
+                q[0] = (m[k, j] - m[j, k]) / s
+                q[i + 1] = 0.25 * s
+                q[j + 1] = (m[j, i] + m[i, j]) / s
+                q[k + 1] = (m[k, i] + m[i, k]) / s
+            self._camera.set_world_pose(
+                position=eye, orientation=np.array(q))
+            return True
+        except Exception as exc:        # noqa: BLE001
+            print(f"  [{self.sensor_id}] look_at manuel échoué : {exc}")
+            return False
+
     @property
     def horizontal_fov_deg(self) -> float:
         """Champ de vision horizontal, utile pour vérifier qu'une scène

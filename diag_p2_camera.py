@@ -48,6 +48,11 @@ def main():
                              orientation=orient)
         if cam.initialize().name != "OK":
             print(f"  [{nom}] initialisation échouée"); continue
+        # ORIENTER vers le robot : sans ça le prim garde son axe par
+        # défaut et regarde ailleurs. C'est ce qui rendait les quatre
+        # points de vue indiscernables.
+        ok_aim = cam.look_at((float(pos[0]), float(pos[1]), 0.7))
+        print(f"  [{nom}] look_at -> {ok_aim}")
         cam.wait_until_ready(bridge._world)
         f = cam.capture()
         if f is None:
@@ -59,16 +64,25 @@ def main():
         std = float(arr.std())
         moy = float(arr.mean())
         # Combien de pixels s'ecartent nettement du fond ?
-        fond = np.median(arr.reshape(-1, 3), axis=0)
-        ecart = np.abs(arr.astype(int) - fond).sum(axis=2)
-        pct_objet = float((ecart > 40).mean() * 100)
+        # CRITÈRE CORRIGÉ. Le précédent comparait chaque pixel à la
+        # MÉDIANE de l'image : sur un simple dégradé de fond, la moitié
+        # des pixels s'en écartent mécaniquement, d'où les 45 % mesurés
+        # sur quatre images pourtant vides. On cherche plutôt des
+        # pixels SOMBRES, puisqu'un G1 non texturé se détache d'un fond
+        # clair (moyenne ~192).
+        lum = arr.mean(axis=2)
+        pct_objet = float((lum < 120).mean() * 100)
+        # Et on compare les moitiés gauche/droite : un fond dégradé est
+        # symétrique, un robot décentré ne l'est pas.
+        g, d_ = lum[:, :320].mean(), lum[:, 320:].mean()
+        asym = abs(float(g - d_))
 
         dets = detector.detect(f, "a robot")
         top = max((d.confidence for d in dets), default=0.0)
 
         print(f"\n  [{nom}] pos={p}")
         print(f"     moyenne={moy:6.1f}  ecart-type={std:6.1f}  "
-              f"pixels non-fond={pct_objet:5.1f}%")
+              f"pixels sombres={pct_objet:5.1f}%  asym.G/D={asym:5.1f}")
         print(f"     -> {len(dets)} detection(s), meilleure conf={top:.4f}")
 
         # Sauver l'image pour inspection visuelle.
@@ -83,9 +97,11 @@ def main():
         cam.shutdown()
 
     print("\n[diag] INTERPRETATION")
-    print("  pixels non-fond < 1%  -> la camera ne cadre PAS le robot")
-    print("  pixels non-fond > 5%  mais 0 detection -> le modele ne")
-    print("                           reconnait pas un G1 sans texture")
+    print("  Si les 4 vues donnent des chiffres IDENTIQUES : les cameras")
+    print("  ne regardent pas la scene (look_at inoperant).")
+    print("  Si elles different et que pixels sombres > 3% : le robot est")
+    print("  cadre. Zero detection signifie alors que le modele ne")
+    print("  reconnait pas un G1 non texture sur fond vide.")
     simulation_app.close()
 
 
