@@ -172,6 +172,25 @@ class IsaacSimBridge:
         # AUCUNE collision : sans ce plan, le G1 tombe à travers.
         self._world = World(stage_units_in_meters=1.0)
         self._world.scene.add_default_ground_plane()
+
+        # Lumière : sans source lumineuse, TOUTE caméra de la scène rend
+        # du noir uniforme, indéfiniment. Aucune erreur n'est levée — le
+        # tableau a la bonne taille, seuls les octets trahissent le
+        # problème. Sans conséquence tant qu'on ne faisait que de la
+        # physique (les suites S1-S5 n'ont jamais rendu d'image), mais
+        # bloquant dès qu'une caméra existe.
+        try:
+            from isaacsim.core.api.objects.ground_plane import GroundPlane  # noqa: F401
+            import omni.usd
+            from pxr import UsdLux, Sdf
+            stage = omni.usd.get_context().get_stage()
+            if not stage.GetPrimAtPath("/World/DefaultLight"):
+                light = UsdLux.DomeLight.Define(
+                    stage, Sdf.Path("/World/DefaultLight"))
+                light.CreateIntensityAttr(1000.0)
+        except Exception as exc:        # noqa: BLE001
+            print(f"[bridge] AVERTISSEMENT : lumière non créée ({exc}) — "
+                  f"une caméra de cette scène rendra du noir.")
         self._robot = self._world.scene.add(Robot(prim_path="/World/g1", name="g1_axisos"))
         self._world.reset()
         self._robot.initialize()

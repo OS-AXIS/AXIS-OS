@@ -86,8 +86,12 @@ def main():
 
     section("2 — Rendu et lecture d'une vraie image")
 
-    for _ in range(30):
-        bridge._world.step(render=True)
+    # Attendre que l'annotateur produise VRAIMENT des données plutôt
+    # qu'un nombre fixe d'images : Isaac Sim avertit lui-même qu'« a few
+    # render frames may be required before data is available », et ce
+    # délai varie selon la scène et la charge GPU.
+    ready = cam.wait_until_ready(bridge._world)
+    check("La caméra produit des données non nulles", ready)
 
     frame = cam.capture()
     check("capture() rend une image après rendu", frame is not None)

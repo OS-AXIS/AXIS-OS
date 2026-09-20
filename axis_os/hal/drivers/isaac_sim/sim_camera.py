@@ -110,6 +110,34 @@ class IsaacSimCamera(ICamera):
               f"{self._prim_path} — {self._width}x{self._height}")
         return HALStatus.OK
 
+    def wait_until_ready(self, world, max_frames: int = 120) -> bool:
+        """Rend des images jusqu'à ce que la caméra produise VRAIMENT des
+        données, ou renonce après max_frames.
+
+        NÉCESSAIRE, et constaté en exécution réelle : Isaac Sim avertit
+        lui-même que « Annotator 'rgb' returned None or unexpected shape
+        — a few render frames may be required before data is available ».
+        Un nombre fixe de step() est un pari : l'annotateur peut mettre
+        plus ou moins de temps selon la scène, la charge GPU et le moment
+        où la caméra a été créée par rapport au reste.
+
+        Le piège que cette méthode ferme : capture() rendait un tableau
+        de la BONNE TAILLE mais entièrement noir. Rien dans la forme des
+        données ne signalait l'anomalie — seul le contenu le trahissait.
+        On attend donc une image réellement non nulle, pas un compteur.
+        """
+        for i in range(max_frames):
+            world.step(render=True)
+            frame = self.capture()
+            if frame is not None and any(frame.data[:4096]):
+                print(f"  [{self.sensor_id}] premières données après "
+                      f"{i + 1} image(s) rendue(s).")
+                return True
+        print(f"  [{self.sensor_id}] AUCUNE donnée après {max_frames} "
+              f"images — la caméra rend du noir. Vérifier qu'une source "
+              f"de lumière existe dans la scène.")
+        return False
+
     def shutdown(self) -> HALStatus:
         self._camera = None
         self._initialized = False
