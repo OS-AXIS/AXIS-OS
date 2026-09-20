@@ -230,6 +230,21 @@ class PerceptionService(IService):
         detections = self._detector.detect(frame, query)
         self._detections_count += len(detections)
 
+        # Une inférence en PANNE rend zéro détection — strictement
+        # indiscernable d'une scène vide pour l'appelant. Constaté en
+        # exécution réelle : le post-traitement d'OWL-ViT plantait à
+        # chaque image et find() rendait ok=True avec 0 détection, sans
+        # le moindre signal. Un détecteur qui expose son erreur doit la
+        # voir remonter.
+        det_err = getattr(self._detector, "stats", {}).get(
+            "last_inference_error") if hasattr(self._detector, "stats") else None
+        if det_err and not detections:
+            return ServiceResult(
+                ok=False, value=[],
+                reason=f"le détecteur est en panne ({det_err}) — zéro "
+                       f"détection ne signifie PAS que la scène est vide",
+            )
+
         intrinsics = self._camera.get_intrinsics()
         if intrinsics is None or self._tree is None:
             # Dégradation HONNÊTE : les détections sont rendues, mais

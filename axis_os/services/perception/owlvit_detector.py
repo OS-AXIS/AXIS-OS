@@ -76,6 +76,7 @@ class OwlViTDetector(IObjectDetector):
         self._model = None
         self._processor = None
         self._load_error: Optional[str] = None
+        self._last_inference_error: Optional[str] = None
         self._inferences = 0
         self._total_ms = 0.0
 
@@ -175,11 +176,15 @@ class OwlViTDetector(IObjectDetector):
 
             target_sizes = torch.tensor(
                 [[frame.height, frame.width]]).to(self._device)
-            results = self._processor.post_process_object_detection(
-                outputs=outputs, threshold=self._threshold,
-                target_sizes=target_sizes,
-            )[0]
+            results = self._post_process(outputs, target_sizes, queries)[0]
         except Exception as exc:        # noqa: BLE001
+            # Mémorisé, pas seulement affiché : une inférence qui
+            # échoue silencieusement rend zéro détection, ce qui est
+            # INDISCERNABLE d'une scène vide. C'est exactement ce qui
+            # s'est produit lors du premier essai avec transformers
+            # 5.x — find() rendait ok=True avec 0 détection alors que
+            # le post-traitement plantait à chaque image.
+            self._last_inference_error = str(exc)
             print(f"  [owlvit] inférence échouée : {exc}")
             return []
         finally:
@@ -187,11 +192,20 @@ class OwlViTDetector(IObjectDetector):
             self._inferences += 1
 
         detections: List[Detection] = []
-        for score, label_idx, box in zip(
-                results["scores"], results["labels"], results["boxes"]):
+        # Selon la version, `labels` contient des indices (int) ou
+        # directement le texte ; `text_labels` existe en 5.x. On
+        # résout sans supposer.
+        labels = results.get("text_labels", results.get("labels"))
+        for score, raw_label, box in zip(
+                results["scores"], labels, results["boxes"]):
             x0, y0, x1, y1 = (float(v) for v in box.tolist())
+            if isinstance(raw_label, str):
+                label = raw_label
+            else:
+                idx = int(raw_label)
+                label = queries[idx] if idx < len(queries) else str(idx)
             detections.append(Detection(
-                label=queries[int(label_idx)],
+                label=label,
                 confidence=float(score),
                 # OWL-ViT rend (x0,y0,x1,y1) ; Detection attend
                 # (x, y, largeur, hauteur). Confondre les deux décale
@@ -206,6 +220,53 @@ class OwlViTDetector(IObjectDetector):
         detections.sort(key=lambda d: -d.confidence)
         return detections[:self._max_detections]
 
+    def _post_process(self, outputs, target_sizes, queries):
+        """Post-traitement, quelle que soit la version de transformers.
+
+        Constaté en exécution réelle avec transformers 5.17 :
+        `post_process_object_detection` a migré du Processor vers
+        l'ImageProcessor, et le Processor expose désormais
+        `post_process_grounded_object_detection`, variante dédiée aux
+        modèles à vocabulaire ouvert.
+
+        On essaie les trois emplacements plutôt que d'épingler une
+        version : ce détecteur doit survivre à une mise à jour de
+        transformers sans casser la perception du robot. L'ordre suit
+        la préférence — la variante « grounded » d'abord, puisque
+        c'est celle qui correspond au vocabulaire ouvert.
+        """
+        # 1. Variante moderne, dédiée au vocabulaire ouvert.
+        fn = getattr(self._processor,
+                     "post_process_grounded_object_detection", None)
+        if fn is not None:
+            try:
+                return fn(outputs=outputs, threshold=self._threshold,
+                          target_sizes=target_sizes, text_labels=[queries])
+            except TypeError:
+                # Signature variable selon la version : certaines
+                # n'acceptent pas text_labels.
+                return fn(outputs=outputs, threshold=self._threshold,
+                          target_sizes=target_sizes)
+
+        # 2. Emplacement historique, sur le Processor.
+        fn = getattr(self._processor, "post_process_object_detection", None)
+        if fn is not None:
+            return fn(outputs=outputs, threshold=self._threshold,
+                      target_sizes=target_sizes)
+
+        # 3. transformers 5.x : déplacé sur l'ImageProcessor.
+        image_proc = getattr(self._processor, "image_processor", None)
+        fn = getattr(image_proc, "post_process_object_detection", None)
+        if fn is not None:
+            return fn(outputs=outputs, threshold=self._threshold,
+                      target_sizes=target_sizes)
+
+        raise RuntimeError(
+            "aucune méthode de post-traitement trouvée sur le processor "
+            f"({type(self._processor).__name__}) ni sur son image_processor "
+            "— version de transformers incompatible."
+        )
+
     @property
     def stats(self) -> dict:
         return {
@@ -216,4 +277,5 @@ class OwlViTDetector(IObjectDetector):
             "mean_ms": (self._total_ms / self._inferences
                         if self._inferences else 0.0),
             "load_error": self._load_error,
+            "last_inference_error": self._last_inference_error,
         }
