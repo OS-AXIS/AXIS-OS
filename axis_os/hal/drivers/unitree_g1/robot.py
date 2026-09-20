@@ -21,7 +21,7 @@ from axis_os.hal.core.capabilities import CapabilitySet, RobotCapability
 from axis_os.hal.core.types import (
     ActuatorCommand, ActuatorFeedback, ActuatorState,
     ControlMode, HALStatus, IMUData, SensorType,
-    JointDefinition, JointLimits, JointType,
+    JointDefinition, JointLimits, JointType, JointGroup,
     Vector3, Quaternion
 )
 from axis_os.hal.core.urdf_loader import load_urdf, URDFParseError
@@ -59,7 +59,50 @@ def _build_g1_joint_definitions() -> List[JointDefinition]:
     doit jamais démarrer avec des valeurs par défaut silencieuses.
     """
     model = load_urdf(_G1_URDF_PATH)
-    return model.get_joints()
+    return [replace(j, group=_G1_JOINT_GROUPS[j.joint_id])
+            for j in model.get_joints()]
+
+
+# Groupe fonctionnel de chaque articulation du G1, DÉCLARÉ ICI par le
+# driver. L'URDF décrit la géométrie et les limites, jamais le rôle
+# fonctionnel d'un joint — c'est une connaissance du robot, au même
+# titre que les conventions de signe de conventions.py.
+#
+# Le SDK devinait auparavant ce rôle à partir de mots-clés anglais
+# ("shoulder", "knee"...). Conséquence sur le G1 lui-même :
+# waist_yaw_joint ne contenait aucun mot-clé, donc AUCUNE app ne
+# pouvait faire pivoter le torse, sauf via move_all(). Il est
+# désormais déclaré OTHER — toujours hors de move_arms/move_legs, ce
+# qui est correct (ce n'est ni un bras ni une jambe), mais
+# explicitement, et move_to_pose() le signale au lieu de l'ignorer.
+_G1_JOINT_GROUPS: Dict[str, JointGroup] = {
+    # Jambes — 12 joints
+    "left_hip_pitch_joint":       JointGroup.LOCOMOTION,
+    "left_hip_roll_joint":        JointGroup.LOCOMOTION,
+    "left_hip_yaw_joint":         JointGroup.LOCOMOTION,
+    "left_knee_joint":            JointGroup.LOCOMOTION,
+    "left_ankle_pitch_joint":     JointGroup.LOCOMOTION,
+    "left_ankle_roll_joint":      JointGroup.LOCOMOTION,
+    "right_hip_pitch_joint":      JointGroup.LOCOMOTION,
+    "right_hip_roll_joint":       JointGroup.LOCOMOTION,
+    "right_hip_yaw_joint":        JointGroup.LOCOMOTION,
+    "right_knee_joint":           JointGroup.LOCOMOTION,
+    "right_ankle_pitch_joint":    JointGroup.LOCOMOTION,
+    "right_ankle_roll_joint":     JointGroup.LOCOMOTION,
+    # Torse — ni bras ni jambe
+    "waist_yaw_joint":            JointGroup.OTHER,
+    # Bras — 10 joints
+    "left_shoulder_pitch_joint":  JointGroup.MANIPULATION,
+    "left_shoulder_roll_joint":   JointGroup.MANIPULATION,
+    "left_shoulder_yaw_joint":    JointGroup.MANIPULATION,
+    "left_elbow_joint":           JointGroup.MANIPULATION,
+    "left_wrist_roll_joint":      JointGroup.MANIPULATION,
+    "right_shoulder_pitch_joint": JointGroup.MANIPULATION,
+    "right_shoulder_roll_joint":  JointGroup.MANIPULATION,
+    "right_shoulder_yaw_joint":   JointGroup.MANIPULATION,
+    "right_elbow_joint":          JointGroup.MANIPULATION,
+    "right_wrist_roll_joint":     JointGroup.MANIPULATION,
+}
 
 
 class G1SimulatedActuator(IActuator):

@@ -143,6 +143,49 @@ check("play() sur un haut-parleur non initialisé échoue proprement",
 
 shutil.rmtree(TMP_DIR, ignore_errors=True)
 
+# ══════════════════════════════════════════════════════════════════
+
+section("CameraIntrinsics — pixel vers rayon")
+
+from axis_os.hal.core.types import CameraIntrinsics
+
+_k = CameraIntrinsics(fx=600.0, fy=600.0, cx=320.0, cy=240.0)
+
+_centre = _k.pixel_to_ray(320.0, 240.0)
+check("Le centre optique donne un rayon droit devant (x=0, y=0, z=1)",
+      abs(_centre.x) < 1e-9 and abs(_centre.y) < 1e-9 and _centre.z == 1.0)
+
+_coin = _k.pixel_to_ray(0.0, 0.0)
+check("Le coin haut-gauche part vers la gauche ET vers le haut "
+      "(convention optique : y vers le bas, donc y negatif en haut)",
+      _coin.x < 0 and _coin.y < 0)
+
+_droite = _k.pixel_to_ray(640.0, 240.0)
+check("Un pixel a droite du centre donne un rayon vers la droite",
+      _droite.x > 0 and abs(_droite.y) < 1e-9)
+
+# Une focale plus longue = champ plus etroit = meme pixel plus proche
+# de l'axe optique. Verifie que fx entre bien au denominateur.
+_tele = CameraIntrinsics(fx=1200.0, fy=1200.0, cx=320.0, cy=240.0)
+check("Doubler la focale halve l'angle du meme pixel (fx au denominateur)",
+      abs(_tele.pixel_to_ray(640.0, 240.0).x - _droite.x / 2) < 1e-9)
+
+section("get_intrinsics() — l'absence de calibration doit se DIRE")
+
+_cam_nue = FakeCamera("cam_sans_calib", Path("/tmp/axisos_inexistant"))
+check("FakeCamera sans calibration retourne None, pas des valeurs inventees",
+      _cam_nue.get_intrinsics() is None)
+
+_cam_cal = FakeCamera("cam_calib", Path("/tmp/axisos_inexistant"), intrinsics=_k)
+check("FakeCamera avec calibration la restitue telle quelle",
+      _cam_cal.get_intrinsics() is not None
+      and _cam_cal.get_intrinsics().fx == 600.0)
+
+check("ICamera impose get_intrinsics() (methode abstraite)",
+      "get_intrinsics" in ICamera.__abstractmethods__)
+
+# ══════════════════════════════════════════════════════════════════
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)
@@ -151,5 +194,6 @@ if FAIL == 0:
     print("\n  ✓ ICamera/IMicrophone/ISpeaker correctement définies et abstraites")
     print("  ✓ FakeCamera rejoue de VRAIES images PPM depuis le disque")
     print("  ✓ Robuste à un dossier absent ou un fichier corrompu")
+    print("  ✓ CameraIntrinsics convertit pixel -> rayon, absence de calibration explicite")
 
 sys.exit(0 if FAIL == 0 else 1)

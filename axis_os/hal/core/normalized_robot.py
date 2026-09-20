@@ -8,6 +8,7 @@ Licence : Apache 2.0 (open-source)
 """
 
 from __future__ import annotations
+from dataclasses import replace
 from typing import Optional, Dict, List
 
 from .interfaces import IRobotHAL, IIMU, IForceTorqueSensor
@@ -98,12 +99,14 @@ class NormalizedRobotHAL:
                     current_max=jdef.limits.current_max,
                     temperature_max=jdef.limits.temperature_max,
                 )
-                normalized_defs.append(JointDefinition(
-                    joint_id=jdef.joint_id, joint_type=jdef.joint_type,
-                    limits=norm_limits, parent_link=jdef.parent_link,
-                    child_link=jdef.child_link,
-                    default_control_mode=jdef.default_control_mode,
-                ))
+                # replace() plutôt qu'une reconstruction champ par champ :
+                # seules les LIMITES sont normalisées ici, tout le reste
+                # doit traverser intact. L'énumération manuelle perdait
+                # silencieusement tout champ ajouté depuis — c'est ce qui
+                # est arrivé à `group`, rendant le routage bras/jambes
+                # inopérant dès que NormalizedRobotHAL était dans la
+                # chaîne (c'est-à-dire toujours, en production).
+                normalized_defs.append(replace(jdef, limits=norm_limits))
             except KeyError:
                 normalized_defs.append(jdef)
         return normalized_defs

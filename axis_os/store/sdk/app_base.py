@@ -16,7 +16,10 @@ import secrets
 import time
 
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
-from axis_os.hal.core.types import ActuatorCommand, ActuatorFeedback, HALStatus, ControlMode
+from axis_os.hal.core.types import (
+    ActuatorCommand, ActuatorFeedback, HALStatus, ControlMode,
+    JointGroup, infer_joint_group,
+)
 from axis_os.hal.watchdog.system import WatchdogSystem
 from .manifest import AppManifest, Permission
 
@@ -131,6 +134,8 @@ class RobotContext:
         self._manifest = manifest
         self._log_entries: list[str] = []
         self._t0 = time.monotonic()
+        # Groupes déclarés par le HAL, résolus à la première utilisation.
+        self._joint_groups: Optional[Dict[str, JointGroup]] = None
 
     @classmethod
     def for_testing(
@@ -162,22 +167,45 @@ class RobotContext:
         self._require(Permission.SENSORS_IMU)
         return self._robot.get_imu()
 
+    def _group_of(self, joint_id: str) -> JointGroup:
+        """Groupe d'une articulation, DÉCLARÉ PAR LE DRIVER.
+
+        Le SDK ne devine plus à partir de mots-clés anglais : il demande
+        au HAL, qui seul sait ce que son robot possède. Repli sur
+        infer_joint_group() pour un driver qui ne déclare pas encore ses
+        groupes, afin de ne rien casser pendant la transition.
+        """
+        if self._joint_groups is None:
+            groups: Dict[str, JointGroup] = {}
+            try:
+                for jdef in self._robot.get_joint_definitions():
+                    groups[jdef.joint_id] = (
+                        jdef.group if jdef.group is not None
+                        else infer_joint_group(jdef.joint_id)
+                    )
+            except Exception:       # noqa: BLE001 — HAL sans définitions
+                pass
+            self._joint_groups = groups
+        g = self._joint_groups.get(joint_id)
+        return g if g is not None else infer_joint_group(joint_id)
+
+    def _route(self, commands: Dict[str, ActuatorCommand],
+               group: JointGroup) -> Dict[str, ActuatorCommand]:
+        return {jid: cmd for jid, cmd in commands.items()
+                if self._group_of(jid) is group}
+
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         self._require(Permission.ACTUATORS_WRITE_ARMS)
         self._require_no_estop()
-        arm_joints = {jid for jid in commands
-                      if any(k in jid for k in ["shoulder", "elbow", "wrist"])}
-        filtered = {jid: cmd for jid, cmd in commands.items() if jid in arm_joints}
-        filtered = self._apply_velocity_cap(filtered)
+        filtered = self._apply_velocity_cap(
+            self._route(commands, JointGroup.MANIPULATION))
         return self._robot.send_joint_commands(filtered)
 
     def move_legs(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         self._require(Permission.ACTUATORS_WRITE_LEGS)
         self._require_no_estop()
-        leg_joints = {jid for jid in commands
-                      if any(k in jid for k in ["hip", "knee", "ankle"])}
-        filtered = {jid: cmd for jid, cmd in commands.items() if jid in leg_joints}
-        filtered = self._apply_velocity_cap(filtered)
+        filtered = self._apply_velocity_cap(
+            self._route(commands, JointGroup.LOCOMOTION))
         return self._robot.send_joint_commands(filtered)
 
     def move_all(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
@@ -249,14 +277,13 @@ class RobotContext:
                     mode=ControlMode.POSITION, position=interpolated,
                 )
 
-            arm_cmds = {jid: c for jid, c in step_commands.items()
-                       if any(k in jid for k in ("shoulder", "elbow", "wrist"))}
-            leg_cmds = {jid: c for jid, c in step_commands.items()
-                       if any(k in jid for k in ("hip", "knee", "ankle"))}
+            arm_cmds = self._route(step_commands, JointGroup.MANIPULATION)
+            leg_cmds = self._route(step_commands, JointGroup.LOCOMOTION)
             unrouted = set(step_commands) - set(arm_cmds) - set(leg_cmds)
             if unrouted:
-                self.log(f"move_to_pose: joint(s) non routable(s) (ni bras ni "
-                        f"jambe) : {sorted(unrouted)} — abandon.")
+                self.log(f"move_to_pose: joint(s) du groupe OTHER (torse, tête…) "
+                        f"non routable(s) par move_arms/move_legs : "
+                        f"{sorted(unrouted)} — abandon. Utiliser move_all().")
                 return False
 
             results: Dict[str, HALStatus] = {}

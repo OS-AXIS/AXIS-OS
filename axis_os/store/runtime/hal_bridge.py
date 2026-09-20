@@ -39,7 +39,7 @@ from typing import Optional, Dict, Any, Callable
 
 from axis_os.hal.core.types import (
     ActuatorCommand, ActuatorFeedback, ActuatorState, ControlMode, HALStatus,
-    IMUData, Vector3, Quaternion,
+    IMUData, Vector3, Quaternion, JointGroup, infer_joint_group,
 )
 from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
@@ -197,6 +197,22 @@ class HALBridgeServer:
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
         try:
+            if cmd.action == "get_joint_groups":
+                # Groupes DÉCLARÉS par le driver, transmis en noms d'enum
+                # (str) : le routage bras/jambes ne doit pas dépendre de
+                # mots-clés anglais devinés côté client, et JointGroup
+                # n'est pas sérialisable tel quel sans imposer l'import
+                # côté process enfant.
+                out = {}
+                try:
+                    for jdef in self._ctx._robot.get_joint_definitions():
+                        g = (jdef.group if jdef.group is not None
+                             else infer_joint_group(jdef.joint_id))
+                        out[jdef.joint_id] = g.name
+                except Exception:       # noqa: BLE001
+                    pass
+                return HALResponse(cmd.request_id, True, data=out)
+
             if cmd.action == "move_arms":
                 commands = self._deserialize_commands(cmd.payload["commands"])
                 result = self._ctx.move_arms(commands)
@@ -405,6 +421,7 @@ class HALBridgeClient:
         self._alert_poll_thread: Optional[threading.Thread] = None
         self._alert_poll_stop = threading.Event()
         self._alert_poll_interval_s = alert_poll_interval_s
+        self.__groups_cache: Optional[Dict[str, str]] = None
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         """
@@ -438,6 +455,20 @@ class HALBridgeClient:
         """
         raw = self._call("move_all", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
+
+    def _joint_groups(self) -> Dict[str, str]:
+        """Groupes déclarés par le HAL, récupérés une fois via le pont.
+
+        Les noms d'enum transitent en str : JointGroup n'est pas
+        sérialisable tel quel à travers multiprocessing.Queue sans
+        imposer l'import côté enfant.
+        """
+        if self.__groups_cache is None:
+            try:
+                self.__groups_cache = self._call("get_joint_groups", {})
+            except Exception:       # noqa: BLE001 — serveur ancien
+                self.__groups_cache = {}
+        return self.__groups_cache
 
     def get_full_state(self) -> Dict[str, ActuatorFeedback]:
         """Identique à RobotContext.get_full_state(), Y COMPRIS LE TYPE
@@ -505,10 +536,15 @@ class HALBridgeClient:
                     mode=ControlMode.POSITION, position=interpolated,
                 )
 
+            # Même routage par groupe DÉCLARÉ que RobotContext, pas de
+            # devinement par mots-clés anglais. Côté client du pont, on
+            # n'a pas get_joint_definitions() sous la main : on demande
+            # les groupes au serveur, qui les tient du HAL.
+            groups = self._joint_groups()
             arm_cmds = {jid: c for jid, c in step_commands.items()
-                       if any(k in jid for k in ("shoulder", "elbow", "wrist"))}
+                        if groups.get(jid) == JointGroup.MANIPULATION.name}
             leg_cmds = {jid: c for jid, c in step_commands.items()
-                       if any(k in jid for k in ("hip", "knee", "ankle"))}
+                        if groups.get(jid) == JointGroup.LOCOMOTION.name}
             unrouted = set(step_commands) - set(arm_cmds) - set(leg_cmds)
             if unrouted:
                 self.log(f"move_to_pose: joint(s) non routable(s) (ni bras ni "

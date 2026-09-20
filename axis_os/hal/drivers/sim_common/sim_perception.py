@@ -35,7 +35,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from axis_os.hal.core.interfaces import ICamera, IMicrophone, ISpeaker
-from axis_os.hal.core.types import CameraFrame, AudioChunk, HALStatus, SensorType
+from axis_os.hal.core.types import (
+    CameraFrame, CameraIntrinsics, AudioChunk, HALStatus, SensorType,
+)
 
 
 class FakeCamera(ICamera):
@@ -59,13 +61,23 @@ class FakeCamera(ICamera):
         image_dir: Path,
         raw_width: Optional[int] = None,
         raw_height: Optional[int] = None,
+        intrinsics: Optional[CameraIntrinsics] = None,
     ):
         super().__init__(sensor_id, SensorType.CAMERA_RGB)
         self._image_dir = Path(image_dir)
         self._raw_width = raw_width
         self._raw_height = raw_height
+        self._intrinsics = intrinsics
         self._files: List[Path] = []
         self._cycle = None
+
+    def get_intrinsics(self) -> Optional[CameraIntrinsics]:
+        """None par défaut, et c'est VOLONTAIRE : une caméra factice
+        n'a pas de calibration réelle, et en inventer une donnerait à
+        un service de perception l'illusion de pouvoir calculer des
+        positions 3D exactes. Passer `intrinsics=` explicitement pour
+        tester le chemin calibré."""
+        return self._intrinsics
 
     def initialize(self) -> HALStatus:
         if not self._image_dir.exists():

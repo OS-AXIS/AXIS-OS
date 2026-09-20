@@ -18,7 +18,7 @@ from typing import Optional, List, Dict
 from .types import (
     ActuatorCommand, ActuatorFeedback, ActuatorState,
     ControlMode, HALStatus, IMUData, ForceTorqueData,
-    JointDefinition, SensorType, CameraFrame, AudioChunk
+    JointDefinition, SensorType, CameraFrame, CameraIntrinsics, AudioChunk
 )
 from .capabilities import CapabilitySet
 
@@ -119,6 +119,19 @@ class ICamera(ISensor, ABC):
     """
     @abstractmethod
     def capture(self) -> Optional[CameraFrame]: ...
+
+    @abstractmethod
+    def get_intrinsics(self) -> Optional[CameraIntrinsics]:
+        """Calibration de CET exemplaire de caméra, ou None si elle
+        n'est pas connue.
+
+        Retourner None est un cas légitime et fréquent (caméra non
+        calibrée, driver qui ne l'expose pas) : le contrat impose de
+        le DIRE, pas d'inventer des valeurs plausibles. Un service de
+        perception qui reçoit None doit dégrader honnêtement — rendre
+        une détection sans position 3D — plutôt que de produire des
+        coordonnées fausses qu'une préhension prendrait au sérieux.
+        """
 
 
 class IMicrophone(ISensor, ABC):

@@ -199,6 +199,46 @@ class CameraFrame:
     timestamp_ns: int = field(default_factory=time.time_ns)
 
 
+@dataclass(frozen=True)
+class CameraIntrinsics:
+    """
+    Calibration d'une caméra — ce qui permet de passer d'un PIXEL à une
+    DIRECTION dans le repère de la caméra.
+
+    Sans ces paramètres, une détection ne produit qu'une boîte en
+    pixels : impossible de dire OÙ se trouve l'objet dans l'espace,
+    donc impossible pour la préhension de savoir où tendre la main.
+    C'est le chaînon qui relie perception et manipulation ; il est
+    déclaré ici, au niveau du contrat HAL, plutôt que réinventé dans
+    chaque service.
+
+    fx/fy : distances focales en pixels. cx/cy : centre optique, qui
+    n'est pas exactement le centre de l'image sur une vraie caméra.
+    distortion : coefficients du modèle de distorsion, vides si l'image
+    est déjà rectifiée — cas fréquent des caméras qui rectifient en
+    interne, et cas systématique d'une caméra simulée, où l'optique est
+    parfaite par construction.
+
+    ATTENTION : ces valeurs sont PROPRES À CHAQUE EXEMPLAIRE de caméra,
+    pas au modèle. Deux G1 sortis de la même chaîne n'ont pas la même
+    calibration. Elles doivent venir du capteur ou d'un fichier de
+    calibration, jamais être codées en dur dans le driver.
+    """
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    distortion: tuple = ()
+
+    def pixel_to_ray(self, u: float, v: float) -> "Vector3":
+        """Direction (non normalisée) dans le repère caméra, en
+        convention optique : x vers la droite, y vers le bas, z vers
+        l'avant. Suppose l'image rectifiée — la distorsion n'est PAS
+        corrigée ici, ce serait le rôle d'un service de perception
+        avec la bibliothèque adéquate, pas du contrat HAL."""
+        return Vector3((u - self.cx) / self.fx, (v - self.cy) / self.fy, 1.0)
+
+
 @dataclass
 class AudioChunk:
     """
@@ -213,6 +253,57 @@ class AudioChunk:
     timestamp_ns: int = field(default_factory=time.time_ns)
 
 
+class JointGroup(Enum):
+    """Groupe fonctionnel d'une articulation, DÉCLARÉ PAR LE DRIVER.
+
+    Remplace le devinement par mots-clés anglais ("shoulder", "knee"...)
+    qui était codé en dur dans le SDK. Ce devinement supposait
+    silencieusement un humanoïde nommé à l'anglaise :
+
+    - un bras industriel aux axes nommés joint_1..joint_6 ne
+      correspondait à AUCUN groupe : move_arms() retournait {} sans
+      erreur, et l'app ne bougeait rien, en silence ;
+    - un quadrupède aurait été classé "jambes" par accident, ce qui
+      marche à moitié — pire qu'un échec franc ;
+    - et sur le G1 lui-même, waist_yaw_joint ne contenait aucun des six
+      mots-clés : le torse était inatteignable pour toute app, sauf via
+      move_all.
+
+    C'est au driver de savoir ce que SON robot possède, exactement comme
+    c'est lui qui connaît ses conventions de signe. Le SDK ne fait plus
+    que router ce qui lui est déclaré.
+
+    OTHER existe pour ne forcer personne à mentir : un joint qui n'est
+    ni manipulation ni locomotion (torse, tête, mât) se déclare OTHER et
+    reste accessible via move_all, sans être faussement rangé ailleurs.
+    """
+    MANIPULATION = auto()   # bras, pinces — ce que move_arms() pilote
+    LOCOMOTION   = auto()   # jambes, pattes, roues — move_legs()
+    OTHER        = auto()   # torse, tête, mât... move_all() uniquement
+
+
+# Mots-clés de REPLI, utilisés seulement si un driver ne déclare pas
+# encore ses groupes. Reproduit l'ancien comportement pour ne casser
+# aucun driver existant, mais reste un pis-aller : tout driver devrait
+# renseigner JointDefinition.group.
+_FALLBACK_MANIPULATION = ("shoulder", "elbow", "wrist")
+_FALLBACK_LOCOMOTION   = ("hip", "knee", "ankle")
+
+
+def infer_joint_group(joint_id: str) -> JointGroup:
+    """Repli par mots-clés pour un joint sans groupe déclaré.
+
+    Ne jamais appeler ça dans un driver neuf : déclarer le groupe sur
+    JointDefinition. Cette fonction n'existe que pour la transition.
+    """
+    low = joint_id.lower()
+    if any(k in low for k in _FALLBACK_MANIPULATION):
+        return JointGroup.MANIPULATION
+    if any(k in low for k in _FALLBACK_LOCOMOTION):
+        return JointGroup.LOCOMOTION
+    return JointGroup.OTHER
+
+
 @dataclass
 class JointDefinition:
     joint_id:             str
@@ -221,3 +312,4 @@ class JointDefinition:
     parent_link:          str
     child_link:           str
     default_control_mode: ControlMode = ControlMode.POSITION
+    group:                Optional[JointGroup] = None
