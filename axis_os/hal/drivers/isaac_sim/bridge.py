@@ -227,6 +227,23 @@ class IsaacSimBridge:
         # et évite le doublon de prim rencontré avec un GroundPlane() en
         # plus au même endroit. La grille par défaut d'Isaac Sim n'a
         # AUCUNE collision : sans ce plan, le G1 tombe à travers.
+        # PLACEMENT DANS LA SCÈNE USD, AVANT QUE LA PHYSIQUE NE DÉMARRE.
+        #
+        # Deux tentatives précédentes ont échoué, et la vérification l'a
+        # dit à chaque fois (boîte englobante inchangée de -0.73 à +0.59) :
+        #   1. passer position= au Robot après création du World ;
+        #   2. relever une ancre de joint attachée au monde — il n'en
+        #      existe aucune : la base fixe n'est pas réalisée ainsi.
+        # Plutôt que de deviner le mécanisme de fixation, on déplace le
+        # prim racine dans la scène AVANT la création du World : quel que
+        # soit ce mécanisme, la physique s'initialise depuis la pose
+        # authorée à ce moment-là.
+        spawn_z = self._compute_spawn_height(margin=0.005)
+        self._spawn_z = spawn_z
+        self._author_root_translation(spawn_z)
+        if fix_base:
+            self._shift_world_anchors(spawn_z)
+
         self._world = World(stage_units_in_meters=1.0)
         self._world.scene.add_default_ground_plane()
 
@@ -258,19 +275,11 @@ class IsaacSimBridge:
         # On mesure la géométrie réelle à l'origine et on relève le robot
         # de ce qu'il faut pour que son point le plus bas touche le sol,
         # plus une marge qui évite toute interpénétration initiale.
-        import numpy as np
-        spawn_z = self._compute_spawn_height(margin=0.005)
-        self._spawn_z = spawn_z
-        # En base fixe, le bassin est attaché au MONDE par un joint fixe
-        # dont l'ancre est un point absolu. Déplacer le robot sans
-        # déplacer cette ancre ne sert à rien : la physique le ramène à
-        # son point d'attache. Constaté : « robot placé à z=+0.797 »,
-        # puis boîte englobante inchangée de -0.73 à +0.59.
-        if fix_base:
-            self._shift_world_anchors(spawn_z)
+        # Placement déjà fait AVANT la création du World (voir plus
+        # haut) : on ne repasse PAS de position au Robot, qui écraserait
+        # la pose authorée dans la scène.
         self._robot = self._world.scene.add(Robot(
-            prim_path="/World/g1", name="g1_axisos",
-            position=np.array([0.0, 0.0, spawn_z])))
+            prim_path="/World/g1", name="g1_axisos"))
         self._world.reset()
         self._verify_grounded()
         self._robot.initialize()
@@ -301,6 +310,28 @@ class IsaacSimBridge:
             )
         print(f"[bridge] {len(self._joint_index)}/23 joints mappés avec Isaac Sim.")
 
+    def _author_root_translation(self, z: float) -> None:
+        """Écrit la translation du prim racine /World/g1 dans la scène USD."""
+        try:
+            import omni.usd
+            from pxr import Gf, UsdGeom
+            stage = omni.usd.get_context().get_stage()
+            prim = stage.GetPrimAtPath("/World/g1")
+            api = UsdGeom.XformCommonAPI(prim)
+            if api.SetTranslate(Gf.Vec3d(0.0, 0.0, z)):
+                print(f"[bridge] translation authorée sur /World/g1 : z={z:+.3f}")
+                return
+            # Repli : pile d'opérations incompatible avec XformCommonAPI.
+            xf = UsdGeom.Xformable(prim)
+            op = next((o for o in xf.GetOrderedXformOps()
+                       if o.GetOpType() == UsdGeom.XformOp.TypeTranslate), None)
+            if op is None:
+                op = xf.AddTranslateOp()
+            op.Set(Gf.Vec3d(0.0, 0.0, z))
+            print(f"[bridge] translation authorée (op directe) : z={z:+.3f}")
+        except Exception as exc:        # noqa: BLE001
+            print(f"[bridge] AVERTISSEMENT : translation non authorée ({exc})")
+
     def _shift_world_anchors(self, dz: float) -> None:
         """Relève de `dz` l'ancre de tout joint attachant le robot au monde.
 
@@ -322,10 +353,14 @@ class IsaacSimBridge:
                 j = UsdPhysics.Joint(p)
                 b0 = j.GetBody0Rel().GetTargets()
                 b1 = j.GetBody1Rel().GetTargets()
+                # « Monde » = corps absent OU corps situé hors du robot
+                # (certains importateurs ciblent /World explicitement).
+                def _hors_robot(t):
+                    return (not t) or not str(t[0]).startswith("/World/g1")
                 attr = None
-                if not b0 and b1:
+                if _hors_robot(b0) and not _hors_robot(b1):
                     attr = j.GetLocalPos0Attr()
-                elif b0 and not b1:
+                elif _hors_robot(b1) and not _hors_robot(b0):
                     attr = j.GetLocalPos1Attr()
                 if attr is None:
                     continue
