@@ -118,7 +118,8 @@ def main():
 
             targets = pol.step(quat, omega,
                                {j: float(jp[idx[j]]) for j in names},
-                               {j: float(jv[idx[j]]) for j in names}, cmd)
+                               {j: float(jv[idx[j]]) for j in names}, cmd,
+                               ang_vel_frame="world")
             targets.update(upper)
             cmds = {j: ActuatorCommand(mode=ControlMode.POSITION, position=v)
                     for j, v in targets.items()}

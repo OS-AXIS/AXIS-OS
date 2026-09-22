@@ -232,10 +232,12 @@ class G1LocomotionPolicy:
     def build_observation(
         self,
         base_quat_wxyz: Sequence[float],
-        base_ang_vel_world: Sequence[float],
+        base_ang_vel: Sequence[float],
         joint_pos: Dict[str, float],
         joint_vel: Dict[str, float],
         command: Sequence[float],
+        *,
+        ang_vel_frame: str,
     ) -> np.ndarray:
         """Assemble les 47 valeurs, dans l'ordre exact de l'entraînement :
 
@@ -248,6 +250,20 @@ class G1LocomotionPolicy:
             [45:47] sin, cos de la phase de marche
         """
         c = self.cfg
+        # ang_vel_frame est OBLIGATOIRE et sans valeur par défaut : le
+        # repère de la vitesse angulaire doit être DÉCLARÉ par l'appelant.
+        # En simulation, Isaac Sim rend le repère du monde ; une vraie
+        # centrale inertielle rend celui du robot. Deviner — ou supposer
+        # le monde par défaut — ferait convertir deux fois sur le vrai
+        # robot, ce qui le fait tomber en tournant (mesuré).
+        if ang_vel_frame == "world":
+            omega_body = body_angular_velocity(base_quat_wxyz, base_ang_vel)
+        elif ang_vel_frame == "body":
+            omega_body = np.asarray(base_ang_vel, dtype=float)
+        else:
+            raise ValueError(
+                f"ang_vel_frame doit valoir 'world' ou 'body', pas "
+                f"{ang_vel_frame!r} — le repère ne se devine pas")
         missing = [j for j in c.leg_joints if j not in joint_pos or j not in joint_vel]
         if missing:
             raise KeyError(f"articulations absentes de l'état : {missing}")
@@ -258,7 +274,7 @@ class G1LocomotionPolicy:
 
         obs = np.zeros(c.num_obs, dtype=np.float32)
         n = c.num_actions
-        obs[0:3] = body_angular_velocity(base_quat_wxyz, base_ang_vel_world) * c.ang_vel_scale
+        obs[0:3] = omega_body * c.ang_vel_scale
         obs[3:6] = projected_gravity(base_quat_wxyz)
         obs[6:9] = self.clamp_command(command) * np.asarray(c.cmd_scale)
         obs[9:9 + n] = (qj - self._default) * c.dof_pos_scale
@@ -305,14 +321,15 @@ class G1LocomotionPolicy:
             out[j] = v
         return out
 
-    def step(self, base_quat_wxyz, base_ang_vel_world, joint_pos, joint_vel,
-             command) -> Dict[str, float]:
+    def step(self, base_quat_wxyz, base_ang_vel, joint_pos, joint_vel,
+             command, *, ang_vel_frame: str) -> Dict[str, float]:
         """Un pas de commande (50 Hz) : état -> cibles des jambes."""
         if self._policy is None:
             raise RuntimeError("politique non chargée — appeler load()")
         import torch
-        obs = self.build_observation(base_quat_wxyz, base_ang_vel_world,
-                                     joint_pos, joint_vel, command)
+        obs = self.build_observation(base_quat_wxyz, base_ang_vel,
+                                     joint_pos, joint_vel, command,
+                                     ang_vel_frame=ang_vel_frame)
         with torch.no_grad():
             action = self._policy(torch.from_numpy(obs).unsqueeze(0))
         action = action.numpy().squeeze().astype(float)
@@ -342,3 +359,50 @@ class G1LocomotionPolicy:
         pose = {j: float(v) for j, v in zip(self.cfg.leg_joints, self._default)}
         pose.update(self.upper_body_targets())
         return pose
+
+
+class G1LocomotionAdapter:
+    """ILocomotionAdapter du G1 : enveloppe G1LocomotionPolicy.
+
+    Déclaré par le driver, conformément au principe d'universalité : le
+    service de locomotion ne sait rien de la marche bipède.
+
+    Un twist nul fait tourner la politique avec une consigne nulle : le
+    robot s'immobilise en gardant l'équilibre. C'est l'arrêt sûr d'un
+    bipède — couper les moteurs le ferait tomber.
+    """
+
+    def __init__(self, policy: "G1LocomotionPolicy", tilt_limit: float = -0.7):
+        self._policy = policy
+        # Chute : gravité projetée z au-dessus de -0.7, soit plus de ~45°
+        # d'inclinaison. Même seuil que les suites L1 et L2.
+        self._tilt_limit = tilt_limit
+
+    @property
+    def control_dt(self) -> float:
+        return self._policy.cfg.control_dt
+
+    @property
+    def max_twist(self):
+        from axis_os.services.locomotion.service import Twist
+        m = self._policy.cfg.max_cmd
+        return Twist(m[0], m[1], m[2])
+
+    def reset(self) -> None:
+        self._policy.reset()
+
+    def step(self, state, twist) -> Dict[str, float]:
+        targets = self._policy.step(
+            state.quat_wxyz, state.ang_vel_body,
+            state.joint_pos, state.joint_vel,
+            (twist.vx, twist.vy, twist.wz),
+            # BaseState porte le repère CORPS par contrat : une vraie
+            # centrale inertielle le fournit tel quel, et la source de
+            # simulation convertit avant de remplir l'état.
+            ang_vel_frame="body",
+        )
+        targets.update(self._policy.upper_body_targets())
+        return targets
+
+    def is_fallen(self, state) -> bool:
+        return float(projected_gravity(state.quat_wxyz)[2]) > self._tilt_limit

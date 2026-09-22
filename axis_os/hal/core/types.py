@@ -168,6 +168,26 @@ class ActuatorFeedback:
 
 @dataclass
 class IMUData:
+    """Mesure d'une centrale inertielle.
+
+    CONVENTION DE REPÈRE, désormais explicite :
+      - angular_velocity    : dans le repère du CAPTEUR (du corps), comme
+                              le rend TOUTE centrale inertielle réelle ;
+      - linear_acceleration : idem, repère du capteur ;
+      - orientation         : rotation monde <- capteur, (w, x, y, z).
+
+    Un driver de SIMULATION qui lit la vitesse angulaire dans le repère du
+    monde (Isaac Sim le fait) doit la CONVERTIR avant de remplir ce champ.
+    La conversion appartient à la source, jamais au consommateur : sinon,
+    le même consommateur branché sur une vraie centrale convertirait une
+    seconde fois. Mesuré : une vitesse angulaire dans le mauvais repère
+    fait tomber le G1 après 103° de virage (docs/validation_locomotion.md).
+
+    Attention : sur le G1 réel, la centrale est dans le TORSE, au-dessus
+    de l'articulation de taille. Une politique qui attend le repère du
+    BASSIN doit en plus compenser l'angle et la vitesse de la taille
+    (voir transform_imu_data dans unitree_rl_gym/deploy_real).
+    """
     linear_acceleration: Vector3
     angular_velocity:    Vector3
     orientation:         Quaternion

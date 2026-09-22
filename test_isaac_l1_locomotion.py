@@ -129,7 +129,7 @@ def main():
                 fell_at = t
                 break
 
-            targets = pol.step(quat, omega, jp, jv, cmd)
+            targets = pol.step(quat, omega, jp, jv, cmd, ang_vel_frame="world")
             targets.update(upper)
 
             if guarded:

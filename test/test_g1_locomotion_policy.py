@@ -105,7 +105,8 @@ section("4 — Assemblage des 47 observations")
 pol = G1LocomotionPolicy(policy_path=None)
 pos = {j: d + 0.01 * i for i, (j, d) in enumerate(zip(cfg.leg_joints, cfg.default_angles))}
 vel = {j: 0.5 for j in cfg.leg_joints}
-obs = pol.build_observation(identity, (0.4, 0.0, 0.0), pos, vel, (0.5, 0.0, 0.0))
+obs = pol.build_observation(identity, (0.4, 0.0, 0.0), pos, vel, (0.5, 0.0, 0.0),
+                            ang_vel_frame="world")
 
 check("Vecteur de 47 valeurs", obs.shape == (47,))
 check("[0:3] vitesse angulaire x 0.25", np.allclose(obs[0:3], [0.1, 0, 0]))
@@ -121,11 +122,42 @@ check("Consigne hors domaine bornée à max_cmd (5 m/s -> 0.8)",
       np.allclose(pol.clamp_command((5.0, -9.0, 9.0)), [0.8, -0.5, 1.57]))
 
 try:
-    pol.build_observation(identity, (0, 0, 0), {}, {}, (0, 0, 0))
+    pol.build_observation(identity, (0, 0, 0), {}, {}, (0, 0, 0), ang_vel_frame="world")
     ok = False
 except KeyError:
     ok = True
 check("État incomplet : erreur explicite, jamais une observation à trous", ok)
+
+section("4b — Le repère de la vitesse angulaire DOIT être déclaré")
+
+yaw = (math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4))
+o_w = pol.build_observation(yaw, (1.0, 0, 0), pos, vel, (0, 0, 0), ang_vel_frame="world")
+o_b = pol.build_observation(yaw, (0.0, -1.0, 0), pos, vel, (0, 0, 0), ang_vel_frame="body")
+check("« world » converti = même observation que « body » déjà converti",
+      np.allclose(o_w[0:3], o_b[0:3]))
+
+# LE piège sur le vrai robot : une centrale inertielle rend DÉJÀ le
+# repère du corps. Si le consommateur convertissait de lui-même, il
+# convertirait deux fois.
+o_double = pol.build_observation(yaw, (0.0, -1.0, 0), pos, vel, (0, 0, 0),
+                                 ang_vel_frame="world")
+check("Une mesure DÉJÀ en repère corps, déclarée « world » par erreur, "
+      "donne une observation FAUSSE — d'où l'obligation de déclarer",
+      not np.allclose(o_double[0:3], o_b[0:3]))
+
+try:
+    pol.build_observation(yaw, (0, 0, 0), pos, vel, (0, 0, 0))
+    ok = False
+except TypeError:
+    ok = True
+check("Sans ang_vel_frame : refusé — pas de valeur par défaut", ok)
+
+try:
+    pol.build_observation(yaw, (0, 0, 0), pos, vel, (0, 0, 0), ang_vel_frame="monde")
+    ok = False
+except ValueError:
+    ok = True
+check("Repère inconnu : refusé, le repère ne se devine pas", ok)
 
 section("5 — Action -> consignes")
 
@@ -167,7 +199,8 @@ check("Sans joint_limits : aucune modification (politique pure)",
 pb.last_action = big.copy()
 obs_b = pb.build_observation((1.0, 0, 0, 0), (0, 0, 0),
                              {j: 0.0 for j in cfg.leg_joints},
-                             {j: 0.0 for j in cfg.leg_joints}, (0, 0, 0))
+                             {j: 0.0 for j in cfg.leg_joints}, (0, 0, 0),
+                             ang_vel_frame="world")
 check("L'action réinjectée dans l'observation reste BRUTE (4.0), pas bornée",
       abs(obs_b[33 + cfg.leg_joints.index("left_ankle_roll_joint")] - 4.0) < 1e-6)
 
@@ -177,7 +210,7 @@ check("reset() remet les compteurs de bornage à zéro", pb.clamp_counts == {})
 section("6 — La politique non chargée ne peut pas commander")
 
 try:
-    pol.step(identity, (0, 0, 0), pos, vel, (0, 0, 0))
+    pol.step(identity, (0, 0, 0), pos, vel, (0, 0, 0), ang_vel_frame="world")
     ok = False
 except RuntimeError:
     ok = True
