@@ -56,6 +56,7 @@ class OwlViTDetector(IObjectDetector):
     def __init__(
         self,
         model_name: str = "google/owlvit-base-patch32",
+        revision: Optional[str] = None,
         threshold: float = 0.1,
         device: Optional[str] = None,
         max_detections: int = 20,
@@ -67,8 +68,18 @@ class OwlViTDetector(IObjectDetector):
             détection. À régler sur des images réelles, jamais deviné.
         device : "cuda" si disponible, sinon "cpu". CPU fonctionne mais
             compte en secondes par image, pas en millisecondes.
+        revision : identifiant de commit Hugging Face des POIDS du modèle.
+            None = la dernière version publiée, donc un comportement de
+            détection qui peut changer sans qu'une ligne d'AXIS-OS ne
+            bouge — même risque que transformers non épinglé, côté
+            poids cette fois. À renseigner avec le hash de commit
+            relevé sur la page du modèle avant tout déploiement. Laissé
+            à None par défaut plutôt qu'inventé : un identifiant faux
+            ferait échouer le chargement, un identifiant absent le
+            laisse fonctionner en le signalant.
         """
         self._model_name = model_name
+        self._revision = revision
         self._threshold = threshold
         self._device = device
         self._max_detections = max_detections
@@ -104,9 +115,11 @@ class OwlViTDetector(IObjectDetector):
         try:
             if self._device is None:
                 self._device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._processor = OwlViTProcessor.from_pretrained(self._model_name)
+            kw = {"revision": self._revision} if self._revision else {}
+            self._processor = OwlViTProcessor.from_pretrained(
+                self._model_name, **kw)
             self._model = OwlViTForObjectDetection.from_pretrained(
-                self._model_name).to(self._device)
+                self._model_name, **kw).to(self._device)
             self._model.eval()
         except Exception as exc:        # noqa: BLE001 — réseau, mémoire...
             self._load_error = f"chargement impossible : {exc}"
@@ -119,6 +132,11 @@ class OwlViTDetector(IObjectDetector):
                   "des SECONDES par image, pas des millisecondes. "
                   "Inutilisable dans une boucle de contrôle.")
         print(f"  [owlvit] {self._model_name} chargé sur {self._device}")
+        if self._revision is None:
+            print("  [owlvit] AVERTISSEMENT : poids NON épinglés (revision=None) "
+                  "— la dernière version publiée a été chargée. Le "
+                  "comportement de détection peut changer sans modification "
+                  "d'AXIS-OS. Épingler avant tout déploiement.")
         return True
 
     @property
@@ -271,6 +289,7 @@ class OwlViTDetector(IObjectDetector):
     def stats(self) -> dict:
         return {
             "model": self._model_name,
+            "revision": self._revision or "NON ÉPINGLÉE",
             "device": self._device,
             "loaded": self.is_loaded,
             "inferences": self._inferences,

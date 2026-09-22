@@ -40,3 +40,25 @@ protobuf>=4.25.0
 # unitree_sdk2py  # pip install unitree_sdk2py (pas encore publié sur PyPI
 #                 # au moment de l'écriture — installer depuis
 #                 # github.com/unitreerobotics/unitree_sdk2_python)
+
+# Perception — OwlViTDetector (axis_os/services/perception/owlvit_detector.py)
+# Requis uniquement si le détecteur à vocabulaire ouvert est utilisé.
+#
+# VERSION ÉPINGLÉE EXACTEMENT, même raisonnement que pyhpke ci-dessus.
+# C'est cette bibliothèque qui a cassé la perception lors de la première
+# exécution réelle : en 5.x, post_process_object_detection a migré du
+# Processor vers l'ImageProcessor. Le modèle se chargeait, l'inférence
+# réussissait, et le robot ne voyait plus rien — find() rendait ok=True
+# avec zéro détection. Elle n'était alors déclarée NULLE PART dans ce
+# fichier : installée à la main dans le conteneur, on avait la version du
+# jour.
+#
+# 5.17.0 est la version validée contre Isaac Sim (test_isaac_p1_perception
+# et test_isaac_p2_detection). Toute montée de version se valide d'abord
+# en simulation, jamais en production.
+#
+# torch n'est pas listé : il est fourni par le conteneur Isaac Sim, et sur
+# Jetson par l'image NVIDIA — sa version dépend du matériel (CUDA), pas de
+# ce fichier.
+transformers==5.17.0
+pillow>=10.0.0
