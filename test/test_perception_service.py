@@ -143,6 +143,64 @@ h.start()
 check("health() signale DÉGRADÉ (sain mais non calibré), pas en panne",
       h.health().healthy and "calibr" in (h.health().detail or ""))
 
+section("3b — Profondeur : de la direction à la POSITION")
+
+import numpy as np
+
+
+class StubDepth(StubCamera):
+    """Caméra de profondeur : distance uniforme, avec quelques pixels
+    invalides comme en produit une vraie caméra."""
+
+    def __init__(self, dist=2.0, invalides=False):
+        super().__init__(K)
+        self._d = np.full((480, 640), dist, dtype=np.float32)
+        if invalides:
+            self._d[238:243, 318:323] = 0.0      # trou au centre
+
+    def capture_depth(self):
+        return self._d
+
+
+# Caméra à 0.1 m devant et 0.5 m au-dessus de la base ; objet au centre
+# de l'image, à 2 m devant l'objectif.
+loc = PerceptionService(StubCamera(K), make_tree(), StubDetector(),
+                        depth_camera=StubDepth(2.0))
+loc.start()
+d3 = loc.find(None).value[0]
+check("Avec profondeur, position_3d est renseignée", d3.position_3d is not None)
+check(f"Position = direction x distance, dans le repère robot "
+      f"({d3.position_3d})",
+      abs(d3.position_3d.x - (0.1 + 2.0)) < 0.05
+      and abs(d3.position_3d.z - 0.5) < 0.05)
+
+# LE piège : un POINT subit la translation de la caméra, une DIRECTION
+# non. Confondre les deux donne un vecteur parfaitement valide qui
+# désigne le mauvais endroit — sans aucune erreur.
+check("Le POINT inclut bien la position de la caméra (x≈2.1, pas 2.0) — "
+      "une direction, elle, l'ignore",
+      abs(d3.position_3d.x - 2.1) < 0.05)
+check("La direction reste unitaire et inchangée",
+      d3.direction is not None and abs(d3.direction.x - 1.0) < 1e-6)
+
+trou = PerceptionService(StubCamera(K), make_tree(), StubDetector(),
+                         depth_camera=StubDepth(2.0, invalides=True))
+trou.start()
+dt = trou.find(None).value[0]
+check("Pixels invalides au centre : la médiane du voisinage sauve la "
+      "mesure au lieu de rendre 0 m",
+      dt.position_3d is not None and abs(dt.position_3d.x - 2.1) < 0.1)
+
+check("_depth_at rend None si TOUT le voisinage est invalide — jamais "
+      "une distance par défaut",
+      PerceptionService._depth_at(np.zeros((480, 640), dtype=np.float32),
+                                  320, 240) is None)
+
+sans_prof = PerceptionService(StubCamera(K), make_tree(), StubDetector())
+sans_prof.start()
+check("Sans caméra de profondeur : direction oui, position None",
+      sans_prof.find(None).value[0].position_3d is None)
+
 section("4 — Image périmée et absence d'image")
 
 stale = PerceptionService(StubCamera(K, age_s=5.0), make_tree(),

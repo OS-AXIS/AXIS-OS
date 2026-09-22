@@ -97,6 +97,13 @@ class IsaacSimCamera(ICamera):
                 kwargs["orientation"] = np.array(self._orientation)
             self._camera = Camera(**kwargs)
             self._camera.initialize()
+            if self._depth:
+                # La profondeur n'est PAS rendue par défaut : il faut
+                # activer l'annotateur correspondant. Sans lui,
+                # get_depth() rend None et la perception ne peut donner
+                # que des directions, jamais de distances — donc un
+                # robot qui ne sait pas quand s'arrêter devant un objet.
+                self._camera.add_distance_to_image_plane_to_frame()
             self._camera.set_focal_length(self._focal_mm / 10.0)
             self._camera.set_horizontal_aperture(self._aperture_mm / 10.0)
         except Exception as exc:        # noqa: BLE001
@@ -147,6 +154,31 @@ class IsaacSimCamera(ICamera):
         return self._initialized and self._camera is not None
 
     # ---- lecture ---------------------------------------------------------
+
+    def capture_depth(self) -> Optional["np.ndarray"]:
+        """Carte de distances, en mètres, une valeur par pixel.
+
+        « distance_to_image_plane » : la distance mesurée PERPENDICULAIREMENT
+        au plan de l'image, pas la distance en ligne droite jusqu'au point.
+        Pour un pixel au centre les deux coïncident ; sur les bords, la
+        distance vraie est plus grande. C'est exactement la convention
+        attendue par pixel_to_ray(), dont le rayon a z=1 : multiplier le
+        rayon par cette valeur donne directement la position 3D.
+
+        Rend None si la caméra n'a pas été créée avec depth=True, ou si
+        aucune image n'est encore disponible — jamais une distance
+        inventée.
+        """
+        if self._camera is None or not self._depth:
+            return None
+        try:
+            import numpy as np
+            d = self._camera.get_depth()
+        except Exception:               # noqa: BLE001
+            return None
+        if d is None or getattr(d, "size", 0) == 0:
+            return None
+        return np.asarray(d, dtype=np.float32)
 
     def capture(self) -> Optional[CameraFrame]:
         """Dernière image rendue par Isaac Sim, ou None.

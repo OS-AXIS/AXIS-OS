@@ -135,8 +135,23 @@ class PerceptionService(IService):
         frame_tree: Optional[FrameTree] = None,
         detector: Optional[IObjectDetector] = None,
         max_frame_age_s: float = 1.0,
+        depth_camera: Optional[ICamera] = None,
     ):
+        """
+        depth_camera : caméra de profondeur, si disponible. Sans elle,
+            les détections portent une DIRECTION mais jamais de
+            POSITION — un robot sait alors vers où s'orienter, pas où
+            s'arrêter. C'est la différence entre « le colis est par là »
+            et « le colis est à 2.3 m ».
+
+            Doit regarder la MÊME scène que `camera` : le service
+            suppose les deux images alignées pixel à pixel. Sur une
+            RealSense, cela exige l'alignement profondeur/couleur ; sur
+            un montage où elles ne le sont pas, les positions seraient
+            fausses sans qu'aucune vérification ne s'en aperçoive.
+        """
         self._camera = camera
+        self._depth_camera = depth_camera
         self._tree = frame_tree
         self._detector = detector or NullObjectDetector()
         self._max_frame_age_s = max_frame_age_s
@@ -258,7 +273,10 @@ class PerceptionService(IService):
                        " — directions indisponibles",
             )
 
-        located, warn = self._locate(detections, intrinsics, now)
+        depth = None
+        if self._depth_camera is not None:
+            depth = getattr(self._depth_camera, "capture_depth", lambda: None)()
+        located, warn = self._locate(detections, intrinsics, now, depth)
         return ServiceResult(
             ok=True,
             value=sorted(located, key=lambda d: -d.confidence),
@@ -266,7 +284,7 @@ class PerceptionService(IService):
         )
 
     def _locate(self, detections, intrinsics: CameraIntrinsics,
-                now_ns: int):
+                now_ns: int, depth=None):
         """Ajoute à chaque détection sa direction dans le repère robot."""
         tf, warn = self._tree.lookup(
             FRAME_BASE, FRAME_CAMERA_OPTICAL, now_ns=now_ns)
@@ -280,15 +298,53 @@ class PerceptionService(IService):
             # géométrique d'une boîte n'est pas le centre de masse de
             # l'objet, ni son point de préhension. Suffisant pour
             # s'orienter vers lui, pas pour l'attraper.
-            ray_optical = intrinsics.pixel_to_ray(x + w / 2.0, y + h / 2.0)
+            cx, cy = x + w / 2.0, y + h / 2.0
+            ray_optical = intrinsics.pixel_to_ray(cx, cy)
             direction = tf.apply_direction(ray_optical)
+
+            # POSITION : direction x distance. pixel_to_ray rend un rayon
+            # de z=1 dans le repère optique, et la profondeur est mesurée
+            # perpendiculairement au plan image : le produit des deux
+            # donne directement le point, sans trigonométrie.
+            position = d.position_3d
+            if position is None and depth is not None:
+                dist = self._depth_at(depth, cx, cy)
+                if dist is not None:
+                    p_opt = Vector3(ray_optical.x * dist,
+                                    ray_optical.y * dist,
+                                    ray_optical.z * dist)
+                    position = tf.apply(p_opt)     # apply, PAS
+                    # apply_direction : un POINT subit la translation,
+                    # contrairement à une direction.
+
             out.append(Detection(
                 label=d.label, confidence=d.confidence, bbox=d.bbox,
                 direction=direction,
-                position_3d=d.position_3d,
+                position_3d=position,
                 timestamp_ns=d.timestamp_ns,
             ))
         return out, warn
+
+    @staticmethod
+    def _depth_at(depth, cx: float, cy: float, half: int = 3):
+        """Distance au centre d'une détection, par MÉDIANE d'un petit
+        voisinage.
+
+        Un pixel isolé suffit à tout fausser : sur un bord d'objet il
+        peut appartenir à l'arrière-plan, et une caméra de profondeur
+        rend régulièrement des valeurs invalides (0, inf, NaN). La
+        médiane d'un voisinage est robuste à ces deux cas. Rend None si
+        aucune valeur exploitable — jamais une distance par défaut.
+        """
+        import numpy as np
+        h, w = depth.shape[0], depth.shape[1]
+        x0, x1 = max(0, int(cx) - half), min(w, int(cx) + half + 1)
+        y0, y1 = max(0, int(cy) - half), min(h, int(cy) + half + 1)
+        if x0 >= x1 or y0 >= y1:
+            return None
+        patch = np.asarray(depth[y0:y1, x0:x1], dtype=float).ravel()
+        valid = patch[np.isfinite(patch) & (patch > 1e-3)]
+        return float(np.median(valid)) if valid.size else None
 
     @property
     def stats(self) -> dict:
