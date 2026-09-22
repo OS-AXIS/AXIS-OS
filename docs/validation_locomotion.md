@@ -115,11 +115,32 @@ de sécurité.
 
 ---
 
-## 5. Limites
+## 5. Virage — expérience témoin
 
-- **Simulation seulement.** Sol plat, ligne droite, 5 s, une allure.
-- **Pas de virage testé** — c'est pourtant là que l'erreur de repère de
-  la vitesse angulaire aurait mordu, si elle n'avait pas été corrigée.
+La conversion du repère de la vitesse angulaire avait été faite AVANT le
+premier essai, sur la base d'un raisonnement. La ligne droite ne pouvait
+pas la tester. `test_isaac_l2_turning.py` fait tourner le robot deux
+fois (0.3 m/s en avançant, 0.6 rad/s), dont une fois en fournissant
+délibérément à la politique la vitesse angulaire dans le repère du monde.
+
+| | virage | chute | refus du garde-fou |
+|---|---|---|---|
+| **Avec** conversion (code réel) | 272° sur ~275° | aucune | 0 |
+| **Sans** conversion (témoin) | 103° | **à t = 6.74 s** | 3 |
+
+**La correction était indispensable — démontré par la mesure.**
+
+Le point de chute est lui-même une confirmation : 103°, juste après le
+quart de tour, là où la théorie prédit l'erreur maximale — à 90°, les
+vitesses de roulis et de tangage sont intervertis. Le robot tient tant
+que l'erreur est faible et tombe précisément quand elle devient totale.
+
+> Un test qui ne peut pas détecter le bug qu'il prétend couvrir ne prouve
+> rien. La phase témoin est ce qui donne sa valeur à la phase réelle.
+
+## 6. Limites
+
+- **Simulation seulement.** Sol plat, 5 à 8 s, une allure.
 - **Pas de perturbation** : aucune poussée, aucun obstacle, aucun sol
   irrégulier.
 - **Moteur de contact différent** de l'entraînement : un succès dans
