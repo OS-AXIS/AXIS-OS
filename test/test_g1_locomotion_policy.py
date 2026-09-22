@@ -142,6 +142,38 @@ hors = [j for j, v in pol.default_pose().items()
 check(f"Pose par défaut dans les limites de l'URDF (hors: {hors or 'aucune'})",
       not hors)
 
+section("5b — Bornage aux butées, COMPTÉ, jamais silencieux")
+
+lims = {d.joint_id: (d.limits.pos_min, d.limits.pos_max)
+        for d in _build_g1_joint_definitions()}
+pb = G1LocomotionPolicy(policy_path=None, joint_limits=lims)
+big = np.zeros(12)
+big[cfg.leg_joints.index("left_ankle_roll_joint")] = 4.0   # 0 + 4*0.25 = 1.0 rad
+tb = pb.action_to_targets(big)
+lo, hi = lims["left_ankle_roll_joint"]
+check(f"Consigne hors butée ramenée exactement à la butée ({tb['left_ankle_roll_joint']:.4f} = {hi})",
+      abs(tb["left_ankle_roll_joint"] - hi) < 1e-12)
+check("Le bornage est COMPTÉ", pb.clamp_counts.get("left_ankle_roll_joint") == 1)
+check("Les articulations non bornées ne sont pas comptées",
+      set(pb.clamp_counts) == {"left_ankle_roll_joint"})
+
+sans = G1LocomotionPolicy(policy_path=None)
+check("Sans joint_limits : aucune modification (politique pure)",
+      abs(sans.action_to_targets(big)["left_ankle_roll_joint"] - 1.0) < 1e-12)
+
+# LE point subtil : le réseau doit continuer à voir son action BRUTE.
+# À l'entraînement, c'est la physique qui bornait, pas la politique : la
+# sortie non bornée était réinjectée telle quelle dans l'observation.
+pb.last_action = big.copy()
+obs_b = pb.build_observation((1.0, 0, 0, 0), (0, 0, 0),
+                             {j: 0.0 for j in cfg.leg_joints},
+                             {j: 0.0 for j in cfg.leg_joints}, (0, 0, 0))
+check("L'action réinjectée dans l'observation reste BRUTE (4.0), pas bornée",
+      abs(obs_b[33 + cfg.leg_joints.index("left_ankle_roll_joint")] - 4.0) < 1e-6)
+
+pb.reset()
+check("reset() remet les compteurs de bornage à zéro", pb.clamp_counts == {})
+
 section("6 — La politique non chargée ne peut pas commander")
 
 try:

@@ -174,12 +174,20 @@ class G1LocomotionPolicy:
 
     def __init__(self, policy_path: Optional[Path] = None,
                  cfg: G1LocomotionConfig = G1LocomotionConfig(),
-                 expected_sha256: Optional[str] = G1_MOTION_PT_SHA256):
+                 expected_sha256: Optional[str] = G1_MOTION_PT_SHA256,
+                 joint_limits: Optional[Dict[str, Tuple[float, float]]] = None):
+        """
+        joint_limits : {articulation: (min, max)} — si fourni, les
+            consignes sont ramenées aux butées AVANT envoi, et chaque
+            bornage est COMPTÉ (clamp_counts). Voir action_to_targets().
+        """
         self.cfg = cfg
         self._policy_path = Path(policy_path) if policy_path else None
         self._expected_sha256 = expected_sha256
         self._policy = None
         self._default = np.array(cfg.default_angles, dtype=float)
+        self._limits = dict(joint_limits) if joint_limits else None
+        self.clamp_counts: Dict[str, int] = {}
         self.reset()
 
     # ---- cycle de vie ----------------------------------------------------
@@ -210,6 +218,7 @@ class G1LocomotionPolicy:
     def reset(self) -> None:
         self.last_action = np.zeros(self.cfg.num_actions, dtype=float)
         self.t = 0.0
+        self.clamp_counts = {}
 
     # ---- observation ------------------------------------------------------
 
@@ -262,10 +271,39 @@ class G1LocomotionPolicy:
     # ---- action -----------------------------------------------------------
 
     def action_to_targets(self, action: Sequence[float]) -> Dict[str, float]:
-        """Action brute du réseau -> positions cibles BRUTES des jambes."""
+        """Action brute du réseau -> positions cibles BRUTES des jambes.
+
+        BORNAGE AUX BUTÉES, si joint_limits a été fourni. Constaté en
+        simulation : cette politique vise régulièrement AU-DELÀ des
+        butées des chevilles — jusqu'à 0.326 rad pour un roulis limité à
+        0.262, un pas sur dix pour la cheville gauche. À l'entraînement,
+        viser au-delà ne coûtait rien : la physique bloquait
+        l'articulation. La politique l'a donc appris.
+
+        Sans bornage, JointSafetyGuard refuse ces consignes — ce qui est
+        correct, et sans effet mesurable sur la marche (2.15 m contre
+        2.17 m sans garde-fou). Mais il en journalise plus de six par
+        seconde, toutes bénignes : une violation réellement dangereuse
+        pendant une marche serait noyée dans le bruit.
+
+        Le garde-fou RESTE STRICT pour toutes les apps. C'est ici, dans
+        l'adaptateur qui connaît cette politique, que la consigne est
+        ramenée à la butée — ce qui correspond exactement à ce qu'elle a
+        vécu à l'entraînement. Et chaque bornage est compté
+        (clamp_counts), jamais silencieux.
+        """
         a = np.asarray(action, dtype=float)
         targets = a * self.cfg.action_scale + self._default
-        return {j: float(v) for j, v in zip(self.cfg.leg_joints, targets)}
+        out = {}
+        for j, v in zip(self.cfg.leg_joints, targets):
+            v = float(v)
+            if self._limits is not None and j in self._limits:
+                lo, hi = self._limits[j]
+                if v < lo or v > hi:
+                    self.clamp_counts[j] = self.clamp_counts.get(j, 0) + 1
+                    v = min(max(v, lo), hi)
+            out[j] = v
+        return out
 
     def step(self, base_quat_wxyz, base_ang_vel_world, joint_pos, joint_vel,
              command) -> Dict[str, float]:

@@ -54,7 +54,13 @@ def main():
     from isaacsim.core.utils.types import ArticulationAction
 
     cfg = G1LocomotionConfig()
-    pol = G1LocomotionPolicy(POLICY, cfg)
+    from axis_os.hal.drivers.unitree_g1.robot import _build_g1_joint_definitions
+    # Bornage aux butées DANS L'ADAPTATEUR : premier essai, le garde-fou
+    # a refusé 52 consignes de chevilles hors butée — sans effet sur la
+    # marche (2.15 m contre 2.17 m) mais en noyant le journal de sécurité.
+    limits = {d.joint_id: (d.limits.pos_min, d.limits.pos_max)
+              for d in _build_g1_joint_definitions()}
+    pol = G1LocomotionPolicy(POLICY, cfg, joint_limits=limits)
     pol.load()
     print(f"\n[politique] chargée, empreinte vérifiée, "
           f"physique {cfg.physics_dt*1000:.0f} ms, commande "
@@ -152,6 +158,10 @@ def main():
             print(f"  distance parcourue en marche : {walked:+.2f} m "
                   f"(consigne {WALK_CMD[0]} m/s -> idéal {WALK_CMD[0]*WALK_S:.1f} m)")
         print(f"  hauteur minimale du bassin : {min_z:.3f} m")
+        if pol.clamp_counts:
+            print(f"  consignes BORNÉES par l'adaptateur : {pol.clamp_counts}")
+        else:
+            print(f"  consignes bornées par l'adaptateur : aucune")
         if guarded:
             if rejected:
                 print(f"  commandes REFUSÉES par le garde-fou : {rejected}")
@@ -175,6 +185,13 @@ def main():
         print("  -> à comprendre AVANT tout essai réel. Voir les refus ci-dessus.")
     else:
         print("  A et B marchent : la marche passe par AXIS-OS, sans raccourci.")
+        if rb:
+            print(f"  ATTENTION : le garde-fou refuse encore {sum(rb.values())} "
+                  f"consigne(s) malgré le bornage — une limite autre que la "
+                  f"position est en cause.")
+        else:
+            print("  Aucune consigne refusée : le journal de sécurité ne contient")
+            print("  plus que ce qui mérite d'y être.")
 
     simulation_app.close()
     sys.exit(0 if (ok_a and ok_b) else 1)
