@@ -110,6 +110,60 @@ def main():
     if not vsets.GetNames():
         print("      (aucune)")
 
+    # --- [8] La conversion a-t-elle produit de la géométrie ? --------
+    # On ouvre geometries.usd COMME SON PROPRE STAGE, hors de toute
+    # composition : ça répond sans ambiguïté à « les STL ont-ils été
+    # convertis en meshes ? », indépendamment de la façon dont la scène
+    # les assemble.
+    import glob
+    geo_files = glob.glob("/isaac-sim/g1_axisos.usd/**/geometries.usd",
+                          recursive=True)
+    print(f"\n[8] fichier(s) geometries.usd : {geo_files}")
+    for gf in geo_files:
+        gstage = Usd.Stage.Open(gf)
+        n_mesh, n_pts = 0, 0
+        for p in gstage.Traverse():
+            if p.IsA(UsdGeom.Mesh):
+                n_mesh += 1
+                pts = UsdGeom.Mesh(p).GetPointsAttr().Get()
+                n_pts += len(pts) if pts is not None else 0
+        print(f"    meshes dans le fichier : {n_mesh}, sommets : {n_pts}")
+
+    # --- [9] Dans la scène, EN ENTRANT DANS LES INSTANCES -----------
+    # CORRECTION DE MON PROPRE DIAGNOSTIC : le parcours [3] n'entrait
+    # pas dans les instances USD. Or instances.usda indique que les
+    # meshes sont instanciés — ils vivent dans des prototypes partagés,
+    # invisibles à un parcours ordinaire. Le « 0 mesh » de [3] pouvait
+    # donc être un artefact de méthode.
+    pred = Usd.TraverseInstanceProxies(Usd.PrimAllPrimsPredicate)
+    n_inst_mesh, n_instanceable = 0, 0
+    for p in Usd.PrimRange(root, pred):
+        if p.IsA(UsdGeom.Mesh):
+            n_inst_mesh += 1
+        if p.IsInstance():
+            n_instanceable += 1
+    print(f"\n[9] prims instanciés sous /World/g1 : {n_instanceable}")
+    print(f"    meshes EN ENTRANT dans les instances : {n_inst_mesh}")
+
+    # --- [10] Payloads chargés ? --------------------------------------
+    payload_prims, unloaded = 0, []
+    for p in Usd.PrimRange(root, Usd.PrimAllPrimsPredicate):
+        if p.HasAuthoredPayloads():
+            payload_prims += 1
+            if not p.IsLoaded():
+                unloaded.append(str(p.GetPath()))
+    print(f"\n[10] prims portant un payload : {payload_prims}")
+    print(f"     payloads NON chargés : {len(unloaded)}")
+    for u in unloaded[:5]:
+        print(f"       {u}")
+
+    print("\n[LECTURE]")
+    print("  [8]=0 meshes        -> les STL n'ont jamais été convertis")
+    print("  [8]>0 mais [9]=0    -> convertis mais pas assemblés dans la scène")
+    print("  [9]>0               -> les meshes SONT dans la scène ; si l'image")
+    print("                         reste vide, le problème est au RENDU")
+    print("  [10] non chargés>0  -> la géométrie est dans un payload désactivé")
+
     pos, _ = bridge._robot.get_world_pose()
     print(f"\n[7] pose de la base : z = {float(pos[2]):+.4f} m")
     print("      (en base fixe, le bassin d'un G1 debout est vers +0.79 m ;")
