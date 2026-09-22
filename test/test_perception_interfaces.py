@@ -186,6 +186,30 @@ check("ICamera impose get_intrinsics() (methode abstraite)",
 
 # ══════════════════════════════════════════════════════════════════
 
+section("Caméra de profondeur : le mode doit être ACCESSIBLE")
+
+# Ce test existe parce que capture_depth() et l'activation de
+# l'annotateur avaient été écrits AVANT le paramètre qui les active :
+# self._depth était lu mais aucun appelant ne pouvait le mettre à True.
+# Une caméra de profondeur était donc impossible à construire, et
+# l'erreur n'est apparue qu'en simulation.
+import inspect as _inspect
+try:
+    from axis_os.hal.drivers.isaac_sim.sim_camera import IsaacSimCamera
+    _params = _inspect.signature(IsaacSimCamera.__init__).parameters
+    check("IsaacSimCamera accepte depth= (sinon capture_depth() est "
+          "inatteignable)", "depth" in _params)
+    check("IsaacSimCamera expose capture_depth()",
+          hasattr(IsaacSimCamera, "capture_depth"))
+except ImportError:
+    # Module dépendant d'Isaac Sim : absent hors conteneur, ce n'est pas
+    # un échec.
+    print("  [—] IsaacSimCamera non importable hors du conteneur Isaac Sim")
+
+check("FakeCamera aussi peut être interrogée sans profondeur",
+      not hasattr(FakeCamera("c", Path("/tmp/x")), "capture_depth")
+      or FakeCamera("c", Path("/tmp/x")).capture_depth() is None)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

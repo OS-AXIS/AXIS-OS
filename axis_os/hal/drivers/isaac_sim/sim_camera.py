@@ -55,6 +55,7 @@ class IsaacSimCamera(ICamera):
         orientation: Optional[tuple] = None,
         focal_length_mm: float = 24.0,
         horizontal_aperture_mm: float = 20.955,
+        depth: bool = False,
     ):
         """
         focal_length_mm / horizontal_aperture_mm : valeurs par défaut
@@ -63,7 +64,16 @@ class IsaacSimCamera(ICamera):
         orientation : quaternion (w, x, y, z) du prim caméra. None =
             orientation par défaut du prim.
         """
-        super().__init__(sensor_id, SensorType.CAMERA_RGB)
+        # depth=True : caméra de PROFONDEUR. capture() rend toujours
+        # l'image couleur ; capture_depth() rend la carte de distances,
+        # et n'est active que dans ce mode. Deux instances distinctes
+        # pour couleur et profondeur, à la MÊME position, comme sur une
+        # RealSense dont les deux flux sont alignés.
+        self._depth = depth
+        super().__init__(
+            sensor_id,
+            SensorType.CAMERA_DEPTH if depth else SensorType.CAMERA_RGB,
+        )
         self._prim_path = prim_path
         self._width = width
         self._height = height
