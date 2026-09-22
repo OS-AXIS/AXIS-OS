@@ -138,6 +138,37 @@ que l'erreur est faible et tombe précisément quand elle devient totale.
 > Un test qui ne peut pas détecter le bug qu'il prétend couvrir ne prouve
 > rien. La phase témoin est ce qui donne sa valeur à la phase réelle.
 
+## 5b. Service de locomotion — une app qui plante en pleine marche
+
+`LocomotionService` rend la marche accessible à une app par une consigne
+de vitesse, sans que l'app connaisse le robot. `test_isaac_l3_service.py`
+simule le cas le plus dangereux : une app qui fait marcher le robot puis
+**plante** sans prévenir.
+
+| Phase | Durée | Résultat |
+|---|---|---|
+| Debout, aucune consigne | 2 s | stable |
+| Marche, consigne 0.5 m/s rafraîchie | 4 s | **+1.68 m** |
+| App plantée, plus aucune consigne | 3 s | **+0.10 m** sur les 2 dernières s |
+
+- consigne expirée détectée (`stale = 1`) après 0.5 s ;
+- robot **arrêté et debout** — ni marche indéfinie, ni effondrement ;
+- aucune consigne refusée par le garde-fou.
+
+Les 10 cm correspondent à la stabilisation du dernier pas.
+
+**La sécurité ne dépend pas de l'app** : quand elle disparaît en pleine
+marche, le système reprend la main. Sur un bipède, cela veut dire
+continuer à faire tourner la politique à vitesse nulle — cesser
+d'envoyer des consignes ou couper le couple le ferait tomber.
+
+Deux choix de conception vérifiés au passage :
+- la **source** d'état convertit la vitesse angulaire dans le repère du
+  robot, jamais le consommateur (voir `IMUData`) ;
+- l'horloge du service est celle de la **simulation** : avec l'horloge
+  murale, un simulateur plus lent que le temps réel ferait expirer les
+  consignes trop tôt.
+
 ## 6. Limites
 
 - **Simulation seulement.** Sol plat, 5 à 8 s, une allure.
