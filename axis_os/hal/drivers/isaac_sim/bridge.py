@@ -179,7 +179,8 @@ class IsaacSimBridge:
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
         self._pump: Optional["MainThreadSimPump"] = None
     def setup(self, fix_base: bool = False, require_meshes: bool = False,
-              ground_clearance: float = 0.0):
+              ground_clearance: float = 0.0,
+              physics_dt: Optional[float] = None):
         if _simulation_app is None:
             raise RuntimeError(
                 "IsaacSimBridge.setup() appelé sans avoir d'abord appelé "
@@ -253,7 +254,15 @@ class IsaacSimBridge:
         if fix_base:
             self._shift_world_anchors(spawn_z)
 
-        self._world = World(stage_units_in_meters=1.0)
+        # physics_dt : pas physique. Par défaut Isaac Sim tourne à 60 Hz ;
+        # une politique de marche entraînée à 500 Hz (dt=0.002) tombe à
+        # coup sûr sur un pas huit fois plus grossier — et on accuserait
+        # la politique. Passer le dt d'ENTRAÎNEMENT de la politique.
+        world_kw = {"stage_units_in_meters": 1.0}
+        if physics_dt is not None:
+            world_kw["physics_dt"] = physics_dt
+            world_kw["rendering_dt"] = max(physics_dt, 1.0 / 60.0)
+        self._world = World(**world_kw)
         self._world.scene.add_default_ground_plane()
 
         # Lumière : sans source lumineuse, TOUTE caméra de la scène rend
