@@ -159,5 +159,16 @@ Signature de contact avec le sol, pas de bug de signe :
 
 Robot posé, collisions réelles : le plancher bloque la cheville.
 Correctif : S2 tourne désormais **robot suspendu** (`ground_clearance`),
-même principe que le protocole de mise sous tension réel. Résultat à
-confirmer.
+même principe que le protocole de mise sous tension réel.
+
+**Résultat : 23/23 cohérents. S2 validée — pour la première fois.**
+Robot suspendu à 0.147 m, pieds dans le vide. Les conventions de signe
+sont correctes sur les 23 articulations, y compris les 9 inversées, en
+mode position ET en mode couple.
+
+Aucun des échecs antérieurs de S2 n'était un bug de convention :
+successivement le couple jamais appliqué par le pont, les gains PD
+absents, la libération globale des joints, la cible PD non réalignée,
+le robot enterré sans collision, puis le plancher bloquant les
+chevilles. Tous des problèmes du **banc de test**, jamais de
+`conventions.py`.
