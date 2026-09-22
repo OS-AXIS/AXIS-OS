@@ -74,15 +74,24 @@ def main():
 
     section("2 — Caméra braquée sur le robot")
 
-    # Caméra devant le G1, à hauteur de torse, reculée pour le cadrer
-    # en entier. Position CONNUE : c'est ce qui rend la direction
-    # calculée vérifiable.
-    CAM_POS = (2.5, 0.0, 0.9)
+    # Viser le CENTRE RÉEL du robot, mesuré après placement. L'ancienne
+    # version codait en dur une orientation (0,0,0,1) qui faisait
+    # regarder la caméra à 90° de la cible : aucune image n'a jamais
+    # contenu le robot, d'où zéro détection. Le problème n'était pas
+    # OWL-ViT.
+    import omni.usd
+    from pxr import Usd, UsdGeom
+    stage = omni.usd.get_context().get_stage()
+    bb = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
+                           [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+    rng = bb.ComputeWorldBound(stage.GetPrimAtPath("/World/g1")).ComputeAlignedRange()
+    cz = (rng.GetMin()[2] + rng.GetMax()[2]) / 2.0
+    CAM_POS = (2.5, 0.0, cz + 0.2)
     cam = IsaacSimCamera("p2_cam", prim_path="/World/p2_camera",
-                         width=640, height=480, position=CAM_POS,
-                         # regard vers -x, donc vers le robot à l'origine
-                         orientation=(0.0, 0.0, 0.0, 1.0))
+                         width=640, height=480, position=CAM_POS)
     check("initialize() -> OK", cam.initialize() is HALStatus.OK)
+    check("look_at() VÉRIFIÉ : la caméra regarde réellement le robot",
+          cam.look_at((0.0, 0.0, cz)))
     check("La caméra produit des données non nulles",
           cam.wait_until_ready(bridge._world))
 

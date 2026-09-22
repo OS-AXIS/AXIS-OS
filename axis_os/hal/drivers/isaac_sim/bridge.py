@@ -261,10 +261,18 @@ class IsaacSimBridge:
         import numpy as np
         spawn_z = self._compute_spawn_height(margin=0.005)
         self._spawn_z = spawn_z
+        # En base fixe, le bassin est attaché au MONDE par un joint fixe
+        # dont l'ancre est un point absolu. Déplacer le robot sans
+        # déplacer cette ancre ne sert à rien : la physique le ramène à
+        # son point d'attache. Constaté : « robot placé à z=+0.797 »,
+        # puis boîte englobante inchangée de -0.73 à +0.59.
+        if fix_base:
+            self._shift_world_anchors(spawn_z)
         self._robot = self._world.scene.add(Robot(
             prim_path="/World/g1", name="g1_axisos",
             position=np.array([0.0, 0.0, spawn_z])))
         self._world.reset()
+        self._verify_grounded()
         self._robot.initialize()
 
         if not self._robot.num_dof:
@@ -292,6 +300,73 @@ class IsaacSimBridge:
                 f"la validation du 18/09 — ne pas continuer sans corriger."
             )
         print(f"[bridge] {len(self._joint_index)}/23 joints mappés avec Isaac Sim.")
+
+    def _shift_world_anchors(self, dz: float) -> None:
+        """Relève de `dz` l'ancre de tout joint attachant le robot au monde.
+
+        En USD Physics, un joint dont l'un des deux corps n'est pas
+        renseigné est attaché au monde, et la position locale
+        correspondante (localPos0 ou localPos1) est alors exprimée dans
+        le repère du monde. C'est cette valeur qu'il faut relever.
+        """
+        try:
+            import omni.usd
+            from pxr import Gf, Usd, UsdPhysics
+            stage = omni.usd.get_context().get_stage()
+            root = stage.GetPrimAtPath("/World/g1")
+            moved = 0
+            for p in Usd.PrimRange(root, Usd.TraverseInstanceProxies(
+                    Usd.PrimAllPrimsPredicate)):
+                if not p.IsA(UsdPhysics.Joint):
+                    continue
+                j = UsdPhysics.Joint(p)
+                b0 = j.GetBody0Rel().GetTargets()
+                b1 = j.GetBody1Rel().GetTargets()
+                attr = None
+                if not b0 and b1:
+                    attr = j.GetLocalPos0Attr()
+                elif b0 and not b1:
+                    attr = j.GetLocalPos1Attr()
+                if attr is None:
+                    continue
+                v = attr.Get() or Gf.Vec3f(0, 0, 0)
+                attr.Set(Gf.Vec3f(v[0], v[1], v[2] + dz))
+                moved += 1
+                print(f"[bridge] ancre monde de {p.GetName()} relevée : "
+                      f"z {v[2]:+.3f} -> {v[2] + dz:+.3f}")
+            if moved == 0:
+                print("[bridge] aucune ancre monde trouvée — si le robot "
+                      "reste enterré, l'attache au monde est ailleurs.")
+        except Exception as exc:        # noqa: BLE001
+            print(f"[bridge] AVERTISSEMENT : ancres non déplacées ({exc})")
+
+    def _verify_grounded(self, tolerance: float = 0.05) -> bool:
+        """Remesure la géométrie APRÈS placement et le dit si les pieds ne
+        sont pas au sol. Même principe que look_at() : on ne croit pas ce
+        qu'on a demandé, on mesure ce qui est."""
+        try:
+            import omni.usd
+            from pxr import Usd, UsdGeom
+            stage = omni.usd.get_context().get_stage()
+            prim = stage.GetPrimAtPath("/World/g1")
+            cache = UsdGeom.BBoxCache(
+                Usd.TimeCode.Default(),
+                [UsdGeom.Tokens.default_, UsdGeom.Tokens.render,
+                 UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy])
+            rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            min_z = float(rng.GetMin()[2])
+            ok = abs(min_z) <= tolerance
+            print(f"[bridge] VÉRIFICATION : point le plus bas à "
+                  f"z={min_z:+.3f} m -> "
+                  f"{'pieds au sol' if ok else 'ROBOT MAL PLACÉ'}")
+            if not ok and min_z < 0:
+                print(f"[bridge]   le robot est ENCORE enterré de "
+                      f"{-min_z:.2f} m : avec des meshes de collision, la "
+                      f"physique risque de diverger (non-finite bounds).")
+            return ok
+        except Exception as exc:        # noqa: BLE001
+            print(f"[bridge] vérification de hauteur impossible ({exc})")
+            return False
 
     def _compute_spawn_height(self, margin: float = 0.005) -> float:
         """Hauteur à laquelle placer l'origine du robot pour que son point
