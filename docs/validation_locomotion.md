@@ -98,7 +98,20 @@ le **journal de sécurité**. Plus de six violations bénignes par seconde
 de marche noieraient une violation réellement dangereuse. Un journal de
 sécurité qui crie tout le temps n'avertit plus de rien.
 
-Résultat après bornage : à confirmer.
+**Résultat après bornage :**
+
+| | A — politique seule | B — via le garde-fou |
+|---|---|---|
+| Chute | aucune | aucune |
+| Distance en marche | 2.16 m | 2.16 m |
+| Consignes bornées (adaptateur) | 59 | 53 |
+| Consignes refusées (garde-fou) | — | **aucune** |
+
+A et B sont désormais **identiques au centimètre** : avec le refus, B
+perdait 2 cm ; avec le bornage, la marche sous garde-fou se comporte
+exactement comme la politique seule. Les bornages existent toujours —
+ils sont comptés là où ils sont compris, au lieu de remplir le journal
+de sécurité.
 
 ---
 
