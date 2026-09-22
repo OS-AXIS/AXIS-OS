@@ -134,11 +134,30 @@ seuils. Chacune pouvait se tromper, et deux l'ont fait.
 
 ---
 
-## 6. Non-régression à confirmer
+## 6. Non-régression
 
 Le pont a changé en profondeur (robot relevé de 0.80 m, collisions
-complètes pour la première fois). Les résultats antérieurs — S2 (23/23
-cohérents) et latence du `SetpointFollower` (5.41 ms) — ont été obtenus
-avec un robot enterré et sans collision. Ils portaient sur les
-articulations en base fixe et devraient tenir, mais restent à
-revalider.
+complètes pour la première fois).
+
+**Latence `SetpointFollower` : aucune régression.** 5.39 ms de moyenne
+(contre 5.41 ms avant), fraîcheur OK, dérive après péremption
+0.0027 rad — identique.
+
+**S2 (conventions de signe).** *Correction :* avant ces changements, S2
+n'était PAS à 23/23 mais à **21/23** (`left_hip_pitch`, `left_hip_yaw`).
+Une version antérieure de ce document l'affirmait à tort.
+
+Après les changements : toujours 21/23, mais **d'autres articulations**.
+Les deux défaillances de la hanche ont disparu ; les deux chevilles
+(`left_ankle_pitch`, `right_ankle_pitch`) échouent en mode position.
+Signature de contact avec le sol, pas de bug de signe :
+- comportement **identique** à gauche et à droite (−0.063 → −0.059 et
+  −0.065 → −0.061), alors que l'une est inversée et l'autre non — un
+  bug de convention se comporterait différemment ;
+- départ à −0.063 juste après remise à zéro : poussée extérieure ;
+- seules échouent les articulations dont la rotation enfonce le pied.
+
+Robot posé, collisions réelles : le plancher bloque la cheville.
+Correctif : S2 tourne désormais **robot suspendu** (`ground_clearance`),
+même principe que le protocole de mise sous tension réel. Résultat à
+confirmer.

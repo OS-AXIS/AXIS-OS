@@ -44,7 +44,10 @@ SETTLE_STEPS = 40
 def main():
     simulation_app = start_simulation_app(headless=True)
     bridge = IsaacSimBridge()
-    bridge.setup(fix_base=True)
+    # SUSPENDU : pieds 15 cm au-dessus du sol. Posé au sol avec de
+    # vraies collisions, le plancher bloquait les chevilles et faisait
+    # échouer S2 pour une raison sans rapport avec les conventions.
+    bridge.setup(fix_base=True, ground_clearance=0.15)
     hal = bridge.build_hal()
     hal.initialize_all()
 

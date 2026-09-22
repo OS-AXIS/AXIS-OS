@@ -178,7 +178,8 @@ class IsaacSimBridge:
         self._joint_defs = _build_g1_joint_definitions()
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
         self._pump: Optional["MainThreadSimPump"] = None
-    def setup(self, fix_base: bool = False, require_meshes: bool = False):
+    def setup(self, fix_base: bool = False, require_meshes: bool = False,
+              ground_clearance: float = 0.0):
         if _simulation_app is None:
             raise RuntimeError(
                 "IsaacSimBridge.setup() appelé sans avoir d'abord appelé "
@@ -238,7 +239,15 @@ class IsaacSimBridge:
         # prim racine dans la scène AVANT la création du World : quel que
         # soit ce mécanisme, la physique s'initialise depuis la pose
         # authorée à ce moment-là.
-        spawn_z = self._compute_spawn_height(margin=0.005)
+        # ground_clearance > 0 : robot SUSPENDU, pieds dans le vide.
+        # Indispensable aux suites articulaires (S2) : constaté, une fois
+        # le robot posé avec de vraies collisions, le plancher bloquait la
+        # rotation des chevilles (-0.063 -> -0.059 pour +0.15 commandé,
+        # identique à gauche et à droite). Même principe que le protocole
+        # de mise sous tension réel : robot suspendu pour isoler ce qu'on
+        # teste.
+        self._ground_clearance = ground_clearance
+        spawn_z = self._compute_spawn_height(margin=0.005 + ground_clearance)
         self._spawn_z = spawn_z
         self._author_root_translation(spawn_z)
         if fix_base:
@@ -281,7 +290,7 @@ class IsaacSimBridge:
         self._robot = self._world.scene.add(Robot(
             prim_path="/World/g1", name="g1_axisos"))
         self._world.reset()
-        self._verify_grounded()
+        self._verify_grounded(expected=ground_clearance)
         self._robot.initialize()
 
         if not self._robot.num_dof:
@@ -375,7 +384,7 @@ class IsaacSimBridge:
         except Exception as exc:        # noqa: BLE001
             print(f"[bridge] AVERTISSEMENT : ancres non déplacées ({exc})")
 
-    def _verify_grounded(self, tolerance: float = 0.05) -> bool:
+    def _verify_grounded(self, tolerance: float = 0.05, expected: float = 0.0) -> bool:
         """Remesure la géométrie APRÈS placement et le dit si les pieds ne
         sont pas au sol. Même principe que look_at() : on ne croit pas ce
         qu'on a demandé, on mesure ce qui est."""
@@ -390,10 +399,12 @@ class IsaacSimBridge:
                  UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy])
             rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
             min_z = float(rng.GetMin()[2])
-            ok = abs(min_z) <= tolerance
+            ok = abs(min_z - expected) <= tolerance
+            etat = ("pieds au sol" if expected == 0.0
+                    else f"suspendu à {expected:.2f} m, pieds dans le vide")
             print(f"[bridge] VÉRIFICATION : point le plus bas à "
                   f"z={min_z:+.3f} m -> "
-                  f"{'pieds au sol' if ok else 'ROBOT MAL PLACÉ'}")
+                  f"{etat if ok else 'ROBOT MAL PLACÉ'}")
             if not ok and min_z < 0:
                 print(f"[bridge]   le robot est ENCORE enterré de "
                       f"{-min_z:.2f} m : avec des meshes de collision, la "
