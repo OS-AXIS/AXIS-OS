@@ -212,86 +212,88 @@ class IsaacSimCamera(ICamera):
             distortion=(),
         )
 
-    def look_at(self, target=(0.0, 0.0, 0.0)) -> bool:
-        """Oriente la caméra vers un point du monde.
+    def look_at(self, target=(0.0, 0.0, 0.0), tolerance: float = 0.99) -> bool:
+        """Oriente la caméra vers un point du monde, et VÉRIFIE le résultat.
 
-        NÉCESSAIRE, et constaté en diagnostic : sans orientation
-        explicite, le prim caméra garde son axe par défaut, qui ne
-        pointe PAS vers la scène. Symptôme trompeur — quatre caméras
-        placées à quatre endroits différents rendaient des images
-        quasi identiques (moyenne 192, écart-type 43), c'est-à-dire le
-        même fond, parce qu'aucune ne regardait le robot.
+        HISTORIQUE, constaté en exécution réelle : la première version
+        rendait True alors que la caméra regardait à 90° de la cible,
+        selon (0, +1, 0) au lieu de (-0.99, 0, -0.26). Cause : la classe
+        Camera d'Isaac Sim convertit les orientations entre trois
+        conventions d'axes (world, ros, usd), et on lui passait une
+        cible en déclarant la mauvaise. Aucune caméra n'a donc jamais
+        regardé le robot — d'où des images de ciel et de sol, et zéro
+        détection pour OWL-ViT, qui n'avait simplement rien à voir.
 
-        Deviner le bon quaternion à la main est une perte de temps :
-        Isaac Sim fournit set_world_pose avec une cible, qui fait le
-        calcul correctement.
+        Désormais : on calcule nous-mêmes l'orientation en convention
+        USD (la caméra regarde selon -Z, +Y vers le haut de l'image), on
+        la déclare explicitement comme telle, puis on RELIT la
+        transformation réellement composée dans la scène. True n'est
+        rendu que si l'axe de visée mesuré pointe vers la cible à
+        `tolerance` près (cosinus). Une réussite qui n'est pas vérifiée
+        n'est plus possible.
         """
         if self._camera is None:
             return False
-        try:
-            import numpy as np
-            self._camera.set_world_pose(
-                position=np.array(self._position),
-                target=np.array(target),
-                camera_axes="usd",
-            )
-            return True
-        except TypeError:
-            # Signature différente selon la version : certaines
-            # n'acceptent pas `target`. On calcule alors le quaternion
-            # nous-même plutôt que d'abandonner.
-            return self._look_at_manual(target)
-        except Exception as exc:        # noqa: BLE001
-            print(f"  [{self.sensor_id}] look_at échoué : {exc}")
-            return False
-
-    def _look_at_manual(self, target) -> bool:
-        """Repli : construit la rotation à la main.
-
-        Convention USD d'une caméra : elle regarde selon -Z, avec +Y
-        vers le haut de l'image. On construit la base orthonormée
-        correspondante puis on la convertit en quaternion.
-        """
         import numpy as np
-        try:
-            eye = np.array(self._position, dtype=float)
-            tgt = np.array(target, dtype=float)
-            fwd = tgt - eye
-            n = np.linalg.norm(fwd)
-            if n < 1e-9:
-                return False
-            fwd = fwd / n
-            world_up = np.array([0.0, 0.0, 1.0])
-            if abs(float(np.dot(fwd, world_up))) > 0.999:
-                world_up = np.array([0.0, 1.0, 0.0])
-            right = np.cross(fwd, world_up)
-            right = right / np.linalg.norm(right)
-            up = np.cross(right, fwd)
-            # Colonnes = (right, up, -forward) : la caméra USD regarde
-            # selon -Z.
-            m = np.column_stack((right, up, -fwd))
-            tr = float(np.trace(m))
-            if tr > 0:
-                s = math.sqrt(tr + 1.0) * 2.0
-                q = [0.25 * s,
-                     (m[2, 1] - m[1, 2]) / s,
-                     (m[0, 2] - m[2, 0]) / s,
-                     (m[1, 0] - m[0, 1]) / s]
-            else:
-                i = int(np.argmax([m[0, 0], m[1, 1], m[2, 2]]))
-                j, k = (i + 1) % 3, (i + 2) % 3
-                s = math.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) * 2.0
-                q = [0.0, 0.0, 0.0, 0.0]
-                q[0] = (m[k, j] - m[j, k]) / s
-                q[i + 1] = 0.25 * s
-                q[j + 1] = (m[j, i] + m[i, j]) / s
-                q[k + 1] = (m[k, i] + m[i, k]) / s
-            self._camera.set_world_pose(
-                position=eye, orientation=np.array(q))
-            return True
-        except Exception as exc:        # noqa: BLE001
-            print(f"  [{self.sensor_id}] look_at manuel échoué : {exc}")
+
+        eye = np.array(self._position, dtype=float)
+        tgt = np.array(target, dtype=float)
+        fwd = tgt - eye
+        n = float(np.linalg.norm(fwd))
+        if n < 1e-9:
             return False
+        fwd = fwd / n
+        world_up = np.array([0.0, 0.0, 1.0])
+        if abs(float(np.dot(fwd, world_up))) > 0.999:
+            world_up = np.array([0.0, 1.0, 0.0])
+        right = np.cross(fwd, world_up)
+        right = right / np.linalg.norm(right)
+        up = np.cross(right, fwd)
+        # Colonnes = axes de la caméra exprimés dans le monde :
+        #   +X caméra = droite, +Y caméra = haut, +Z caméra = ARRIÈRE
+        # (une caméra USD regarde selon -Z).
+        q = _matrix_to_quat_wxyz(np.column_stack((right, up, -fwd)))
+
+        tentatives = [
+            ("orientation USD déclarée USD",
+             lambda: self._camera.set_world_pose(
+                 position=eye, orientation=np.array(q), camera_axes="usd")),
+            ("cible, convention monde",
+             lambda: self._camera.set_world_pose(
+                 position=eye, target=tgt, camera_axes="world")),
+        ]
+        for nom, appliquer in tentatives:
+            try:
+                appliquer()
+            except Exception:           # noqa: BLE001 — signature absente
+                continue
+            cos = self._measured_alignment(fwd)
+            if cos is not None and cos >= tolerance:
+                self._last_look_at = (nom, cos)
+                return True
+        cos = self._measured_alignment(fwd)
+        print(f"  [{self.sensor_id}] look_at ÉCHOUÉ : axe de visée mesuré "
+              f"aligné à {cos} avec la cible (attendu >= {tolerance}). La "
+              f"caméra ne regarde PAS la cible — refus plutôt qu'un succès "
+              f"silencieux.")
+        return False
+
+    def _measured_alignment(self, expected_fwd):
+        """Cosinus entre l'axe de visée RÉEL (relu dans la scène USD
+        composée) et la direction attendue. C'est la vérité terrain : on
+        ne se fie pas à ce qu'on a demandé, on mesure ce qui est."""
+        try:
+            import omni.usd
+            import numpy as np
+            from pxr import Gf, Usd, UsdGeom
+            stage = omni.usd.get_context().get_stage()
+            prim = stage.GetPrimAtPath(self._prim_path)
+            m = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+                Usd.TimeCode.Default())
+            f = m.TransformDir(Gf.Vec3d(0, 0, -1)).GetNormalized()
+            return float(np.dot([f[0], f[1], f[2]], expected_fwd))
+        except Exception:               # noqa: BLE001
+            return None
 
     @property
     def horizontal_fov_deg(self) -> float:
@@ -304,3 +306,23 @@ class IsaacSimCamera(ICamera):
     @property
     def frames_captured(self) -> int:
         return self._frames_captured
+
+
+def _matrix_to_quat_wxyz(m):
+    """Matrice de rotation 3x3 (colonnes = axes) -> quaternion (w, x, y, z)."""
+    tr = float(m[0, 0] + m[1, 1] + m[2, 2])
+    if tr > 0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        return [0.25 * s,
+                (m[2, 1] - m[1, 2]) / s,
+                (m[0, 2] - m[2, 0]) / s,
+                (m[1, 0] - m[0, 1]) / s]
+    i = int(max(range(3), key=lambda k: m[k, k]))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = math.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) * 2.0
+    q = [0.0, 0.0, 0.0, 0.0]
+    q[0] = (m[k, j] - m[j, k]) / s
+    q[i + 1] = 0.25 * s
+    q[j + 1] = (m[j, i] + m[i, j]) / s
+    q[k + 1] = (m[k, i] + m[i, k]) / s
+    return q

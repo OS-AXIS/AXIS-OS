@@ -40,15 +40,25 @@ def main():
     stage = omni.usd.get_context().get_stage()
     robot = stage.GetPrimAtPath("/World/g1")
 
-    # Viser la partie HORS SOL du robot : sa boîte englobante va de
-    # z=-0.69 à +0.64, il est enterré, donc seule la tranche 0..0.64
-    # peut apparaître. On vise son milieu plutôt que z=0.7, qui était
-    # AU-DESSUS du sommet du robot.
-    TARGET = (0.0, 0.0, 0.3)
+    # Viser le CENTRE RÉEL de la géométrie du robot, mesuré après
+    # placement — pas une hauteur supposée. C'est exactement ce genre de
+    # supposition (viser z=0.7 au-dessus d'un robot enterré) qui a
+    # faussé les essais précédents.
+    bb = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
+                           [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+    rng = bb.ComputeWorldBound(robot).ComputeAlignedRange()
+    mn, mx = rng.GetMin(), rng.GetMax()
+    cz = (mn[2] + mx[2]) / 2.0
+    print(f"\n[0] robot : z de {mn[2]:+.2f} à {mx[2]:+.2f} m "
+          f"(pieds au sol si le minimum est proche de 0)")
+    TARGET = (0.0, 0.0, cz)
+    # 2.5 m : à 36° de champ vertical, on voit ~1.6 m de haut, assez pour
+    # un G1 de 1.33 m en entier.
     cam = IsaacSimCamera("diff_cam", prim_path="/World/diff_cam",
-                         width=640, height=480, position=(1.5, 0.0, 0.9))
+                         width=640, height=480, position=(2.5, 0.0, cz + 0.2))
     cam.initialize()
-    print(f"\n[1] look_at -> {cam.look_at(TARGET)}")
+    ok = cam.look_at(TARGET)
+    print(f"[1] look_at -> {ok}  {getattr(cam, '_last_look_at', '')}")
 
     # --- Orientation réelle de la caméra ------------------------------
     cam_prim = stage.GetPrimAtPath("/World/diff_cam")
@@ -57,12 +67,16 @@ def main():
     fwd = m.TransformDir(Gf.Vec3d(0, 0, -1)).GetNormalized()
     up = m.TransformDir(Gf.Vec3d(0, 1, 0)).GetNormalized()
     print(f"[2] axe de visée dans le monde : ({fwd[0]:+.2f}, {fwd[1]:+.2f}, {fwd[2]:+.2f})")
-    print(f"      attendu : vers la cible, soit environ (-0.99, +0.00, -0.26)")
+    print(f"      attendu : vers la cible, soit environ (-1.00, +0.00, -0.08)")
     print(f"    axe « haut » de l'image      : ({up[0]:+.2f}, {up[1]:+.2f}, {up[2]:+.2f})")
-    if abs(up[2]) < 0.3:
-        print(f"      -> CAMÉRA COUCHÉE : son haut est horizontal dans le monde")
-    else:
+    # Seuil RESSERRÉ : l'ancien (|haut.z| > 0.3) a déclaré « correcte »
+    # une caméra dont le haut valait (+0.93, 0, +0.37), c'est-à-dire
+    # presque horizontal. Une caméra droite a son haut franchement
+    # vertical.
+    if up[2] > 0.8:
         print(f"      -> orientation correcte : le haut de l'image pointe vers le ciel")
+    else:
+        print(f"      -> CAMÉRA MAL ORIENTÉE : son haut n'est pas vertical")
 
     # --- Image AVEC le robot ------------------------------------------
     cam.wait_until_ready(bridge._world)

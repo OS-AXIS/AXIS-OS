@@ -248,7 +248,22 @@ class IsaacSimBridge:
         except Exception as exc:        # noqa: BLE001
             print(f"[bridge] AVERTISSEMENT : lumière non créée ({exc}) — "
                   f"une caméra de cette scène rendra du noir.")
-        self._robot = self._world.scene.add(Robot(prim_path="/World/g1", name="g1_axisos"))
+        # HAUTEUR D'APPARITION calculée, pas supposée. Constaté en
+        # diagnostic : le robot apparaissait avec sa boîte englobante de
+        # z=-0.69 à +0.64 — pieds 70 cm SOUS le sol. Sans conséquence tant
+        # que les meshes de collision manquaient ; dès qu'ils ont été
+        # présents, les pieds pris dans le sol ont fait diverger la
+        # physique (« PhysX error: non-finite bounds », en boucle).
+        #
+        # On mesure la géométrie réelle à l'origine et on relève le robot
+        # de ce qu'il faut pour que son point le plus bas touche le sol,
+        # plus une marge qui évite toute interpénétration initiale.
+        import numpy as np
+        spawn_z = self._compute_spawn_height(margin=0.005)
+        self._spawn_z = spawn_z
+        self._robot = self._world.scene.add(Robot(
+            prim_path="/World/g1", name="g1_axisos",
+            position=np.array([0.0, 0.0, spawn_z])))
         self._world.reset()
         self._robot.initialize()
 
@@ -277,6 +292,41 @@ class IsaacSimBridge:
                 f"la validation du 18/09 — ne pas continuer sans corriger."
             )
         print(f"[bridge] {len(self._joint_index)}/23 joints mappés avec Isaac Sim.")
+
+    def _compute_spawn_height(self, margin: float = 0.005) -> float:
+        """Hauteur à laquelle placer l'origine du robot pour que son point
+        le plus bas repose sur le sol (z=0).
+
+        Mesure la boîte englobante de TOUTE la géométrie, collision
+        comprise (purpose guide), puisque c'est elle qui touche le sol.
+        Rend 0.0 si la mesure échoue, avec un avertissement : mieux vaut
+        un robot à l'ancienne position, signalée, qu'une hauteur
+        inventée.
+        """
+        try:
+            import omni.usd
+            from pxr import Usd, UsdGeom
+            stage = omni.usd.get_context().get_stage()
+            prim = stage.GetPrimAtPath("/World/g1")
+            cache = UsdGeom.BBoxCache(
+                Usd.TimeCode.Default(),
+                [UsdGeom.Tokens.default_, UsdGeom.Tokens.render,
+                 UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy])
+            rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            if rng.IsEmpty():
+                print("[bridge] AVERTISSEMENT : géométrie introuvable, "
+                      "hauteur d'apparition laissée à 0 — le robot risque "
+                      "d'être partiellement sous le sol.")
+                return 0.0
+            min_z = float(rng.GetMin()[2])
+            spawn = max(0.0, -min_z) + margin
+            print(f"[bridge] point le plus bas à z={min_z:+.3f} m -> robot "
+                  f"placé à z={spawn:+.3f} m (pieds au sol)")
+            return spawn
+        except Exception as exc:        # noqa: BLE001
+            print(f"[bridge] AVERTISSEMENT : hauteur d'apparition non "
+                  f"calculée ({exc}), laissée à 0.")
+            return 0.0
 
     def set_holding_gains(self, kp: float = 80.0, kd: float = 8.0) -> None:
         """Règle des gains PD de maintien sur les 23 joints.
