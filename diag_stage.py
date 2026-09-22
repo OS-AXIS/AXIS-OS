@@ -23,6 +23,21 @@ from axis_os.hal.drivers.isaac_sim.bridge import (
 
 def main():
     simulation_app = start_simulation_app(headless=True)
+
+    # RALLUMER les diagnostics USD, masqués par défaut dans Isaac Sim.
+    # C'est derrière « USD Diagnostics are currently muted » que se
+    # cachaient les erreurs de fichiers introuvables — et c'est là que se
+    # trouve, selon toute vraisemblance, la raison pour laquelle les STL
+    # présents sur disque ne sont pas importés.
+    try:
+        import carb.settings
+        s = carb.settings.get_settings()
+        s.set("/persistent/app/usd/muteUsdDiagnostics", False)
+        s.set("/app/usd/muteUsdDiagnostics", False)
+        print("[0] diagnostics USD RÉACTIVÉS")
+    except Exception as exc:        # noqa: BLE001
+        print(f"[0] impossible de réactiver les diagnostics USD : {exc}")
+
     import omni.usd
     from pxr import Usd, UsdGeom
     from collections import Counter
