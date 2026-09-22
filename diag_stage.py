@@ -157,6 +157,49 @@ def main():
     for u in unloaded[:5]:
         print(f"       {u}")
 
+    # --- [11] Les 47 meshes : rendus, et à la bonne échelle ? -------
+    # [4] ne portait que sur le parcours SANS instances, donc vide. On
+    # refait la mesure en entrant dans les instances.
+    vis11, pur11, sizes = Counter(), Counter(), []
+    bb_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render,
+         UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy])
+    for p in Usd.PrimRange(root, pred):
+        if p.IsA(UsdGeom.Mesh):
+            img = UsdGeom.Imageable(p)
+            vis11[str(img.ComputeVisibility())] += 1
+            pur = str(img.ComputePurpose())
+            pur11[pur] += 1
+            r = bb_cache.ComputeWorldBound(p).ComputeAlignedRange()
+            if not r.IsEmpty():
+                s = r.GetSize()
+                sizes.append((max(s[0], s[1], s[2]), pur, p.GetName()))
+    print(f"\n[11] visibilité des 47 meshes : {dict(vis11)}")
+    print(f"     purpose des 47 meshes    : {dict(pur11)}")
+    print(f"       -> seuls 'default' et 'render' sont vus par la caméra")
+    if sizes:
+        sizes.sort()
+        print(f"     plus grande dimension d'un mesh : de {sizes[0][0]:.4f} m "
+              f"à {sizes[-1][0]:.4f} m")
+        print(f"       (attendu : de ~0.02 m pour une petite pièce à ~0.4 m "
+              f"pour le torse ; des valeurs vers 0.0004 ou 400 trahiraient "
+              f"une erreur d'unité mm/m à la conversion)")
+        for sz, pur, name in sizes[-3:]:
+            print(f"       {name:32} {sz:.4f} m  purpose={pur}")
+
+    # Boîte englobante SELON le purpose : si elle ne vient que des
+    # primitives de collision (guide), les visuels sont hors du rendu.
+    for label, toks in [("default+render", [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]),
+                        ("guide seul", [UsdGeom.Tokens.guide])]:
+        c = UsdGeom.BBoxCache(Usd.TimeCode.Default(), toks)
+        r = c.ComputeWorldBound(root).ComputeAlignedRange()
+        if r.IsEmpty():
+            print(f"     bbox {label:15} : VIDE")
+        else:
+            print(f"     bbox {label:15} : z de {r.GetMin()[2]:+.2f} à "
+                  f"{r.GetMax()[2]:+.2f}")
+
     print("\n[LECTURE]")
     print("  [8]=0 meshes        -> les STL n'ont jamais été convertis")
     print("  [8]>0 mais [9]=0    -> convertis mais pas assemblés dans la scène")
