@@ -23,7 +23,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, "/isaac-sim")
 
@@ -57,7 +57,47 @@ def start_simulation_app(headless: bool = False):
     return _simulation_app
 
 
-def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False):
+
+def find_missing_meshes(urdf_path: str = URDF_PATH) -> List[str]:
+    """Meshes référencés par l'URDF mais absents du disque.
+
+    NÉCESSAIRE, et découvert tardivement : les .STL du G1 ne sont pas
+    versionnés (106 Mo, voir urdf/meshes/README.md). Sans eux, Isaac Sim
+    importe le robot SANS ERREUR — articulations, masses, limites, tout
+    ce qui fait la physique — mais sans AUCUNE géométrie visuelle
+    (100 % meshes dans l'URDF du G1) et avec une collision PARTIELLE
+    (20 éléments sur 32 sont des meshes).
+
+    Symptôme trompeur, constaté réellement : toutes les suites
+    articulaires passaient, et les caméras rendaient un sol et un ciel
+    vides. On a cru à un problème d'orientation de caméra, puis à un
+    modèle de perception incapable de reconnaître un G1 non texturé —
+    il n'y avait simplement pas de robot dans l'image. Les avertissements
+    de fichiers introuvables existaient, masqués par « USD Diagnostics
+    are currently muted ».
+    """
+    import xml.etree.ElementTree as ET
+    base = os.path.dirname(os.path.abspath(urdf_path))
+    try:
+        root = ET.parse(urdf_path).getroot()
+    except Exception:           # noqa: BLE001 — URDF absent : autre erreur
+        return []
+    missing = set()
+    for mesh in root.iter("mesh"):
+        fn = mesh.get("filename", "")
+        if not fn:
+            continue
+        rel = fn.split("://", 1)[-1] if "://" in fn else fn
+        if rel.startswith("/"):
+            path = rel
+        else:
+            path = os.path.join(base, rel)
+        if not os.path.exists(path):
+            missing.add(fn)
+    return sorted(missing)
+
+def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False,
+                   require_meshes: bool = False):
     """Importe le G1 depuis le vrai URDF officiel AXIS-OS (pas la variante
     générique NVIDIA — évite la divergence de nommage à 5 joints déjà
     rencontrée). Retourne le usd_path généré.
@@ -79,6 +119,22 @@ def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False):
     """
     from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
     import shutil
+
+    # Vérifier les meshes AVANT d'importer : l'importateur ne signale pas
+    # leur absence de façon visible, et produit un robot physiquement
+    # correct mais INVISIBLE, avec une collision partielle.
+    missing = find_missing_meshes(URDF_PATH)
+    if missing:
+        msg = (f"{len(missing)} mesh(es) introuvable(s) à côté de "
+               f"{URDF_PATH} (ex. {missing[0]}). Le robot sera INVISIBLE "
+               f"aux caméras et sa COLLISION sera PARTIELLE. Récupération : "
+               f"voir axis_os/hal/drivers/unitree_g1/urdf/meshes/README.md")
+        if require_meshes:
+            raise RuntimeError(msg)
+        print(f"[bridge] AVERTISSEMENT : {msg}")
+        print("[bridge]   -> sans conséquence pour les suites articulaires "
+              "en base fixe ; INVALIDE pour toute perception et toute "
+              "locomotion.")
 
     if force_reimport and os.path.exists(USD_PATH):
         # L'importateur URDF peut laisser une arborescence (textures,
@@ -122,7 +178,7 @@ class IsaacSimBridge:
         self._joint_defs = _build_g1_joint_definitions()
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
         self._pump: Optional["MainThreadSimPump"] = None
-    def setup(self, fix_base: bool = False):
+    def setup(self, fix_base: bool = False, require_meshes: bool = False):
         if _simulation_app is None:
             raise RuntimeError(
                 "IsaacSimBridge.setup() appelé sans avoir d'abord appelé "
@@ -135,7 +191,8 @@ class IsaacSimBridge:
 
         # Référencer le USD importé AVANT de créer World() — l'ordre compte,
         # voir plus bas.
-        usd_path = import_g1_urdf(fix_base=fix_base)
+        usd_path = import_g1_urdf(fix_base=fix_base,
+                                  require_meshes=require_meshes)
         add_reference_to_stage(usd_path=usd_path, prim_path="/World/g1")
 
         # ÉTAPE RÉELLEMENT MANQUANTE (trouvée par test direct, pas par

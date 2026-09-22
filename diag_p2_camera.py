@@ -24,7 +24,7 @@ def main():
     import numpy as np
 
     bridge = IsaacSimBridge()
-    bridge.setup(fix_base=True)
+    bridge.setup(fix_base=True, require_meshes=True)
     bridge.set_holding_gains()
 
     # Position du robot dans la scène, pour orienter la caméra vers lui.

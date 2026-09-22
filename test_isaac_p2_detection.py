@@ -55,7 +55,7 @@ def main():
     from axis_os.services.perception.service import PerceptionService
 
     bridge = IsaacSimBridge()
-    bridge.setup(fix_base=True)
+    bridge.setup(fix_base=True, require_meshes=True)
     bridge.set_holding_gains()
 
     section("1 — Chargement du modèle")
