@@ -114,6 +114,42 @@ seuils. Chacune pouvait se tromper, et deux l'ont fait.
 
 ---
 
+## 4b. P3 — colis dans un entrepôt, avec distance (2026-09-22)
+
+Deux colis placés à des positions **choisies**, donc vérifiables.
+
+| Colis | Centre réel | Face avant | Mesuré | Hauteur |
+|---|---|---|---|---|
+| proche | x = 1.50 | **1.30** | **1.30** | 0.30 (réel 0.20) |
+| lointain | x = 3.00 | **2.85** | **2.85** | 0.19 (réel 0.15) |
+
+**La mesure tombe au centimètre sur la FACE AVANT**, pas sur le centre —
+ce qui est physiquement correct : une caméra voit la surface visible. Et
+c'est la bonne grandeur pour un robot qui doit s'arrêter *devant* un
+colis.
+
+OWL-ViT reconnaît des cartons **sans texture** (« a cardboard box »,
+0.31 et 0.23) : les modèles d'entrepôt texturés de NVIDIA ne sont pas
+nécessaires pour avancer.
+
+**Erreur corrigée en chemin, et elle vaut d'être retenue.** La pose de la
+caméra était déclarée dans l'arbre des repères avec sa seule
+*translation*, sans orientation. La caméra étant inclinée de 28° vers le
+bas, tout était projeté à l'horizontale : un colis posé à 0.20 m était
+situé à 0.99 m — exactement la hauteur de la caméra — alors que x et y
+restaient justes à 2 cm près.
+
+P1 et P2 ne pouvaient pas la détecter : leurs caméras étaient quasi
+horizontales. Il a fallu une caméra franchement inclinée **et** des
+cibles à des positions connues.
+
+> Vérifier qu'« il y a une détection » ne prouve presque rien. Placer les
+> cibles à des positions choisies transforme un test de présence en test
+> de justesse.
+
+Sur le robot réel, cette pose devra venir de la **cinématique** — point
+de montage, orientation de la tête —, jamais d'une valeur supposée.
+
 ## 5. Limites connues
 
 - **« a person »** : avec les requêtes par défaut, OWL-ViT a classé le
