@@ -320,6 +320,61 @@ class IsaacSimCamera(ICamera):
               f"silencieux.")
         return False
 
+    def optical_transform(self, parent: str = "world",
+                          child: Optional[str] = None):
+        """Transformation `parent` <- repère OPTIQUE de la caméra, lue
+        dans la scène.
+
+        NÉCESSAIRE, et découvert par la mesure : déclarer la caméra dans
+        l'arbre des repères avec sa seule POSITION, sans son
+        orientation, projette toutes les détections à l'horizontale. Une
+        caméra inclinée de 28° vers le bas plaçait ainsi un colis posé à
+        0.20 m de haut à 0.99 m — soit exactement sa propre hauteur. Les
+        coordonnées x et y restaient justes à 2 cm près, ce qui rend
+        l'erreur d'autant plus discrète.
+
+        Sur le robot réel, cette pose doit venir de la cinématique (où
+        la caméra est montée, comment la tête est orientée), jamais
+        d'une valeur supposée.
+
+        Le repère optique (x droite, y BAS, z avant) n'est pas celui du
+        prim caméra USD (x droite, y haut, z ARRIÈRE) : les deux
+        diffèrent d'une rotation d'un demi-tour autour de x, appliquée
+        ici. C'est la même distinction que camera_optical_to_link(), mais
+        mesurée sur la scène plutôt que supposée.
+        """
+        try:
+            import numpy as np
+            import omni.usd
+            from pxr import Usd, UsdGeom
+            from axis_os.hal.core.frames import Transform
+            from axis_os.hal.core.types import Quaternion, Vector3
+
+            stage = omni.usd.get_context().get_stage()
+            prim = stage.GetPrimAtPath(self._prim_path)
+            m = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+                Usd.TimeCode.Default())
+            t = m.ExtractTranslation()
+            # Axes du prim dans le monde (USD : vecteurs-lignes).
+            ax = np.array([[m.TransformDir((1, 0, 0))[i] for i in range(3)],
+                           [m.TransformDir((0, 1, 0))[i] for i in range(3)],
+                           [m.TransformDir((0, 0, 1))[i] for i in range(3)]]).T
+            for c in range(3):
+                n = np.linalg.norm(ax[:, c])
+                if n > 1e-9:
+                    ax[:, c] /= n
+            # USD caméra -> optique : demi-tour autour de x (y et z inversés).
+            r_opt = ax @ np.diag([1.0, -1.0, -1.0])
+            q = _matrix_to_quat_wxyz(r_opt)
+            return Transform(
+                parent=parent, child=child or f"{self.sensor_id}_optical",
+                translation=Vector3(float(t[0]), float(t[1]), float(t[2])),
+                rotation=Quaternion(w=q[0], x=q[1], y=q[2], z=q[3]),
+            )
+        except Exception as exc:        # noqa: BLE001
+            print(f"  [{self.sensor_id}] pose optique indisponible : {exc}")
+            return None
+
     def _measured_alignment(self, expected_fwd):
         """Cosinus entre l'axe de visée RÉEL (relu dans la scène USD
         composée) et la direction attendue. C'est la vérité terrain : on

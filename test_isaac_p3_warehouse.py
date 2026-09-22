@@ -90,9 +90,18 @@ def main():
     check("Les caméras produisent des données", cam.wait_until_ready(bridge._world))
     dep.wait_until_ready(bridge._world)
 
+    # Pose RÉELLE de la caméra, lue dans la scène — pas une translation
+    # supposée. Première version : translation seule, sans orientation.
+    # La caméra étant inclinée de 28° vers le bas, tout était projeté à
+    # l'horizontale : un colis à 0.20 m de haut était situé à 0.99 m,
+    # exactement la hauteur de la caméra, alors que x et y restaient
+    # justes à 2 cm près.
     tree = FrameTree()
-    tree.set(Transform(FRAME_BASE, FRAME_CAMERA, Vector3(*CAM_POS)))
-    tree.set(camera_optical_to_link())
+    from axis_os.hal.core.frames import FRAME_CAMERA_OPTICAL
+    tf_opt = cam.optical_transform(parent=FRAME_BASE,
+                                   child=FRAME_CAMERA_OPTICAL)
+    check("Pose optique de la caméra lue dans la scène", tf_opt is not None)
+    tree.set(tf_opt)
 
     detector = OwlViTDetector(threshold=0.08)
     check("OWL-ViT chargé", detector.load())
@@ -116,25 +125,29 @@ def main():
     if not dets:
         print("  Aucune détection : distance non vérifiable.")
     else:
-        d = dets[0]
-        check("La détection porte une POSITION, pas seulement une direction",
-              d.position_3d is not None)
-        if d.position_3d is not None:
+        check("Les détections portent une POSITION, pas seulement une direction",
+              all(d.position_3d is not None for d in dets))
+        # Chaque détection est comparée au colis RÉEL le plus proche : la
+        # position de chacun a été choisie, donc l'écart est une vraie
+        # erreur de mesure, pas une estimation.
+        pires = []
+        for d in dets:
+            if d.position_3d is None:
+                continue
             p = np.array([d.position_3d.x, d.position_3d.y, d.position_3d.z])
-            # Le colis le plus proche de la position mesurée, et l'écart.
             best, err = None, 9e9
             for name, pos, _s in COLIS:
                 e = float(np.linalg.norm(p - np.array(pos)))
                 if e < err:
                     best, err = name, e
-            print(f"\n  position mesurée : ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f})")
-            print(f"  colis le plus proche : {best}, écart {err:.2f} m")
-            check(f"Écart sous 30 cm — au-delà, le robot heurterait le colis "
-                  f"au lieu de s'arrêter devant (écart {err:.2f} m)", err < 0.30)
-            dist = float(np.linalg.norm(p - np.array(CAM_POS)))
-            reel = float(np.linalg.norm(np.array(COLIS[0][1]) - np.array(CAM_POS)))
-            print(f"  distance caméra -> colis : mesurée {dist:.2f} m, "
-                  f"réelle {reel:.2f} m")
+            dz = abs(p[2] - dict((n, q) for n, q, _ in COLIS)[best][2])
+            print(f"\n  mesurée ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}) -> {best}"
+                  f" : écart {err:.2f} m (dont {dz:.2f} m en hauteur)")
+            pires.append(err)
+        if pires:
+            check(f"Écart max sous 30 cm — au-delà, le robot heurterait le "
+                  f"colis au lieu de s'arrêter devant (max {max(pires):.2f} m)",
+                  max(pires) < 0.30)
 
     section("4 — Vocabulaire ouvert : chercher autre chose")
 
