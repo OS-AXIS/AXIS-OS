@@ -203,3 +203,66 @@ class FakeSpeaker(ISpeaker):
         self.last_played = audio
         self.play_count += 1
         return HALStatus.OK
+
+
+class QueuedMicrophone(IMicrophone):
+    """Micro qui rejoue une file de segments audio préparés.
+
+    Permet de tester toute la chaîne voix -> intention -> action sans
+    matériel ni enregistrement en direct : on fournit les phrases, dans
+    l'ordre où elles seront « prononcées ».
+
+    Quand la file est vide, rend du SILENCE plutôt que None : un micro
+    réel ne cesse pas de fonctionner parce que personne ne parle, et le
+    service doit voir passer du silence comme cas normal.
+    """
+
+    def __init__(self, sensor_id: str, chunks=None, sample_rate: int = 16000):
+        super().__init__(sensor_id, SensorType.MICROPHONE)
+        self._file = list(chunks or [])
+        self._sample_rate = sample_rate
+        self.captures = 0
+
+    def initialize(self) -> HALStatus:
+        self._initialized = True
+        return HALStatus.OK
+
+    def shutdown(self) -> HALStatus:
+        self._initialized = False
+        return HALStatus.OK
+
+    def is_healthy(self) -> bool:
+        return self._initialized
+
+    def enqueue(self, chunk: AudioChunk) -> None:
+        self._file.append(chunk)
+
+    @property
+    def remaining(self) -> int:
+        return len(self._file)
+
+    def capture(self, duration_s: float):
+        if not self._initialized:
+            return None
+        self.captures += 1
+        if self._file:
+            return self._file.pop(0)
+        n = max(1, int(self._sample_rate * duration_s))
+        return AudioChunk(sample_rate=self._sample_rate, channels=1,
+                          sample_width=2, data=b"\x00\x00" * n)
+
+
+def wav_to_chunk(path) -> AudioChunk:
+    """Fichier WAV -> AudioChunk, sans conversion.
+
+    La fréquence et le nombre de canaux du fichier sont conservés TELS
+    QUELS : c'est au consommateur de convertir s'il en a besoin. Un
+    micro réel ne rééchantillonne pas non plus, et masquer cette étape
+    ici cacherait un bug de conversion côté transcription.
+    """
+    import wave
+    with wave.open(str(path), "rb") as w:
+        return AudioChunk(
+            sample_rate=w.getframerate(), channels=w.getnchannels(),
+            sample_width=w.getsampwidth(),
+            data=w.readframes(w.getnframes()))
