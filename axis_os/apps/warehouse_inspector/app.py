@@ -33,7 +33,26 @@ from axis_os.store.sdk.manifest import (
 )
 
 CIBLE = "a cardboard box"
-DISTANCE_ARRET_M = 0.8       # devant le colis, pas dessus
+DISTANCE_ARRET_M = 1.2
+"""Distance d'arrêt devant le colis.
+
+Choisie pour une raison PHYSIQUE, pas arbitraire : une caméra montée sur
+la tête et inclinée vers l'avant a une zone aveugle près des pieds. En
+dessous d'environ 1 m, le colis sort du champ et la mesure de distance
+se dégrade — constaté, un robot au contact du colis le mesurait encore à
+0.94 m, faute de le voir encore.
+
+C'est aussi ce qu'on veut d'un robot d'inspection : se placer DEVANT un
+colis pour le lire, pas le heurter. Un robot qui devrait le saisir aurait
+besoin d'une caméra de poignet ou d'un capteur de proximité — matériel
+que le G1 23 DOF n'a pas."""
+
+HAUTEUR_MIN_M = -0.70
+"""Hauteur minimale d'une détection valable, dans le repère du robot.
+
+Le bassin étant vers 0.79 m, une détection sous -0.70 est au niveau du
+sol : c'est le plancher pris pour un carton, pas un colis. Un colis de
+60 cm posé au sol a son centre vers -0.5."""
 VITESSE_M_S = 0.4
 GAIN_CAP = 1.2               # correction de direction, rad/s par rad d'écart
 TIMEOUT_RECHERCHE_S = 20.0
@@ -119,8 +138,20 @@ class WarehouseInspectorApp(RobotApp):
                 time.sleep(0.05)
                 continue
 
+            # Écarter les détections au niveau du SOL : à faible confiance,
+            # OWL-ViT désigne parfois le plancher. Avancer vers un
+            # « colis » qui est en réalité le sol fait tourner le robot en
+            # rond.
+            plausibles = [x for x in detections
+                          if x.position_3d is None
+                          or x.position_3d.z > HAUTEUR_MIN_M]
+            if not plausibles:
+                ctx.walk(0.0, 0.0, 0.4)
+                time.sleep(0.05)
+                continue
+
             perdu_depuis = None
-            d = detections[0]          # la plus confiante
+            d = plausibles[0]          # la plus confiante des plausibles
             vue = d
 
             if d.position_3d is None:
