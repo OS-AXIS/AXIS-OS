@@ -29,91 +29,9 @@ sys.path.insert(0, "/isaac-sim")
 from axis_os.hal.drivers.isaac_sim.bridge import (
     IsaacSimBridge, start_simulation_app,
 )
-from axis_os.store.sdk.app_base import (
-    MissionResult, RobotApp,
-    PermissionError as SandboxPermissionError,
+from axis_os.apps.demo_fixtures.apps import (
+    AppCurieuse, AppDeuxMains, AppLente,
 )
-from axis_os.store.sdk.manifest import (
-    AppCategory, AppManifest, Capability, Permission, ResourceQuota,
-)
-
-
-# ── Apps de DÉMONSTRATION ────────────────────────────────────────────
-# Définies au niveau MODULE, et non dans main() : le sandbox exécute
-# l'app dans un SOUS-PROCESSUS, et une classe définie à l'intérieur
-# d'une fonction ne peut pas lui être transmise. Première version :
-# « on_start arrêté par l'isolation : CRASHED (SANDBOX_ERROR) », pour
-# une raison qui n'avait rien à voir avec la scène jouée.
-#
-# Ce sont des figurants de test, pas des applications du catalogue.
-
-class AppDeuxMains(RobotApp):
-    """Exige une préhension à DEUX mains — le G1 23 DOF ne l'a pas."""
-
-    def manifest(self):
-        return AppManifest(
-            app_id="com.demo.deux_mains", name="Manipulation bimanuelle",
-            version="1.0.0", author="Demo", author_email="d@d.d",
-            description="Saisit un objet à deux mains.",
-            category=AppCategory.LOGISTICS,
-            permissions=[Permission.ACTUATORS_WRITE_ARMS],
-            capabilities_required=[Capability.GRASP_DUAL],
-            quota=ResourceQuota())
-
-    def on_start(self, ctx): return True
-    def on_stop(self, ctx): pass
-
-    def run_mission(self, ctx, params):
-        return MissionResult(success=True, mission_id="m",
-                             app_id="com.demo.deux_mains", duration_s=0.0)
-
-
-class AppCurieuse(RobotApp):
-    """Ne déclare que la caméra, mais essaie de faire marcher le robot."""
-
-    def manifest(self):
-        return AppManifest(
-            app_id="com.demo.curieuse", name="App curieuse",
-            version="1.0.0", author="Demo", author_email="d@d.d",
-            description="Regarde… et tente de marcher.",
-            category=AppCategory.RESEARCH,
-            permissions=[Permission.SENSORS_CAMERA],
-            quota=ResourceQuota(max_runtime_s=20.0))
-
-    def on_start(self, ctx): return True
-    def on_stop(self, ctx): pass
-
-    def run_mission(self, ctx, params):
-        try:
-            ctx.walk(0.5)
-            marche = True
-        except SandboxPermissionError as exc:
-            ctx.log(f"refus attendu : {exc}")
-            marche = False
-        return MissionResult(
-            success=not marche, mission_id="m",
-            app_id="com.demo.curieuse", duration_s=0.0,
-            metrics={"a_pu_marcher": marche})
-
-
-class AppLente(RobotApp):
-    """Occupe le robot pendant plusieurs secondes."""
-
-    def manifest(self):
-        return AppManifest(
-            app_id="com.demo.lente", name="App lente", version="1.0.0",
-            author="Demo", author_email="d@d.d", description="Occupe.",
-            category=AppCategory.RESEARCH, permissions=[],
-            quota=ResourceQuota(max_runtime_s=30.0))
-
-    def on_start(self, ctx): return True
-    def on_stop(self, ctx): pass
-
-    def run_mission(self, ctx, params):
-        import time as _t
-        _t.sleep(6.0)
-        return MissionResult(success=True, mission_id="m",
-                             app_id="com.demo.lente", duration_s=6.0)
 
 POLICY = Path("/isaac-sim/policies/g1_motion.pt")
 MEMOIRE = Path("/isaac-sim/memory_store_demo")
@@ -265,6 +183,8 @@ def main():
     faire_tourner(1.0)
     x_apres = float(robot.get_world_pose()[0][0])
 
+    if r3 is not None and not r3.success:
+        print(f"    mission en échec : {r3.error_message}")
     check("L'app N'A PAS PU faire marcher le robot",
           r3 is not None and r3.metrics.get("a_pu_marcher") is False)
     check(f"Et le robot n'a effectivement pas bougé "
