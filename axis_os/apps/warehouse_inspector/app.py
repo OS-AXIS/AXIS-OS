@@ -58,7 +58,11 @@ class WarehouseInspectorApp(RobotApp):
                 Permission.LOCOMOTION_WALK,
             ],
             capabilities_required=[Capability.WALK, Capability.CAMERA_RGB],
-            quota=ResourceQuota(max_memory_mb=8192, max_runtime_s=120.0),
+            # Le quota doit dépasser le délai de recherche, sinon le
+            # sandbox tue la mission avant qu'elle ne rende ses
+            # résultats — constaté : métriques vides après un
+            # TIMEOUT à la seconde près.
+            quota=ResourceQuota(max_memory_mb=8192, max_runtime_s=300.0),
         )
 
     def on_start(self, ctx: RobotContext) -> bool:

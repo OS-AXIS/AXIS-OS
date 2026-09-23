@@ -54,15 +54,17 @@ def main():
 
     from axis_os.apps.warehouse_inspector.app import WarehouseInspectorApp
     from axis_os.hal.core.frames import (
-        FRAME_BASE, FRAME_CAMERA_OPTICAL, FrameTree,
+        FRAME_BASE, FRAME_CAMERA_OPTICAL, FRAME_WORLD, FrameTree, Transform,
     )
     from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
     from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
-    from axis_os.hal.core.types import ActuatorCommand, ControlMode
+    from axis_os.hal.core.types import (
+        ActuatorCommand, ControlMode, Quaternion, Vector3,
+    )
     from axis_os.hal.drivers.isaac_sim.sim_camera import IsaacSimCamera
     from axis_os.hal.drivers.unitree_g1.locomotion_policy import (
         G1LocomotionAdapter, G1LocomotionConfig, G1LocomotionPolicy,
-        body_angular_velocity,
+        body_angular_velocity, quat_wxyz_to_matrix,
     )
     from axis_os.hal.drivers.unitree_g1.robot import _build_g1_joint_definitions
     from axis_os.hal.watchdog.system import WatchdogSystem
@@ -168,7 +170,7 @@ def main():
     def mission():
         try:
             holder["result"] = runtime.run_mission(
-                man.app_id, params={"timeout_s": 120.0})
+                man.app_id, params={"timeout_s": 90.0})
         except BaseException as exc:            # noqa: BLE001
             holder["error"] = exc
         finally:
@@ -206,12 +208,33 @@ def main():
         k += 1
 
         if rendre:
-            # Les caméras suivent le robot, comme montées sur sa tête.
-            pos, _q = robot.get_world_pose()
+            # CAMÉRA RÉELLEMENT MONTÉE SUR LE ROBOT : sa position ET son
+            # axe de visée suivent l'orientation du robot. La première
+            # version la plaçait en coordonnées du MONDE (regard toujours
+            # vers +x) tout en la déclarant dans le repère du ROBOT. Tant
+            # qu'il regardait droit devant, les deux coïncidaient ; dès
+            # qu'il tournait, la direction reçue par l'app était fausse,
+            # elle corrigeait à l'envers et le robot s'éloignait — il a
+            # fini à x=-1.25 en cherchant un colis à x=+2.5.
+            pos, quat = robot.get_world_pose()
+            R = quat_wxyz_to_matrix(quat)
+            p_w = np.asarray(pos, dtype=float)
+            mount = R @ np.array([0.2, 0.0, 0.4])      # devant, au-dessus
+            aim = p_w + R @ np.array([3.0, 0.0, -0.6])  # devant, vers le sol
             for c in (cam, dep):
-                c._position = (float(pos[0]) + 0.2, float(pos[1]), 1.2)
-                c.look_at((float(pos[0]) + 3.0, float(pos[1]), 0.3))
-            tf = cam.optical_transform(parent=FRAME_BASE,
+                c._position = tuple(float(v) for v in (p_w + mount))
+                c.look_at(tuple(float(v) for v in aim))
+
+            # L'ARBRE DES REPÈRES fait la conversion, au lieu de la
+            # supposer : monde <- robot (odométrie) et monde <- caméra
+            # (montage). PerceptionService demande robot <- caméra, et
+            # FrameTree compose les deux. C'est exactement son rôle.
+            tree.set(Transform(
+                FRAME_WORLD, FRAME_BASE,
+                translation=Vector3(*(float(v) for v in p_w)),
+                rotation=Quaternion(w=float(quat[0]), x=float(quat[1]),
+                                    y=float(quat[2]), z=float(quat[3]))))
+            tf = cam.optical_transform(parent=FRAME_WORLD,
                                        child=FRAME_CAMERA_OPTICAL)
             if tf is not None:
                 tree.set(tf)
