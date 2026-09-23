@@ -113,6 +113,48 @@ check("camera_optical_to_link() n'est PAS l'identité — l'oublier ferait "
       "pointer la préhension à côté sans aucune erreur visible",
       not near(camera_optical_to_link().rotation.w, 1.0, 1e-3))
 
+section("3b — Deux repères FRÈRES sous un ancêtre commun")
+
+# Cas réel qui a cassé : robot et caméra tous deux enfants du monde,
+# au lieu d'une caméra descendant du robot. La version précédente
+# composait dans le mauvais ordre et levait « le repère intermédiaire
+# ne correspond pas ».
+FRAME_WORLD_ = FRAME_WORLD
+fr = FrameTree()
+# Robot à x=2, tourné de 90° autour de z (il regarde vers +y du monde).
+h = math.sqrt(2.0) / 2.0
+fr.set(Transform(FRAME_WORLD_, FRAME_BASE, Vector3(2.0, 0.0, 0.0),
+                 Quaternion(w=h, x=0, y=0, z=h)))
+# Caméra à x=3 dans le monde, sans rotation.
+fr.set(Transform(FRAME_WORLD_, "cam", Vector3(3.0, 0.0, 0.5)))
+
+tf, warn = fr.lookup(FRAME_BASE, "cam")
+check("Deux frères sous le monde : la composition aboutit",
+      tf is not None and warn is None)
+
+# La caméra est 1 m devant le robot selon +x du monde. Le robot étant
+# tourné de 90°, ce +x du monde est son -y à lui. Un point à l'origine
+# de la caméra doit donc apparaître en (0, -1, 0.5) dans le repère du
+# robot.
+p_base = tf.apply(Vector3(0.0, 0.0, 0.0))
+check(f"Position convertie correctement dans le repère du robot "
+      f"({p_base.x:+.2f}, {p_base.y:+.2f}, {p_base.z:+.2f}) — attendu "
+      f"(0, -1, +0.5)",
+      near(p_base.x, 0.0, 1e-6) and near(p_base.y, -1.0, 1e-6)
+      and near(p_base.z, 0.5, 1e-6))
+
+# Et l'inverse doit ramener au point de départ.
+back, _ = fr.lookup("cam", FRAME_BASE)
+p_cam = back.apply(p_base)
+check("La transformation inverse ramène au point de départ",
+      near(p_cam.x, 0.0, 1e-6) and near(p_cam.y, 0.0, 1e-6)
+      and near(p_cam.z, 0.0, 1e-6))
+
+check("Un repère vers la racine fonctionne aussi",
+      fr.lookup(FRAME_WORLD_, FRAME_BASE)[0] is not None)
+check("Et depuis la racine",
+      fr.lookup(FRAME_BASE, FRAME_WORLD_)[0] is not None)
+
 section("4 — Fraîcheur : une pose périmée se signale")
 
 now = time.time_ns()

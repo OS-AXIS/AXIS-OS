@@ -169,57 +169,54 @@ class FrameTree:
             cur = tf.parent
         return chain
 
+    def _to_root(self, frame: str) -> Tuple[Optional["Transform"], str]:
+        """Transformation racine <- frame, et le nom de cette racine.
+
+        Rend None pour la transformation si `frame` EST la racine : il n'y
+        a alors rien à composer.
+        """
+        chain = self._chain_to_root(frame)
+        if not chain:
+            return None, frame
+        # chain = [T(p1<-frame), T(p2<-p1), ...]. On compose depuis le
+        # HAUT : T(p2<-p1) ∘ T(p1<-frame) = T(p2<-frame), etc.
+        acc = chain[0]
+        for tf in chain[1:]:
+            acc = tf.compose(acc)
+        return acc, acc.parent
+
     def lookup(self, target: str, source: str,
                now_ns: Optional[int] = None) -> Tuple[Optional[Transform], Optional[str]]:
         """Transformation qui exprime dans `target` un point donné dans
         `source`.
 
+        Méthode : chacun est ramené à la racine de son arbre, puis
+        combiné — T(target<-source) = T(target<-racine) ∘ T(racine<-source).
+        C'est valable pour TOUS les cas, y compris deux repères frères
+        sous un ancêtre commun (robot et caméra tous deux sous le monde),
+        cas où la version précédente composait dans le mauvais ordre et
+        levait « le repère intermédiaire ne correspond pas ».
+
         Rend (transform, avertissement). L'avertissement est non-None si
         la chaîne contient une transformation périmée : on ne masque pas
         le problème, mais on ne refuse pas non plus de répondre —
-        l'appelant décide s'il peut s'en contenter. Une perception qui
-        travaille sur une pose vieille de 200 ms peut être acceptable
-        pour désigner une pièce, jamais pour y tendre la main.
+        l'appelant décide s'il peut s'en contenter.
         """
         if target == source:
             return Transform(parent=target, child=source), None
 
-        up = self._chain_to_root(source)
-        down = self._chain_to_root(target)
+        up, root_s = self._to_root(source)
+        down, root_t = self._to_root(target)
+        if root_s != root_t:
+            return None, (f"'{source}' et '{target}' ne sont pas reliés : "
+                          f"racines '{root_s}' et '{root_t}'.")
 
-        up_parents = {tf.parent for tf in up} | {source}
-        common = None
-        for tf in down:
-            if tf.parent in up_parents or tf.child in up_parents:
-                common = tf.parent if tf.parent in up_parents else tf.child
-                break
-        if common is None:
-            common = FRAME_WORLD if (not up and not down) else None
-            roots_up = up[-1].parent if up else source
-            roots_down = down[-1].parent if down else target
-            if roots_up != roots_down:
-                return None, (f"'{source}' et '{target}' ne sont pas reliés : "
-                              f"racines '{roots_up}' et '{roots_down}'.")
-            common = roots_up
-
-        # source -> commun
-        result: Optional[Transform] = None
-        for tf in up:
-            if tf.child == common:
-                break
-            result = tf if result is None else tf.compose(result)
-            if tf.parent == common:
-                break
-        # commun -> target, en remontant la branche descendante inversée
-        inv_chain: List[Transform] = []
-        for tf in down:
-            if tf.parent == common or tf.child == common:
-                inv_chain.append(tf)
-                break
-            inv_chain.append(tf)
-        for tf in reversed(inv_chain):
-            inv = tf.inverse()
-            result = inv if result is None else result.compose(inv)
+        if down is None:                 # target EST la racine
+            result = up
+        elif up is None:                 # source EST la racine
+            result = down.inverse()
+        else:
+            result = down.inverse().compose(up)
 
         if result is None:
             return Transform(parent=target, child=source), None
