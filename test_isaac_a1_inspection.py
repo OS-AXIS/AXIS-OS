@@ -286,8 +286,25 @@ def main():
               avance > 1.0)
         d = r.metrics.get("distance_finale_m")
         if d is not None:
-            check(f"Arrêt à moins d'1 m du colis ({d} m) — devant, pas dessus",
-                  d < 1.0)
+            # Cohérent avec la distance d'arrêt de l'app (1.2 m), choisie
+            # parce que la caméra a une zone aveugle près des pieds.
+            # L'assertion précédente exigeait moins d'1 m : elle datait
+            # d'avant ce changement et échouait sur une mission réussie.
+            check(f"Arrêt à la distance visée par l'app ({d:.2f} m pour une "
+                  f"consigne de 1.2 m)", 0.5 <= d <= 1.4)
+
+        # Distance RÉELLE, calculée depuis les positions connues — la
+        # seule qui ne dépende pas de ce que le robot croit voir.
+        face_avant = COLIS[1][0] - COLIS[2][0] / 2.0
+        reelle = face_avant - avance
+        print(f"\n  distance réelle robot -> face avant du colis : "
+              f"{reelle:.2f} m (mesurée par le robot : "
+              f"{d:.2f} m)" if d else "")
+        check(f"Le robot s'est bien arrêté DEVANT le colis, sans le "
+              f"toucher ({reelle:.2f} m)", 0.3 < reelle < 1.8)
+        if d is not None:
+            check(f"Erreur de mesure sous 40 cm "
+                  f"({abs(reelle - d):.2f} m)", abs(reelle - d) < 0.4)
 
     pos, _ = robot.get_world_pose()
     print(f"\n  position finale du robot : x={float(pos[0]):.2f} "
