@@ -133,8 +133,22 @@ def main():
             {j: ActuatorCommand(mode=ControlMode.POSITION, position=v)
              for j, v in targets.items()})
 
+    premier_refus = {}
+
+    def send_targets_diag(targets):
+        st = send_targets(targets)
+        if not premier_refus:
+            for j, s_ in st.items():
+                if s_.name != "OK":
+                    fb = hal.get_full_state().get(j)
+                    premier_refus.update({
+                        "joint": j, "cible": round(targets[j], 3),
+                        "position_vue_par_le_garde": round(fb.position, 3) if fb else None,
+                        "instant_sim_s": round(sim_t[0], 2)})
+        return st
+
     locomotion = LocomotionService(G1LocomotionAdapter(pol), read_state,
-                                   send_targets, command_timeout_s=0.5,
+                                   send_targets_diag, command_timeout_s=0.5,
                                    clock=lambda: sim_t[0])
     locomotion.start()
 
@@ -153,7 +167,8 @@ def main():
 
     def mission():
         try:
-            holder["result"] = runtime.run_mission(man.app_id, params={})
+            holder["result"] = runtime.run_mission(
+                man.app_id, params={"timeout_s": 120.0})
         except BaseException as exc:            # noqa: BLE001
             holder["error"] = exc
         finally:
@@ -165,22 +180,41 @@ def main():
     # --- Thread principal : simulation + locomotion à 50 Hz ----------
     # L'app ne tient PAS cette cadence : elle déclare une vitesse, l'OS
     # l'exécute. C'est tout l'intérêt de l'architecture.
+    # EXACTEMENT decimation pas de physique par pas de commande. La
+    # première version en faisait UN DE PLUS (un world.step(render=True)
+    # ajouté en fin de boucle pour la caméra) : la politique croyait
+    # avancer de 20 ms quand la simulation avançait de 22 ms. 10 %
+    # d'erreur, accumulée — or cette politique compte le temps pour sa
+    # phase de marche (période 0.8 s). Son horloge interne dérivait de
+    # la physique, elle a fini par commander un pied au mauvais moment
+    # (action de 4.6 sur une cheville, contre moins de 1 en marche
+    # normale), le garde-fou a refusé, et le robot est tombé à 18.8 s.
+    #
+    # Le rendu se fait DANS la décimation, jamais en plus.
+    RENDER_TOUS_LES = 5          # la perception lit ~5 images/s, inutile
+                                 # de rendre à 50 Hz — et le rendu est ce
+                                 # qui ralentit le plus la boucle.
     t_start = time.monotonic()
-    while not holder["done"] and time.monotonic() - t_start < 180.0:
+    k = 0
+    while not holder["done"] and time.monotonic() - t_start < 300.0:
         locomotion.tick()                    # envoie + 1 pas de physique
-        for _ in range(cfg.decimation - 1):
-            world.step(render=False)
+        rendre = (k % RENDER_TOUS_LES == 0)
+        for i in range(cfg.decimation - 1):
+            # Un seul rendu, sur l'un des pas de la décimation.
+            world.step(render=(rendre and i == 0))
         sim_t[0] += cfg.control_dt
-        # Les caméras suivent le robot (comme si elles étaient sur sa tête)
-        pos, quat = robot.get_world_pose()
-        for c in (cam, dep):
-            c._position = (float(pos[0]) + 0.2, float(pos[1]), 1.2)
-            c.look_at((float(pos[0]) + 3.0, float(pos[1]), 0.3))
-        tf = cam.optical_transform(parent=FRAME_BASE,
-                                   child=FRAME_CAMERA_OPTICAL)
-        if tf is not None:
-            tree.set(tf)
-        world.step(render=True)              # la caméra a besoin d'un rendu
+        k += 1
+
+        if rendre:
+            # Les caméras suivent le robot, comme montées sur sa tête.
+            pos, _q = robot.get_world_pose()
+            for c in (cam, dep):
+                c._position = (float(pos[0]) + 0.2, float(pos[1]), 1.2)
+                c.look_at((float(pos[0]) + 3.0, float(pos[1]), 0.3))
+            tf = cam.optical_transform(parent=FRAME_BASE,
+                                       child=FRAME_CAMERA_OPTICAL)
+            if tf is not None:
+                tree.set(tf)
 
     th.join(timeout=10.0)
 
@@ -208,6 +242,9 @@ def main():
     print(f"\n  position finale du robot : x={float(pos[0]):.2f} "
           f"(colis à x={COLIS[1][0]})")
     print(f"  locomotion : {locomotion.stats}")
+    print(f"  temps simulé écoulé : {sim_t[0]:.1f} s")
+    if premier_refus:
+        print(f"  PREMIER refus : {premier_refus}")
     check("Aucune consigne refusée par le garde-fou",
           locomotion.stats["refused"] == 0)
     check("Le robot n'est pas tombé", locomotion.state.name != "FALLEN")

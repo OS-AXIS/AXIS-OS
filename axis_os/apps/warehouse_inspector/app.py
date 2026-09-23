@@ -75,12 +75,16 @@ class WarehouseInspectorApp(RobotApp):
         t0 = time.monotonic()
         cible = params.get("cible", CIBLE)
         stop_m = float(params.get("distance_arret_m", DISTANCE_ARRET_M))
+        # Réglable : en simulation, le temps réel avance plus vite que le
+        # temps simulé, et un délai calibré pour le robot réel expire
+        # avant que quoi que ce soit ait eu lieu.
+        timeout_s = float(params.get("timeout_s", TIMEOUT_RECHERCHE_S))
 
         vue: Optional[Any] = None
         approches = 0
         sans_distance = 0
 
-        while time.monotonic() - t0 < TIMEOUT_RECHERCHE_S:
+        while time.monotonic() - t0 < timeout_s:
             detections: List[Any] = ctx.look_for(cible)
             if not detections:
                 # Rien en vue : tourner sur place pour balayer le local.
@@ -118,7 +122,7 @@ class WarehouseInspectorApp(RobotApp):
             time.sleep(0.1)
 
         ctx.stop_walking()
-        ctx.log(f"Aucun colis atteint en {TIMEOUT_RECHERCHE_S:.0f} s.")
+        ctx.log(f"Aucun colis atteint en {timeout_s:.0f} s.")
         return self._resultat(ctx, t0, False, vue, None, approches, sans_distance)
 
     @staticmethod
