@@ -171,6 +171,17 @@ def main():
     runtime.install(app)
     runtime.start_app(man.app_id)
 
+    # Quota RÉELLEMENT appliqué par le runtime, pas celui déclaré : la
+    # mission a été tuée pour TIMEOUT à 10.6 s alors que le manifeste
+    # annonce 300 s. L'un des deux ment.
+    _entry = runtime._get(man.app_id)
+    _q = _entry.manifest.quota if _entry else None
+    print(f"\n[quota] déclaré par l'app : runtime={man.quota.max_runtime_s}s "
+          f"mem={man.quota.max_memory_mb}Mo cpu={man.quota.max_cpu_percent}%")
+    if _q is not None:
+        print(f"[quota] appliqué par le runtime : runtime={_q.max_runtime_s}s "
+              f"mem={_q.max_memory_mb}Mo cpu={_q.max_cpu_percent}%")
+
     holder = {"result": None, "error": None, "done": False}
 
     def mission():
