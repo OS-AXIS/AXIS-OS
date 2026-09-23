@@ -308,7 +308,7 @@ class PerceptionService(IService):
             # donne directement le point, sans trigonométrie.
             position = d.position_3d
             if position is None and depth is not None:
-                dist = self._depth_at(depth, cx, cy)
+                dist = self._depth_of_object(depth, d.bbox)
                 if dist is not None:
                     p_opt = Vector3(ray_optical.x * dist,
                                     ray_optical.y * dist,
@@ -324,6 +324,42 @@ class PerceptionService(IService):
                 timestamp_ns=d.timestamp_ns,
             ))
         return out, warn
+
+    @staticmethod
+    def _depth_of_object(depth, bbox, quantile: float = 0.25):
+        """Distance de la SURFACE VISIBLE de l'objet détecté.
+
+        Prend la médiane du quart le plus PROCHE des profondeurs valides
+        dans la boîte, plutôt qu'un point au centre.
+
+        Pourquoi : une boîte de détection contient toujours de
+        l'arrière-plan — d'autant plus qu'elle est large ou imprécise. Un
+        échantillon au centre tombe alors sur ce qu'il y a DERRIÈRE
+        l'objet. Constaté : un robot arrivé à 5 cm d'un colis le croyait
+        encore à 1.87 m, parce que la mesure portait sur le sol visible
+        au-delà (position z = -0.74 dans son repère, soit le plancher).
+
+        Le quart le plus proche, lui, appartient à l'objet : c'est la
+        partie de la boîte qui est devant. Et prendre la médiane de ce
+        quart plutôt que le minimum absolu résiste au bruit et aux
+        pixels aberrants d'une caméra de profondeur.
+
+        Rend None si rien d'exploitable — jamais une distance par défaut.
+        """
+        import numpy as np
+        h, w = depth.shape[0], depth.shape[1]
+        x, y, bw, bh = (int(v) for v in bbox)
+        x0, x1 = max(0, x), min(w, x + max(bw, 1))
+        y0, y1 = max(0, y), min(h, y + max(bh, 1))
+        if x0 >= x1 or y0 >= y1:
+            return None
+        patch = np.asarray(depth[y0:y1, x0:x1], dtype=float).ravel()
+        valid = patch[np.isfinite(patch) & (patch > 1e-3)]
+        if valid.size == 0:
+            return None
+        seuil = float(np.quantile(valid, quantile))
+        proches = valid[valid <= seuil]
+        return float(np.median(proches)) if proches.size else float(seuil)
 
     @staticmethod
     def _depth_at(depth, cx: float, cy: float, half: int = 3):

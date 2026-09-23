@@ -227,7 +227,10 @@ def main():
             R = quat_wxyz_to_matrix(quat)
             p_w = np.asarray(pos, dtype=float)
             mount = R @ np.array([0.2, 0.0, 0.4])      # devant, au-dessus
-            aim = p_w + R @ np.array([3.0, 0.0, -0.6])  # devant, vers le sol
+            # Viser à 2 m et plus bas : à 3 m, la caméra regardait au-delà
+            # d'un colis proche, et la profondeur portait sur le sol
+            # derrière lui.
+            aim = p_w + R @ np.array([2.0, 0.0, -0.9])
             for c in (cam, dep):
                 c._position = tuple(float(v) for v in (p_w + mount))
                 c.look_at(tuple(float(v) for v in aim))

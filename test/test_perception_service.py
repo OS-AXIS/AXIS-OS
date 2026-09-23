@@ -201,6 +201,32 @@ sans_prof.start()
 check("Sans caméra de profondeur : direction oui, position None",
       sans_prof.find(None).value[0].position_3d is None)
 
+section("3c — La distance est celle de l'OBJET, pas de l'arrière-plan")
+
+import numpy as _np
+
+# Boîte de détection contenant 30% d'objet (à 1.2 m) et 70% de fond
+# (à 4 m) — situation normale dès qu'une détection est imprécise, ou
+# que l'objet est proche et déborde.
+_d = _np.full((100, 100), 4.0, dtype=_np.float32)
+_d[:, :30] = 1.2
+check(f"Objet sur 30% de la boîte : distance mesurée = celle de l'OBJET "
+      f"({PerceptionService._depth_of_object(_d, (0, 0, 100, 100)):.2f} m)",
+      abs(PerceptionService._depth_of_object(_d, (0, 0, 100, 100)) - 1.2) < 0.05)
+check("L'ancien estimateur (centre de la boîte) rendait le FOND — c'est "
+      "ce qui a fait croire à un robot arrivé au contact que le colis "
+      "était encore à 1.87 m",
+      abs(PerceptionService._depth_at(_d, 50, 50) - 4.0) < 0.05)
+
+_u = _np.full((100, 100), 2.0, dtype=_np.float32)
+check("Profondeur uniforme : résultat inchangé",
+      abs(PerceptionService._depth_of_object(_u, (10, 10, 50, 50)) - 2.0) < 1e-6)
+check("Aucune valeur valide : None, jamais une distance par défaut",
+      PerceptionService._depth_of_object(_np.zeros((50, 50), dtype=_np.float32),
+                                         (0, 0, 50, 50)) is None)
+check("Boîte hors image : None",
+      PerceptionService._depth_of_object(_u, (200, 200, 10, 10)) is None)
+
 section("4 — Image périmée et absence d'image")
 
 stale = PerceptionService(StubCamera(K, age_s=5.0), make_tree(),
