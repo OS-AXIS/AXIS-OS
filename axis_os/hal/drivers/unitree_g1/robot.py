@@ -461,4 +461,20 @@ class UnitreeG1HAL(IRobotHAL):
             RobotCapability.IMU,
             RobotCapability.FORCE_TORQUE,
             RobotCapability.CAMERA,
+            # MICROPHONE / SPEAKER : même convention que CAMERA ci-dessus
+            # — on décrit ce que LE ROBOT possède, pas ce qu'AXIS-OS
+            # pilote aujourd'hui. Le G1 est équipé d'un micro et d'un
+            # haut-parleur intégrés.
+            #
+            # Conséquence concrète, constatée : sans cette déclaration,
+            # le Play Store REFUSE d'installer toute app exigeant
+            # SPEECH_IN — ce qui était le comportement correct, puisque
+            # le robot ne déclarait aucun micro.
+            #
+            # À VÉRIFIER sur l'exemplaire réel avant mise en service :
+            # les configurations varient d'une version à l'autre, et une
+            # capacité déclarée à tort fait installer une app qui ne
+            # pourra pas fonctionner.
+            RobotCapability.MICROPHONE,
+            RobotCapability.SPEAKER,
         ])
