@@ -35,7 +35,10 @@ from axis_os.hal.drivers.isaac_sim.bridge import (
 )
 
 POLICY = Path("/isaac-sim/policies/g1_motion.pt")
-COLIS = ("colis", (2.5, 0.0, 0.25), (0.5, 0.4, 0.5))
+# Colis de 60 cm : taille réaliste pour un carton de manutention,
+# et assez grand pour rester détectable à 2.5 m — la confiance
+# mesurée tournait autour de 0.10 avec un cube de 50 cm.
+COLIS = ("colis", (2.5, 0.0, 0.3), (0.6, 0.5, 0.6))
 FAIL = 0
 
 
@@ -112,7 +115,11 @@ def main():
     dep.wait_until_ready(world)
 
     tree = FrameTree()
-    detector = OwlViTDetector(threshold=0.08)
+    # Seuil bas : les scores d'OWL-ViT ne sont pas calibrés comme ceux
+    # d'un détecteur à classes fermées, et un carton lointain tourne
+    # autour de 0.10. Mieux vaut quelques détections faibles que le
+    # robot perde sa cible une image sur deux.
+    detector = OwlViTDetector(threshold=0.05)
     check("OWL-ViT chargé", detector.load())
     perception = PerceptionService(cam, tree, detector, depth_camera=dep)
     perception.start()

@@ -37,6 +37,7 @@ DISTANCE_ARRET_M = 0.8       # devant le colis, pas dessus
 VITESSE_M_S = 0.4
 GAIN_CAP = 1.2               # correction de direction, rad/s par rad d'écart
 TIMEOUT_RECHERCHE_S = 20.0
+MEMOIRE_S = 2.0              # durée de confiance à une détection perdue
 
 
 class WarehouseInspectorApp(RobotApp):
@@ -87,16 +88,38 @@ class WarehouseInspectorApp(RobotApp):
         vue: Optional[Any] = None
         approches = 0
         sans_distance = 0
+        perdu_depuis: Optional[float] = None
+        pertes = 0
 
         while time.monotonic() - t0 < timeout_s:
             detections: List[Any] = ctx.look_for(cible)
+
             if not detections:
-                # Rien en vue : tourner sur place pour balayer le local.
-                # Un demi-tour montre plus de scène qu'une ligne droite.
-                ctx.walk(0.0, 0.0, 0.5)
-                time.sleep(0.1)
+                # MÉMOIRE DE COURTE DURÉE. Une détection est
+                # intermittente : un colis lointain passe sous le seuil de
+                # confiance une image sur deux. Sans mémoire, l'app
+                # pivotait à chaque perte et perdait son cap — 20
+                # commandes d'approche seulement sur toute une mission,
+                # le reste passé à tourner sur place.
+                #
+                # Tant que la perte est récente, on continue sur le
+                # dernier cap connu. C'est de la connaissance métier :
+                # combien de temps faire confiance à une observation
+                # périmée dépend de la tâche, pas du robot.
+                maintenant = time.monotonic()
+                if perdu_depuis is None:
+                    perdu_depuis = maintenant
+                    pertes += 1
+                if vue is not None and maintenant - perdu_depuis < MEMOIRE_S:
+                    ctx.walk(VITESSE_M_S, 0.0, GAIN_CAP * self._cap_vers(vue))
+                    approches += 1
+                else:
+                    # Perdu depuis trop longtemps : balayer le local.
+                    ctx.walk(0.0, 0.0, 0.5)
+                time.sleep(0.05)
                 continue
 
+            perdu_depuis = None
             d = detections[0]          # la plus confiante
             vue = d
 
@@ -107,7 +130,7 @@ class WarehouseInspectorApp(RobotApp):
                 sans_distance += 1
                 cap = self._cap_vers(d)
                 ctx.walk(0.0, 0.0, GAIN_CAP * cap)
-                time.sleep(0.1)
+                time.sleep(0.05)
                 continue
 
             distance = (d.position_3d.x ** 2 + d.position_3d.y ** 2) ** 0.5
@@ -116,18 +139,19 @@ class WarehouseInspectorApp(RobotApp):
                 ctx.log(f"Colis atteint à {distance:.2f} m "
                         f"(consigne d'arrêt {stop_m:.2f} m)")
                 return self._resultat(ctx, t0, True, d, distance,
-                                      approches, sans_distance)
+                                      approches, sans_distance, pertes)
 
             # Avancer en corrigeant le cap : le colis n'est pas forcément
             # droit devant.
             cap = self._cap_vers(d)
             ctx.walk(VITESSE_M_S, 0.0, GAIN_CAP * cap)
             approches += 1
-            time.sleep(0.1)
+            time.sleep(0.05)
 
         ctx.stop_walking()
         ctx.log(f"Aucun colis atteint en {timeout_s:.0f} s.")
-        return self._resultat(ctx, t0, False, vue, None, approches, sans_distance)
+        return self._resultat(ctx, t0, False, vue, None, approches,
+                              sans_distance, pertes)
 
     @staticmethod
     def _cap_vers(d) -> float:
@@ -141,10 +165,12 @@ class WarehouseInspectorApp(RobotApp):
         v = d.direction
         return math.atan2(v.y, v.x) if v is not None else 0.0
 
-    def _resultat(self, ctx, t0, ok, d, distance, approches, sans_distance):
+    def _resultat(self, ctx, t0, ok, d, distance, approches, sans_distance,
+                  pertes=0):
         metrics = {
             "approches": approches,
             "images_sans_distance": sans_distance,
+            "pertes_de_vue": pertes,
             "colis_vu": d is not None,
         }
         if d is not None:
