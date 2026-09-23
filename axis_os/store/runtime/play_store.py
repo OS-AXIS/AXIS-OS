@@ -892,7 +892,8 @@ class PlayStoreRuntime:
         # explicite, jamais une erreur obscure.
         ctx._attach_services(perception=self._perception_service,
                              locomotion=self._locomotion_service,
-                             speech=self._speech_service)
+                             speech=self._speech_service,
+                             memory=self._memory_service)
         return ctx
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:

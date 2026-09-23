@@ -72,6 +72,14 @@ class Permission(Enum):
     # dans un escalier. Une app qui marche déclare les DEUX, pour que
     # l'utilisateur voie à l'installation que le robot bougera de place.
     LOCOMOTION_WALK      = auto()
+    # Mémoire persistante PROPRE à l'app : ce qu'elle écrit survit à un
+    # redémarrage du robot. Le stockage est cloisonné par app_id (voir
+    # MemoryService.app_store), donc une app ne peut ni lire ni écraser
+    # les données d'une autre. La permission reste nécessaire : un robot
+    # qui retient des lieux et des objets accumule de l'information sur
+    # son environnement, et l'utilisateur doit savoir quelles apps en
+    # gardent une trace.
+    STORAGE_PERSISTENT   = auto()
 
 
 class ProtectionLevel(Enum):
@@ -124,6 +132,10 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # DANGEROUS : un robot qui se déplace seul dans un local est un
     # risque que l'utilisateur doit accepter explicitement.
     Permission.LOCOMOTION_WALK:      ProtectionLevel.DANGEROUS,
+    # NORMAL : écrire dans son propre espace cloisonné ne met rien en
+    # danger physiquement. C'est une question de traçabilité, pas de
+    # sécurité.
+    Permission.STORAGE_PERSISTENT:   ProtectionLevel.NORMAL,
 }
 
 

@@ -228,6 +228,18 @@ class HALBridgeServer:
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
         try:
+            if cmd.action == "remember":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.remember(
+                                       cmd.payload["key"],
+                                       cmd.payload.get("value")))
+
+            if cmd.action == "recall":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.recall(
+                                       cmd.payload["key"],
+                                       cmd.payload.get("default")))
+
             if cmd.action == "listen":
                 intent = self._ctx.listen(cmd.payload.get("duration_s", 3.0))
                 return HALResponse(cmd.request_id, True, data=(
@@ -521,6 +533,19 @@ class HALBridgeClient:
         """
         raw = self._call("move_all", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
+
+    def remember(self, key: str, value) -> bool:
+        try:
+            return bool(self._call("remember", {"key": key, "value": value}))
+        except RuntimeError as exc:
+            self.log(f"remember indisponible : {exc}")
+            return False
+
+    def recall(self, key: str, default=None):
+        try:
+            return self._call("recall", {"key": key, "default": default})
+        except RuntimeError:
+            return default
 
     def listen(self, duration_s: float = 3.0):
         """Identique à RobotContext.listen(), Y COMPRIS LE TYPE : un

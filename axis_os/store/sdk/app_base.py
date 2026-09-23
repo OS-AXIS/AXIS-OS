@@ -140,6 +140,7 @@ class RobotContext:
         self._perception = None
         self._locomotion = None
         self._speech = None
+        self._memory = None
         # Groupes déclarés par le HAL, résolus à la première utilisation.
         self._joint_groups: Optional[Dict[str, JointGroup]] = None
 
@@ -203,13 +204,43 @@ class RobotContext:
     # ---- Services système -------------------------------------------
 
     def _attach_services(self, perception=None, locomotion=None,
-                         speech=None) -> None:
+                         speech=None, memory=None) -> None:
         """Injection par le runtime — PRIVÉE, donc hors de la surface
         publique comparée par le test de parité. Ce n'est pas une API
         d'app : une app ne choisit pas ses services, elle les reçoit."""
         self._perception = perception
         self._locomotion = locomotion
         self._speech = speech
+        self._memory = memory
+
+    def remember(self, key: str, value) -> bool:
+        """Enregistre une donnée qui SURVIT au redémarrage du robot.
+
+        L'espace de stockage est celui de CETTE app : l'identifiant
+        utilisé est celui de son manifeste, qu'elle ne choisit pas. Une
+        app ne peut donc ni lire ni écraser les données d'une autre,
+        même en devinant sa clé.
+        """
+        self._require(Permission.STORAGE_PERSISTENT)
+        if self._memory is None:
+            self.log("remember : ce robot n'a pas de mémoire persistante.")
+            return False
+        r = self._memory.app_store(self._manifest.app_id, key, value)
+        if not r.ok:
+            self.log(f"remember : {r.reason}")
+        return bool(r.ok)
+
+    def recall(self, key: str, default=None):
+        """Relit une donnée enregistrée, ou `default` si absente.
+
+        Une clé inconnue est un cas NORMAL — premier démarrage, mémoire
+        effacée — pas une erreur.
+        """
+        self._require(Permission.STORAGE_PERSISTENT)
+        if self._memory is None:
+            return default
+        r = self._memory.app_load(self._manifest.app_id, key)
+        return r.value if r.ok else default
 
     def listen(self, duration_s: float = 3.0):
         """Écoute et rend une INTENTION reconnue, ou None.
