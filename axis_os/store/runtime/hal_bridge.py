@@ -228,6 +228,21 @@ class HALBridgeServer:
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
         try:
+            if cmd.action == "listen":
+                intent = self._ctx.listen(cmd.payload.get("duration_s", 3.0))
+                return HALResponse(cmd.request_id, True, data=(
+                    None if intent is None else
+                    {"name": intent.name, "params": dict(intent.params),
+                     "confidence": intent.confidence,
+                     "utterance": intent.utterance}))
+
+            if cmd.action == "declare_intent":
+                p = cmd.payload
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.declare_intent(
+                                       p["name"], p["keywords"],
+                                       p.get("params"), p.get("description", "")))
+
             if cmd.action == "look_for":
                 dets = self._ctx.look_for(cmd.payload.get("query"))
                 return HALResponse(cmd.request_id, True,
@@ -506,6 +521,30 @@ class HALBridgeClient:
         """
         raw = self._call("move_all", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
+
+    def listen(self, duration_s: float = 3.0):
+        """Identique à RobotContext.listen(), Y COMPRIS LE TYPE : un
+        vrai Intent, pas un dict sérialisé."""
+        try:
+            raw = self._call("listen", {"duration_s": duration_s})
+        except RuntimeError as exc:
+            self.log(f"listen indisponible : {exc}")
+            return None
+        if raw is None:
+            return None
+        from axis_os.services.speech.service import Intent
+        return Intent(name=raw["name"], params=raw.get("params", {}),
+                      confidence=float(raw.get("confidence", 0.0)),
+                      utterance=raw.get("utterance", ""))
+
+    def declare_intent(self, name: str, keywords, params=None,
+                       description: str = "") -> bool:
+        try:
+            return bool(self._call("declare_intent", {
+                "name": name, "keywords": [list(g) for g in keywords],
+                "params": params or {}, "description": description}))
+        except RuntimeError:
+            return False
 
     def look_for(self, query: Optional[str] = None) -> list:
         """Identique à RobotContext.look_for(), Y COMPRIS LE TYPE : de

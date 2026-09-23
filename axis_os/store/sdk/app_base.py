@@ -139,6 +139,7 @@ class RobotContext:
         # obscurément.
         self._perception = None
         self._locomotion = None
+        self._speech = None
         # Groupes déclarés par le HAL, résolus à la première utilisation.
         self._joint_groups: Optional[Dict[str, JointGroup]] = None
 
@@ -201,12 +202,58 @@ class RobotContext:
 
     # ---- Services système -------------------------------------------
 
-    def _attach_services(self, perception=None, locomotion=None) -> None:
+    def _attach_services(self, perception=None, locomotion=None,
+                         speech=None) -> None:
         """Injection par le runtime — PRIVÉE, donc hors de la surface
         publique comparée par le test de parité. Ce n'est pas une API
         d'app : une app ne choisit pas ses services, elle les reçoit."""
         self._perception = perception
         self._locomotion = locomotion
+        self._speech = speech
+
+    def listen(self, duration_s: float = 3.0):
+        """Écoute et rend une INTENTION reconnue, ou None.
+
+        Rend un objet Intent : un NOM d'action et des paramètres. Jamais
+        un mouvement. C'est l'app qui décide ce que l'intention
+        déclenche — une phrase ne commande pas un moteur, elle demande
+        quelque chose à du code responsable.
+
+        None est un résultat NORMAL et fréquent : silence, bruit, phrase
+        hors du vocabulaire déclaré. Une app doit traiter ce cas comme
+        ordinaire, pas comme une erreur.
+        """
+        self._require(Permission.SENSORS_MICROPHONE)
+        if self._speech is None:
+            self.log("listen : ce robot n'a pas de service de parole.")
+            return None
+        r = self._speech.listen(duration_s)
+        if r.reason:
+            self.log(f"listen : {r.reason}")
+        return r.value if r.ok else None
+
+    def declare_intent(self, name: str, keywords, params=None,
+                       description: str = "") -> bool:
+        """Déclare une intention que CETTE app sait traiter.
+
+        C'est le modèle des intentions d'Android : l'app annonce ce
+        qu'elle sait faire, l'OS choisit qui appeler. Installer une app
+        ajoute du vocabulaire au robot, sans réentraîner aucun modèle.
+        """
+        self._require(Permission.SENSORS_MICROPHONE)
+        if self._speech is None:
+            return False
+        from axis_os.services.speech.service import IntentDeclaration
+        try:
+            self._speech.registry.register(IntentDeclaration(
+                name=name, keywords=keywords, params=params or {},
+                description=description))
+            return True
+        except ValueError as exc:
+            # Déjà déclarée par une autre app : ce n'est pas une erreur
+            # de programmation, c'est un conflit à arbitrer.
+            self.log(f"declare_intent : {exc}")
+            return False
 
     def look_for(self, query: Optional[str] = None) -> list:
         """Cherche un objet décrit en langage naturel.

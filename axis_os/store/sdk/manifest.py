@@ -49,7 +49,7 @@ class Permission(Enum):
     SENSORS_IMU          = auto()
     SENSORS_FORCE_TORQUE = auto()  # NON APPLIQUÉE — voir docstring de classe
     SENSORS_CAMERA       = auto()  # appliquée : look_for / describe_scene
-    SENSORS_MICROPHONE   = auto()  # NON APPLIQUÉE — aucune API micro dans RobotContext
+    SENSORS_MICROPHONE   = auto()  # appliquée : listen / declare_intent
     WATCHDOG_READ        = auto()
     EMERGENCY_STOP       = auto()
     FLEET_BROADCAST      = auto()  # NON APPLIQUÉE — Fleet Manager non implémenté (voir docs/)

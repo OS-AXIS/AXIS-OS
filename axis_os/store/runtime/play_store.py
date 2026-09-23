@@ -187,6 +187,7 @@ class PlayStoreRuntime:
         memory_service: Optional[MemoryService] = None,
         perception_service=None,
         locomotion_service=None,
+        speech_service=None,
     ):
         """
         `require_signed_apps` : si True, install() refuse toute app
@@ -256,6 +257,7 @@ class PlayStoreRuntime:
         self._memory_service = memory_service
         self._perception_service = perception_service
         self._locomotion_service = locomotion_service
+        self._speech_service = speech_service
         # Jeton de session — voir _RuntimeSessionToken (axis_os/store/
         # sdk/app_base.py) et UnauthorizedContextError pour le contexte
         # complet : seule cette instance de PlayStoreRuntime peut
@@ -889,7 +891,8 @@ class PlayStoreRuntime:
         # (robot sans caméra, sans jambes) donne une réponse vide et
         # explicite, jamais une erreur obscure.
         ctx._attach_services(perception=self._perception_service,
-                             locomotion=self._locomotion_service)
+                             locomotion=self._locomotion_service,
+                             speech=self._speech_service)
         return ctx
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:
