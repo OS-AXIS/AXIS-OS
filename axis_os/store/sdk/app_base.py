@@ -134,6 +134,11 @@ class RobotContext:
         self._manifest = manifest
         self._log_entries: list[str] = []
         self._t0 = time.monotonic()
+        # Services système, injectés par le runtime. None = service
+        # indisponible sur ce robot ; l'API le DIT plutôt que d'échouer
+        # obscurément.
+        self._perception = None
+        self._locomotion = None
         # Groupes déclarés par le HAL, résolus à la première utilisation.
         self._joint_groups: Optional[Dict[str, JointGroup]] = None
 
@@ -193,6 +198,80 @@ class RobotContext:
                group: JointGroup) -> Dict[str, ActuatorCommand]:
         return {jid: cmd for jid, cmd in commands.items()
                 if self._group_of(jid) is group}
+
+    # ---- Services système -------------------------------------------
+
+    def _attach_services(self, perception=None, locomotion=None) -> None:
+        """Injection par le runtime — PRIVÉE, donc hors de la surface
+        publique comparée par le test de parité. Ce n'est pas une API
+        d'app : une app ne choisit pas ses services, elle les reçoit."""
+        self._perception = perception
+        self._locomotion = locomotion
+
+    def look_for(self, query: Optional[str] = None) -> list:
+        """Cherche un objet décrit en langage naturel.
+
+        Rend une liste de Detection, triées par confiance. Chacune porte
+        une direction dans le repère du robot, et une position 3D si une
+        caméra de profondeur est disponible — sinon None, jamais une
+        distance inventée.
+
+        Liste vide si le service de perception est absent : un robot
+        sans caméra n'est pas une erreur de programmation.
+        """
+        self._require(Permission.SENSORS_CAMERA)
+        if self._perception is None:
+            self.log("look_for : aucun service de perception sur ce robot.")
+            return []
+        r = self._perception.find(query)
+        if not r.ok:
+            self.log(f"look_for : {r.reason}")
+            return []
+        if r.reason:
+            self.log(f"look_for : {r.reason}")
+        return r.value or []
+
+    def describe_scene(self) -> str:
+        """Ce que le robot voit, en clair."""
+        self._require(Permission.SENSORS_CAMERA)
+        if self._perception is None:
+            return "aucune perception disponible"
+        r = self._perception.describe_scene()
+        return r.value if r.ok else f"perception indisponible : {r.reason}"
+
+    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> bool:
+        """Déclare une vitesse de déplacement. NON BLOQUANT.
+
+        L'app ne pilote PAS la marche pas à pas : elle déclare une
+        intention, et l'OS fait tourner la boucle de commande à la
+        fréquence qu'exige le robot. Une app sandboxée ne peut pas
+        garantir 50 Hz — elle peut être lente, bloquée, ou arrêtée par
+        son quota.
+
+        La consigne doit être RENOUVELÉE régulièrement. Si l'app cesse
+        de le faire, le service la ramène à zéro et le robot s'arrête en
+        gardant l'équilibre : la sécurité ne dépend pas de l'app.
+
+        Rend False si le service refuse (robot à terre, service arrêté).
+        """
+        self._require(Permission.LOCOMOTION_WALK)
+        self._require(Permission.ACTUATORS_WRITE_LEGS)
+        self._require_no_estop()
+        if self._locomotion is None:
+            self.log("walk : ce robot ne sait pas se déplacer.")
+            return False
+        r = self._locomotion.set_velocity(vx, vy, wz)
+        if r.reason:
+            self.log(f"walk : {r.reason}")
+        return bool(r.ok)
+
+    def stop_walking(self) -> bool:
+        """Arrêt EN ÉQUILIBRE (vitesse nulle). Ce n'est pas un arrêt
+        d'urgence : voir emergency_stop()."""
+        self._require(Permission.LOCOMOTION_WALK)
+        if self._locomotion is None:
+            return False
+        return bool(self._locomotion.halt().ok)
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         self._require(Permission.ACTUATORS_WRITE_ARMS)

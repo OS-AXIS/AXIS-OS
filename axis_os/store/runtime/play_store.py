@@ -185,6 +185,8 @@ class PlayStoreRuntime:
         require_signed_apps: bool = False,
         platform_public_key: Optional[str] = None,
         memory_service: Optional[MemoryService] = None,
+        perception_service=None,
+        locomotion_service=None,
     ):
         """
         `require_signed_apps` : si True, install() refuse toute app
@@ -252,6 +254,8 @@ class PlayStoreRuntime:
             )
         self._platform_public_key = platform_public_key
         self._memory_service = memory_service
+        self._perception_service = perception_service
+        self._locomotion_service = locomotion_service
         # Jeton de session — voir _RuntimeSessionToken (axis_os/store/
         # sdk/app_base.py) et UnauthorizedContextError pour le contexte
         # complet : seule cette instance de PlayStoreRuntime peut
@@ -874,11 +878,19 @@ class PlayStoreRuntime:
         return available
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
-        return RobotContext(
+        ctx = RobotContext(
             self._robot, self._watchdog, manifest,
             _session_token=self._session_token,
             _runtime_token_holder=self._session_token,
         )
+        # Les services sont injectés à TOUTE app : c'est la PERMISSION
+        # déclarée dans son manifeste qui décide de son droit d'usage,
+        # pas la présence ou l'absence du service. Un service absent
+        # (robot sans caméra, sans jambes) donne une réponse vide et
+        # explicite, jamais une erreur obscure.
+        ctx._attach_services(perception=self._perception_service,
+                             locomotion=self._locomotion_service)
+        return ctx
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:
         entry = self._apps.get(app_id)

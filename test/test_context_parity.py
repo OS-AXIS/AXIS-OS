@@ -120,6 +120,35 @@ _lost = [f for f in _fields if getattr(_fb, f) != getattr(_round, f)]
 check(f"Aller-retour sérialisation sans perte sur les {len(_fields)} champs "
       f"(perdus: {_lost or 'aucun'})", not _lost)
 
+# Même exigence pour les Detection : une app sandboxée doit recevoir de
+# vrais objets. C'est exactement le chemin par lequel la divergence
+# ActuatorFeedback/dict était passée — un nom de méthode identique ne
+# garantit rien sur ce qui en sort.
+from axis_os.hal.core.types import Vector3
+from axis_os.services.perception.service import Detection
+from axis_os.store.runtime.hal_bridge import (
+    _serialize_detection, _deserialize_detection,
+)
+
+_det = Detection(label="a box", confidence=0.31, bbox=(10, 20, 30, 40),
+                 direction=Vector3(1.0, 0.0, 0.0),
+                 position_3d=Vector3(1.3, 0.0, 0.3), timestamp_ns=1234)
+_back = _deserialize_detection(_serialize_detection(_det))
+check("Le pont reconstruit une Detection, pas un dict",
+      isinstance(_back, Detection))
+check("Aller-retour sans perte (label, confiance, boîte, horodatage)",
+      _back.label == _det.label and _back.confidence == _det.confidence
+      and _back.bbox == _det.bbox and _back.timestamp_ns == _det.timestamp_ns)
+check("direction et position_3d restent des Vector3 avec .x/.y/.z",
+      isinstance(_back.direction, Vector3)
+      and abs(_back.position_3d.x - 1.3) < 1e-9)
+
+_sans = Detection(label="x", confidence=0.1, bbox=(0, 0, 1, 1))
+_sb = _deserialize_detection(_serialize_detection(_sans))
+check("Sans profondeur, position_3d reste None à travers le pont — "
+      "aucune distance inventée en chemin",
+      _sb.position_3d is None and _sb.direction is None)
+
 check("get_full_state() annote Dict[str, ActuatorFeedback] des deux côtés",
       "ActuatorFeedback" in str(
           HALBridgeClient.get_full_state.__annotations__.get("return", "")))

@@ -48,7 +48,7 @@ class Permission(Enum):
     ACTUATORS_RAW        = auto()
     SENSORS_IMU          = auto()
     SENSORS_FORCE_TORQUE = auto()  # NON APPLIQUÉE — voir docstring de classe
-    SENSORS_CAMERA       = auto()  # NON APPLIQUÉE — aucune API caméra dans RobotContext
+    SENSORS_CAMERA       = auto()  # appliquée : look_for / describe_scene
     SENSORS_MICROPHONE   = auto()  # NON APPLIQUÉE — aucune API micro dans RobotContext
     WATCHDOG_READ        = auto()
     EMERGENCY_STOP       = auto()
@@ -65,6 +65,13 @@ class Permission(Enum):
     # explicitement reportée dans docs/ ("distinction IA/script dans
     # les permissions").
     ACTUATORS_AI_DRIVEN  = auto()
+    # Faire SE DÉPLACER le robot dans l'espace (marche, roues...).
+    # Distincte d'ACTUATORS_WRITE_LEGS, qui autorise à commander les
+    # articulations des jambes : une app qui déplace le robot change son
+    # environnement, peut heurter des objets, quitter une zone, tomber
+    # dans un escalier. Une app qui marche déclare les DEUX, pour que
+    # l'utilisateur voie à l'installation que le robot bougera de place.
+    LOCOMOTION_WALK      = auto()
 
 
 class ProtectionLevel(Enum):
@@ -114,6 +121,9 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # bon niveau — l'utilisateur doit savoir qu'une IA commandera le
     # robot, pas en être protégé par interdiction.
     Permission.ACTUATORS_AI_DRIVEN:  ProtectionLevel.DANGEROUS,
+    # DANGEROUS : un robot qui se déplace seul dans un local est un
+    # risque que l'utilisateur doit accepter explicitement.
+    Permission.LOCOMOTION_WALK:      ProtectionLevel.DANGEROUS,
 }
 
 

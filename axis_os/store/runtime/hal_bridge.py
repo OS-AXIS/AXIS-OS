@@ -72,6 +72,37 @@ class HALResponse:
 #  CÔTÉ PARENT — exécute réellement sur le HAL
 # ─────────────────────────────────────────────────────────────────
 
+def _serialize_detection(d) -> Dict[str, Any]:
+    """Detection -> dict transportable."""
+    def _v(v):
+        return None if v is None else [v.x, v.y, v.z]
+    return {"label": d.label, "confidence": d.confidence,
+            "bbox": list(d.bbox), "direction": _v(d.direction),
+            "position_3d": _v(d.position_3d), "timestamp_ns": d.timestamp_ns}
+
+
+def _deserialize_detection(d: Dict[str, Any]):
+    """dict -> Detection RÉELLE.
+
+    Même exigence que pour ActuatorFeedback : une app sandboxée doit
+    recevoir le MÊME TYPE qu'en direct. Sinon une app écrite contre la
+    documentation (`det.position_3d.x`) fonctionne en test et plante en
+    sandbox — donc uniquement sur le vrai robot.
+    """
+    from axis_os.hal.core.types import Vector3
+    from axis_os.services.perception.service import Detection
+
+    def _v(raw):
+        return None if raw is None else Vector3(raw[0], raw[1], raw[2])
+
+    return Detection(
+        label=d.get("label", ""), confidence=float(d.get("confidence", 0.0)),
+        bbox=tuple(d.get("bbox", (0, 0, 0, 0))),
+        direction=_v(d.get("direction")), position_3d=_v(d.get("position_3d")),
+        timestamp_ns=int(d.get("timestamp_ns", 0)),
+    )
+
+
 def _serialize_feedback(fb: ActuatorFeedback) -> Dict[str, Any]:
     """ActuatorFeedback -> dict transportable par multiprocessing.Queue."""
     return {
@@ -197,6 +228,26 @@ class HALBridgeServer:
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
         try:
+            if cmd.action == "look_for":
+                dets = self._ctx.look_for(cmd.payload.get("query"))
+                return HALResponse(cmd.request_id, True,
+                                   data=[_serialize_detection(d) for d in dets])
+
+            if cmd.action == "describe_scene":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.describe_scene())
+
+            if cmd.action == "walk":
+                p = cmd.payload
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.walk(p.get("vx", 0.0),
+                                                       p.get("vy", 0.0),
+                                                       p.get("wz", 0.0)))
+
+            if cmd.action == "stop_walking":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.stop_walking())
+
             if cmd.action == "get_joint_groups":
                 # Groupes DÉCLARÉS par le driver, transmis en noms d'enum
                 # (str) : le routage bras/jambes ne doit pas dépendre de
@@ -455,6 +506,35 @@ class HALBridgeClient:
         """
         raw = self._call("move_all", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
+
+    def look_for(self, query: Optional[str] = None) -> list:
+        """Identique à RobotContext.look_for(), Y COMPRIS LE TYPE : de
+        vraies Detection, pas des dicts sérialisés."""
+        try:
+            raw = self._call("look_for", {"query": query})
+        except RuntimeError as exc:
+            self.log(f"look_for indisponible : {exc}")
+            return []
+        return [_deserialize_detection(d) for d in (raw or [])]
+
+    def describe_scene(self) -> str:
+        try:
+            return self._call("describe_scene", {})
+        except RuntimeError as exc:
+            return f"perception indisponible : {exc}"
+
+    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> bool:
+        try:
+            return bool(self._call("walk", {"vx": vx, "vy": vy, "wz": wz}))
+        except RuntimeError as exc:
+            self.log(f"walk refusé : {exc}")
+            return False
+
+    def stop_walking(self) -> bool:
+        try:
+            return bool(self._call("stop_walking", {}))
+        except RuntimeError:
+            return False
 
     def _joint_groups(self) -> Dict[str, str]:
         """Groupes déclarés par le HAL, récupérés une fois via le pont.
