@@ -29,6 +29,91 @@ sys.path.insert(0, "/isaac-sim")
 from axis_os.hal.drivers.isaac_sim.bridge import (
     IsaacSimBridge, start_simulation_app,
 )
+from axis_os.store.sdk.app_base import (
+    MissionResult, RobotApp,
+    PermissionError as SandboxPermissionError,
+)
+from axis_os.store.sdk.manifest import (
+    AppCategory, AppManifest, Capability, Permission, ResourceQuota,
+)
+
+
+# ── Apps de DÉMONSTRATION ────────────────────────────────────────────
+# Définies au niveau MODULE, et non dans main() : le sandbox exécute
+# l'app dans un SOUS-PROCESSUS, et une classe définie à l'intérieur
+# d'une fonction ne peut pas lui être transmise. Première version :
+# « on_start arrêté par l'isolation : CRASHED (SANDBOX_ERROR) », pour
+# une raison qui n'avait rien à voir avec la scène jouée.
+#
+# Ce sont des figurants de test, pas des applications du catalogue.
+
+class AppDeuxMains(RobotApp):
+    """Exige une préhension à DEUX mains — le G1 23 DOF ne l'a pas."""
+
+    def manifest(self):
+        return AppManifest(
+            app_id="com.demo.deux_mains", name="Manipulation bimanuelle",
+            version="1.0.0", author="Demo", author_email="d@d.d",
+            description="Saisit un objet à deux mains.",
+            category=AppCategory.LOGISTICS,
+            permissions=[Permission.ACTUATORS_WRITE_ARMS],
+            capabilities_required=[Capability.GRASP_DUAL],
+            quota=ResourceQuota())
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="m",
+                             app_id="com.demo.deux_mains", duration_s=0.0)
+
+
+class AppCurieuse(RobotApp):
+    """Ne déclare que la caméra, mais essaie de faire marcher le robot."""
+
+    def manifest(self):
+        return AppManifest(
+            app_id="com.demo.curieuse", name="App curieuse",
+            version="1.0.0", author="Demo", author_email="d@d.d",
+            description="Regarde… et tente de marcher.",
+            category=AppCategory.RESEARCH,
+            permissions=[Permission.SENSORS_CAMERA],
+            quota=ResourceQuota(max_runtime_s=20.0))
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        try:
+            ctx.walk(0.5)
+            marche = True
+        except SandboxPermissionError as exc:
+            ctx.log(f"refus attendu : {exc}")
+            marche = False
+        return MissionResult(
+            success=not marche, mission_id="m",
+            app_id="com.demo.curieuse", duration_s=0.0,
+            metrics={"a_pu_marcher": marche})
+
+
+class AppLente(RobotApp):
+    """Occupe le robot pendant plusieurs secondes."""
+
+    def manifest(self):
+        return AppManifest(
+            app_id="com.demo.lente", name="App lente", version="1.0.0",
+            author="Demo", author_email="d@d.d", description="Occupe.",
+            category=AppCategory.RESEARCH, permissions=[],
+            quota=ResourceQuota(max_runtime_s=30.0))
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        import time as _t
+        _t.sleep(6.0)
+        return MissionResult(success=True, mission_id="m",
+                             app_id="com.demo.lente", duration_s=6.0)
 
 POLICY = Path("/isaac-sim/policies/g1_motion.pt")
 MEMOIRE = Path("/isaac-sim/memory_store_demo")
@@ -65,13 +150,8 @@ def main():
     from axis_os.hal.watchdog.system import WatchdogSystem
     from axis_os.services.locomotion.service import BaseState, LocomotionService
     from axis_os.services.memory.service import MemoryService
-    from axis_os.store.sdk.app_base import (
-        MissionResult, RobotApp, RobotContext,
-        PermissionError as SandboxPermissionError,
-    )
     from axis_os.store.sdk.manifest import (
-        AppCategory, AppManifest, Capability, Permission, ProtectionLevel,
-        ResourceQuota, get_protection_level,
+        ProtectionLevel, get_protection_level,
     )
     from axis_os.store.runtime.play_store import PlayStoreRuntime
 
@@ -167,25 +247,6 @@ def main():
     # ================================================================
     scene(2, "Matériel : une app refusée faute d'organe")
 
-    class AppDeuxMains(RobotApp):
-        """Exige une préhension à DEUX mains — le G1 23 DOF ne l'a pas."""
-
-        def manifest(self):
-            return AppManifest(
-                app_id="com.demo.deux_mains", name="Manipulation bimanuelle",
-                version="1.0.0", author="Demo", author_email="d@d.d",
-                description="Saisit un objet à deux mains.",
-                category=AppCategory.LOGISTICS,
-                permissions=[Permission.ACTUATORS_WRITE_ARMS],
-                capabilities_required=[Capability.GRASP_DUAL],
-                quota=ResourceQuota())
-
-        def on_start(self, ctx): return True
-        def on_stop(self, ctx): pass
-        def run_mission(self, ctx, params):
-            return MissionResult(success=True, mission_id="m",
-                                 app_id="com.demo.deux_mains", duration_s=0.0)
-
     refusee = runtime.install(AppDeuxMains())
     check("App exigeant une capacité absente : REFUSÉE à l'installation",
           not refusee)
@@ -195,36 +256,11 @@ def main():
     # ================================================================
     scene(3, "Permission : une app tente ce qu'elle n'a pas déclaré")
 
-    class AppCurieuse(RobotApp):
-        """Ne déclare que la caméra, mais essaie de faire marcher le robot."""
-
-        def manifest(self):
-            return AppManifest(
-                app_id="com.demo.curieuse", name="App curieuse",
-                version="1.0.0", author="Demo", author_email="d@d.d",
-                description="Regarde… et tente de marcher.",
-                category=AppCategory.RESEARCH,
-                permissions=[Permission.SENSORS_CAMERA],
-                quota=ResourceQuota(max_runtime_s=20.0))
-
-        def on_start(self, ctx): return True
-        def on_stop(self, ctx): pass
-
-        def run_mission(self, ctx, params):
-            try:
-                ctx.walk(0.5)
-                marche = True
-            except SandboxPermissionError as exc:
-                ctx.log(f"refus attendu : {exc}")
-                marche = False
-            return MissionResult(
-                success=not marche, mission_id="m",
-                app_id="com.demo.curieuse", duration_s=0.0,
-                metrics={"a_pu_marcher": marche})
-
     x_avant = float(robot.get_world_pose()[0][0])
     runtime.install(AppCurieuse())
-    runtime.start_app("com.demo.curieuse")
+    demarree = runtime.start_app("com.demo.curieuse")
+    check("L'app curieuse a bien DÉMARRÉ — sans quoi un refus ne "
+          "prouverait rien sur les permissions", bool(demarree))
     r3 = runtime.run_mission("com.demo.curieuse", params={})
     faire_tourner(1.0)
     x_apres = float(robot.get_world_pose()[0][0])
@@ -237,25 +273,15 @@ def main():
     # ================================================================
     scene(4, "Concurrence : deux apps veulent le robot en même temps")
 
-    class AppLente(RobotApp):
-        def manifest(self):
-            return AppManifest(
-                app_id="com.demo.lente", name="App lente", version="1.0.0",
-                author="Demo", author_email="d@d.d", description="Occupe.",
-                category=AppCategory.RESEARCH, permissions=[],
-                quota=ResourceQuota(max_runtime_s=30.0))
-
-        def on_start(self, ctx): return True
-        def on_stop(self, ctx): pass
-
-        def run_mission(self, ctx, params):
-            time.sleep(6.0)
-            return MissionResult(success=True, mission_id="m",
-                                 app_id="com.demo.lente", duration_s=6.0)
-
     runtime.install(AppLente())
-    runtime.start_app("com.demo.lente")
-    concurrent = {"resultat": "pas encore tenté"}
+    lente_ok = runtime.start_app("com.demo.lente")
+    # La première version de cette scène est passée au vert POUR LA
+    # MAUVAISE RAISON : la seconde mission était refusée parce que l'app
+    # n'avait pas démarré, pas à cause du verrou. Un refus sans motif
+    # vérifié ne prouve rien.
+    check("L'app occupante a DÉMARRÉ", bool(lente_ok))
+    premiere_demarree = runtime.start_app(installees[0])
+    check("L'app concurrente a DÉMARRÉ elle aussi", bool(premiere_demarree))
 
     def occuper():
         runtime.run_mission("com.demo.lente", params={})
@@ -265,8 +291,8 @@ def main():
     time.sleep(1.5)                     # laisser la première prendre le verrou
 
     r4 = runtime.run_mission(installees[0], params={})
-    concurrent["resultat"] = r4
-    check("La SECONDE mission est refusée pendant que la première tourne",
+    check("La SECONDE mission est refusée pendant que la première tourne, "
+          "alors que les DEUX apps sont démarrées",
           r4 is None or not r4.success)
     print(f"    (le robot ne peut pas servir deux maîtres à la fois)")
     th.join(timeout=15.0)
