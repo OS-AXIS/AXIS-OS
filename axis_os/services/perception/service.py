@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from axis_os.hal.core.frames import (
-    FRAME_BASE, FRAME_CAMERA_OPTICAL, FrameTree,
+    FRAME_BASE, FRAME_CAMERA_OPTICAL, FRAME_WORLD, FrameTree,
 )
 from axis_os.hal.core.interfaces import ICamera
 from axis_os.hal.core.types import (
@@ -213,11 +213,30 @@ class PerceptionService(IService):
         return ServiceResult(ok=True, value=labels)
 
     def find(self, query: Optional[str],
-             now_ns: Optional[int] = None) -> ServiceResult:
+             now_ns: Optional[int] = None,
+             frame: str = FRAME_BASE) -> ServiceResult:
         """Cherche un objet décrit en langage naturel.
 
         value = List[Detection], triée par confiance décroissante.
+
+        `frame` : repère dans lequel exprimer directions et positions.
+
+        FRAME_BASE (défaut) — repère du ROBOT. C'est ce qu'il faut pour
+        se diriger vers un objet : « 15° à gauche, à 2 m ».
+
+        FRAME_WORLD — repère FIXE. Indispensable dès qu'on mémorise une
+        position. Constaté : une app d'inventaire qui balayait en
+        TOURNANT SUR PLACE enregistrait ses observations dans le repère
+        du robot ; deux colis situés à 90° l'un de l'autre apparaissaient
+        tous deux à (2.2, 0) — face à chacun — et ont été fusionnés en un
+        seul. Un inventaire tenu dans un repère mobile n'a pas de sens.
         """
+        # Le paramètre `frame` désigne un REPÈRE ; la variable `frame`
+        # plus bas désigne l'IMAGE capturée. On fige le repère tout de
+        # suite pour éviter que l'une n'écrase l'autre — collision qui
+        # donnait un « unhashable type: CameraFrame » très opaque.
+        repere_sortie = frame
+
         if not self._started:
             return ServiceResult(ok=False, reason="service non démarré")
 
@@ -276,7 +295,8 @@ class PerceptionService(IService):
         depth = None
         if self._depth_camera is not None:
             depth = getattr(self._depth_camera, "capture_depth", lambda: None)()
-        located, warn = self._locate(detections, intrinsics, now, depth)
+        located, warn = self._locate(detections, intrinsics, now, depth,
+                                     repere_sortie)
         return ServiceResult(
             ok=True,
             value=sorted(located, key=lambda d: -d.confidence),
@@ -284,10 +304,10 @@ class PerceptionService(IService):
         )
 
     def _locate(self, detections, intrinsics: CameraIntrinsics,
-                now_ns: int, depth=None):
+                now_ns: int, depth=None, frame: str = FRAME_BASE):
         """Ajoute à chaque détection sa direction dans le repère robot."""
         tf, warn = self._tree.lookup(
-            FRAME_BASE, FRAME_CAMERA_OPTICAL, now_ns=now_ns)
+            frame, FRAME_CAMERA_OPTICAL, now_ns=now_ns)
         if tf is None:
             return detections, warn
 

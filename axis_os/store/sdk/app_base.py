@@ -286,13 +286,19 @@ class RobotContext:
             self.log(f"declare_intent : {exc}")
             return False
 
-    def look_for(self, query: Optional[str] = None) -> list:
+    def look_for(self, query: Optional[str] = None,
+                 frame: str = "base") -> list:
         """Cherche un objet décrit en langage naturel.
 
         Rend une liste de Detection, triées par confiance. Chacune porte
         une direction dans le repère du robot, et une position 3D si une
         caméra de profondeur est disponible — sinon None, jamais une
         distance inventée.
+
+        `frame` : "base" (défaut) pour se diriger vers un objet,
+        "world" pour MÉMORISER sa position. Un repère lié au robot
+        change quand le robot bouge : y enregistrer un inventaire n'a
+        pas de sens.
 
         Liste vide si le service de perception est absent : un robot
         sans caméra n'est pas une erreur de programmation.
@@ -301,7 +307,9 @@ class RobotContext:
         if self._perception is None:
             self.log("look_for : aucun service de perception sur ce robot.")
             return []
-        r = self._perception.find(query)
+        from axis_os.hal.core.frames import FRAME_BASE, FRAME_WORLD
+        repere = FRAME_WORLD if frame == "world" else FRAME_BASE
+        r = self._perception.find(query, frame=repere)
         if not r.ok:
             self.log(f"look_for : {r.reason}")
             return []

@@ -38,8 +38,9 @@ class FakePerception:
     def __init__(self):
         self.calls = 0
 
-    def find(self, query=None):
+    def find(self, query=None, now_ns=None, frame=None):
         self.calls += 1
+        self.dernier_repere = frame
         return ServiceResult(ok=True, value=[
             Detection("a box", 0.3, (1, 2, 3, 4),
                       direction=Vector3(1, 0, 0),
@@ -158,6 +159,15 @@ check("look_for() rend des Detection", len(dets) == 1
 check("La position 3D est accessible en attribut (det.position_3d.x)",
       abs(dets[0].position_3d.x - 1.3) < 1e-9)
 check("describe_scene() répond", ctx.describe_scene() == "a box")
+# Le repère demandé doit être TRANSMIS au service : une app qui
+# mémorise des positions a besoin d'un repère fixe, et le silence sur
+# ce point produirait un inventaire dans le repère du robot.
+ctx.look_for("a box", frame="world")
+check("look_for(frame=\"world\") demande bien le repère FIXE au service",
+      str(p.dernier_repere) == "world")
+ctx.look_for("a box")
+check("Par défaut, le repère du ROBOT (pour se diriger)",
+      str(p.dernier_repere) == "base_link")
 check("walk() transmet la consigne", ctx.walk(0.5, 0.0, 0.2)
       and l.velocities[-1] == (0.5, 0.0, 0.2))
 check("stop_walking() demande une vitesse NULLE, sans couper les moteurs",

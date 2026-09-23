@@ -108,7 +108,10 @@ class WarehouseInventoryApp(RobotApp):
             # coordonnées mémorisées perdent leur sens.
             ctx.walk(0.0, 0.0, VITESSE_ROTATION)
 
-            for d in ctx.look_for(cible):
+            # REPÈRE FIXE, pas celui du robot : il tourne sur place.
+            # Dans son repère, deux colis situés à 90° l'un de l'autre
+            # apparaissent tous deux droit devant — et se confondent.
+            for d in ctx.look_for(cible, frame="world"):
                 if d.position_3d is None:
                     continue           # sans distance, impossible de situer
                 if d.position_3d.z <= HAUTEUR_MIN_M:

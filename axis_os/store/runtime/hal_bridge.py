@@ -256,7 +256,8 @@ class HALBridgeServer:
                                        p.get("params"), p.get("description", "")))
 
             if cmd.action == "look_for":
-                dets = self._ctx.look_for(cmd.payload.get("query"))
+                dets = self._ctx.look_for(cmd.payload.get("query"),
+                                          cmd.payload.get("frame", "base"))
                 return HALResponse(cmd.request_id, True,
                                    data=[_serialize_detection(d) for d in dets])
 
@@ -571,11 +572,12 @@ class HALBridgeClient:
         except RuntimeError:
             return False
 
-    def look_for(self, query: Optional[str] = None) -> list:
+    def look_for(self, query: Optional[str] = None,
+                 frame: str = "base") -> list:
         """Identique à RobotContext.look_for(), Y COMPRIS LE TYPE : de
         vraies Detection, pas des dicts sérialisés."""
         try:
-            raw = self._call("look_for", {"query": query})
+            raw = self._call("look_for", {"query": query, "frame": frame})
         except RuntimeError as exc:
             self.log(f"look_for indisponible : {exc}")
             return []
