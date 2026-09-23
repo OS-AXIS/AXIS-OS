@@ -47,12 +47,26 @@ colis pour le lire, pas le heurter. Un robot qui devrait le saisir aurait
 besoin d'une caméra de poignet ou d'un capteur de proximité — matériel
 que le G1 23 DOF n'a pas."""
 
-HAUTEUR_MIN_M = -0.70
+HAUTEUR_MIN_M = -0.60
 """Hauteur minimale d'une détection valable, dans le repère du robot.
 
-Le bassin étant vers 0.79 m, une détection sous -0.70 est au niveau du
+Le bassin étant vers 0.79 m, une détection sous -0.60 est au niveau du
 sol : c'est le plancher pris pour un carton, pas un colis. Un colis de
-60 cm posé au sol a son centre vers -0.5."""
+60 cm posé au sol a sa face avant vers -0.5.
+
+Seuil resserré après un faux positif mesuré à -0.69 : le sol devant le
+robot, détecté comme carton avec une confiance de 0.129, a fait
+conclure à l'app qu'elle était arrivée SANS AVOIR BOUGÉ."""
+
+CONFIRMATIONS_ARRIVEE = 3
+"""Nombre d'images consécutives sous la distance d'arrêt avant de
+conclure.
+
+Une seule image ne prouve rien : une détection isolée peut être un
+reflet, le sol, ou une boîte mal placée par le modèle. Exiger plusieurs
+images d'affilée coûte quelques dixièmes de seconde et élimine les
+conclusions sur un coup de chance. C'est de la logique métier — la
+perception ne peut pas savoir combien de preuves une tâche exige."""
 VITESSE_M_S = 0.4
 GAIN_CAP = 1.2               # correction de direction, rad/s par rad d'écart
 TIMEOUT_RECHERCHE_S = 20.0
@@ -109,6 +123,7 @@ class WarehouseInspectorApp(RobotApp):
         sans_distance = 0
         perdu_depuis: Optional[float] = None
         pertes = 0
+        confirmations = 0
 
         while time.monotonic() - t0 < timeout_s:
             detections: List[Any] = ctx.look_for(cible)
@@ -166,11 +181,18 @@ class WarehouseInspectorApp(RobotApp):
 
             distance = (d.position_3d.x ** 2 + d.position_3d.y ** 2) ** 0.5
             if distance <= stop_m:
-                ctx.stop_walking()
-                ctx.log(f"Colis atteint à {distance:.2f} m "
-                        f"(consigne d'arrêt {stop_m:.2f} m)")
-                return self._resultat(ctx, t0, True, d, distance,
-                                      approches, sans_distance, pertes)
+                confirmations += 1
+                if confirmations >= CONFIRMATIONS_ARRIVEE:
+                    ctx.stop_walking()
+                    ctx.log(f"Colis atteint à {distance:.2f} m, confirmé sur "
+                            f"{confirmations} images")
+                    return self._resultat(ctx, t0, True, d, distance,
+                                          approches, sans_distance, pertes)
+                # Pas encore assez sûr : on ralentit sans s'arrêter.
+                ctx.walk(VITESSE_M_S * 0.3, 0.0, GAIN_CAP * self._cap_vers(d))
+                time.sleep(0.05)
+                continue
+            confirmations = 0
 
             # Avancer en corrigeant le cap : le colis n'est pas forcément
             # droit devant.

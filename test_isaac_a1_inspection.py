@@ -115,11 +115,10 @@ def main():
     dep.wait_until_ready(world)
 
     tree = FrameTree()
-    # Seuil bas : les scores d'OWL-ViT ne sont pas calibrés comme ceux
-    # d'un détecteur à classes fermées, et un carton lointain tourne
-    # autour de 0.10. Mieux vaut quelques détections faibles que le
-    # robot perde sa cible une image sur deux.
-    detector = OwlViTDetector(threshold=0.05)
+    # 0.09 : compromis mesuré. À 0.05, le SOL était détecté comme carton
+    # (confiance 0.129) et l'app concluait à l'arrivée sans avoir bougé.
+    # Le vrai colis marque 0.10 à distance et 0.31 de près.
+    detector = OwlViTDetector(threshold=0.09)
     check("OWL-ViT chargé", detector.load())
     perception = PerceptionService(cam, tree, detector, depth_camera=dep)
     perception.start()
@@ -266,6 +265,14 @@ def main():
             print(f"  message : {r.error_message}")
         check("L'app a VU le colis", bool(r.metrics.get("colis_vu")))
         check("L'app a ATTEINT le colis", r.success)
+        # Un succès sans déplacement est pire qu'un échec : c'est
+        # exactement ce qui s'est produit quand l'app a pris le sol pour
+        # un colis. Le test doit le refuser.
+        pos_f, _ = robot.get_world_pose()
+        avance = float(pos_f[0])
+        check(f"Le robot s'est RÉELLEMENT déplacé vers le colis "
+              f"(x={avance:.2f}, départ 0.00, colis à {COLIS[1][0]})",
+              avance > 1.0)
         d = r.metrics.get("distance_finale_m")
         if d is not None:
             check(f"Arrêt à moins d'1 m du colis ({d} m) — devant, pas dessus",
