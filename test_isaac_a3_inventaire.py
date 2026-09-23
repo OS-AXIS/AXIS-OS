@@ -159,7 +159,9 @@ def main():
                                memory_service=memoire)
     app = WarehouseInventoryApp()
     man = app.manifest()
-    runtime.install(app)
+    installee = runtime.install(app)
+    check("L'app est INSTALLÉE (capacités du robot suffisantes)",
+          bool(installee) and runtime._get(man.app_id) is not None)
     runtime.start_app(man.app_id)
 
     def faire_mission(label):
@@ -229,10 +231,19 @@ def main():
 
     section("On retire un colis de la scène")
 
-    world.scene.remove_object(COLIS[1][0])
+    # INVISIBLE plutôt que SUPPRIMÉ : retirer un objet de la scène
+    # invalide la vue physique d'Isaac Sim, et le robot devient
+    # illisible — « Failed to get root link transforms from backend ».
+    # Le rendre invisible suffit : la caméra ne le voit plus, ce qui est
+    # exactement ce qu'on veut éprouver.
+    import omni.usd
+    from pxr import UsdGeom
+    stage = omni.usd.get_context().get_stage()
+    UsdGeom.Imageable(
+        stage.GetPrimAtPath(f"/World/{COLIS[1][0]}")).MakeInvisible()
     for _ in range(20):
         world.step(render=True)
-    print(f"  « {COLIS[1][0]} » retiré")
+    print(f"  « {COLIS[1][0]} » retiré de la vue")
 
     section("Mission 2 — le robot doit reconnaître et remarquer l'absence")
 

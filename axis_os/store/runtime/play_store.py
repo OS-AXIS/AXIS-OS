@@ -877,6 +877,18 @@ class PlayStoreRuntime:
             available.add(Capability.WALK)
         if robot_caps.has(RobotCapability.ARMS):
             available.add(Capability.GRASP_SINGLE)
+
+        # CAPACITÉS LOGICIELLES : elles ne viennent pas du matériel mais
+        # des SERVICES effectivement présents sur ce robot. Une mémoire
+        # persistante n'est pas un capteur — elle existe si le noyau
+        # fournit le service, et pas autrement.
+        #
+        # Oubli constaté : la table ne traduisait que des capacités
+        # matérielles, donc MEMORY_PERSISTENT n'était JAMAIS disponible
+        # et toute app l'exigeant était refusée à l'installation — sans
+        # que rien n'indique pourquoi la mission suivante échouait.
+        if self._memory_service is not None:
+            available.add(Capability.MEMORY_PERSISTENT)
         return available
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:

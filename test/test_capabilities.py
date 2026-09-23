@@ -218,4 +218,36 @@ if FAIL == 0:
 else:
     print(f"  ✗ {FAIL} test(s) échoué(s).")
 
+# ── Capacités LOGICIELLES : elles viennent des SERVICES, pas du matériel ──
+# Oubli constaté en simulation : la table ne traduisait que des capacités
+# matérielles, donc MEMORY_PERSISTENT n'était JAMAIS disponible. Toute
+# app l'exigeant était refusée à l'installation — et la mission suivante
+# échouait sur un « app non installée » qui n'expliquait rien.
+import contextlib as _ctx
+import io as _io
+import tempfile as _tmp
+from pathlib import Path as _P
+
+from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer as _norm
+from axis_os.hal.core.normalized_robot import NormalizedRobotHAL as _NRH
+from axis_os.hal.watchdog.system import WatchdogSystem as _WD
+from axis_os.services.memory.service import MemoryService as _MS
+from axis_os.store.runtime.play_store import PlayStoreRuntime as _PSR
+from axis_os.store.sdk.manifest import Capability as _Cap
+
+with _ctx.redirect_stdout(_io.StringIO()):
+    _hal = UnitreeG1HAL(backend="sim"); _hal.initialize_all()
+    _rb = _NRH(_hal, _norm()); _rb.initialize_all()
+    _wd = _WD(_rb)
+    _c_sans = _PSR(_rb, _wd)._available_capabilities()
+    with _tmp.TemporaryDirectory() as _d:
+        _mem = _MS(_P(_d)); _mem.start()
+        _c_avec = _PSR(_rb, _wd, memory_service=_mem)._available_capabilities()
+
+print()
+check("Sans service de mémoire : MEMORY_PERSISTENT indisponible",
+      _Cap.MEMORY_PERSISTENT not in _c_sans)
+check("Avec service de mémoire : MEMORY_PERSISTENT disponible",
+      _Cap.MEMORY_PERSISTENT in _c_avec)
+
 sys.exit(0 if FAIL == 0 else 1)
