@@ -132,6 +132,14 @@ m.initialize()
 m.capture(2.0)
 check("File vide : l'attente passe par l'horloge fournie",
       attentes == [2.0])
+from axis_os.hal.core.types import AudioChunk
+attentes2 = []
+m2 = QueuedMicrophone("m2", [AudioChunk(16000, 1, 2, b"\x01\x00" * 100)],
+                      sleeper=attentes2.append)
+m2.initialize()
+check("Phrase en file : le micro prend AUSSI le temps d'écouter — sinon "
+      "toutes les phrases sont « prononcées » à l'instant zéro",
+      m2.capture(2.0) is not None and attentes2 == [2.0])
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

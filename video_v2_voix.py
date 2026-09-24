@@ -33,11 +33,14 @@ from axis_os.hal.drivers.isaac_sim.bridge import (
 
 POLICY = Path("/isaac-sim/policies/g1_motion.pt")
 SORTIE = "/isaac-sim/videos/v2_commande_vocale.mp4"
-COLIS = ("colis", (2.6, 0.0, 0.3), (0.6, 0.5, 0.6))
+# Plus loin : la marche doit durer assez pour que la troisième
+# phrase tombe PENDANT le trajet. À 2.6 m, le robot arrivait avant.
+COLIS = ("colis", (3.2, 0.0, 0.3), (0.6, 0.5, 0.6))
 PHRASES = ["Il fait beau aujourd'hui.",
            "Va vers le carton.",
            "Quelle heure est-il ?"]
-APRES_S = 3.0
+AVANT_S = 2.0          # robot immobile avant la première écoute
+APRES_S = 4.0
 
 
 def synthetiser(phrases, whisper, attendu, essais=12):
@@ -257,13 +260,13 @@ def main():
     # ---- caméra spectateur : de côté, le robot à gauche, le colis à
     # droite. Le panneau passe donc à DROITE, en haut, au-dessus du colis
     # qui est au sol.
-    rec = SceneRecorder(world, SORTIE, position=(1.2, -3.9, 1.35),
-                        cible=(1.1, 0.0, 0.75),
+    rec = SceneRecorder(world, SORTIE, position=(1.6, -4.6, 1.35),
+                        cible=(1.6, 0.0, 0.75),
                         titre="AXIS-OS — le robot obéit à la voix",
                         panneau="droite")
     rec.suivre(lambda: robot.get_world_pose()[0],
-               decalage=(1.2, -3.9, 0.6), hauteur_visee=0.75,
-               decalage_cadre=(1.1, 0.0))
+               decalage=(1.6, -4.6, 0.6), hauteur_visee=0.75,
+               decalage_cadre=(1.6, 0.0))
     if not rec.start():
         simulation_app.close()
         sys.exit(1)
@@ -290,13 +293,18 @@ def main():
             f"Distance au colis : {dist:.2f} m",
         ]
 
-    th = threading.Thread(target=mission, daemon=True)
-    th.start()
+    th = None
     fin_t = None
     k = 0
     t_mur = time.monotonic()
     while time.monotonic() - t_mur < 420.0:
         t = sim_t[0]
+
+        # Le robot reste d'abord immobile : le spectateur doit voir qu'il
+        # ne bouge pas AVANT qu'on lui parle.
+        if th is None and t >= AVANT_S:
+            th = threading.Thread(target=mission, daemon=True)
+            th.start()
 
         # Nouvelle phrase transcrite -> bandeau et panneau.
         while etat["vus"] < len(journal):

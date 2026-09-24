@@ -251,14 +251,19 @@ class QueuedMicrophone(IMicrophone):
         if not self._initialized:
             return None
         self.captures += 1
+        # On ATTEND TOUJOURS la durée d'écoute, comme un vrai micro qui
+        # enregistre en temps réel — qu'il y ait une phrase ou du silence.
+        #
+        # Deux défauts constatés sans cette attente :
+        #   - silence rendu instantanément : une app qui écoute en boucle
+        #     tournait à pleine vitesse, 117 547 « phrases ignorées » en
+        #     une mission ;
+        #   - phrase rendue instantanément : toutes les phrases de la file
+        #     étaient « prononcées » à l'instant zéro, avant même que la
+        #     vidéo commence, et leur son était tronqué.
+        self._sleeper(duration_s)
         if self._file:
             return self._file.pop(0)
-        # File vide : on ATTEND la durée d'écoute, comme un vrai micro qui
-        # bloque pendant qu'il enregistre. Sans cette attente, le silence
-        # revenait instantanément et une app qui écoute en boucle tournait
-        # à pleine vitesse — 117 547 « phrases ignorées » constatées en
-        # une seule mission.
-        self._sleeper(duration_s)
         n = max(1, int(self._sample_rate * duration_s))
         return AudioChunk(sample_rate=self._sample_rate, channels=1,
                           sample_width=2, data=b"\x00\x00" * n)
