@@ -65,10 +65,17 @@ def make_bridge(permissions):
 section("1 — CRITIQUE : move_all() vérifié côté SERVEUR, pas côté client")
 
 robot1, wd1, server1, client1 = make_bridge([Permission.ACTUATORS_READ])  # SANS write_all
+from axis_os.store.sdk.app_base import PermissionError as _PermErr
+
 try:
     client1.move_all({"waist_yaw_joint": ActuatorCommand(mode=ControlMode.POSITION, position=0.1)})
     check("Sans ACTUATORS_WRITE_ALL, move_all() refusé", False)
-except RuntimeError as e:
+except _PermErr as e:
+    # Attendait auparavant un RuntimeError générique : le pont ne
+    # transportait que le MESSAGE de l'erreur, pas son TYPE. Une app
+    # sandboxée ne pouvait donc pas distinguer une permission manquante
+    # d'une autre panne, alors qu'en direct elle recevait une
+    # PermissionError.
     check("Sans ACTUATORS_WRITE_ALL, move_all() refusé (le client n'a "
           "AUCUN moyen de le contourner — vérification côté serveur)",
           "Permission" in str(e))
@@ -157,6 +164,35 @@ check("NormalizedRobotHAL.get_motion_tracker() ne lève plus AttributeError",
       tracker is not None)
 
 # ══════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════
+
+section("Le TYPE d'erreur traverse le pont, pas seulement son message")
+
+# Divergence constatée en démonstration : en direct, une permission
+# manquante lève PermissionError ; à travers le pont, elle devenait un
+# RuntimeError générique que les méthodes du client avalaient en rendant
+# False. Une app sandboxée ne pouvait plus distinguer « je n'ai pas le
+# droit » de « ce robot n'a pas de jambes ».
+from axis_os.store.sdk.app_base import PermissionError as _PermErr
+
+robot_p, wd_p, server_p, client_p = make_bridge([Permission.ACTUATORS_READ])
+try:
+    client_p.move_arms({"left_elbow_joint":
+                        ActuatorCommand(mode=ControlMode.POSITION, position=0.1)})
+    leve = None
+except _PermErr as exc:
+    leve = "permission"
+except RuntimeError:
+    leve = "runtime"
+check("Permission manquante : PermissionError, comme en direct — "
+      f"pas un RuntimeError générique (obtenu: {leve})",
+      leve == "permission")
+
+check("PermissionError n'hérite PAS de RuntimeError, donc elle n'est "
+      "pas avalée par les except RuntimeError du client",
+      not issubclass(_PermErr, RuntimeError))
+server_p.stop()
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

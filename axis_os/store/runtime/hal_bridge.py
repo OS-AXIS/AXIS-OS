@@ -415,7 +415,15 @@ class HALBridgeServer:
                                    error=f"Action inconnue : {cmd.action}")
 
         except SandboxPermissionError as exc:
-            return HALResponse(cmd.request_id, False, error=f"Permission refusée : {exc}")
+            # Préfixé, comme ESTOP_ACTIVE ci-dessous : le TYPE de l'erreur
+            # doit traverser le pont, pas seulement son message. Sans ça,
+            # une permission manquante devenait un RuntimeError générique,
+            # que les méthodes du client avalaient en rendant False — une
+            # app sandboxée ne pouvait plus distinguer « je n'ai pas le
+            # droit » de « ce robot n'a pas de jambes », alors qu'en
+            # direct elle recevait une PermissionError.
+            return HALResponse(cmd.request_id, False,
+                               error=f"PERMISSION_DENIED:{exc}")
         except EstopActiveError as exc:
             # Propagé distinctement — un e-stop survenu pendant qu'une
             # app sandboxée exécute sa mission doit être identifiable
@@ -832,6 +840,12 @@ class HALBridgeClient:
             if not resp.success:
                 if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
                     raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
+                if resp.error and resp.error.startswith("PERMISSION_DENIED:"):
+                    # Même exception qu'en direct : une app écrite contre
+                    # RobotContext se comporte identiquement, sandboxée ou
+                    # non.
+                    raise SandboxPermissionError(
+                        resp.error[len("PERMISSION_DENIED:"):])
                 raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
             return resp.data
         raise TimeoutError(f"HAL bridge timeout sur '{action}' (> {self._timeout}s)")
