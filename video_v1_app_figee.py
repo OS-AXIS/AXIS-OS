@@ -109,13 +109,16 @@ def main():
     runtime.start_app(app.manifest().app_id)
 
     # Caméra spectateur : de trois quarts, couvrant le trajet du robot.
-    # Caméra RECULÉE et plus haute : la première version cadrait trop
-    # serré — le robot sortait du champ vers la droite, pieds coupés sous
-    # le bandeau. À 6.5 m, le champ couvre environ 5.6 m de large, soit
-    # tout le trajet.
-    rec = SceneRecorder(world, SORTIE, position=(1.3, -6.5, 2.4),
-                        cible=(1.3, 0.0, 0.8),
+    # Caméra qui SUIT le robot, en trois quarts avant, à ~3.7 m. Version
+    # précédente : caméra fixe reculée à 6.5 m pour garder tout le trajet
+    # dans le champ — le robot y paraissait minuscule. Une caméra proche
+    # et fixe le perdrait ; une caméra qui l'accompagne le garde en gros
+    # plan du début à la fin.
+    rec = SceneRecorder(world, SORTIE, position=(2.4, -2.8, 1.25),
+                        cible=(0.0, 0.0, 0.75),
                         titre="AXIS-OS — une app se fige en pleine marche")
+    rec.suivre(lambda: robot.get_world_pose()[0],
+               decalage=(2.4, -2.8, 0.5), hauteur_visee=0.75)
     if not rec.start():
         simulation_app.close()
         sys.exit(1)
@@ -152,11 +155,17 @@ def main():
         else:
             recue = (f"Dernière consigne de l'app : {derniere['vx']:.2f} m/s "
                      f"(il y a {sim_t[0] - derniere['t']:.1f} s)")
+        if fraiche:
+            appliquee = f"Consigne appliquée : {loco._twist.vx:.2f} m/s"
+        elif derniere["t"] is None:
+            # Rien n'a encore été demandé : « expirée » serait faux.
+            appliquee = "Consigne appliquée : aucune — robot debout"
+        else:
+            appliquee = "Consigne appliquée : 0 — expirée, robot à l'arrêt"
         return [
             app_txt,
             recue,
-            f"Consigne appliquée : {loco._twist.vx:.2f} m/s" if fraiche
-            else "Consigne appliquée : 0 — expirée, robot à l'arrêt",
+            appliquee,
             f"Service de marche : {loco.state.name}",
             f"Garde-fou : {loco.stats['refused']} refus",
             f"Position du robot : x = {float(pos[0]):+.2f} m",
@@ -197,6 +206,8 @@ def main():
 
         loco.tick()
         capture = (k % 2 == 0)             # 25 images/s pour 50 Hz
+        if capture:
+            rec.cadrer()                   # AVANT le rendu, pas après
         for i in range(cfg.decimation - 1):
             world.step(render=(capture and i == 0))
         sim_t[0] += cfg.control_dt

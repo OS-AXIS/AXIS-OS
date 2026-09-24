@@ -141,8 +141,8 @@ class SceneRecorder:
     def __init__(self, world, chemin_mp4: str,
                  position: Tuple[float, float, float] = (2.0, -3.5, 1.8),
                  cible: Tuple[float, float, float] = (1.2, 0.0, 0.6),
-                 largeur: int = 1280, hauteur: int = 720, fps: int = 25,
-                 titre: str = "AXIS-OS"):
+                 largeur: int = 1920, hauteur: int = 1080, fps: int = 25,
+                 titre: str = "AXIS-OS", qualite: int = 9):
         self._world = world
         self._chemin = Path(chemin_mp4)
         self._position = position
@@ -156,14 +156,67 @@ class SceneRecorder:
         self._bandeau_fin_s = 0.0
         self._bandeau_couleur = (220, 60, 50)
         self.images = 0
-        self._f_titre = _police(24)
-        self._f_etat = _police(18)
-        self._f_bandeau = _police(30)
+        self._qualite = qualite
+        # Tailles proportionnelles à la hauteur : un texte calibré pour du
+        # 720p devient illisible sur un téléphone en 1080p.
+        self._k = hauteur / 720.0
+        self._f_titre = _police(int(24 * self._k))
+        self._f_etat = _police(int(18 * self._k))
+        self._f_bandeau = _police(int(30 * self._k))
+        # Suivi : None = caméra fixe.
+        self._suivi = None
+        self._pos_lissee = None
 
     # ---- cycle de vie -------------------------------------------------
 
+    def suivre(self, position_sujet, decalage=(2.4, -2.8, 0.5),
+               hauteur_visee: float = 0.75, lissage: float = 0.12,
+               decalage_cadre=(-0.45, -0.40)) -> None:
+        """Caméra qui ACCOMPAGNE le sujet, comme un travelling.
+
+        Avec une caméra fixe, se rapprocher fait sortir le robot du champ
+        pendant sa marche ; la première vidéo, cadrée large pour l'éviter,
+        montrait un robot minuscule au milieu d'un sol vide.
+
+        position_sujet : fonction rendant la position (x, y, z) du sujet.
+        decalage       : position de la caméra RELATIVE au sujet — par
+                         défaut devant et sur le côté, trois quarts avant.
+        lissage        : fraction du chemin parcourue à chaque image. Sans
+                         lissage, la caméra reproduit chaque oscillation
+                         du bassin pendant la marche, et l'image tremble.
+        decalage_cadre : décalage du point VISÉ par rapport au sujet. Le
+                         défaut place le robot au TIERS DROIT de l'image :
+                         centré, il touchait le panneau d'état ; au tiers,
+                         la gauche reste libre pour le texte — et c'est de
+                         toute façon une meilleure composition.
+        """
+        self._suivi = (position_sujet, decalage, hauteur_visee, lissage,
+                       decalage_cadre)
+
+    def cadrer(self) -> None:
+        """Replace la caméra avant le RENDU de l'image suivante.
+
+        À appeler AVANT le pas de simulation qui rend l'image, pas
+        après : la caméra doit être en place quand le rendu a lieu.
+        """
+        if self._suivi is None or self._cam is None:
+            return
+        import numpy as np
+        fn, dec, h, a, cadre = self._suivi
+        p = np.asarray(fn(), dtype=float)
+        if self._pos_lissee is None:
+            self._pos_lissee = p.copy()
+        else:
+            self._pos_lissee += a * (p - self._pos_lissee)
+        sx, sy = float(self._pos_lissee[0]), float(self._pos_lissee[1])
+        # La caméra se place par rapport au SUJET, mais vise un point
+        # décalé : c'est ce qui déplace le sujet dans l'image.
+        self._cam._position = (sx + dec[0], sy + dec[1], h + dec[2])
+        self._cam.look_at((sx + cadre[0], sy + cadre[1], h))
+
     def start(self) -> bool:
         from axis_os.hal.drivers.isaac_sim.sim_camera import IsaacSimCamera
+        self._reglages_rendu()
         self._cam = IsaacSimCamera(
             "spectateur", prim_path="/World/spectateur",
             width=self._w, height=self._h, position=self._position)
@@ -180,13 +233,31 @@ class SceneRecorder:
             import imageio.v2 as imageio
             self._writer = imageio.get_writer(
                 str(self._chemin), fps=self.fps, codec="libx264",
-                quality=8, macro_block_size=8)
+                quality=self._qualite, macro_block_size=8)
         except Exception as exc:        # noqa: BLE001
             print(f"  [vidéo] écriture MP4 impossible ({exc}) — "
                   f"`pip install imageio imageio-ffmpeg`")
             return False
         print(f"  [vidéo] enregistrement -> {self._chemin}")
         return True
+
+    @staticmethod
+    def _reglages_rendu() -> None:
+        """Rendu en qualité plutôt qu'en vitesse.
+
+        Par défaut, Isaac Sim rend à résolution réduite puis agrandit
+        (DLSS en mode performance) — constaté dans les journaux : rendu
+        interne en 320x240 pour une image demandée en 640x480. Pour une
+        vidéo, on privilégie la qualité. Sans effet si le réglage
+        n'existe pas dans cette version : l'enregistrement continue.
+        """
+        try:
+            import carb.settings
+            st = carb.settings.get_settings()
+            st.set("/rtx/post/dlss/execMode", 2)       # 2 = qualité
+            st.set("/rtx/post/aa/op", 3)               # anti-crénelage
+        except Exception as exc:            # noqa: BLE001
+            print(f"  [vidéo] réglages de rendu non appliqués : {exc}")
 
     def terminer(self) -> Optional[Path]:
         if self._writer is not None:
@@ -227,22 +298,26 @@ class SceneRecorder:
         largeur = 20 + max(
             [d.textlength(self._titre, font=self._f_titre)]
             + [d.textlength(l, font=self._f_etat) for l in lignes])
-        haut = 48 + 26 * len(lignes)
-        d.rectangle([16, 16, 16 + largeur + 20, 16 + haut],
+        k = self._k
+        haut = (48 + 26 * len(lignes)) * k
+        d.rectangle([16 * k, 16 * k, 16 * k + largeur + 20 * k, 16 * k + haut],
                     fill=(15, 20, 30, 180))
-        d.text((30, 24), self._titre, font=self._f_titre, fill=(120, 200, 255, 255))
+        d.text((30 * k, 24 * k), self._titre, font=self._f_titre,
+               fill=(120, 200, 255, 255))
         for i, ligne in enumerate(lignes):
-            d.text((30, 60 + 26 * i), ligne, font=self._f_etat,
+            d.text((30 * k, (60 + 26 * i) * k), ligne, font=self._f_etat,
                    fill=(235, 235, 235, 255))
 
         # Bandeau d'événement, centré en bas.
         if self._bandeau and t_s <= self._bandeau_fin_s:
             tw = d.textlength(self._bandeau, font=self._f_bandeau)
-            x0 = (self._w - tw) / 2 - 30
-            y0 = self._h - 90
+            k = self._k
+            x0 = (self._w - tw) / 2 - 30 * k
+            y0 = self._h - 90 * k
             r, g, b = self._bandeau_couleur
-            d.rectangle([x0, y0, x0 + tw + 60, y0 + 60], fill=(r, g, b, 225))
-            d.text((x0 + 30, y0 + 12), self._bandeau, font=self._f_bandeau,
+            d.rectangle([x0, y0, x0 + tw + 60 * k, y0 + 60 * k],
+                        fill=(r, g, b, 225))
+            d.text((x0 + 30 * k, y0 + 12 * k), self._bandeau, font=self._f_bandeau,
                    fill=(255, 255, 255, 255))
 
         img = Image.alpha_composite(img, calque).convert("RGB")
