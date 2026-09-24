@@ -142,7 +142,8 @@ class SceneRecorder:
                  position: Tuple[float, float, float] = (2.0, -3.5, 1.8),
                  cible: Tuple[float, float, float] = (1.2, 0.0, 0.6),
                  largeur: int = 1920, hauteur: int = 1080, fps: int = 25,
-                 titre: str = "AXIS-OS", qualite: int = 9):
+                 titre: str = "AXIS-OS", qualite: int = 9,
+                 panneau: str = "gauche"):
         self._world = world
         self._chemin = Path(chemin_mp4)
         self._position = position
@@ -166,6 +167,10 @@ class SceneRecorder:
         # Suivi : None = caméra fixe.
         self._suivi = None
         self._pos_lissee = None
+        # Panneau à gauche ou à droite, selon où se trouve le sujet.
+        self._panneau = panneau
+        # Piste son : (instant de fin en secondes, échantillons 16 kHz).
+        self._sons = []
 
     # ---- cycle de vie -------------------------------------------------
 
@@ -259,14 +264,61 @@ class SceneRecorder:
         except Exception as exc:            # noqa: BLE001
             print(f"  [vidéo] réglages de rendu non appliqués : {exc}")
 
+    def ajouter_son(self, t_fin_s: float, chunk) -> None:
+        """Place un son dans la piste audio, se TERMINANT à t_fin_s.
+
+        Pour la parole, t_fin_s est l'instant où le micro a capté la
+        phrase : on l'entend donc juste AVANT la réaction du robot, dans
+        l'ordre où les choses se passent — parler, comprendre, agir.
+        """
+        import numpy as np
+        from axis_os.services.speech.whisper_recognizer import WhisperRecognizer
+        x = WhisperRecognizer.to_float_mono(chunk)      # 16 kHz, [-1, 1]
+        self._sons.append((float(t_fin_s), np.asarray(x, dtype=np.float32)))
+
+    def _piste_audio(self, duree_s: float, chemin_wav: Path) -> None:
+        import wave
+        import numpy as np
+        sr = 16000
+        piste = np.zeros(int(duree_s * sr) + 1, dtype=np.float32)
+        for t_fin, x in self._sons:
+            debut = max(0, int(t_fin * sr) - x.size)
+            fin = min(piste.size, debut + x.size)
+            piste[debut:fin] += x[:fin - debut]
+        pcm = (np.clip(piste, -1.0, 1.0) * 32767).astype(np.int16)
+        with wave.open(str(chemin_wav), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+            w.writeframes(pcm.tobytes())
+
     def terminer(self) -> Optional[Path]:
-        if self._writer is not None:
-            self._writer.close()
-            self._writer = None
-            print(f"  [vidéo] {self.images} images, "
-                  f"{self.images / self.fps:.1f} s -> {self._chemin}")
-            return self._chemin
-        return None
+        if self._writer is None:
+            return None
+        self._writer.close()
+        self._writer = None
+        duree = self.images / self.fps
+        if self._sons:
+            # La vidéo a été écrite SANS son ; on assemble ensuite image et
+            # son en un seul fichier. La vidéo n'est pas réencodée
+            # (-c:v copy) : aucune perte de qualité.
+            import subprocess
+            try:
+                import imageio_ffmpeg
+                ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+                wav = self._chemin.with_suffix(".wav")
+                muet = self._chemin.with_name(self._chemin.stem + "_muet.mp4")
+                self._piste_audio(duree, wav)
+                self._chemin.rename(muet)
+                subprocess.run([ffmpeg, "-y", "-loglevel", "error",
+                                "-i", str(muet), "-i", str(wav),
+                                "-c:v", "copy", "-c:a", "aac",
+                                "-shortest", str(self._chemin)], check=True)
+                muet.unlink(missing_ok=True)
+                wav.unlink(missing_ok=True)
+                print(f"  [vidéo] piste son ajoutée ({len(self._sons)} son(s))")
+            except Exception as exc:            # noqa: BLE001
+                print(f"  [vidéo] son NON ajouté ({exc}) — vidéo muette")
+        print(f"  [vidéo] {self.images} images, {duree:.1f} s -> {self._chemin}")
+        return self._chemin
 
     # ---- contenu --------------------------------------------------------
 
@@ -300,12 +352,15 @@ class SceneRecorder:
             + [d.textlength(l, font=self._f_etat) for l in lignes])
         k = self._k
         haut = (48 + 26 * len(lignes)) * k
-        d.rectangle([16 * k, 16 * k, 16 * k + largeur + 20 * k, 16 * k + haut],
+        x0 = 16 * k
+        if self._panneau == "droite":
+            x0 = self._w - 16 * k - (largeur + 20 * k)
+        d.rectangle([x0, 16 * k, x0 + largeur + 20 * k, 16 * k + haut],
                     fill=(15, 20, 30, 180))
-        d.text((30 * k, 24 * k), self._titre, font=self._f_titre,
+        d.text((x0 + 14 * k, 24 * k), self._titre, font=self._f_titre,
                fill=(120, 200, 255, 255))
         for i, ligne in enumerate(lignes):
-            d.text((30 * k, (60 + 26 * i) * k), ligne, font=self._f_etat,
+            d.text((x0 + 14 * k, (60 + 26 * i) * k), ligne, font=self._f_etat,
                    fill=(235, 235, 235, 255))
 
         # Bandeau d'événement, centré en bas.
