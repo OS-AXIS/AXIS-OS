@@ -109,8 +109,12 @@ def main():
     runtime.start_app(app.manifest().app_id)
 
     # Caméra spectateur : de trois quarts, couvrant le trajet du robot.
-    rec = SceneRecorder(world, SORTIE, position=(1.6, -4.2, 1.9),
-                        cible=(1.4, 0.0, 0.6),
+    # Caméra RECULÉE et plus haute : la première version cadrait trop
+    # serré — le robot sortait du champ vers la droite, pieds coupés sous
+    # le bandeau. À 6.5 m, le champ couvre environ 5.6 m de large, soit
+    # tout le trajet.
+    rec = SceneRecorder(world, SORTIE, position=(1.3, -6.5, 2.4),
+                        cible=(1.3, 0.0, 0.8),
                         titre="AXIS-OS — une app se fige en pleine marche")
     if not rec.start():
         simulation_app.close()
@@ -125,11 +129,17 @@ def main():
         finally:
             holder["done"] = True
 
+    derniere = {"vx": None, "t": None}
+
     def etat_affiche():
-        demande = loco._twist
-        t_demande = loco._twist_t
-        expiree = (t_demande is None
-                   or sim_t[0] - t_demande > 0.5)
+        # On raconte l'HISTOIRE, pas l'état interne du service : celui-ci
+        # efface une consigne expirée, ce qui affichait « consigne
+        # demandée : aucune » juste après que l'app eut demandé 0.5 m/s.
+        # Trompeur. On retient donc nous-mêmes la dernière consigne reçue.
+        if loco._twist_t is not None and loco._twist.vx != 0.0:
+            derniere["vx"], derniere["t"] = loco._twist.vx, loco._twist_t
+        fraiche = (loco._twist_t is not None
+                   and sim_t[0] - loco._twist_t <= 0.5)
         if not holder["lancee"]:
             app_txt = "App : pas encore lancée"
         elif holder["done"]:
@@ -137,12 +147,16 @@ def main():
         else:
             app_txt = "App : en cours d'exécution"
         pos, _ = robot.get_world_pose()
+        if derniere["t"] is None:
+            recue = "Dernière consigne de l'app : aucune"
+        else:
+            recue = (f"Dernière consigne de l'app : {derniere['vx']:.2f} m/s "
+                     f"(il y a {sim_t[0] - derniere['t']:.1f} s)")
         return [
             app_txt,
-            f"Consigne demandée : {demande.vx:.2f} m/s"
-            if t_demande is not None else "Consigne demandée : aucune",
-            "Consigne effective : 0 (expirée)" if expiree
-            else f"Consigne effective : {demande.vx:.2f} m/s",
+            recue,
+            f"Consigne appliquée : {loco._twist.vx:.2f} m/s" if fraiche
+            else "Consigne appliquée : 0 — expirée, robot à l'arrêt",
             f"Service de marche : {loco.state.name}",
             f"Garde-fou : {loco.stats['refused']} refus",
             f"Position du robot : x = {float(pos[0]):+.2f} m",
