@@ -98,3 +98,45 @@ class AppLente(RobotApp):
         _t.sleep(6.0)
         return MissionResult(success=True, mission_id="m",
                              app_id="com.demo.lente", duration_s=6.0)
+
+
+class AppQuiSeFige(RobotApp):
+    """Fait marcher le robot, puis SE FIGE — comme une app qui plante.
+
+    Elle ne lève pas d'exception et ne se termine pas : elle cesse
+    simplement de répondre, bloquée dans une attente sans fin. C'est le
+    cas le plus difficile pour un système, parce que rien ne signale la
+    panne — l'app est toujours là, elle ne dit juste plus rien.
+
+    Deux mécanismes d'AXIS-OS doivent alors agir, dans cet ordre :
+      1. l'échéance de fraîcheur du service de marche arrête le robot
+         EN ÉQUILIBRE, en une demi-seconde ;
+      2. le quota d'exécution du sandbox finit par tuer l'app.
+    """
+
+    MARCHE_S = 10.0
+
+    def manifest(self):
+        return AppManifest(
+            app_id="com.demo.se_fige", name="App qui se fige",
+            version="1.0.0", author="Demo", author_email="d@d.d",
+            description="Marche, puis cesse de répondre.",
+            category=AppCategory.RESEARCH,
+            permissions=[Permission.ACTUATORS_WRITE_LEGS,
+                         Permission.LOCOMOTION_WALK],
+            capabilities_required=[Capability.WALK],
+            quota=ResourceQuota(max_memory_mb=8192, max_runtime_s=28.0))
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        import time as _t
+        t0 = _t.monotonic()
+        while _t.monotonic() - t0 < self.MARCHE_S:
+            ctx.walk(0.5, 0.0, 0.0)
+            _t.sleep(0.1)
+        # LA PANNE : plus aucune consigne, plus aucune réponse.
+        _t.sleep(3600.0)
+        return MissionResult(success=True, mission_id="m",
+                             app_id="com.demo.se_fige", duration_s=0.0)
