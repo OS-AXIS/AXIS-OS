@@ -32,6 +32,7 @@ Licence : Propriétaire — AXIS-OS
 from __future__ import annotations
 import multiprocessing as mp
 import queue
+import os
 import threading
 import time
 from dataclasses import dataclass, asdict
@@ -574,7 +575,8 @@ class HALBridgeClient:
         """Identique à RobotContext.listen(), Y COMPRIS LE TYPE : un
         vrai Intent, pas un dict sérialisé."""
         try:
-            raw = self._call("listen", {"duration_s": duration_s})
+            raw = self._call("listen", {"duration_s": duration_s},
+                             duree_nominale_s=duration_s)
         except RuntimeError as exc:
             self.log(f"listen indisponible : {exc}")
             return None
@@ -837,12 +839,35 @@ class HALBridgeClient:
         """
         return list(self._local_log)
 
-    def _call(self, action: str, payload: Dict[str, Any]) -> Any:
+    # Un appel qui BLOQUE PAR NATURE (écouter 2 s) peut durer bien plus
+    # longtemps en temps mural qu'en temps du robot quand la simulation
+    # est ralentie. Tolérance par défaut : une simulation jusqu'à 60 fois
+    # plus lente que le temps réel. Réglable pour des cas extrêmes.
+    TOLERANCE_LENTEUR = float(os.environ.get("AXIS_OS_BRIDGE_TOLERANCE", "60"))
+
+    def _delai(self, duree_nominale_s: float = 0.0) -> float:
+        """Délai d'attente MURAL d'un appel.
+
+        Les 5 s de base servent à détecter un noyau MORT, pour des appels
+        censés répondre aussitôt. Un appel qui bloque par conception —
+        listen() écoute pendant sa durée — reçoit en plus sa durée
+        annoncée multipliée par la tolérance de lenteur.
+
+        Constaté sans cela : listen(2.0) en simulation ralentie par le
+        rendu 1080p dépassait 5 s murales, le pont concluait à un noyau
+        mort, et l'app PLANTAIT — troisième horloge murale trouvée sur ce
+        chemin, après la logique des apps et le quota du sandbox.
+        """
+        return self._timeout + max(0.0, duree_nominale_s) * self.TOLERANCE_LENTEUR
+
+    def _call(self, action: str, payload: Dict[str, Any],
+              duree_nominale_s: float = 0.0) -> Any:
         self._req_id += 1
         req_id = self._req_id
         self._cmd_q.put(asdict(HALCommand(action=action, payload=payload,
                                           request_id=req_id)))
-        deadline = time.monotonic() + self._timeout
+        delai = self._delai(duree_nominale_s)
+        deadline = time.monotonic() + delai
         while time.monotonic() < deadline:
             try:
                 raw = self._resp_q.get(timeout=0.1)
@@ -862,7 +887,7 @@ class HALBridgeClient:
                         resp.error[len("PERMISSION_DENIED:"):])
                 raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
             return resp.data
-        raise TimeoutError(f"HAL bridge timeout sur '{action}' (> {self._timeout}s)")
+        raise TimeoutError(f"HAL bridge timeout sur '{action}' (> {delai:.1f}s)")
 
     @staticmethod
     def _serialize(commands: Dict[str, ActuatorCommand]) -> Dict[str, dict]:

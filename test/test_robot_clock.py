@@ -141,6 +141,17 @@ check("Phrase en file : le micro prend AUSSI le temps d'écouter — sinon "
       "toutes les phrases sont « prononcées » à l'instant zéro",
       m2.capture(2.0) is not None and attentes2 == [2.0])
 
+section("4 — Le pont tolère un appel bloquant en simulation lente")
+
+from axis_os.store.runtime.hal_bridge import HALBridgeClient
+cli = HALBridgeClient.__new__(HALBridgeClient)
+cli._timeout = 5.0
+check("Appel instantané : 5 s — détecte un noyau mort",
+      cli._delai() == 5.0)
+check(f"listen(2.0) : délai étendu à {cli._delai(2.0):.0f} s, pour une "
+      f"simulation jusqu'à 60× plus lente — au lieu de planter à 5 s",
+      cli._delai(2.0) >= 2.0 * 30)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)
