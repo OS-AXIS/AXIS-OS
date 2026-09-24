@@ -20,6 +20,7 @@ service de marche, refus du garde-fou.
   docker exec isim-isaac-sim-1 /isaac-sim/python.sh /isaac-sim/axis_os/video_v1_app_figee.py
   docker cp isim-isaac-sim-1:/isaac-sim/videos/v1_app_figee.mp4 ~/videos/
 """
+import math
 import sys
 import threading
 import time
@@ -95,7 +96,8 @@ def main():
             {j: ActuatorCommand(mode=ControlMode.POSITION, position=v)
              for j, v in targets.items()})
 
-    loco = LocomotionService(G1LocomotionAdapter(pol), read_state,
+    adaptateur = G1LocomotionAdapter(pol)
+    loco = LocomotionService(adaptateur, read_state,
                              send_targets, command_timeout_s=0.5,
                              clock=lambda: sim_t[0])
     loco.start()
@@ -169,6 +171,12 @@ def main():
             f"Service de marche : {loco.state.name}",
             f"Garde-fou : {loco.stats['refused']} refus",
             f"Position du robot : x = {float(pos[0]):+.2f} m",
+            # Le cap est ce que la politique de marche ne perçoit pas :
+            # sans maintien, le robot pivotait de plus de 90° une fois
+            # arrêté. On l'affiche pour que la correction soit VISIBLE.
+            f"Cap du robot : {math.degrees(adaptateur._lacet(robot.get_world_pose()[1])):+.0f}°"
+            + (f"  (AXIS-OS corrige : {adaptateur.correction_cap:+.2f} rad/s)"
+               if abs(adaptateur.correction_cap) > 0.02 else "  (tenu)"),
         ]
 
     stale_vu = 0

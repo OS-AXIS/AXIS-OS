@@ -159,6 +159,65 @@ r = svc.tick()
 check("Les refus du garde-fou sont comptés et remontés",
       svc.stats["refused"] == 1 and r.reason is not None)
 
+section("4b — Maintien de cap : arrêté, le robot ne doit pas pivoter")
+
+# Constaté en vidéo : arrêté par l'OS, le robot pivotait de plus de 90°
+# en quatre secondes. La politique piétine sur place et ne connaît pas
+# son cap. L'adaptateur doit le tenir lui-même.
+try:
+    import math
+    from axis_os.hal.drivers.unitree_g1.locomotion_policy import (
+        G1LocomotionAdapter, G1LocomotionPolicy,
+    )
+
+    class PolitiqueEspion(G1LocomotionPolicy):
+        def __init__(self):
+            super().__init__(policy_path=None)
+            self.consignes = []
+
+        def step(self, quat, omega, jp, jv, cmd, *, ang_vel_frame):
+            self.consignes.append(cmd)
+            return {}
+
+    def etat_au_cap(lacet):
+        return BaseState((math.cos(lacet / 2), 0.0, 0.0, math.sin(lacet / 2)),
+                         (0.0, 0.0, 0.0), {}, {})
+
+    esp = PolitiqueEspion()
+    ad = G1LocomotionAdapter(esp)
+    ad.step(etat_au_cap(0.0), Twist())            # cap de référence : 0
+    ad.step(etat_au_cap(0.3), Twist())            # le robot a dérivé à +0.3
+    check(f"Dérive de +0.3 rad à l'arrêt -> rotation INVERSE commandée "
+          f"(wz = {esp.consignes[-1][2]:+.2f})", esp.consignes[-1][2] < -0.1)
+
+    ad.step(etat_au_cap(-0.2), Twist())
+    check("Dérive dans l'autre sens -> correction dans l'autre sens",
+          esp.consignes[-1][2] > 0.1)
+
+    ad.step(etat_au_cap(3.0), Twist())
+    check(f"Correction BORNÉE, même pour une grosse dérive "
+          f"({esp.consignes[-1][2]:+.2f} rad/s)",
+          abs(esp.consignes[-1][2]) <= 0.6 + 1e-9)
+
+    ad.step(etat_au_cap(1.0), Twist(0.0, 0.0, 0.6))
+    check("Rotation DEMANDÉE : transmise telle quelle, pas contrée",
+          abs(esp.consignes[-1][2] - 0.6) < 1e-9)
+
+    ad.step(etat_au_cap(1.5), Twist())            # fin du virage à 1.5 rad
+    ad.step(etat_au_cap(1.5), Twist())
+    check("Après un virage, le NOUVEAU cap est tenu, pas l'ancien — "
+          "sinon le robot ferait demi-tour tout seul",
+          abs(esp.consignes[-1][2]) < 1e-6)
+
+    ad.step(etat_au_cap(math.pi - 0.05), Twist())   # cap ref = 1.5, loin
+    ad.reset()
+    ad.step(etat_au_cap(math.pi - 0.05), Twist())
+    ad.step(etat_au_cap(-math.pi + 0.05), Twist())
+    check("Passage par ±180° : l'écart de 0.1 rad n'est pas pris pour "
+          "un tour complet", abs(esp.consignes[-1][2]) < 0.3)
+except ImportError as exc:
+    print(f"  [—] non testable ici : {exc}")
+
 section("5 — L'adaptateur G1 déclare le repère CORPS")
 
 try:

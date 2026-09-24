@@ -372,11 +372,17 @@ class G1LocomotionAdapter:
     bipède — couper les moteurs le ferait tomber.
     """
 
-    def __init__(self, policy: "G1LocomotionPolicy", tilt_limit: float = -0.7):
+    def __init__(self, policy: "G1LocomotionPolicy", tilt_limit: float = -0.7,
+                 gain_cap: float = 1.5, rotation_max: float = 0.6):
         self._policy = policy
         # Chute : gravité projetée z au-dessus de -0.7, soit plus de ~45°
         # d'inclinaison. Même seuil que les suites L1 et L2.
         self._tilt_limit = tilt_limit
+        # MAINTIEN DE CAP — voir step().
+        self._gain_cap = gain_cap
+        self._rotation_max = rotation_max
+        self._cap_ref: Optional[float] = None
+        self.correction_cap = 0.0          # dernière correction, pour affichage
 
     @property
     def control_dt(self) -> float:
@@ -390,12 +396,54 @@ class G1LocomotionAdapter:
 
     def reset(self) -> None:
         self._policy.reset()
+        self._cap_ref = None
+        self.correction_cap = 0.0
+
+    @staticmethod
+    def _lacet(q) -> float:
+        w, x, y, z = (float(v) for v in q)
+        return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    def _maintien_cap(self, state, wz: float) -> float:
+        """Rotation à commander pour TENIR LE CAP quand aucune rotation
+        n'est demandée.
+
+        POURQUOI, constaté en vidéo : arrêté par l'OS, le robot pivotait
+        sur lui-même — plus de 90° en quatre secondes. Cette politique ne
+        s'arrête jamais vraiment : sa phase de marche continue, donc le
+        robot PIÉTINE sur place. Et elle ne connaît pas son cap — ses
+        observations contiennent la vitesse de rotation et la gravité,
+        jamais l'orientation absolue. Une petite asymétrie de piétinement
+        s'accumule sans qu'elle puisse la percevoir.
+
+        Correction : quand la consigne de rotation est nulle, on mémorise
+        le cap, puis on commande une rotation inverse proportionnelle à la
+        dérive. On passe par l'interface NORMALE de la politique — une
+        consigne de vitesse —, sans toucher à ses sorties.
+
+        Dès qu'une rotation est demandée, on la transmet telle quelle et on
+        oublie le cap de référence : le robot doit pouvoir tourner quand on
+        le lui demande.
+        """
+        if abs(wz) > 1e-6:
+            self._cap_ref = None
+            self.correction_cap = 0.0
+            return wz
+        cap = self._lacet(state.quat_wxyz)
+        if self._cap_ref is None:
+            self._cap_ref = cap
+        ecart = (self._cap_ref - cap + math.pi) % (2.0 * math.pi) - math.pi
+        c = max(-self._rotation_max, min(self._rotation_max,
+                                         self._gain_cap * ecart))
+        self.correction_cap = c
+        return c
 
     def step(self, state, twist) -> Dict[str, float]:
+        wz = self._maintien_cap(state, twist.wz)
         targets = self._policy.step(
             state.quat_wxyz, state.ang_vel_body,
             state.joint_pos, state.joint_vel,
-            (twist.vx, twist.vy, twist.wz),
+            (twist.vx, twist.vy, wz),
             # BaseState porte le repère CORPS par contrat : une vraie
             # centrale inertielle le fournit tel quel, et la source de
             # simulation convertit avant de remplir l'état.
