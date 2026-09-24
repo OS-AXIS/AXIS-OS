@@ -203,19 +203,43 @@ def main():
     premiere_demarree = runtime.start_app(installees[0])
     check("L'app concurrente a DÉMARRÉ elle aussi", bool(premiere_demarree))
 
+    occupante = {"resultat": None}
+
     def occuper():
-        runtime.run_mission("com.demo.lente", params={})
+        occupante["resultat"] = runtime.run_mission("com.demo.lente", params={})
 
     th = threading.Thread(target=occuper, daemon=True)
     th.start()
     time.sleep(1.5)                     # laisser la première prendre le verrou
 
+    # TROIS conditions, et non « la mission a échoué » : la version
+    # précédente est passée au vert alors que l'app occupante était morte
+    # en 0.3 s et que la concurrente avait TOURNÉ 20 s avant d'échouer
+    # faute de colis dans la scène. Un échec quelconque ne prouve rien.
+    occupante_vivante = th.is_alive()
+    check("L'app occupante TOURNE encore au moment de la tentative "
+          "concurrente — sans quoi il n'y a rien à arbitrer",
+          occupante_vivante)
+
+    t_tentative = time.monotonic()
     r4 = runtime.run_mission(installees[0], params={})
-    check("La SECONDE mission est refusée pendant que la première tourne, "
-          "alors que les DEUX apps sont démarrées",
-          r4 is None or not r4.success)
+    duree_refus = time.monotonic() - t_tentative
+
+    check(f"Le refus est IMMÉDIAT ({duree_refus:.2f} s) — un refus par le "
+          f"verrou ne fait pas tourner la mission",
+          duree_refus < 2.0)
+    check("Le motif est bien le VERROU de mission, pas une autre panne",
+          r4 is not None and not r4.success
+          and "déjà en cours" in (r4.error_message or ""))
+    if r4 is not None and r4.error_message:
+        print(f"    motif : {r4.error_message}")
     print(f"    (le robot ne peut pas servir deux maîtres à la fois)")
     th.join(timeout=15.0)
+    ro = occupante["resultat"]
+    if ro is not None and not ro.success:
+        print(f"    l'app occupante a échoué : {ro.error_message}")
+    check("L'app occupante a terminé sa mission normalement",
+          ro is not None and ro.success)
     faire_tourner(1.0)
 
     # ================================================================

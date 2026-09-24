@@ -57,7 +57,7 @@ class AppCurieuse(RobotApp):
             description="Regarde… et tente de marcher.",
             category=AppCategory.RESEARCH,
             permissions=[Permission.SENSORS_CAMERA],
-            quota=ResourceQuota(max_runtime_s=20.0))
+            quota=ResourceQuota(max_memory_mb=8192, max_runtime_s=20.0))
 
     def on_start(self, ctx): return True
     def on_stop(self, ctx): pass
@@ -83,7 +83,12 @@ class AppLente(RobotApp):
             app_id="com.demo.lente", name="App lente", version="1.0.0",
             author="Demo", author_email="d@d.d", description="Occupe.",
             category=AppCategory.RESEARCH, permissions=[],
-            quota=ResourceQuota(max_runtime_s=30.0))
+            # 8192 Mo comme toutes les vraies apps du projet : avec le
+            # défaut de 256 Mo, le processus enfant dépasse la limite
+            # dans l'environnement Python d'Isaac Sim, et la mission
+            # est tuée en 0.3 s — constaté sur cette app, alors qu'elle
+            # réussit en 6.01 s hors conteneur.
+            quota=ResourceQuota(max_memory_mb=8192, max_runtime_s=30.0))
 
     def on_start(self, ctx): return True
     def on_stop(self, ctx): pass
