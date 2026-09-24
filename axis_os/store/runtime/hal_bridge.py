@@ -228,6 +228,9 @@ class HALBridgeServer:
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
         try:
+            if cmd.action == "now":
+                return HALResponse(cmd.request_id, True, data=self._ctx.now())
+
             if cmd.action == "remember":
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.remember(
@@ -542,6 +545,17 @@ class HALBridgeClient:
         """
         raw = self._call("move_all", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
+
+    def now(self) -> float:
+        """Heure du ROBOT, demandée au noyau : en simulation, l'app
+        sandboxée n'a aucun autre moyen de connaître l'heure simulée."""
+        return float(self._call("now", {}))
+
+    def sleep(self, secondes: float) -> None:
+        """Attente en temps du ROBOT, par consultations successives."""
+        fin = self.now() + max(0.0, secondes)
+        while self.now() < fin:
+            time.sleep(0.005)
 
     def remember(self, key: str, value) -> bool:
         try:

@@ -188,6 +188,7 @@ class PlayStoreRuntime:
         perception_service=None,
         locomotion_service=None,
         speech_service=None,
+        clock=None,
     ):
         """
         `require_signed_apps` : si True, install() refuse toute app
@@ -258,6 +259,11 @@ class PlayStoreRuntime:
         self._perception_service = perception_service
         self._locomotion_service = locomotion_service
         self._speech_service = speech_service
+        # Horloge du robot : simulée en simulation, réelle sur le
+        # robot. Transmise au sandbox (quotas) et aux apps
+        # (ctx.now / ctx.sleep) — l'équivalent de use_sim_time
+        # dans ROS.
+        self._clock = clock or time.monotonic
         # Jeton de session — voir _RuntimeSessionToken (axis_os/store/
         # sdk/app_base.py) et UnauthorizedContextError pour le contexte
         # complet : seule cette instance de PlayStoreRuntime peut
@@ -489,7 +495,7 @@ class PlayStoreRuntime:
         bridge_server.start()
 
         try:
-            runner = SandboxRunner(app_id, entry.manifest.quota)
+            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
             sandbox_result = runner.run(
                 _run_start_hook_in_sandbox,
                 args=(entry.app, command_queue, response_queue),
@@ -594,7 +600,7 @@ class PlayStoreRuntime:
         bridge_server.start()
 
         try:
-            runner = SandboxRunner(app_id, entry.manifest.quota)
+            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
             sandbox_result = runner.run(
                 _run_app_in_sandbox,
                 args=(entry.app, params, command_queue, response_queue),
@@ -672,7 +678,7 @@ class PlayStoreRuntime:
         bridge_server.start()
 
         try:
-            runner = SandboxRunner(app_id, entry.manifest.quota)
+            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
             sandbox_result = runner.run(
                 _run_stop_hook_in_sandbox,
                 args=(entry.app, command_queue, response_queue),
@@ -902,6 +908,7 @@ class PlayStoreRuntime:
         # pas la présence ou l'absence du service. Un service absent
         # (robot sans caméra, sans jambes) donne une réponse vide et
         # explicite, jamais une erreur obscure.
+        ctx._set_clock(self._clock)
         ctx._attach_services(perception=self._perception_service,
                              locomotion=self._locomotion_service,
                              speech=self._speech_service,

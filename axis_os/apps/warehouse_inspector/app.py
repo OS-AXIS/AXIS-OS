@@ -110,7 +110,7 @@ class WarehouseInspectorApp(RobotApp):
         ctx.stop_walking()
 
     def run_mission(self, ctx: RobotContext, params: Dict[str, Any]) -> MissionResult:
-        t0 = time.monotonic()
+        t0 = ctx.now()
         cible = params.get("cible", CIBLE)
         stop_m = float(params.get("distance_arret_m", DISTANCE_ARRET_M))
         # Réglable : en simulation, le temps réel avance plus vite que le
@@ -125,7 +125,7 @@ class WarehouseInspectorApp(RobotApp):
         pertes = 0
         confirmations = 0
 
-        while time.monotonic() - t0 < timeout_s:
+        while ctx.now() - t0 < timeout_s:
             detections: List[Any] = ctx.look_for(cible)
 
             if not detections:
@@ -140,7 +140,7 @@ class WarehouseInspectorApp(RobotApp):
                 # dernier cap connu. C'est de la connaissance métier :
                 # combien de temps faire confiance à une observation
                 # périmée dépend de la tâche, pas du robot.
-                maintenant = time.monotonic()
+                maintenant = ctx.now()
                 if perdu_depuis is None:
                     perdu_depuis = maintenant
                     pertes += 1
@@ -150,7 +150,7 @@ class WarehouseInspectorApp(RobotApp):
                 else:
                     # Perdu depuis trop longtemps : balayer le local.
                     ctx.walk(0.0, 0.0, 0.5)
-                time.sleep(0.05)
+                ctx.sleep(0.05)
                 continue
 
             # Écarter les détections au niveau du SOL : à faible confiance,
@@ -162,7 +162,7 @@ class WarehouseInspectorApp(RobotApp):
                           or x.position_3d.z > HAUTEUR_MIN_M]
             if not plausibles:
                 ctx.walk(0.0, 0.0, 0.4)
-                time.sleep(0.05)
+                ctx.sleep(0.05)
                 continue
 
             perdu_depuis = None
@@ -176,7 +176,7 @@ class WarehouseInspectorApp(RobotApp):
                 sans_distance += 1
                 cap = self._cap_vers(d)
                 ctx.walk(0.0, 0.0, GAIN_CAP * cap)
-                time.sleep(0.05)
+                ctx.sleep(0.05)
                 continue
 
             distance = (d.position_3d.x ** 2 + d.position_3d.y ** 2) ** 0.5
@@ -190,7 +190,7 @@ class WarehouseInspectorApp(RobotApp):
                                           approches, sans_distance, pertes)
                 # Pas encore assez sûr : on ralentit sans s'arrêter.
                 ctx.walk(VITESSE_M_S * 0.3, 0.0, GAIN_CAP * self._cap_vers(d))
-                time.sleep(0.05)
+                ctx.sleep(0.05)
                 continue
             confirmations = 0
 
@@ -199,7 +199,7 @@ class WarehouseInspectorApp(RobotApp):
             cap = self._cap_vers(d)
             ctx.walk(VITESSE_M_S, 0.0, GAIN_CAP * cap)
             approches += 1
-            time.sleep(0.05)
+            ctx.sleep(0.05)
 
         ctx.stop_walking()
         ctx.log(f"Aucun colis atteint en {timeout_s:.0f} s.")
@@ -239,7 +239,7 @@ class WarehouseInspectorApp(RobotApp):
             success=ok,
             mission_id="inspection",
             app_id="com.axisos.warehouse_inspector",
-            duration_s=time.monotonic() - t0,
+            duration_s=ctx.now() - t0,
             items_processed=1 if ok else 0,
             metrics=metrics,
             error_message=None if ok else (

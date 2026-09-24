@@ -92,7 +92,7 @@ class WarehouseInventoryApp(RobotApp):
         ctx.stop_walking()
 
     def run_mission(self, ctx: RobotContext, params: Dict[str, Any]) -> MissionResult:
-        t0 = time.monotonic()
+        t0 = ctx.now()
         duree = float(params.get("duree_balayage_s", 30.0))
         cible = params.get("cible", CIBLE)
 
@@ -101,7 +101,7 @@ class WarehouseInventoryApp(RobotApp):
         anciens: List[dict] = list(ctx.recall(CLE_INVENTAIRE, default=[]) or [])
         observes: List[dict] = []          # colis vus PENDANT cette mission
 
-        while time.monotonic() - t0 < duree:
+        while ctx.now() - t0 < duree:
             # Balayage : tourner sur place montre toute la zone sans
             # quitter le point de départ. Une app d'inventaire ne doit
             # pas dériver loin de sa position de référence, sinon les
@@ -118,7 +118,7 @@ class WarehouseInventoryApp(RobotApp):
                     continue           # le sol, pas un colis
                 self._noter(observes, d)
 
-            time.sleep(0.05)
+            ctx.sleep(0.05)
 
         ctx.stop_walking()
 
@@ -141,7 +141,7 @@ class WarehouseInventoryApp(RobotApp):
             success=len(retenus) > 0,
             mission_id="inventaire",
             app_id="com.axisos.warehouse_inventory",
-            duration_s=time.monotonic() - t0,
+            duration_s=ctx.now() - t0,
             items_processed=len(retenus),
             metrics={
                 "colis_inventories": len(retenus),

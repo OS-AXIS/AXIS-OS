@@ -228,16 +228,28 @@ def main():
                              clock=lambda: sim_t[0])
     loco.start()
 
-    mic = MicroHorodate("head_mic", chunks)
+    def attente_simulee(secondes):
+        # Écouter « deux secondes » = deux secondes SIMULÉES.
+        fin = sim_t[0] + secondes
+        while sim_t[0] < fin:
+            time.sleep(0.002)
+
+    mic = MicroHorodate("head_mic", chunks, sleeper=attente_simulee)
     speech = SpeechService(mic, rec_whisper, min_confidence=0.2)
     speech.start()
 
     nrobot = NormalizedRobotHAL(hal, build_g1_normalizer())
     nrobot.initialize_all()
+    # HORLOGE DU ROBOT = horloge simulée. L'app, ses attentes et son quota
+    # vivent au rythme de la simulation, quelle que soit la lenteur du
+    # rendu vidéo. Premier essai sans elle : les trois phrases empilées
+    # dans les deux premières secondes, le colis perdu, et la mission tuée
+    # par un quota de 300 s MURALES.
     runtime = PlayStoreRuntime(nrobot, WatchdogSystem(nrobot),
                                perception_service=perception,
                                locomotion_service=loco,
-                               speech_service=speech)
+                               speech_service=speech,
+                               clock=lambda: sim_t[0])
     app = VoiceInspectorApp()
     runtime.install(app)
     runtime.start_app(app.manifest().app_id)
@@ -261,7 +273,7 @@ def main():
     def mission():
         try:
             holder["result"] = runtime.run_mission(
-                app.manifest().app_id, {"timeout_s": 150.0})
+                app.manifest().app_id, {"timeout_s": 60.0})
         finally:
             holder["done"] = True
 

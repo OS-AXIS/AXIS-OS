@@ -26,6 +26,15 @@ Licence : Propriétaire — AXIS-OS
 
 from __future__ import annotations
 import multiprocessing as mp
+# Sous-module IMPORTÉ EXPLICITEMENT : run() teste isinstance(a,
+# mp.queues.Queue), et `multiprocessing.queues` n'est pas chargé par
+# `import multiprocessing`. En production cela fonctionnait PAR HASARD —
+# le pont du sandbox crée des files avant et charge le sous-module au
+# passage. Dans tout autre contexte, CHAQUE exécution sandboxée
+# échouait en « Fonction ou arguments non picklables : module
+# 'multiprocessing' has no attribute 'queues' ». Trouvé par le test de
+# l'horloge du robot, qui appelait le sandbox directement.
+import multiprocessing.queues  # noqa: F401
 import pickle
 import threading
 import time
@@ -109,7 +118,8 @@ class SandboxRunner:
     """
 
     def __init__(self, app_id: str, quota: Optional[ResourceQuota] = None,
-                strict: bool = False):
+                strict: bool = False,
+                clock: Optional[Callable[[], float]] = None):
         """
         `strict` : si True, refuse de démarrer (lève RuntimeError) si
         `psutil` n'est pas disponible — False par défaut, rétrocompatible
@@ -125,6 +135,12 @@ class SandboxRunner:
         externe) est exécutée.
         """
         self._app_id = app_id
+        # HORLOGE DU ROBOT, pas du mur. En simulation, l'horloge simulée ;
+        # sur le vrai robot, l'horloge réelle — donc aucun changement de
+        # comportement. Constaté : une simulation ralentie par le rendu vidéo
+        # faisait tuer une mission par son quota de 300 s MURALES alors
+        # qu'elle n'avait vécu qu'une trentaine de secondes simulées.
+        self._clock = clock or time.monotonic
         self._quota  = quota or ResourceQuota()
         self._psutil = _try_import_psutil()
         if self._psutil is None:
@@ -164,7 +180,7 @@ class SandboxRunner:
     def run(self, target_fn: Callable, args: tuple = (),
             kwargs: Optional[dict] = None) -> SandboxResult:
         kwargs = kwargs or {}
-        t_start = time.monotonic()
+        t_start = self._clock()
         self._set_state(SandboxState.STARTING)
 
         try:
@@ -187,7 +203,7 @@ class SandboxRunner:
                 success=False, state=SandboxState.CRASHED,
                 error=f"Fonction ou arguments non picklables : {exc}",
                 error_kind=SandboxErrorKind.SANDBOX_ERROR,
-                duration_s=time.monotonic() - t_start,
+                duration_s=self._clock() - t_start,
             )
 
         # Contexte "fork" forcé explicitement — indépendant de la méthode
@@ -216,7 +232,7 @@ class SandboxRunner:
                 success=False, state=SandboxState.CRASHED,
                 error=f"Échec démarrage process : {exc}",
                 error_kind=SandboxErrorKind.SANDBOX_ERROR,
-                duration_s=time.monotonic() - t_start,
+                duration_s=self._clock() - t_start,
             )
 
         self._set_state(SandboxState.RUNNING)
@@ -226,7 +242,11 @@ class SandboxRunner:
         )
         monitor.start()
 
-        proc.join(timeout=self._quota.max_runtime_s + 1.0)
+        # Attente bornée en temps du ROBOT : join() ne connaît que le temps
+        # mural, on attend donc par petits pas en consultant l'horloge.
+        while (proc.is_alive()
+               and self._clock() - t_start < self._quota.max_runtime_s + 1.0):
+            proc.join(timeout=0.05)
         self._set_state(SandboxState.STOPPING)
 
         try:
@@ -241,7 +261,7 @@ class SandboxRunner:
                 if violation is None:
                     violation = SandboxViolation(
                         app_id=self._app_id, rule="TIMEOUT",
-                        value=time.monotonic() - t_start,
+                        value=self._clock() - t_start,
                         limit=self._quota.max_runtime_s
                     )
                 self._set_state(SandboxState.TIMEOUT)
@@ -249,7 +269,7 @@ class SandboxRunner:
                     success=False, state=SandboxState.TIMEOUT,
                     violation=violation, error="Timeout — processus tué.",
                     error_kind=SandboxErrorKind.TIMEOUT,
-                    duration_s=time.monotonic() - t_start,
+                    duration_s=self._clock() - t_start,
                 )
 
             violation = self._get_violation()
@@ -261,7 +281,7 @@ class SandboxRunner:
                 return SandboxResult(
                     success=False, state=SandboxState.VIOLATED,
                     violation=violation, error=f"Quota dépassé : {violation.rule}",
-                    error_kind=kind, duration_s=time.monotonic() - t_start,
+                    error_kind=kind, duration_s=self._clock() - t_start,
                 )
 
             if result_queue.empty():
@@ -270,7 +290,7 @@ class SandboxRunner:
                     success=False, state=SandboxState.CRASHED,
                     error="Processus terminé sans résultat (crash probable).",
                     error_kind=SandboxErrorKind.PROCESS_CRASH,
-                    duration_s=time.monotonic() - t_start,
+                    duration_s=self._clock() - t_start,
                 )
 
             payload = result_queue.get()
@@ -280,14 +300,14 @@ class SandboxRunner:
                     success=False, state=SandboxState.CRASHED,
                     error=payload["error"],
                     error_kind=SandboxErrorKind.APPLICATION_ERROR,
-                    duration_s=time.monotonic() - t_start,
+                    duration_s=self._clock() - t_start,
                 )
 
             self._set_state(SandboxState.STOPPED)
             return SandboxResult(
                 success=True, state=SandboxState.STOPPED,
                 result=payload.get("result"),
-                duration_s=time.monotonic() - t_start,
+                duration_s=self._clock() - t_start,
             )
 
         finally:
@@ -321,7 +341,7 @@ class SandboxRunner:
         CONFIRM_THRESHOLD = 3
 
         while proc.is_alive():
-            elapsed = time.monotonic() - t_start
+            elapsed = self._clock() - t_start
             if elapsed > self._quota.max_runtime_s:
                 self._add_violation(SandboxViolation(
                     app_id=self._app_id, rule="TIMEOUT",

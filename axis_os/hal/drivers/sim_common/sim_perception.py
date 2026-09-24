@@ -217,8 +217,14 @@ class QueuedMicrophone(IMicrophone):
     service doit voir passer du silence comme cas normal.
     """
 
-    def __init__(self, sensor_id: str, chunks=None, sample_rate: int = 16000):
+    def __init__(self, sensor_id: str, chunks=None, sample_rate: int = 16000,
+                 sleeper=None):
+        """sleeper : fonction d'attente. Par défaut time.sleep ; en
+        simulation, une attente en temps SIMULÉ, pour qu'écouter « deux
+        secondes » dure deux secondes simulées et non murales."""
         super().__init__(sensor_id, SensorType.MICROPHONE)
+        import time as _time
+        self._sleeper = sleeper or _time.sleep
         self._file = list(chunks or [])
         self._sample_rate = sample_rate
         self.captures = 0
@@ -252,8 +258,7 @@ class QueuedMicrophone(IMicrophone):
         # revenait instantanément et une app qui écoute en boucle tournait
         # à pleine vitesse — 117 547 « phrases ignorées » constatées en
         # une seule mission.
-        import time as _t
-        _t.sleep(duration_s)
+        self._sleeper(duration_s)
         n = max(1, int(self._sample_rate * duration_s))
         return AudioChunk(sample_rate=self._sample_rate, channels=1,
                           sample_width=2, data=b"\x00\x00" * n)

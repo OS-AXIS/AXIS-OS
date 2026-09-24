@@ -141,6 +141,7 @@ class RobotContext:
         self._locomotion = None
         self._speech = None
         self._memory = None
+        self._clock = time.monotonic
         # Groupes déclarés par le HAL, résolus à la première utilisation.
         self._joint_groups: Optional[Dict[str, JointGroup]] = None
 
@@ -212,6 +213,34 @@ class RobotContext:
         self._locomotion = locomotion
         self._speech = speech
         self._memory = memory
+
+    def _set_clock(self, clock) -> None:
+        """Injection par le runtime — privée, hors surface publique."""
+        self._clock = clock or time.monotonic
+
+    def now(self) -> float:
+        """Heure du ROBOT, en secondes.
+
+        À utiliser À LA PLACE de time.monotonic() pour mesurer une durée
+        dans une app. En simulation, c'est l'heure SIMULÉE ; sur le vrai
+        robot, l'heure réelle. Le même code se comporte donc identiquement
+        dans les deux cas — l'équivalent de use_sim_time dans ROS.
+
+        Constaté sans cette précaution : une app qui écoutait « deux
+        secondes » et marchait « trois secondes » en temps mural, dans une
+        simulation ralentie par le rendu vidéo, prenait ses décisions sur
+        une perception décalée et perdait le colis qu'elle visait.
+        """
+        return float(self._clock())
+
+    def sleep(self, secondes: float) -> None:
+        """Attend `secondes` du temps du ROBOT. Voir now()."""
+        if self._clock is time.monotonic:
+            time.sleep(max(0.0, secondes))
+            return
+        fin = self._clock() + max(0.0, secondes)
+        while self._clock() < fin:
+            time.sleep(0.002)
 
     def remember(self, key: str, value) -> bool:
         """Enregistre une donnée qui SURVIT au redémarrage du robot.

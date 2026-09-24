@@ -97,7 +97,7 @@ class VoiceInspectorApp(RobotApp):
         ctx.stop_walking()
 
     def run_mission(self, ctx: RobotContext, params: Dict[str, Any]) -> MissionResult:
-        t0 = time.monotonic()
+        t0 = ctx.now()
         timeout_s = float(params.get("timeout_s", 120.0))
         stop_m = float(params.get("distance_arret_m", DISTANCE_ARRET_M))
 
@@ -107,7 +107,7 @@ class VoiceInspectorApp(RobotApp):
         atteint = False
         distance_finale = None
 
-        while time.monotonic() - t0 < timeout_s and not atteint:
+        while ctx.now() - t0 < timeout_s and not atteint:
             intent = ctx.listen(duration_s=2.0)
 
             if intent is None:
@@ -142,7 +142,7 @@ class VoiceInspectorApp(RobotApp):
             success=atteint,
             mission_id="voix",
             app_id="com.axisos.voice_inspector",
-            duration_s=time.monotonic() - t0,
+            duration_s=ctx.now() - t0,
             items_processed=1 if atteint else 0,
             metrics={
                 "commandes_comprises": entendues,
@@ -164,24 +164,24 @@ class VoiceInspectorApp(RobotApp):
         la voix — et c'est précisément quand il bouge qu'on veut pouvoir
         lui dire stop.
         """
-        t_salve = time.monotonic()
+        t_salve = ctx.now()
         perdu_depuis = None
         confirmations = 0
         vue = None
 
-        while time.monotonic() - t_salve < 3.0:
+        while ctx.now() - t_salve < 3.0:
             dets: List[Any] = [d for d in ctx.look_for(cible)
                                if d.position_3d is None
                                or d.position_3d.z > HAUTEUR_MIN_M]
             if not dets:
-                maintenant = time.monotonic()
+                maintenant = ctx.now()
                 if perdu_depuis is None:
                     perdu_depuis = maintenant
                 if vue is not None and maintenant - perdu_depuis < MEMOIRE_S:
                     ctx.walk(VITESSE_M_S, 0.0, GAIN_CAP * self._cap(vue))
                 else:
                     ctx.walk(0.0, 0.0, 0.5)
-                time.sleep(0.05)
+                ctx.sleep(0.05)
                 continue
 
             perdu_depuis = None
@@ -189,7 +189,7 @@ class VoiceInspectorApp(RobotApp):
             vue = d
             if d.position_3d is None:
                 ctx.walk(0.0, 0.0, GAIN_CAP * self._cap(d))
-                time.sleep(0.05)
+                ctx.sleep(0.05)
                 continue
 
             dist = (d.position_3d.x ** 2 + d.position_3d.y ** 2) ** 0.5
@@ -203,7 +203,7 @@ class VoiceInspectorApp(RobotApp):
             else:
                 confirmations = 0
                 ctx.walk(VITESSE_M_S, 0.0, GAIN_CAP * self._cap(d))
-            time.sleep(0.05)
+            ctx.sleep(0.05)
 
         return False, None
 
