@@ -341,6 +341,12 @@ def main():
     chemin = rec.terminer()
     r = holder["result"]
     print(f"\n  mission : {None if r is None else (r.success, r.metrics)}")
+    if r is not None and not r.success:
+        # Des métriques VIDES signalent une interruption par le sandbox
+        # (quota, plantage), pas un échec conclu par l'app — qui rend
+        # toujours ses métriques. Le message dit laquelle.
+        print(f"  cause : {r.error_message}")
+        print(f"  durée de la mission : {r.duration_s:.1f} s")
     print(f"  transcriptions : {[t for _, t in journal]}")
     print(f"  locomotion : {loco.stats}")
     print(f"\n  VIDÉO : {chemin}")
