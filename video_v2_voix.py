@@ -40,21 +40,65 @@ PHRASES = ["Il fait beau aujourd'hui.",
 APRES_S = 3.0
 
 
-def synthetiser(phrases):
+def synthetiser(phrases, whisper, attendu, essais=12):
+    """Synthétise chaque phrase et ne garde qu'une prise CORRECTEMENT
+    comprise — comme un présentateur qui refait une prise.
+
+    POURQUOI : le modèle de synthèse est ALÉATOIRE. Même phrase, autre
+    exécution, autre prononciation. Première vidéo : « Va vers le
+    carton » transcrit « Vavère le Carpent », le robot n'a jamais bougé —
+    alors que la même phrase avait été parfaitement comprise au test A2.
+
+    Ce n'est pas tricher : la synthèse remplace un humain qui parle, et un
+    humain répète quand on ne l'a pas compris. Ce qui est démontré — la
+    chaîne transcription, intention, action, et le refus de ce qui n'est
+    pas compris — reste intact. On choisit la prise, pas le résultat.
+
+    attendu[i] : l'intention que la phrase i DOIT déclencher, ou None si
+    elle doit être ignorée.
+    """
     import numpy as np
     import torch
     from transformers import AutoTokenizer, VitsModel
+    from axis_os.apps.voice_inspector.app import INTENTIONS
     from axis_os.hal.core.types import AudioChunk
+    from axis_os.services.speech.service import (
+        IntentDeclaration, IntentRegistry,
+    )
+    reg = IntentRegistry()
+    for nom, mots, params, desc in INTENTIONS:
+        reg.register(IntentDeclaration(nom, mots, params, desc))
+
     tok = AutoTokenizer.from_pretrained("facebook/mms-tts-fra")
     tts = VitsModel.from_pretrained("facebook/mms-tts-fra")
     tts.eval()
+    # Élocution plus posée : un débit légèrement ralenti est nettement
+    # mieux compris.
+    tts.speaking_rate = 0.85
+    tts.noise_scale = 0.5
+
     out = []
-    for texte in phrases:
-        with torch.no_grad():
-            wav = tts(**tok(texte, return_tensors="pt")).waveform[0].numpy()
-        pcm = (np.clip(wav, -1.0, 1.0) * 32767.0).astype(np.int16)
-        out.append(AudioChunk(sample_rate=int(tts.config.sampling_rate),
-                              channels=1, sample_width=2, data=pcm.tobytes()))
+    for texte, but in zip(phrases, attendu):
+        retenu = None
+        for graine in range(essais):
+            torch.manual_seed(graine)
+            with torch.no_grad():
+                wav = tts(**tok(texte, return_tensors="pt")).waveform[0].numpy()
+            pcm = (np.clip(wav, -1.0, 1.0) * 32767.0).astype(np.int16)
+            ch = AudioChunk(sample_rate=int(tts.config.sampling_rate),
+                            channels=1, sample_width=2, data=pcm.tobytes())
+            trans, conf = whisper.transcribe(ch)
+            it = reg.match(trans)
+            ok = (it is None) if but is None else (it is not None and it.name == but)
+            print(f"    prise {graine} : « {trans} » -> "
+                  f"{it.name if it else 'aucune'} {'✓' if ok else '✗'}")
+            if ok:
+                retenu = ch
+                break
+        if retenu is None:
+            raise RuntimeError(
+                f"aucune prise comprise pour « {texte} » en {essais} essais")
+        out.append(retenu)
     return out
 
 
@@ -91,8 +135,6 @@ def main():
 
     sim_t = [0.0]
 
-    # ---- parole : synthèse, micro et transcription HORODATÉS ----------
-    chunks = synthetiser(PHRASES)
     journal = []            # (instant, texte transcrit)
 
     class MicroHorodate(QueuedMicrophone):
@@ -114,6 +156,14 @@ def main():
 
     rec_whisper = WhisperJournal(model_name="openai/whisper-small", language="fr")
     rec_whisper.load()
+
+    # Prises vérifiées AVANT de lancer la simulation : si une phrase
+    # n'est jamais comprise, autant le savoir en quelques secondes plutôt
+    # qu'après dix minutes de rendu.
+    print("\n  [parole] sélection des prises")
+    chunks = synthetiser(PHRASES, rec_whisper,
+                         attendu=[None, "aller_vers_colis", None])
+    journal.clear()         # les essais ne font pas partie de la vidéo
 
     # ---- robot, colis, caméras de perception ---------------------------
     cfg = G1LocomotionConfig()

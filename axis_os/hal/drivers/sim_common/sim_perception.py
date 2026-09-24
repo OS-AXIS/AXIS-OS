@@ -247,6 +247,13 @@ class QueuedMicrophone(IMicrophone):
         self.captures += 1
         if self._file:
             return self._file.pop(0)
+        # File vide : on ATTEND la durée d'écoute, comme un vrai micro qui
+        # bloque pendant qu'il enregistre. Sans cette attente, le silence
+        # revenait instantanément et une app qui écoute en boucle tournait
+        # à pleine vitesse — 117 547 « phrases ignorées » constatées en
+        # une seule mission.
+        import time as _t
+        _t.sleep(duration_s)
         n = max(1, int(self._sample_rate * duration_s))
         return AudioChunk(sample_rate=self._sample_rate, channels=1,
                           sample_width=2, data=b"\x00\x00" * n)
