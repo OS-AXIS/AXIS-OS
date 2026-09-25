@@ -79,7 +79,19 @@ TABLE_HAUT = MAINS_Z - HAUTEUR / 2          # plateau sous le carton
 # essai, il basculait en se soulevant. Son centre de masse (+0.29) reste
 # au-dessus de la table (bord à +0.26).
 CARTON_X = 0.29
-TABLE_AVANT, TABLE_ARRIERE = 0.26, 0.60
+# QUATRIÈME ESSAI : carton centré à +0.29, mais bord de table à +0.26 —
+# 3 cm d'appui seulement. Il a basculé par-dessus le bord dès la première
+# seconde et s'est coincé entre la table et les jambes du robot.
+#
+# Contradiction de géométrie : le carton doit être à +0.29 (entre les
+# mains), mais un bloc plein ne peut pas s'approcher à moins de +0.26 sans
+# toucher les cuisses. Solution, celle de toute vraie table : un PLATEAU
+# FIN, à 80 cm, qui passe AU-DESSUS des cuisses et avance jusqu'à +0.18 ;
+# et un PIED placé en arrière, hors de portée des jambes. Le carton repose
+# alors entièrement sur le plateau.
+TABLE_AVANT, TABLE_ARRIERE = 0.18, 0.60
+EPAISSEUR_PLATEAU = 0.04
+PIED_AVANT = 0.42
 # Gains des bras RAIDIS pour la prise. NVIDIA utilise une raideur de 4
 # aux POIGNETS — réglage de téléopération, où l'on veut des poignets
 # souples. Constaté au troisième essai de W3 : sous le serrage des épaules,
@@ -148,11 +160,20 @@ def main():
     # Table FIXE, plateau juste sous les mains ; carton posé dessus, entre
     # les mains ouvertes. Visible et stable dès la première image.
     world.scene.add(FixedCuboid(
-        prim_path="/World/table", name="table",
-        position=np.array([(TABLE_AVANT + TABLE_ARRIERE) / 2, 0.0, TABLE_HAUT / 2]),
+        prim_path="/World/table_plateau", name="table_plateau",
+        position=np.array([(TABLE_AVANT + TABLE_ARRIERE) / 2, 0.0,
+                           TABLE_HAUT - EPAISSEUR_PLATEAU / 2]),
         size=1.0,
-        scale=np.array([TABLE_ARRIERE - TABLE_AVANT, 0.50, TABLE_HAUT]),
+        scale=np.array([TABLE_ARRIERE - TABLE_AVANT, 0.50, EPAISSEUR_PLATEAU]),
         color=np.array([0.45, 0.45, 0.50])))
+    world.scene.add(FixedCuboid(
+        prim_path="/World/table_pied", name="table_pied",
+        position=np.array([(PIED_AVANT + TABLE_ARRIERE) / 2, 0.0,
+                           (TABLE_HAUT - EPAISSEUR_PLATEAU) / 2]),
+        size=1.0,
+        scale=np.array([TABLE_ARRIERE - PIED_AVANT, 0.30,
+                        TABLE_HAUT - EPAISSEUR_PLATEAU]),
+        color=np.array([0.35, 0.35, 0.40])))
     carton = world.scene.add(DynamicCuboid(
         prim_path="/World/carton", name="carton",
         position=np.array([CARTON_X, 0.0, TABLE_HAUT + HAUTEUR / 2 + 0.002]),
