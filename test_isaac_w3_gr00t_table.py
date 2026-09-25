@@ -58,7 +58,7 @@ FAIL = 0
 EPAULE_TANGAGE = -0.30        # bras légèrement levés vers l'avant
 COUDE = 0.0                   # coude à angle droit (zéro du G1)
 ROULIS_OUVERT = 0.20          # bras écartés : 34 cm entre les mains
-ROULIS_SERRE = -0.25          # vise AU-DELÀ du contact : la raideur serre
+ROULIS_SERRE = -0.40          # vise AU-DELÀ du contact : la raideur serre
 LARGEUR = 0.24                # carton plus étroit que l'écartement ouvert
 EPAULE_LEVEE = -0.50          # soulever : les mains montent d'environ 6 cm
 # Position des mains mesurée au test W2, bras ouverts : c'est là que doit
@@ -197,6 +197,29 @@ def main():
     robot.set_joint_positions(q0v)
     robot.set_joint_velocities(np.zeros_like(q0v))
     robot.apply_action(ArticulationAction(joint_positions=q0v))
+
+    # MAINS EN CAOUTCHOUC : leur donner le frottement du caoutchouc. Au
+    # cinquième essai, le carton a été soulevé, tenu en reculant et pendant
+    # tout le demi-tour, puis a glissé jusqu'à tomber en marche avant. Les
+    # mains avaient le frottement PAR DÉFAUT du simulateur, celui d'une
+    # surface quelconque — alors qu'Unitree les a faites en caoutchouc
+    # précisément pour qu'elles adhèrent.
+    import omni.usd
+    from pxr import UsdShade
+    caoutchouc = PhysicsMaterial(prim_path="/World/Materiaux/caoutchouc",
+                                 static_friction=1.2, dynamic_friction=1.0,
+                                 restitution=0.0)
+    _stage = omni.usd.get_context().get_stage()
+    _mat = UsdShade.Material(_stage.GetPrimAtPath("/World/Materiaux/caoutchouc"))
+    appliques = []
+    for _prim in _stage.Traverse():
+        _n = _prim.GetName()
+        if "/World/g1" in str(_prim.GetPath()) and (
+                "rubber_hand" in _n or "wrist_yaw_link" in _n):
+            UsdShade.MaterialBindingAPI.Apply(_prim).Bind(
+                _mat, UsdShade.Tokens.weakerThanDescendants, "physics")
+            appliques.append(_n)
+    print(f"  caoutchouc appliqué à : {sorted(set(appliques)) or 'AUCUN LIEN TROUVÉ'}")
 
     hal = bridge.build_hal()
     hal.initialize_all()
@@ -356,10 +379,16 @@ def main():
     # cuisse, et il a reculé de 26 cm).
     xa = [x for t, p, z, d, x in trace if p in ("A", "B")]
     if xa:
+        # 8 cm : la mise en contact des bras raidis déplace le robot de
+        # quelques centimètres (6 cm constatés) ; une collision parasite,
+        # elle, l'avait repoussé de 26 cm.
         check(f"Aucun recul parasite avant le serrage : "
               f"{abs(xa[-1] - xa[0]) * 100:.1f} cm (au premier essai : 26 cm, "
-              f"la table poussait la cuisse)", abs(xa[-1] - xa[0]) < 0.05)
-    pts_c = dans("C")
+              f"la table poussait la cuisse)", abs(xa[-1] - xa[0]) < 0.08)
+    # Soulèvement : sur C et le DÉBUT de D — au cinquième essai, le carton
+    # a quitté la table (+2.5 cm) juste au passage en phase D.
+    pts_c = [(z, d) for t, p, z, d, x in trace
+             if p == "C" or (p == "D" and t < 6.0)]
     if pts_c:
         zc = max(z for z, _ in pts_c)
         check(f"Le carton est SOULEVÉ de la table : {zc:.2f} m, départ "
