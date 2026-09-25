@@ -17,20 +17,31 @@ terme piloter des humanoïdes de fabricants différents sans réécrire son cœu
 
 ## État réel du projet (honnête, pas un pitch)
 
-Ce projet est au stade de **fondations logicielles validées en simulation**,
-pas d'un robot physique fonctionnel. Concrètement :
+Ce projet est au stade de **logiciel validé en simulation** (NVIDIA Isaac
+Sim 6.1), **pas encore sur un robot physique**. Concrètement :
 
-| Ce qui existe et est testé | Ce qui n'existe pas encore |
+| Ce qui fonctionne en simulation | Ce qui n'existe pas encore |
 |---|---|
-| HAL, Safety Layer, Watchdog, Sandbox | Un modèle d'équilibre entraîné (nécessite Isaac Sim/RL) |
-| 2 applications complètes qui tournent réellement | Un robot physique branché |
-| Système de facturation et permissions | Locomotion / marche réelle |
-| Interface pour modèles IA et modèles d'équilibre | Fleet Manager multi-robots |
+| HAL, garde-fou articulaire, watchdog, sandbox, permissions, Play Store | Un robot physique branché |
+| Unitree G1 **23 et 29 DOF**, même OS, mêmes apps | Navigation et cartographie (SLAM) |
+| Marche, virage, arrêt sûr quand une app plante | Localisation par capteurs |
+| Perception en vocabulaire ouvert, positions 3D à quelques cm | Un modèle vision-langage-action qui décide des gestes |
+| Commande vocale — les phrases hors sujet ne déclenchent rien | Chaîne de démonstration et d'entraînement |
+| **Saisie autonome** : trouver un carton, le prendre, l'emporter, le déposer | Mains à doigts |
+| Plusieurs apps tierces sur un même robot, arbitrées par l'OS | Fleet Manager multi-robots |
 
-**221 tests automatisés passent actuellement**, couvrant chaque composant
-individuellement et un scénario de charge/intégration complet avec injection
-de pannes. Ces tests protègent contre les régressions ; ils ne remplacent pas
-la validation sur un robot réel, qui reste à faire.
+**56 suites de tests automatisés** protègent chaque composant, et **16 suites
+de validation** tournent dans Isaac Sim. Chaque résultat, **échecs compris**,
+est documenté dans `docs/`.
+
+### Documents clés
+
+- [Ce qu'un robot doit avoir pour faire tourner AXIS-OS](docs/PREREQUIS_ROBOT.md)
+- [Saisie et port autonomes d'un carton](docs/validation_port_carton.md)
+- [Intégration de la politique GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
+- [Plusieurs apps sur un même robot](docs/validation_multiapp.md)
+- [Commande vocale](docs/validation_voix.md)
+- [Prochaine démonstration : tri autonome en usine](docs/demo_tri_usine.md)
 
 ---
 
