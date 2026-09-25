@@ -198,6 +198,7 @@ def main():
               "F": ("Arrêt, carton en main", (40, 140, 70))}
     phase_vue = None
     lache_signale = False
+    relache = False
     k = 0
 
     trace = []
@@ -242,6 +243,23 @@ def main():
             a = min(1.0, (t - 5.0) / 0.5)
             r = ROULIS_OUVERT + a * (ROULIS_SERRE - ROULIS_OUVERT)
             adapt.pose_bras.update(pose(r))
+            # MAINTENU EN PLACE pendant que les bras se referment, comme
+            # s'il reposait sur une étagère. Premier essai sans : le carton,
+            # plus étroit que l'écartement des mains, tombait en chute libre
+            # (80 cm en 0.4 s) AVANT que les bras ne se referment (0.5 s).
+            # Il est RELÂCHÉ à la fin de la phase : ce qui se passe ensuite
+            # est le vrai test de la prise.
+            pg, _ = position_lien("left_rubber_hand")
+            pd, _ = position_lien("right_rubber_hand")
+            if pg is not None and pd is not None:
+                carton.set_world_pose(position=(pg + pd) / 2.0)
+                carton.set_linear_velocity(np.zeros(3))
+                carton.set_angular_velocity(np.zeros(3))
+        if phase == "D" and not relache:
+            relache = True
+            if video_ok:
+                rec.evenement("Carton relâché — seule la prise le retient", t,
+                              duree_s=2.0, couleur=(210, 120, 30))
         if phase == "E":
             loco.set_velocity(0.3, 0.0, 0.0)
         if phase == "F":
@@ -292,7 +310,8 @@ def main():
     print("  t     phase  hauteur carton  distance au bassin  x robot")
     derniere = -1.0
     for t, ph, z, d, x in trace:
-        if t - derniere >= 1.0:
+        pas = 0.25 if 6.3 <= t <= 8.0 else 1.0     # finesse au relâchement
+        if t - derniere >= pas:
             print(f"  {t:5.1f}   {ph}     {z:6.3f} m        {d:5.2f} m        {x:+.2f}")
             derniere = t
 
