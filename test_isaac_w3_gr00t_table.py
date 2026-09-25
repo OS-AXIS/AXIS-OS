@@ -65,6 +65,18 @@ EPAULE_LEVEE = -0.50          # soulever : les mains montent d'environ 6 cm
 # se trouver le carton.
 MAINS_X, MAINS_Z = 0.29, 0.90
 TABLE_HAUT = MAINS_Z - HAUTEUR / 2          # plateau sous le carton
+# PREMIER ESSAI : table dont le bord avant était à +0.14 m du bassin. La
+# CUISSE du robot, en posture accroupie, touchait la table dès 0.3 s ; la
+# politique d'équilibre a répondu à la poussée en RECULANT de 26 cm, et
+# les mains ont fini devant le carton, à serrer le vide. Le calcul avait
+# prévu les genoux, pas le volume de la cuisse.
+#
+# Table avancée : bord avant à +0.26 m, 16 cm de dégagement. Carton
+# avancé à +0.33 m pour que son centre de masse repose sur la table ; il
+# s'étend de +0.23 à +0.43, donc ses flancs restent ENTRE les mains
+# (centrées à +0.29).
+CARTON_X = 0.33
+TABLE_AVANT, TABLE_ARRIERE = 0.26, 0.60
 KP_BRAS = [90, 60, 20, 60, 4, 4, 4]
 KD_BRAS = [2.0, 1.0, 0.4, 1.0, 0.2, 0.2, 0.2]
 
@@ -127,12 +139,13 @@ def main():
     # les mains ouvertes. Visible et stable dès la première image.
     world.scene.add(FixedCuboid(
         prim_path="/World/table", name="table",
-        position=np.array([MAINS_X + 0.05, 0.0, TABLE_HAUT / 2]), size=1.0,
-        scale=np.array([0.40, 0.50, TABLE_HAUT]),
+        position=np.array([(TABLE_AVANT + TABLE_ARRIERE) / 2, 0.0, TABLE_HAUT / 2]),
+        size=1.0,
+        scale=np.array([TABLE_ARRIERE - TABLE_AVANT, 0.50, TABLE_HAUT]),
         color=np.array([0.45, 0.45, 0.50])))
     carton = world.scene.add(DynamicCuboid(
         prim_path="/World/carton", name="carton",
-        position=np.array([MAINS_X, 0.0, TABLE_HAUT + HAUTEUR / 2 + 0.002]),
+        position=np.array([CARTON_X, 0.0, TABLE_HAUT + HAUTEUR / 2 + 0.002]),
         size=1.0,
         scale=np.array([PROFONDEUR, LARGEUR, HAUTEUR]), mass=MASSE_KG,
         color=np.array([0.72, 0.52, 0.30]), physics_material=materiau))
@@ -307,6 +320,14 @@ def main():
     def dans(ph):
         return [(z, d) for t, p, z, d, x in trace if p == ph]
 
+    # Le robot ne doit PAS reculer pendant qu'il attend debout : c'est le
+    # signe d'un contact parasite (au premier essai, la table poussait sa
+    # cuisse, et il a reculé de 26 cm).
+    xa = [x for t, p, z, d, x in trace if p in ("A", "B")]
+    if xa:
+        check(f"Aucun recul parasite avant le serrage : "
+              f"{abs(xa[-1] - xa[0]) * 100:.1f} cm (au premier essai : 26 cm, "
+              f"la table poussait la cuisse)", abs(xa[-1] - xa[0]) < 0.05)
     pts_c = dans("C")
     if pts_c:
         zc = max(z for z, _ in pts_c)
