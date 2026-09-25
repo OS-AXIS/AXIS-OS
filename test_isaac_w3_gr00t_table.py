@@ -58,7 +58,7 @@ FAIL = 0
 EPAULE_TANGAGE = -0.30        # bras légèrement levés vers l'avant
 COUDE = 0.0                   # coude à angle droit (zéro du G1)
 ROULIS_OUVERT = 0.20          # bras écartés : 34 cm entre les mains
-ROULIS_SERRE = -0.10          # vise AU-DELÀ du contact : la raideur serre
+ROULIS_SERRE = -0.25          # vise AU-DELÀ du contact : la raideur serre
 LARGEUR = 0.24                # carton plus étroit que l'écartement ouvert
 EPAULE_LEVEE = -0.50          # soulever : les mains montent d'environ 6 cm
 # Position des mains mesurée au test W2, bras ouverts : c'est là que doit
@@ -75,10 +75,20 @@ TABLE_HAUT = MAINS_Z - HAUTEUR / 2          # plateau sous le carton
 # avancé à +0.33 m pour que son centre de masse repose sur la table ; il
 # s'étend de +0.23 à +0.43, donc ses flancs restent ENTRE les mains
 # (centrées à +0.29).
-CARTON_X = 0.33
+# Carton CENTRÉ sur les mains. Décalé de 4 cm vers l'avant au troisième
+# essai, il basculait en se soulevant. Son centre de masse (+0.29) reste
+# au-dessus de la table (bord à +0.26).
+CARTON_X = 0.29
 TABLE_AVANT, TABLE_ARRIERE = 0.26, 0.60
-KP_BRAS = [90, 60, 20, 60, 4, 4, 4]
-KD_BRAS = [2.0, 1.0, 0.4, 1.0, 0.2, 0.2, 0.2]
+# Gains des bras RAIDIS pour la prise. NVIDIA utilise une raideur de 4
+# aux POIGNETS — réglage de téléopération, où l'on veut des poignets
+# souples. Constaté au troisième essai de W3 : sous le serrage des épaules,
+# les poignets pliaient, les mains PIVOTAIENT et s'écartaient du carton au
+# lieu de le pincer ; il montait d'un centimètre, basculait, et glissait.
+# La force de serrage se perdait dans les poignets.
+#            épaule tangage, roulis, lacet, coude, poignet roulis, tangage, lacet
+KP_BRAS = [90, 100, 40, 60, 40, 40, 40]
+KD_BRAS = [2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 
 def check(label, cond):
