@@ -175,3 +175,46 @@ docker exec isim-isaac-sim-1 /isaac-sim/python.sh /isaac-sim/axis_os/test_isaac_
 Au premier chargement, la politique affiche l'**empreinte SHA-256** de
 chaque fichier ONNX : la relever et l'épingler dans `GR00TWBCPolicy`,
 comme pour la politique d'Unitree.
+
+---
+
+## 8. Découverte : étiquettes anatomiques inversées dans la table de conventions
+
+Constaté au premier essai de W2 (2026-09-25). La posture de port écrite
+en convention anatomique — tangage d'épaule « flexion antérieure » +0.6,
+coude « flexion » +1.2 — plaçait les mains **derrière** le bassin.
+
+Deux sources **indépendantes** concordent :
+- mesure en simulation : centre des mains à x = −0.16 m du bassin ;
+- cinématique directe sur l'URDF 29 DOF : x = −0.16 m.
+
+En angles bruts :
+- tangage d'épaule **positif = bras vers l'arrière** ; négatif le lève
+  vers l'avant ;
+- coude **positif = dépliement** ; à zéro, le coude du G1 est déjà plié à
+  angle droit (d'où les bras tendus devant le robot dans toutes les
+  vidéos) ;
+- roulis d'épaule : **conforme** à la table (positif à gauche = abduction).
+
+La table affirme l'inverse pour le tangage d'épaule et le coude.
+
+**Hypothèse :** la suite S2 a vérifié la **cohérence** des signes — que
+les deux côtés bougent symétriquement pour une même consigne —, pas leur
+**sens anatomique absolu**. Les deux ne se contrôlent pas de la même
+façon.
+
+**Conséquence, au-delà de ce test :** toute app qui commande les bras en
+convention normalisée (`move_arms` avec une « flexion » positive) obtient
+le mouvement **opposé** à celui qu'elle demande, pour ces articulations.
+
+**Ce qui n'est PAS fait**, volontairement : corriger la table à l'aveugle.
+La bonne correction est un contrôle **systématique** du sens de chaque
+articulation par cinématique directe — il ne demande aucun GPU : pour
+chaque articulation, déplacer de +δ et vérifier que le membre part dans
+la direction que nomme l'étiquette. Ce contrôle trouvera aussi les
+éventuelles autres erreurs, sans supposer qu'il n'y en a que deux.
+
+**Et sur W1 :** sa « posture de port » utilisait ces étiquettes. Le robot
+a marché les bras tirés vers l'**arrière**. W1 prouve que la politique
+tient pendant qu'on bouge les bras ; pas qu'elle marche bras en avant.
+C'est W2, avec une posture calculée par cinématique, qui le dira.

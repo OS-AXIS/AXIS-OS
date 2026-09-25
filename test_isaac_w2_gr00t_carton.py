@@ -41,9 +41,25 @@ MASSE_KG = 1.0
 PROFONDEUR, HAUTEUR = 0.20, 0.20
 FAIL = 0
 
-# Convention ANATOMIQUE, traduite par la table validée.
-PORT_OUVERT = {"shoulder_pitch": 0.6, "shoulder_roll": 0.10, "elbow": 1.2}
-SERRE_ROULIS = -0.40                 # adduction : vise AU-DELÀ du contact
+# Postures en ANGLES BRUTS, calculées par CINÉMATIQUE DIRECTE sur l'URDF
+# 29 DOF — et non plus traduites par les étiquettes anatomiques de la
+# table de conventions.
+#
+# DÉCOUVERTE du premier essai : la « flexion antérieure » de la table
+# (tangage d'épaule +0.6) envoyait les mains DERRIÈRE le bassin — x=-0.16
+# mesuré en simulation, x=-0.16 calculé par cinématique, deux sources
+# indépendantes. En angles bruts, un tangage d'épaule POSITIF recule le
+# bras, et un coude POSITIF le déplie (le coude du G1 est déjà plié à
+# angle droit à zéro). Les étiquettes anatomiques de ces deux
+# articulations sont inversées ; le roulis, lui, est conforme.
+#
+# Posture retenue, vérifiée par cinématique : mains 29 cm devant le
+# bassin et 18 cm au-dessus, écartées de 34 cm.
+EPAULE_TANGAGE = -0.30        # bras légèrement levés vers l'avant
+COUDE = 0.0                   # coude à angle droit (zéro du G1)
+ROULIS_OUVERT = 0.20          # bras écartés : 34 cm entre les mains
+ROULIS_SERRE = -0.10          # vise AU-DELÀ du contact : la raideur serre
+LARGEUR = 0.24                # carton plus étroit que l'écartement ouvert
 KP_BRAS = [90, 60, 20, 60, 4, 4, 4]
 KD_BRAS = [2.0, 1.0, 0.4, 1.0, 0.2, 0.2, 0.2]
 
@@ -83,17 +99,14 @@ def main():
     pol.load()
     conv = conventions_pour("29dof")
 
-    def brut(j, v):
-        c = conv[j]
-        return c.sign * v + c.offset_rad
-
     def pose(roulis):
-        out = {}
-        for cote in ("left", "right"):
-            for art, v in PORT_OUVERT.items():
-                j = f"{cote}_{art}_joint"
-                out[j] = brut(j, roulis if art == "shoulder_roll" else v)
-        return out
+        # Roulis symétrique : positif à gauche et négatif à droite écartent
+        # les deux bras (vérifié par cinématique, conforme à la table).
+        return {"left_shoulder_pitch_joint": EPAULE_TANGAGE,
+                "right_shoulder_pitch_joint": EPAULE_TANGAGE,
+                "left_shoulder_roll_joint": roulis,
+                "right_shoulder_roll_joint": -roulis,
+                "left_elbow_joint": COUDE, "right_elbow_joint": COUDE}
 
     bridge = IsaacSimBridge(variante="29dof")
     bridge.setup(fix_base=False, require_meshes=True, physics_dt=cfg.physics_dt)
@@ -108,7 +121,7 @@ def main():
     carton = world.scene.add(DynamicCuboid(
         prim_path="/World/carton", name="carton",
         position=np.array([10.0, 0.0, HAUTEUR / 2]), size=1.0,
-        scale=np.array([PROFONDEUR, 0.30, HAUTEUR]), mass=MASSE_KG,
+        scale=np.array([PROFONDEUR, LARGEUR, HAUTEUR]), mass=MASSE_KG,
         color=np.array([0.72, 0.52, 0.30]), physics_material=materiau))
 
     g = pol.gains()
@@ -200,7 +213,7 @@ def main():
 
         if phase == "B":
             a = min(1.0, (t - 3.0) / 1.0)
-            adapt.pose_bras.update({j: a * v for j, v in pose(PORT_OUVERT["shoulder_roll"]).items()})
+            adapt.pose_bras.update({j: a * v for j, v in pose(ROULIS_OUVERT).items()})
 
         if not carton_place and t >= 5.0:
             pg, ng = position_lien("left_rubber_hand")
@@ -209,12 +222,16 @@ def main():
                 print("  [✗] mains introuvables dans la scène — test interrompu")
                 break
             ecart = float(np.linalg.norm(pg - pd))
-            largeur = float(np.clip(ecart - 0.04, 0.12, 0.45))
             centre = (pg + pd) / 2.0
-            print(f"\n  mains ({ng}) : écartement mesuré {ecart:.3f} m -> "
-                  f"carton de {largeur:.3f} m de large, centré en "
-                  f"({centre[0]:.2f}, {centre[1]:.2f}, {centre[2]:.2f})")
-            carton.set_local_scale(np.array([PROFONDEUR, largeur, HAUTEUR]))
+            pr_, _ = robot.get_world_pose()
+            print(f"\n  mains ({ng}) : écartement mesuré {ecart:.3f} m, carton "
+                  f"de {LARGEUR:.2f} m ; centre des mains à "
+                  f"{centre[0] - float(pr_[0]):+.2f} m DEVANT le bassin, "
+                  f"z = {centre[2]:.2f} m")
+            if centre[0] - float(pr_[0]) < 0.10:
+                print("  [!] les mains ne sont pas devant le robot — posture à revoir")
+            # Taille FIXÉE à la création : la changer en cours de simulation
+            # invalide la vue physique (constaté au premier essai de W2).
             carton.set_world_pose(position=centre)
             carton.set_linear_velocity(np.zeros(3))
             carton.set_angular_velocity(np.zeros(3))
@@ -223,7 +240,7 @@ def main():
 
         if phase == "C":
             a = min(1.0, (t - 5.0) / 0.5)
-            r = PORT_OUVERT["shoulder_roll"] + a * (SERRE_ROULIS - PORT_OUVERT["shoulder_roll"])
+            r = ROULIS_OUVERT + a * (ROULIS_SERRE - ROULIS_OUVERT)
             adapt.pose_bras.update(pose(r))
         if phase == "E":
             loco.set_velocity(0.3, 0.0, 0.0)
