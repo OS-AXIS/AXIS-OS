@@ -28,11 +28,18 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, "/isaac-sim")
 
 from axis_os.hal.core.types import ActuatorFeedback, ActuatorState, HALStatus
-from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL, _build_g1_joint_definitions
+from axis_os.hal.drivers.unitree_g1.robot import (
+    UnitreeG1HAL, _build_g1_joint_definitions, build_g1_joint_definitions,
+)
 
 
 USD_PATH = "/isaac-sim/g1_axisos.usd"
 URDF_PATH = "/isaac-sim/g1_23dof_rev_1_0.urdf"
+# Un URDF par variante, copié dans le conteneur à côté de ses meshes.
+URDF_PATHS = {
+    "23dof": URDF_PATH,
+    "29dof": "/isaac-sim/g1_29dof_rev_1_0.urdf",
+}
 
 _simulation_app = None  # référence gardée pour éviter le garbage-collect
 
@@ -97,7 +104,7 @@ def find_missing_meshes(urdf_path: str = URDF_PATH) -> List[str]:
     return sorted(missing)
 
 def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False,
-                   require_meshes: bool = False):
+                   require_meshes: bool = False, urdf_path: str = URDF_PATH):
     """Importe le G1 depuis le vrai URDF officiel AXIS-OS (pas la variante
     générique NVIDIA — évite la divergence de nommage à 5 joints déjà
     rencontrée). Retourne le usd_path généré.
@@ -123,10 +130,10 @@ def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False,
     # Vérifier les meshes AVANT d'importer : l'importateur ne signale pas
     # leur absence de façon visible, et produit un robot physiquement
     # correct mais INVISIBLE, avec une collision partielle.
-    missing = find_missing_meshes(URDF_PATH)
+    missing = find_missing_meshes(urdf_path)
     if missing:
         msg = (f"{len(missing)} mesh(es) introuvable(s) à côté de "
-               f"{URDF_PATH} (ex. {missing[0]}). Le robot sera INVISIBLE "
+               f"{urdf_path} (ex. {missing[0]}). Le robot sera INVISIBLE "
                f"aux caméras et sa COLLISION sera PARTIELLE. Récupération : "
                f"voir axis_os/hal/drivers/unitree_g1/urdf/meshes/README.md")
         if require_meshes:
@@ -147,7 +154,7 @@ def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False,
             os.remove(USD_PATH)
 
     config = URDFImporterConfig()
-    config.urdf_path = URDF_PATH
+    config.urdf_path = urdf_path
     config.usd_path = USD_PATH
     config.fix_base = fix_base
     config.merge_fixed_joints = False
@@ -172,10 +179,15 @@ class IsaacSimBridge:
         bridge.step(60)                # avance la simulation physique
     """
 
-    def __init__(self):
+    def __init__(self, variante: str = "23dof"):
+        """variante : "23dof" (défaut, inchangé) ou "29dof" — le robot de
+        référence pour la loco-manipulation (docs/integration_gr00t_wbc.md)."""
+        if variante not in URDF_PATHS:
+            raise ValueError(f"variante inconnue : {variante!r}")
+        self._variante = variante
         self._robot = None
         self._world = None
-        self._joint_defs = _build_g1_joint_definitions()
+        self._joint_defs = build_g1_joint_definitions(variante)
         self._joint_index: Dict[str, int] = {}  # joint_id AXIS-OS -> index DOF Isaac
         self._pump: Optional["MainThreadSimPump"] = None
     def setup(self, fix_base: bool = False, require_meshes: bool = False,
@@ -193,7 +205,8 @@ class IsaacSimBridge:
 
         # Référencer le USD importé AVANT de créer World() — l'ordre compte,
         # voir plus bas.
-        usd_path = import_g1_urdf(fix_base=fix_base,
+        usd_path = import_g1_urdf(urdf_path=URDF_PATHS[self._variante],
+                                  fix_base=fix_base,
                                   require_meshes=require_meshes)
         add_reference_to_stage(usd_path=usd_path, prim_path="/World/g1")
 
@@ -326,7 +339,8 @@ class IsaacSimBridge:
                 f"des DOF Isaac Sim : {missing}. Le mapping a divergé depuis "
                 f"la validation du 18/09 — ne pas continuer sans corriger."
             )
-        print(f"[bridge] {len(self._joint_index)}/23 joints mappés avec Isaac Sim.")
+        print(f"[bridge] {len(self._joint_index)}/{len(self._joint_defs)} joints "
+              f"mappés avec Isaac Sim ({self._variante}).")
 
     def _author_root_translation(self, z: float) -> None:
         """Écrit la translation du prim racine /World/g1 dans la scène USD."""
@@ -661,7 +675,7 @@ class IsaacSimBridge:
         réellement vers Isaac Sim via ce pont, au lieu du simulateur
         interne G1SimulatedActuator. Monkeypatch délibéré et documenté —
         c'est le point d'intégration unique entre les deux piles."""
-        hal = UnitreeG1HAL(backend="sim")
+        hal = UnitreeG1HAL(backend="sim", variante=self._variante)
         bridge = self
 
         original_send = hal.send_joint_commands

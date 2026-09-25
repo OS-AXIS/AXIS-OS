@@ -133,3 +133,45 @@ AXIS-OS.
 **Premier test, avant tout le reste** : faire marcher le G1 29 DOF avec
 cette politique, bras en position de port, sans colis. Si le robot tombe,
 on le saura en une heure.
+
+---
+
+## 7. Mise en route sur la machine GPU
+
+Tout ce qui ne demande pas de simulateur est prêt et testé : driver
+29 DOF (`UnitreeG1HAL(variante="29dof")`), adaptateur
+(`GR00TWBCAdapter`), pont Isaac Sim paramétrable
+(`IsaacSimBridge(variante="29dof")`). Premier test :
+`test_isaac_w1_gr00t_port.py`.
+
+Dans l'ordre, une fois Isaac Sim 6.1 lancé dans Docker :
+
+```bash
+# 1. Poids des politiques (Git LFS — absents d'un clone ordinaire)
+git clone https://github.com/NVlabs/GR00T-WholeBodyControl.git ~/gr00t_wbc
+cd ~/gr00t_wbc && git lfs install && \
+  git lfs pull --include "decoupled_wbc/sim2mujoco/resources/robots/g1/policy/*.onnx"
+docker exec -u root isim-isaac-sim-1 mkdir -p /isaac-sim/policies
+docker cp decoupled_wbc/sim2mujoco/resources/robots/g1/policy/GR00T-WholeBodyControl-Balance.onnx \
+  isim-isaac-sim-1:/isaac-sim/policies/gr00t_wbc_balance.onnx
+docker cp decoupled_wbc/sim2mujoco/resources/robots/g1/policy/GR00T-WholeBodyControl-Walk.onnx \
+  isim-isaac-sim-1:/isaac-sim/policies/gr00t_wbc_walk.onnx
+
+# 2. Moteur d'inférence ONNX dans le Python d'Isaac Sim
+docker exec -u root isim-isaac-sim-1 /isaac-sim/python.sh -m pip install onnxruntime-gpu
+
+# 3. URDF 29 DOF et meshes (le pont refuse de démarrer s'il en manque)
+docker cp ~/AXIS-OS/axis_os/hal/drivers/unitree_g1/urdf/g1_29dof_rev_1_0.urdf \
+  isim-isaac-sim-1:/isaac-sim/
+#    meshes : dépôt unitree_ros, robots/g1_description/meshes -> /isaac-sim/meshes
+
+# 4. Code et test
+docker exec -u root isim-isaac-sim-1 rm -rf /isaac-sim/axis_os
+docker cp ~/AXIS-OS/axis_os isim-isaac-sim-1:/isaac-sim/
+docker cp ~/AXIS-OS/test_isaac_w1_gr00t_port.py isim-isaac-sim-1:/isaac-sim/axis_os/
+docker exec isim-isaac-sim-1 /isaac-sim/python.sh /isaac-sim/axis_os/test_isaac_w1_gr00t_port.py
+```
+
+Au premier chargement, la politique affiche l'**empreinte SHA-256** de
+chaque fichier ONNX : la relever et l'épingler dans `GR00TWBCPolicy`,
+comme pour la politique d'Unitree.
