@@ -262,7 +262,15 @@ def main():
             p_w = np.asarray(pos, dtype=float)
             for c in (cam, dep):
                 c._position = tuple(float(v) for v in (p_w + R @ np.array([0.2, 0.0, 0.4])))
-                c.look_at(tuple(float(v) for v in (p_w + R @ np.array([1.5, 0.0, -0.55]))))
+                # Visée RELEVÉE. Premier réglage repris des tests où le carton
+                # était AU SOL : il visait 0.55 m sous le BASSIN, soit 36° vers
+                # le bas depuis la caméra — et non 20° comme calculé par erreur
+                # depuis la caméra. Le carton, sur une table à 0.90 m, tombait
+                # 25° au-dessus du centre de l'image (champ vertical : ±18°) :
+                # coupé par le haut du cadre, jamais reconnu. Constaté sur la vue
+                # enregistrée par la caméra de tête.
+                # Ici : ~15° vers le bas ; le carton, de loin, près du centre.
+                c.look_at(tuple(float(v) for v in (p_w + R @ np.array([1.5, 0.0, 0.05]))))
             tree.set(Transform(FRAME_WORLD, FRAME_BASE,
                                translation=Vector3(*(float(v) for v in p_w)),
                                rotation=Quaternion(w=float(quat[0]), x=float(quat[1]),
