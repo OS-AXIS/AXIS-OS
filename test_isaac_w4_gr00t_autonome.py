@@ -60,7 +60,16 @@ ROULIS_OUVERT, ROULIS_SERRE = 0.20, -0.40
 KP_BRAS = [90, 100, 40, 60, 40, 40, 40]
 KD_BRAS = [2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 MAINS_DEVANT = 0.29          # le carton doit finir à 29 cm devant le bassin
-TOL_AVANT, TOL_COTE = 0.03, 0.025
+# Tolérances tirées de la GÉOMÉTRIE, et non choisies au jugé. Les mains
+# doivent tomber entre la face avant et la face arrière du carton (20 cm
+# de profondeur) : ±7 cm en avant-arrière, 6 cm retenus. Sur le côté,
+# l'écartement des mains (33 cm) moins la largeur du carton (24 cm) laisse
+# ±4.5 cm, 3.5 retenus. Première version : 3 cm et 2.5 cm — le robot,
+# arrivé dès 8 s, a piétiné 50 s sans jamais se déclarer en place.
+TOL_AVANT, TOL_COTE = 0.06, 0.035
+# En dessous de cette vitesse, GR00T WBC passe en mode ÉQUILIBRE et
+# n'avance plus : les consignes d'ajustement fin ne doivent pas y tomber.
+V_MIN = 0.06
 
 
 def check(label, cond):
@@ -325,7 +334,13 @@ def main():
                 # plus loin, dans l'axe du regard.
                 pr, _ = robot.get_world_pose()
                 v = np.array([p.x - float(pr[0]), p.y - float(pr[1])])
-                v = v / max(np.linalg.norm(v), 1e-6)
+                dist = float(np.linalg.norm(v))
+                # De PRÈS, plus de mise à jour : la caméra y voit la table,
+                # ses propres bras, un morceau de carton — des mesures qui
+                # ont tiré l'estimation vers le fond au premier essai.
+                if estim is not None and dist < 0.9:
+                    break
+                v = v / max(dist, 1e-6)
                 c = np.array([p.x + v[0] * PROFONDEUR / 2,
                               p.y + v[1] * PROFONDEUR / 2])
                 estim = c if estim is None else 0.7 * estim + 0.3 * c
@@ -342,21 +357,32 @@ def main():
             cible = vers_robot([estim[0], estim[1], 0.0])
             ex, ey = cible[0] - MAINS_DEVANT, cible[1]
             cap = math.atan2(cible[1], cible[0])
-            loin = cible[0] > 0.7
-            vx = float(np.clip(0.8 * ex, -0.10, 0.25 if loin else 0.10))
-            vy = 0.0 if loin else float(np.clip(1.0 * ey, -0.10, 0.10))
-            wz = float(np.clip(1.5 * cap, -0.5, 0.5)) if loin else float(
-                np.clip(1.0 * cap, -0.2, 0.2))
-            if abs(cap) > 0.4:
-                vx = 0.0                                # d'abord s'orienter
-            loco.set_velocity(vx, vy, wz)
-            if abs(ex) < TOL_AVANT and abs(ey) < TOL_COTE:
-                en_place += 1
-            else:
+            if cible[0] > 0.7:
+                # LOIN : s'orienter, puis avancer.
+                vx = float(np.clip(0.8 * ex, 0.0, 0.25)) if abs(cap) < 0.4 else 0.0
+                loco.set_velocity(vx, 0.0, float(np.clip(1.5 * cap, -0.5, 0.5)))
                 en_place = 0
-            if en_place >= 15:                          # 0.3 s stable
-                loco.halt()
+            else:
+                # PRÈS : ajuster par petits pas FRANCS. Une consigne sous
+                # V_MIN ferait passer la politique en équilibre sans bouger ;
+                # d'où une vitesse minimale, ou zéro si l'axe est déjà bon.
+                def pas(err, tol, vmax):
+                    if abs(err) < tol:
+                        return 0.0
+                    return math.copysign(min(vmax, max(V_MIN, 0.8 * abs(err))), err)
+                vx = pas(ex, TOL_AVANT, 0.10)
+                vy = pas(ey, TOL_COTE, 0.10)
+                if vx == 0.0 and vy == 0.0:
+                    loco.halt()
+                    en_place += 1        # stable ET immobile
+                else:
+                    loco.set_velocity(vx, vy, 0.0)
+                    en_place = 0
+            if en_place >= 25:           # 0.5 s immobile, en place
                 changer("SAISIR", t, "En place — il serre le carton")
+            elif t - t_etat > 25.0:
+                changer("ECHEC", t, "Placement impossible — il abandonne",
+                        (200, 50, 45))
 
         elif etat == "SAISIR":
             loco.halt()
