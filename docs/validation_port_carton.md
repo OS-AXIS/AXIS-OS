@@ -78,3 +78,63 @@ de la même famille (A3, W2, W3).
 - **Arbitrage des actionneurs** : ici, c'est le script qui commande les
   bras via l'adaptateur de marche. Dans l'OS, l'app devra posséder les
   bras pendant que la marche possède les jambes.
+
+---
+
+## 5. W4 — « Va prendre le carton », sans lui dire où il est
+
+`test_isaac_w4_gr00t_autonome.py`. Le robot ne reçoit **aucune position**.
+Le carton est posé sur une table à 90° sur sa gauche, hors de son champ de
+vision au départ.
+
+| t | État | |
+|---|---|---|
+| 0.0 s | CHERCHER | il tourne sur lui-même |
+| 3.3 s | APPROCHER | OWL-ViT reconnaît le carton — face avant mesurée à 4 cm près |
+| 12.9 s | SAISIR | le carton est entre ses mains : il serre |
+| 13.8 s | SOULEVER | |
+| 15.0 s | RECULER | prise **vérifiée** avant de partir |
+| 17.5 s | TOURNER | demi-tour, carton en main |
+| 21.8 s | EMPORTER | |
+| 25.0 s | DÉPOSER | au sol, à 2.30 m de la table |
+| 27.5 s | FINI | |
+
+0 chute, 0 refus du garde-fou.
+
+**Ce qui relève de l'IA :** la recherche et la localisation (OWL-ViT +
+profondeur), l'équilibre et la marche sous charge (GR00T WBC). **Ce qui
+reste programmé :** le mouvement des bras — l'app sait *comment* prendre,
+la perception lui dit *quand* et *où*. La décision de serrer vient de la
+perception, pas d'une seconde fixée d'avance.
+
+### Quatre essais, trois leçons
+
+**La caméra doit regarder là où est l'objet.** Premier essai : rien reconnu
+en une minute. La vue enregistrée par la tête du robot a montré le carton
+coupé par le haut du cadre : visée reprise des tests où les cartons étaient
+au sol, et angle mal calculé (36° vers le bas au lieu de 20°). **Enregistrer
+ce que voit le robot** a tranché en un coup d'œil, là où on aurait accusé le
+détecteur.
+
+**Sous 0.05 m/s, GR00T WBC ne marche plus : il tient debout.** Des consignes
+d'ajustement fin de 2 à 3 cm/s ne font rien bouger. Les petits pas doivent
+être francs.
+
+**La règle d'un humain vaut mieux que la précision d'une machine** (règle
+de Kenzo). Exiger une immobilité parfaite près d'une table échouait : la
+politique de marche ne s'immobilise jamais tout à fait. « Dès que le carton
+est entre les mains, on serre » a réussi du premier coup — vérifié avec ce
+que le robot sait vraiment : ses mains par ses articulations, le carton par
+sa caméra.
+
+### Limites
+
+- **Fin d'approche à l'aveugle** : sous ~0.9 m, l'estimation est figée et
+  recalée par la pose du robot, exacte en simulation. Sur le vrai robot, il
+  faudra une odométrie.
+- **Prise vérifiée** par la position simulée du carton. Sur le vrai robot :
+  l'effort mesuré aux épaules.
+- **Dépose au sol** par ouverture des bras, pas encore sur une table.
+- Tout le déroulé vit dans un script de test, pas encore dans une **app** du
+  Play Store : il faut d'abord l'arbitrage des actionneurs entre services et
+  la correction des étiquettes anatomiques.
