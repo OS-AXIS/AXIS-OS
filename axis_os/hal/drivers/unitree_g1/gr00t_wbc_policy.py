@@ -68,6 +68,15 @@ G1_29_BODY_JOINTS: Tuple[str, ...] = (
 )
 
 
+# Empreintes des politiques VALIDÉES en simulation (test W1, 2026-09-25 :
+# debout, posture de port, marche en port, arrêt — tout tenu). Un fichier
+# différent est refusé au chargement : ce n'est plus celui qu'on a validé.
+GR00T_WBC_SHA256 = {
+    "balance": "f645da599d4ca3d29ed273c8f4712620bb680d34977469ca3aeabe5bb9631c18",
+    "walk":    "7c82255b6905ffcc4468fa7f8ddcf7b70db168cf1042107ccab887cb6a8e5407",
+}
+
+
 @dataclass(frozen=True)
 class GR00TWBCConfig:
     """Paramètres d'ENTRAÎNEMENT — à ne pas modifier sans changer de
@@ -130,7 +139,7 @@ class GR00TWBCPolicy:
         """
         self.cfg = cfg
         self._paths = {"balance": balance_path, "walk": walk_path}
-        self._sha256 = sha256 or {}
+        self._sha256 = GR00T_WBC_SHA256 if sha256 is None else sha256
         self._nets: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
         n = len(cfg.body_joints)
         # Centrage des positions : pose par défaut pour les 15 commandées,
