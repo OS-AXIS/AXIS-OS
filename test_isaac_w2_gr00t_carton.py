@@ -65,6 +65,7 @@ def main():
     from isaacsim.core.utils.types import ArticulationAction
 
     from axis_os.hal.core.types import ActuatorCommand, ControlMode
+    from axis_os.hal.drivers.isaac_sim.video import SceneRecorder
     from axis_os.hal.drivers.unitree_g1.conventions import conventions_pour
     from axis_os.hal.drivers.unitree_g1.gr00t_wbc_policy import (
         GR00TWBCAdapter, GR00TWBCConfig, GR00TWBCPolicy,
@@ -168,6 +169,24 @@ def main():
                 return np.array([t[0], t[1], t[2]], dtype=float), candidat
         return None, None
 
+    # CAMÉRA : suit le robot, trois quarts avant, PROCHE et visée à hauteur
+    # de poitrine — c'est la prise qu'on veut voir, pas la silhouette.
+    rec = SceneRecorder(world, "/isaac-sim/videos/w2_carton.mp4",
+                        position=(2.0, -2.2, 1.3), cible=(0.0, 0.0, 0.9),
+                        largeur=1280, hauteur=720,
+                        titre="AXIS-OS — le G1 porte un carton")
+    rec.suivre(lambda: robot.get_world_pose()[0], decalage=(2.0, -2.2, 0.4),
+               hauteur_visee=0.9, decalage_cadre=(-0.35, -0.30))
+    video_ok = rec.start()
+    TEXTES = {"B": ("Posture de port", (40, 110, 200)),
+              "C": ("Les bras serrent le carton", (40, 110, 200)),
+              "D": ("Carton tenu — debout", (40, 140, 70)),
+              "E": ("Marche en portant le carton", (40, 140, 70)),
+              "F": ("Arrêt, carton en main", (40, 140, 70))}
+    phase_vue = None
+    lache_signale = False
+    k = 0
+
     trace = []
     politiques = {}
     chute = None
@@ -218,15 +237,40 @@ def main():
                           float(np.linalg.norm(np.asarray(pc[:2]) - np.asarray(pr[:2]))),
                           float(pr[0])))
 
+        if video_ok and phase != phase_vue:
+            phase_vue = phase
+            if phase in TEXTES:
+                rec.evenement(TEXTES[phase][0], t, duree_s=2.0,
+                              couleur=TEXTES[phase][1])
+        if (video_ok and carton_place and not lache_signale and trace
+                and trace[-1][2] < z_depart - 0.15):
+            lache_signale = True
+            rec.evenement("Carton lâché", t, duree_s=3.0, couleur=(200, 50, 45))
+
         loco.tick()
         if loco.state is LocomotionState.FALLEN:
             chute = (t, phase)
             break
         politiques.setdefault(phase, set()).add(pol.derniere_politique)
-        for _ in range(cfg.decimation - 1):
-            world.step(render=False)
+        capture = video_ok and (k % 2 == 0)        # 25 images/s
+        if capture:
+            rec.cadrer()                           # AVANT le rendu
+        for i in range(cfg.decimation - 1):
+            world.step(render=(capture and i == 0))
         sim_t[0] += cfg.control_dt
+        k += 1
+        if capture:
+            zc = trace[-1][2] if trace else None
+            rec.image([
+                f"Phase : {phase}",
+                f"Politique : {pol.derniere_politique}",
+                "Carton : pas encore placé" if zc is None
+                else f"Hauteur du carton : {zc:.2f} m",
+                f"Garde-fou : {loco.stats['refused']} refus",
+            ], t)
 
+    if video_ok:
+        rec.terminer()
     print(f"\n{'=' * 66}\n  RÉSULTATS\n{'=' * 66}")
     print("  t     phase  hauteur carton  distance au bassin  x robot")
     derniere = -1.0
