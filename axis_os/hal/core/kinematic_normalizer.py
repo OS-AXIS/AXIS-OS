@@ -172,11 +172,12 @@ class KinematicNormalizer:
         return self._map[joint_id]
 
 
-def build_g1_normalizer(verbose: bool = False) -> KinematicNormalizer:
+def build_g1_normalizer(verbose: bool = False,
+                        variante: str = "23dof") -> KinematicNormalizer:
     """Factory : normalizer configuré pour le Unitree G1."""
-    from axis_os.hal.drivers.unitree_g1.conventions import G1_JOINT_CONVENTIONS
+    from axis_os.hal.drivers.unitree_g1.conventions import conventions_pour
     convention_map: ConventionMap = {
         jid: ConventionEntry(sign=c.sign, offset_rad=c.offset_rad)
-        for jid, c in G1_JOINT_CONVENTIONS.items()
+        for jid, c in conventions_pour(variante).items()
     }
     return KinematicNormalizer(convention_map, verbose=verbose)

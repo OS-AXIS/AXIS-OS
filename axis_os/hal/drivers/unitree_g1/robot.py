@@ -39,6 +39,26 @@ import time
 _G1_URDF_PATH = Path(__file__).parent / "urdf" / "g1_23dof_rev_1_0.urdf"
 
 
+_G1_29DOF_URDF_PATH = Path(__file__).parent / "urdf" / "g1_29dof_rev_1_0.urdf"
+
+
+def build_g1_joint_definitions(variante: str = "23dof") -> List[JointDefinition]:
+    """Articulations d'une variante du G1, depuis l'URDF officiel.
+
+    23dof : une articulation de taille, cinq par bras, mains en caoutchouc.
+    29dof : trois articulations de taille, sept par bras — la variante que
+            visent GR00T Whole-Body Control, les modèles GR00T et LeRobot
+            (docs/integration_gr00t_wbc.md).
+    """
+    if variante == "23dof":
+        return _build_g1_joint_definitions()
+    if variante == "29dof":
+        model = load_urdf(_G1_29DOF_URDF_PATH)
+        return [replace(j, group=_G1_29DOF_JOINT_GROUPS[j.joint_id])
+                for j in model.get_joints()]
+    raise ValueError(f"variante G1 inconnue : {variante!r} (23dof ou 29dof)")
+
+
 def _build_g1_joint_definitions() -> List[JointDefinition]:
     """
     23 joints du Unitree G1, chargés depuis le fichier URDF officiel
@@ -102,6 +122,20 @@ _G1_JOINT_GROUPS: Dict[str, JointGroup] = {
     "right_shoulder_yaw_joint":   JointGroup.MANIPULATION,
     "right_elbow_joint":          JointGroup.MANIPULATION,
     "right_wrist_roll_joint":     JointGroup.MANIPULATION,
+}
+
+
+# 29 DOF : les groupes du 23 DOF plus les six articulations nouvelles.
+# Taille en OTHER, comme waist_yaw : ni membre locomoteur, ni bras — le
+# groupe que la marche et les apps devront se partager explicitement.
+_G1_29DOF_JOINT_GROUPS: Dict[str, JointGroup] = {
+    **_G1_JOINT_GROUPS,
+    "waist_roll_joint":        JointGroup.OTHER,
+    "waist_pitch_joint":       JointGroup.OTHER,
+    "left_wrist_pitch_joint":  JointGroup.MANIPULATION,
+    "left_wrist_yaw_joint":    JointGroup.MANIPULATION,
+    "right_wrist_pitch_joint": JointGroup.MANIPULATION,
+    "right_wrist_yaw_joint":   JointGroup.MANIPULATION,
 }
 
 
@@ -243,6 +277,7 @@ class UnitreeG1HAL(IRobotHAL):
         backend: str = "sim",
         network_interface: Optional[str] = None,
         domain_id: int = 0,
+        variante: str = "23dof",
     ):
         """
         `backend` : "sim" (défaut, rétrocompatible — G1SimulatedActuator,
@@ -273,7 +308,8 @@ class UnitreeG1HAL(IRobotHAL):
         self._domain_id = domain_id
         self._dds_hub = None  # créé dans initialize_all() si backend == "dds"
 
-        self._joint_defs: List[JointDefinition] = _build_g1_joint_definitions()
+        self._variante = variante
+        self._joint_defs: List[JointDefinition] = build_g1_joint_definitions(variante)
         self._actuators:  Dict[str, IActuator]  = {}
         self._imu:        Optional[IIMU]         = None
 
@@ -294,14 +330,23 @@ class UnitreeG1HAL(IRobotHAL):
         # ou un sign invalide (ex: 0.5 au lieu de ±1.0) ne serait détecté
         # qu'au premier appel du normalizer sur ce joint précis — potentiellement
         # jamais en test, potentiellement en plein mouvement en production.
-        from .conventions import G1_JOINT_CONVENTIONS
+        from .conventions import conventions_pour
         from .convention_validator import validate_convention_table
 
         expected_ids = [jdef.joint_id for jdef in self._joint_defs]
-        validation = validate_convention_table(G1_JOINT_CONVENTIONS, expected_ids)
+        validation = validate_convention_table(conventions_pour(self._variante),
+                                               expected_ids)
         print(f"  {validation}")
         if not validation.valid:
             print("  [ERREUR] Table de conventions invalide — initialisation refusée.")
+            return HALStatus.ERROR_FAULT
+        if validation.non_verifiees and self._backend != "sim":
+            # Sur un VRAI robot, jamais : un signe non vérifié peut envoyer
+            # une articulation dans le sens opposé à celui demandé. C'est
+            # en simulation qu'on le vérifie, par la suite S2.
+            print(f"  [ERREUR] Conventions NON VÉRIFIÉES sur un robot réel : "
+                  f"{validation.non_verifiees} — initialisation refusée. "
+                  f"Lancer la suite S2 en simulation d'abord.")
             return HALStatus.ERROR_FAULT
 
         if self._backend == "dds":

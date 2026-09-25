@@ -156,6 +156,13 @@ class WarehouseOpsApp(RobotApp):
     # ── Mission principale ────────────────────────────────────────
 
     def run_mission(self, ctx: RobotContext, params: Dict[str, Any]) -> MissionResult:
+        # Générateur RECRÉÉ à chaque mission. Chaque mission s'exécute dans
+        # un processus fils qui repart de l'état de l'app à sa création :
+        # un générateur créé une seule fois dans __init__ y est figé, et
+        # toutes les missions tiraient exactement les mêmes nombres — 20
+        # échecs sur 20, ou 0 sur 20, au lieu de ~30 %. Une graine peut
+        # être fournie pour rendre une mission reproductible.
+        self._rng = random.Random(params.get("seed"))
         t_start = time.monotonic()
         mission_id = str(uuid.uuid4())[:8].upper()
 

@@ -60,6 +60,12 @@ class JointConvention:
     positive_label:  str
     negative_label:  str
     anatomical_note: str
+    # VÉRIFIÉE par la suite S2 (mesure en simulation, pas raisonnement).
+    # Par défaut True : toute la table du 23 DOF a été validée, 23/23.
+    # Une entrée non vérifiée porte un signe PROVISOIRE : le HAL la
+    # tolère en simulation, avec avertissement, et la REFUSE sur un vrai
+    # robot — on ne commande jamais un moteur réel dont on ignore le sens.
+    verifiee:        bool = True
 
 
 G1_JOINT_CONVENTIONS: dict[str, JointConvention] = {
@@ -107,3 +113,57 @@ def get_convention(joint_id: str) -> JointConvention:
 
 def get_inverted_joints() -> list[str]:
     return [jid for jid, c in G1_JOINT_CONVENTIONS.items() if c.sign == -1.0]
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  G1 29 DOF
+# ═════════════════════════════════════════════════════════════════════
+#
+# 23 articulations sont COMMUNES avec le 23 DOF. Comparaison des deux
+# URDF officiels (unitree_ros) : 20 sont identiques en tout point — axe,
+# origine, limites, liens ; les 3 autres (lacet de la taille, roulis des
+# poignets) ne diffèrent que par leur position dans la chaîne, parce que
+# le 29 DOF intercale de nouvelles articulations derrière elles. Leurs
+# axes et limites sont identiques : leur convention se transmet. À
+# reconfirmer par S2 sur le modèle 29 DOF, mais sans raison de douter.
+#
+# 6 articulations sont NOUVELLES. Personne n'a jamais vérifié leur sens.
+# Signe PROVISOIRE : celui de l'URDF brut (+1), et des étiquettes qui ne
+# prétendent à AUCUN sens anatomique. Les nommer « flexion » ou
+# « inclinaison à gauche » sans mesure serait inventer — exactement
+# l'erreur qui avait laissé 9 articulations inversées sur le 23 DOF.
+
+def _non_verifiee(joint_id: str, axe: str) -> JointConvention:
+    return JointConvention(
+        joint_id, +1.0, 0.0,
+        f"sens_positif_urdf_{axe}", f"sens_negatif_urdf_{axe}",
+        "NON VÉRIFIÉE — signe brut de l'URDF, sens anatomique inconnu. "
+        "À établir par la suite S2 sur le G1 29 DOF.",
+        verifiee=False,
+    )
+
+
+G1_29DOF_NOUVELLES = (
+    "waist_roll_joint", "waist_pitch_joint",
+    "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+    "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+)
+
+G1_29DOF_JOINT_CONVENTIONS: dict[str, JointConvention] = {
+    **G1_JOINT_CONVENTIONS,
+    "waist_roll_joint":        _non_verifiee("waist_roll_joint", "x"),
+    "waist_pitch_joint":       _non_verifiee("waist_pitch_joint", "y"),
+    "left_wrist_pitch_joint":  _non_verifiee("left_wrist_pitch_joint", "y"),
+    "left_wrist_yaw_joint":    _non_verifiee("left_wrist_yaw_joint", "z"),
+    "right_wrist_pitch_joint": _non_verifiee("right_wrist_pitch_joint", "y"),
+    "right_wrist_yaw_joint":   _non_verifiee("right_wrist_yaw_joint", "z"),
+}
+
+
+def conventions_pour(variante: str) -> dict[str, JointConvention]:
+    """Table de conventions d'une variante du G1."""
+    if variante == "23dof":
+        return G1_JOINT_CONVENTIONS
+    if variante == "29dof":
+        return G1_29DOF_JOINT_CONVENTIONS
+    raise ValueError(f"variante G1 inconnue : {variante!r} (23dof ou 29dof)")

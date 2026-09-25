@@ -379,8 +379,37 @@ class SandboxRunner:
             time.sleep(0.05)
 
 
+def _reensemencer_alea() -> None:
+    """Donne au processus fils son PROPRE aléa.
+
+    Le fils est créé par DUPLICATION du parent : il hérite de l'état de
+    tous les générateurs aléatoires tel qu'il était à ce moment-là, et ce
+    qu'il consomme n'est jamais renvoyé au parent. Sans réensemencement,
+    CHAQUE mission tire exactement les mêmes nombres.
+
+    Constaté : une app qui simulait 30 % d'échecs de saisie échouait
+    soit 20 missions sur 20, soit 0 sur 20 — selon un seul tirage fait à
+    sa création. Le test qui la couvrait passait ou échouait au hasard.
+
+    Ne couvre que les générateurs GLOBAUX (random, numpy). Un générateur
+    PROPRE à l'app (random.Random() créé dans __init__) reste figé : c'est
+    à l'app de le recréer par mission — voir WarehouseOpsApp.
+    """
+    import os
+    import random
+    random.seed(int.from_bytes(os.urandom(8), "little"))
+    try:
+        import sys
+        if "numpy" in sys.modules:
+            import numpy as np
+            np.random.seed(int.from_bytes(os.urandom(4), "little"))
+    except Exception:                   # noqa: BLE001
+        pass
+
+
 def _sandbox_entrypoint(target_fn, args, kwargs, result_queue: mp.Queue) -> None:
     try:
+        _reensemencer_alea()
         result = target_fn(*args, **kwargs)
         result_queue.put({"result": result, "error": None})
     except Exception as exc:

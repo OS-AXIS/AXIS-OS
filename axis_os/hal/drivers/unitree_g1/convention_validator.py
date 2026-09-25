@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Dict, List
+from typing import Optional, Dict, List
 
 from .conventions import JointConvention
 
@@ -42,12 +42,19 @@ class ConventionError:
 
 
 class ConventionValidationResult:
-    def __init__(self, valid: bool, errors: List[ConventionError]):
+    def __init__(self, valid: bool, errors: List[ConventionError],
+                 non_verifiees: Optional[List[str]] = None):
         self.valid  = valid
         self.errors = errors
+        self.non_verifiees = list(non_verifiees or [])
 
     def __str__(self) -> str:
         if self.valid:
+            if self.non_verifiees:
+                return (f"[CONVENTION] Table valide, mais {len(self.non_verifiees)} "
+                        f"articulation(s) NON VÉRIFIÉE(S) : "
+                        f"{', '.join(self.non_verifiees)} — tolérées en "
+                        f"simulation, REFUSÉES sur un vrai robot.")
             return "[CONVENTION] Table valide — AXIS-OS peut passer en mode mouvement."
         lines = [f"[CONVENTION] {len(self.errors)} erreur(s) — mode mouvement REFUSÉ :"]
         lines += [f"  • {e}" for e in self.errors]
@@ -106,4 +113,7 @@ def validate_convention_table(
                 "positive_label ou negative_label manquant"
             ))
 
-    return ConventionValidationResult(valid=(len(errors) == 0), errors=errors)
+    non_verifiees = [jid for jid, c in table.items()
+                     if not getattr(c, "verifiee", True)]
+    return ConventionValidationResult(valid=(len(errors) == 0), errors=errors,
+                                      non_verifiees=non_verifiees)
