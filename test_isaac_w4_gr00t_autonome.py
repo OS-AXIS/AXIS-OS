@@ -175,7 +175,12 @@ def main():
     cam.wait_until_ready(world)
     dep.wait_until_ready(world)
     tree = FrameTree()
-    detecteur = OwlViTDetector(threshold=0.09)
+    # Seuil abaissé : au premier essai, AUCUNE détection n'a franchi les
+    # filtres en une minute de recherche. Ce carton (24 cm) est deux fois et
+    # demie plus petit que ceux des tests précédents, déjà reconnus tout
+    # juste au-dessus de 0.09. Les faux positifs (le sol) restent écartés
+    # par le filtre de hauteur.
+    detecteur = OwlViTDetector(threshold=0.06)
     detecteur.load()
     perception = PerceptionService(cam, tree, detecteur, depth_camera=dep)
     perception.start()
@@ -241,6 +246,7 @@ def main():
         if video_ok:
             rec.evenement(texte, t, duree_s=2.5, couleur=couleur)
 
+    diag = {"t": -1.0, "image": False}
     changer("CHERCHER", 0.0, "« Va prendre le carton » — recherche")
     k = 0
     t_mur = time.monotonic()
@@ -267,7 +273,42 @@ def main():
 
         # -- perception : où est le carton ? --
         if percevoir:
-            r = perception.find("a cardboard box", frame=FRAME_WORLD)
+            # Deux formulations, en alternance : OWL-ViT est sensible aux mots.
+            requete = ("a cardboard box", "a brown box")[(k // 5) % 2]
+            r = perception.find(requete, frame=FRAME_WORLD)
+            # DIAGNOSTIC — au premier essai, le test disait « pas vu » sans
+            # dire pourquoi : confiance trop basse, profondeur absente,
+            # position filtrée ? On le fait parler une fois par seconde.
+            if etat == "CHERCHER" and t - diag["t"] >= 1.0:
+                diag["t"] = t
+                ds = (r.value or []) if r.ok else []
+                pr_, q_ = robot.get_world_pose()
+                vrai = math.degrees(math.atan2(
+                    CARTON[1] - float(pr_[1]), CARTON[0] - float(pr_[0]))
+                    - lacet(q_))
+                vrai = (vrai + 180) % 360 - 180
+                if ds:
+                    m = ds[0]
+                    pz = "None" if m.position_3d is None else (
+                        f"({m.position_3d.x:+.2f}, {m.position_3d.y:+.2f}, "
+                        f"{m.position_3d.z:.2f})")
+                    print(f"  [perception {t:5.1f} s] carton à {vrai:+4.0f}° | "
+                          f"« {requete} » : {len(ds)} détection(s), meilleure "
+                          f"conf {m.confidence:.3f} position {pz}")
+                else:
+                    print(f"  [perception {t:5.1f} s] carton à {vrai:+4.0f}° | "
+                          f"« {requete} » : rien"
+                          + ("" if r.ok else f" — {r.reason}"))
+                # Ce que VOIT la caméra quand elle fait face au carton.
+                if abs(vrai) < 10 and not diag["image"]:
+                    f_ = cam.capture()
+                    if f_ is not None:
+                        from PIL import Image
+                        Image.frombytes("RGB", (f_.width, f_.height), f_.data).save(
+                            "/isaac-sim/videos/w4_vue_tete.png")
+                        diag["image"] = True
+                        print("  [perception] vue de la tête enregistrée "
+                              "(w4_vue_tete.png)")
             for d in (r.value or []) if r.ok else []:
                 p = d.position_3d
                 if p is None or not (0.6 < p.z < 1.3):
