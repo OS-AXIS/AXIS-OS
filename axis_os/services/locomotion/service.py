@@ -116,12 +116,22 @@ class LocomotionService(IService):
         send_targets: Callable[[Dict[str, float]], Dict[str, HALStatus]],
         command_timeout_s: float = 0.5,
         clock: Callable[[], float] = time.monotonic,
+        gardien=None,
     ):
+        """
+        gardien : GardienProximite, optionnel. S'il est fourni, CHAQUE
+            consigne de vitesse — d'une app, de la navigation, de qui que
+            ce soit — est plafonnée par lui avant d'atteindre les jambes.
+            Il n'existe aucune méthode pour le désactiver : une app ne
+            choisit pas la sécurité des humains autour du robot.
+        """
         self._adapter = adapter
         self._read_state = read_state
         self._send = send_targets
         self._timeout = command_timeout_s
         self._clock = clock
+        self._gardien = gardien
+        self.dernier_verdict = None
         self._twist = Twist()
         self._twist_t: Optional[float] = None
         self.state = LocomotionState.STOPPED
@@ -210,6 +220,16 @@ class LocomotionService(IService):
                                  "sécurité")
 
         twist = self._effective_twist()
+        if self._gardien is not None:
+            v = self._gardien.evaluer(self._clock())
+            self.dernier_verdict = v
+            if v.facteur <= 0.0:
+                # Arrêt EN ÉQUILIBRE : consigne nulle, la politique continue
+                # de tenir le robot debout. Jamais une coupure des moteurs.
+                twist = Twist()
+            elif v.facteur < 1.0:
+                twist = Twist(twist.vx * v.facteur, twist.vy * v.facteur,
+                              twist.wz * v.facteur)
         targets = self._adapter.step(st, twist)
         statuses = self._send(targets)
         refused = sum(1 for s in statuses.values() if s != HALStatus.OK)

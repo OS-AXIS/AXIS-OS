@@ -34,6 +34,7 @@ class SensorType(Enum):
     TEMPERATURE  = auto()
     MICROPHONE   = auto()
     GPS          = auto()
+    LIDAR        = auto()
 
 
 class ActuatorState(Enum):
@@ -333,3 +334,17 @@ class JointDefinition:
     child_link:           str
     default_control_mode: ControlMode = ControlMode.POSITION
     group:                Optional[JointGroup] = None
+
+
+
+@dataclass
+class LidarScan:
+    """Un balayage lidar : un nuage de points dans le repère du CAPTEUR.
+
+    points : tableau N x 3 (x, y, z), en mètres. Le repère du capteur est
+        déclaré dans l'arbre des repères, comme celui d'une caméra — jamais
+        supposé.
+    """
+    points: object                      # numpy.ndarray (N, 3)
+    frame_id: str = "lidar"
+    timestamp_ns: int = field(default_factory=time.time_ns)

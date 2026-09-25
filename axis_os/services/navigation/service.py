@@ -63,6 +63,11 @@ class Rectangle:
     ymin: float
     xmax: float
     ymax: float
+    # Hauteur de l'obstacle. None = toute hauteur (un mur, une étagère
+    # jusqu'au plafond). Pour une TABLE, la hauteur du plateau : ce qui est
+    # au-dessus n'est pas expliqué par la table — un humain penché dessus,
+    # ou le carton posé, doivent rester visibles au gardien de proximité.
+    zmax: Optional[float] = None
 
     def contient(self, x: float, y: float, marge: float = 0.0) -> bool:
         return (self.xmin - marge <= x <= self.xmax + marge

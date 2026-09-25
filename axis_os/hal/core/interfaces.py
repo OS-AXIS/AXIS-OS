@@ -88,6 +88,20 @@ class ISensor(ABC):
     def is_healthy(self) -> bool: ...
 
 
+class ILidar(ISensor, ABC):
+    """Lidar : un nuage de points horodaté.
+
+    Le lidar est le capteur de la sécurité de PROXIMITÉ : contrairement à
+    une caméra (≈ 90° devant le robot), il voit TOUT AUTOUR. Un humain qui
+    arrive de côté ou de dos reste visible.
+    """
+
+    @abstractmethod
+    def scan(self) -> Optional["LidarScan"]:
+        """Dernier balayage, ou None s'il n'y en a pas — jamais un nuage
+        vide présenté comme « rien autour »."""
+
+
 class IIMU(ISensor, ABC):
     @abstractmethod
     def read(self) -> Optional[IMUData]: ...
