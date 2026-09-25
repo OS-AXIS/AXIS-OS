@@ -184,20 +184,12 @@ def main():
     g = pol.gains()
     for i, j in enumerate(cfg.body_joints[cfg.num_actions:]):
         g[j] = (KP_BRAS[i % 7], KD_BRAS[i % 7])
-    world.reset()
-    robot.get_articulation_controller().set_gains(
-        kps=np.array([g[j][0] for j in names]),
-        kds=np.array([g[j][1] for j in names]))
-    q0 = {j: 0.0 for j in names}
-    q0.update(dict(zip(cfg.controlled_joints, cfg.default_angles)))
-    # Bras DÉJÀ ouverts autour du carton : le robot ne le percute pas en
-    # prenant la posture.
-    q0.update(pose(ROULIS_OUVERT))
-    q0v = np.array([q0[j] for j in names])
-    robot.set_joint_positions(q0v)
-    robot.set_joint_velocities(np.zeros_like(q0v))
-    robot.apply_action(ArticulationAction(joint_positions=q0v))
-
+    # Posé AVANT world.reset() : modifier la physique d'une scène déjà
+    # initialisée invalide sa vue physique (constaté ici au premier essai du
+    # caoutchouc, comme pour la suppression d'objet en A3 et le changement
+    # de taille du carton en W2). Règle : tout ce qui touche la physique se
+    # pose avant l'initialisation.
+    #
     # MAINS EN CAOUTCHOUC : leur donner le frottement du caoutchouc. Au
     # cinquième essai, le carton a été soulevé, tenu en reculant et pendant
     # tout le demi-tour, puis a glissé jusqu'à tomber en marche avant. Les
@@ -220,6 +212,20 @@ def main():
                 _mat, UsdShade.Tokens.weakerThanDescendants, "physics")
             appliques.append(_n)
     print(f"  caoutchouc appliqué à : {sorted(set(appliques)) or 'AUCUN LIEN TROUVÉ'}")
+
+    world.reset()
+    robot.get_articulation_controller().set_gains(
+        kps=np.array([g[j][0] for j in names]),
+        kds=np.array([g[j][1] for j in names]))
+    q0 = {j: 0.0 for j in names}
+    q0.update(dict(zip(cfg.controlled_joints, cfg.default_angles)))
+    # Bras DÉJÀ ouverts autour du carton : le robot ne le percute pas en
+    # prenant la posture.
+    q0.update(pose(ROULIS_OUVERT))
+    q0v = np.array([q0[j] for j in names])
+    robot.set_joint_positions(q0v)
+    robot.set_joint_velocities(np.zeros_like(q0v))
+    robot.apply_action(ArticulationAction(joint_positions=q0v))
 
     hal = bridge.build_hal()
     hal.initialize_all()
