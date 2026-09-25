@@ -38,7 +38,12 @@ URDF_PATH = "/isaac-sim/g1_23dof_rev_1_0.urdf"
 # Un URDF par variante, copié dans le conteneur à côté de ses meshes.
 URDF_PATHS = {
     "23dof": URDF_PATH,
-    "29dof": "/isaac-sim/g1_29dof_rev_1_0.urdf",
+    # Copie DÉRIVÉE de l'URDF officiel, où seules les mains en caoutchouc
+    # reçoivent une collision : dans l'original, elles n'en ont aucune, et
+    # elles TRAVERSAIENT le carton au test W3. Voir
+    # unitree_g1/urdf/deriver_mains_collision.py. Le HAL, lui, lit
+    # toujours l'URDF officiel pour les articulations et les limites.
+    "29dof": "/isaac-sim/g1_29dof_rev_1_0_mains_collision.urdf",
 }
 
 _simulation_app = None  # référence gardée pour éviter le garbage-collect
