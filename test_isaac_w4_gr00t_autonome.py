@@ -235,6 +235,44 @@ def main():
         R = quat_wxyz_to_matrix(quat)
         return R.T @ (np.asarray(p_monde, dtype=float) - np.asarray(pos, dtype=float))
 
+    from pxr import Usd, UsdGeom
+    prims_mains = {}
+
+    def main_monde(nom):
+        """Position MONDE d'une main. Sur un vrai robot : cinématique à
+        partir des capteurs articulaires. Le lien peut avoir été fusionné à
+        l'import : on retombe alors sur le poignet qui le porte."""
+        for cand in (nom, nom.replace("rubber_hand", "wrist_yaw_link")):
+            if cand not in prims_mains:
+                for prim in stage.Traverse():
+                    if prim.GetName() == cand and "/World/g1" in str(prim.GetPath()):
+                        prims_mains[cand] = prim
+                        break
+            prim = prims_mains.get(cand)
+            if prim is not None:
+                m = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+                    Usd.TimeCode.Default())
+                t_ = m.ExtractTranslation()
+                return np.array([t_[0], t_[1], t_[2]], dtype=float)
+        return None
+
+    def carton_entre_les_mains():
+        """La règle de Kenzo : dès que le carton est ENTRE les mains, on
+        serre. Vérifiée dans le repère du robot : le centre estimé du carton
+        doit tomber entre les deux mains sur le côté, et les mains doivent
+        être entre sa face avant et sa face arrière."""
+        g, d = main_monde("left_rubber_hand"), main_monde("right_rubber_hand")
+        if g is None or d is None or estim is None:
+            return False, None
+        gr, dr = vers_robot(g), vers_robot(d)
+        cr = vers_robot([estim[0], estim[1], 0.0])
+        milieu_y = (gr[1] + dr[1]) / 2
+        jeu = abs(gr[1] - dr[1]) / 2 - LARGEUR / 2      # marge de chaque côté
+        mains_x = (gr[0] + dr[0]) / 2
+        cote_ok = abs(cr[1] - milieu_y) < max(jeu - 0.01, 0.0)
+        avant_ok = (cr[0] - PROFONDEUR / 2 + 0.02) < mains_x < (cr[0] + PROFONDEUR / 2 - 0.02)
+        return cote_ok and avant_ok, (cr[0] - mains_x, cr[1] - milieu_y)
+
     # ---- l'APP : une machine à états ----------------------------------
     etat = "CHERCHER"
     estim = None                 # centre du carton estimé, repère MONDE
@@ -374,13 +412,18 @@ def main():
                 vy = pas(ey, TOL_COTE, 0.10)
                 if vx == 0.0 and vy == 0.0:
                     loco.halt()
-                    en_place += 1        # stable ET immobile
                 else:
                     loco.set_velocity(vx, vy, 0.0)
-                    en_place = 0
-            if en_place >= 25:           # 0.5 s immobile, en place
-                changer("SAISIR", t, "En place — il serre le carton")
-            elif t - t_etat > 25.0:
+                # RÈGLE DE KENZO : dès que le carton est entre les mains, on
+                # serre — même si le corps oscille encore. La version
+                # précédente exigeait 0.5 s d'immobilité parfaite ; près d'un
+                # obstacle, la politique de marche ne s'immobilise jamais tout
+                # à fait, et le robot se balançait sans jamais valider.
+                entre, ecart = carton_entre_les_mains()
+                if entre:
+                    loco.halt()
+                    changer("SAISIR", t, "Carton entre les mains — il serre")
+            if etat == "APPROCHER" and t - t_etat > 25.0:
                 changer("ECHEC", t, "Placement impossible — il abandonne",
                         (200, 50, 45))
 
