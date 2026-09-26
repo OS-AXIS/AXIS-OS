@@ -157,6 +157,35 @@ Manques identifiés, non traités :
   le recul des mains vers le torse en descendant n'est pas modélisé : à
   mesurer sur GPU pour régler la marge de 12 cm à l'intérieur du plateau.
 
+## Scène Isaac Sim T1 — prête, PAS ENCORE EXÉCUTÉE
+
+`test_isaac_t1_tri_usine.py` branche sans les modifier les services
+répétés sur CPU, sur la même disposition (`scene_demo.py`) : tables à
+plateau fin et pied en retrait (leçon W3), stock de cartons colorés hors
+site, silhouettes cinématiques de personnes, lidar simulé par rayons
+PhysX (modèle Mid-360 inversé, `sim_lidar.py`), caméra de tête grand angle
++ profondeur, OWL-ViT, opérateur simulé (réapprovisionne, débarrasse),
+ordre vocal à mi-parcours, tableau de bord incrusté dans la vidéo.
+
+Machine neuve : `deploy/machine_gpu/installer.sh` (Docker, Isaac Sim 6.1,
+politiques GR00T, meshes, OWL-ViT, code). Puis :
+
+| Étape | Commande | But |
+|---|---|---|
+| 1 | `bash deploy/machine_gpu/lancer_t1.sh 240 1` | 4 min, vidéo temps réel : tout s'enchaîne-t-il ? |
+| 2 | corrections, puis `lancer_t1.sh 600 4` | 10 min : premières pannes rares |
+| 3 | `lancer_t1.sh 1800 10` | la démo : 30 min, vidéo de 3 min |
+
+Ce qui n'a jamais tourné sur GPU, donc à surveiller au premier essai :
+- **OWL-ViT sur des cartons colorés unis** (W4 : carton brun, confiance
+  ~0.09, seuil 0.06). S'il ne les voit pas : texture, ou autre requête.
+- **Glissement du carton** sur 15-20 s de trajet (W3 : 8 cm en 11 s).
+- **Hauteur réelle des mains** pendant la descente de dépose, et leur
+  recul vers le torse.
+- **Coût du lidar** (1 800 rayons Python à 10 Hz) sur le temps réel.
+- **Silhouettes cinématiques** déplacées à chaque pas : si PhysX s'en
+  plaint, passer à des cibles cinématiques.
+
 ## Budget GPU
 
 L'essentiel du développement se fait **sans rendu**, bien plus vite. Le

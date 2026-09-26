@@ -34,7 +34,7 @@ from axis_os.services.locomotion.service import (
 )
 from axis_os.services.manipulation.service import Etat, ManipulationService
 from axis_os.services.navigation.service import (
-    Carte, NavigationService, Pose2D, Rectangle,
+    NavigationService, Pose2D, Rectangle,
 )
 from axis_os.services.perception.service import Detection
 
