@@ -130,6 +130,44 @@ res = m.prendre(CARTON)
 check("Le gardien refuse l'exemption : la prise n'a PAS lieu",
       not res.ok and "exemption" in res.reason and m.etat is Etat.LIBRE)
 
+section("6 — Arrêt de sécurité : les bras se FIGENT, puis reprennent")
+arret = [False]
+t6 = [0.0]
+bras6 = {}
+mains6 = lambda: (np.array([0.29, 0.165, 0.90]), np.array([0.29, -0.165, 0.90]))
+m6 = ManipulationService(bras6, mains6, lambda p: np.asarray(p, dtype=float),
+                         lambda: True, horloge=lambda: t6[0],
+                         arret_securite=lambda: arret[0])
+m6.start()
+m6.prendre(CARTON)
+avancer(m6, t6, 0.2)
+check("Serrage commencé", m6.etat is Etat.SERRAGE)
+fige = dict(bras6)
+arret[0] = True
+avancer(m6, t6, 5.0)                    # 5 s d'arrêt : bien plus que le geste
+check("Pendant l'arrêt : AUCUNE articulation n'a bougé", bras6 == fige)
+check("... et l'état n'a pas avancé (toujours en serrage)", m6.etat is Etat.SERRAGE)
+check("Gels comptés", m6.stats["gels_securite"] > 0)
+arret[0] = False
+m6.tick(); t6[0] += 0.02; m6.tick()
+saut = max(abs(bras6[j] - fige[j]) for j in fige)
+check(f"Reprise sans à-coup (écart au premier pas {saut:.3f} rad)", saut < 0.05)
+avancer(m6, t6, 5.0)
+check("Le geste se termine normalement après la reprise", m6.etat is Etat.TENU)
+arret[0] = True
+tenu = dict(bras6)
+avancer(m6, t6, 1.0)
+check("Objet tenu pendant un arrêt : la prise est gardée (figer n'est pas lâcher)",
+      m6.etat is Etat.TENU and bras6 == tenu)
+
+from axis_os.services.locomotion.proximite import GardienProximite
+g6 = GardienProximite(lambda: None, lambda: (0.0, 0.0, 0.0), horloge=lambda: 0.0)
+g6.evaluer(0.0)                          # lidar muet -> arrêt
+m7 = ManipulationService({}, mains6, lambda p: np.asarray(p, dtype=float),
+                         lambda: True, gardien=g6, horloge=lambda: t6[0])
+check("Branché sur un vrai gardien : l'arrêt est lu sur lui par défaut",
+      m7._arret_securite is not None and m7._arret_securite() is True)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

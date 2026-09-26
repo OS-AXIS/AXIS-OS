@@ -100,7 +100,8 @@ class ManipulationService(IService):
                  vers_robot: Callable[[np.ndarray], np.ndarray],
                  verifier_prise: Callable[[], bool],
                  gardien=None, horloge: Callable[[], float] = time.monotonic,
-                 postures: Postures = Postures()):
+                 postures: Postures = Postures(),
+                 arret_securite: Optional[Callable[[], bool]] = None):
         """
         bras            : le dictionnaire des cibles de bras de l'adaptateur
                           de locomotion. CE SERVICE EST SON SEUL ÉCRIVAIN.
@@ -110,6 +111,13 @@ class ManipulationService(IService):
         verifier_prise  : () -> l'objet a-t-il suivi les mains ?
         gardien         : GardienProximite, pour l'exemption autour de
                           l'objet. Optionnel.
+        arret_securite  : () -> un arrêt de sécurité est-il en cours ? Par
+                          défaut, lu sur le gardien. Pendant l'arrêt, les
+                          bras sont FIGÉS en place : un humain assez proche
+                          pour arrêter la marche l'est assez pour qu'un bras
+                          en mouvement le heurte. Le geste reprend là où il
+                          s'était figé. Les bras gardent leur prise : figer
+                          n'est pas lâcher.
         """
         self._bras = bras
         self._mains = mains
@@ -123,7 +131,13 @@ class ManipulationService(IService):
         self.raison = ""
         self._t0 = 0.0
         self._demarre = False
-        self.stats = {"prises": 0, "prises_ratees": 0, "refus": 0, "poses": 0}
+        if arret_securite is None and gardien is not None \
+                and hasattr(type(gardien), "arrete"):
+            arret_securite = lambda: gardien.arrete
+        self._arret_securite = arret_securite
+        self._dernier_tick: Optional[float] = None
+        self.stats = {"prises": 0, "prises_ratees": 0, "refus": 0, "poses": 0,
+                      "gels_securite": 0}
 
     # ---- IService --------------------------------------------------------
 
@@ -234,8 +248,21 @@ class ManipulationService(IService):
 
     # ---- boucle ----------------------------------------------------------
 
+    _EN_MOUVEMENT = (Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE)
+
     def tick(self) -> ServiceResult:
         p = self.p
+        maintenant = self._horloge()
+        dt = 0.0 if self._dernier_tick is None else maintenant - self._dernier_tick
+        self._dernier_tick = maintenant
+        if self.etat in self._EN_MOUVEMENT and self._arret_securite is not None \
+                and self._arret_securite():
+            # Gel : on n'écrit rien (les bras restent où ils sont) et on
+            # décale l'origine du geste pour qu'il reprenne sans à-coup.
+            self._t0 += dt
+            self.stats["gels_securite"] += 1
+            return ServiceResult(ok=True, value=self.etat,
+                                 reason="bras figés : arrêt de sécurité en cours")
         if self.etat is Etat.SERRAGE:
             r, fini = self._interp(p.roulis_ouvert, p.roulis_serre, p.duree_serrage_s)
             self._ecrire(r, p.tangage_port)

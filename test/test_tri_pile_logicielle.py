@@ -137,8 +137,9 @@ class Humain:
     ferait une personne. Ce n'est PAS lui qui garantit l'absence de contact :
     le test vérifie que le ROBOT ne s'approche jamais d'un humain proche."""
 
-    def __init__(self, a, b, vitesse=1.0, pause=4.0):
+    def __init__(self, a, b, vitesse=1.0, pause=4.0, evitement=1.1):
         self.a, self.b, self.v, self.pause = np.array(a), np.array(b), vitesse, pause
+        self.ev = evitement             # distance que la personne garde
         self.p, self.vers_b, self.attente = np.array(a, float), True, 0.0
 
     def pas(self, robot):
@@ -156,12 +157,12 @@ class Humain:
         r = np.array([robot.x, robot.y])
         e = suiv - r
         ne = max(np.linalg.norm(e), 1e-6)
-        if ne < 1.1 and n < 1.5:
+        if ne < self.ev and n < 1.5:
             # Son but est à côté du robot : il fait demi-tour, comme le
             # ferait une personne, plutôt que de rester plantée là.
             self.vers_b = not self.vers_b
             return
-        if ne < 1.1:
+        if ne < self.ev:
             # Contourne le robot : marche en tangente, du côté de son but,
             # en gardant ses distances.
             tang = np.array([-e[1], e[0]]) / ne
@@ -169,7 +170,7 @@ class Humain:
                 tang = -tang
             suiv = self.p + tang * self.v * DT
             e = suiv - r
-            suiv = r + e / max(np.linalg.norm(e), 1e-6) * max(1.1, ne)
+            suiv = r + e / max(np.linalg.norm(e), 1e-6) * max(self.ev, ne)
         self.p = suiv
 
     def nuage(self):
@@ -189,7 +190,10 @@ class Monde:
         self.porte = None           # (couleur,)
         self.deposes = []           # (couleur, poste le plus proche)
         self.humains = [Humain((7.2, 0.5), (7.2, 7.5)),
-                        Humain((0.5, 3.2), (9.5, 3.2), vitesse=0.8, pause=10.0)]
+                        Humain((0.5, 0.9), (9.5, 0.9), vitesse=0.8, pause=10.0),
+                        # un collègue qui vient tout près du poste de prise
+                        Humain((0.6, 0.6), (3.4, 1.6), vitesse=0.5, pause=45.0,
+                               evitement=0.6)]
         self.faux_positif_sol = True
         for x in EMPLACEMENTS_X:
             self.cartons[x] = self.rng.choice(["rouge", "bleu", "vert"])
@@ -295,7 +299,7 @@ for s in (loco, nav, manip):
 check("Services démarrés, façade branchée", True)
 
 # ── Boucle à 50 Hz ──────────────────────────────────────────────────────
-viol = {"collision": 0, "vers_humain": 0, "poste_errone": 0}
+viol = {"collision": 0, "vers_humain": 0, "poste_errone": 0, "bras_pendant_arret": 0}
 d_min_humain = float("inf")
 etat_manip_prec = Etat.LIBRE
 ordre_donne = False
@@ -308,7 +312,10 @@ while not tri.termine and R.t < t_fin:
     nav.tick()
     facade.tick()
     loco.tick()
+    bras_avant = dict(bras)
     manip.tick()
+    if gardien.arrete and bras != bras_avant:
+        viol["bras_pendant_arret"] += 1
     x0, y0 = R.x, R.y
     R.pas()
     tri.pas()
@@ -345,12 +352,14 @@ print(f"\n    {b.colis_tries} triés ({b.par_couleur}), {b.colis_abandonnes} aba
       f"{d_min_humain:.2f} m")
 
 section("Résultats")
-# Débit MESURÉ dans cette disposition : un colis toutes les ~95 s (trajets
-# de 5 à 8 m à 0.3 m/s, humains, 15 % de prises ratées). Le seuil protège
+# Débit MESURÉ dans cette disposition : un colis toutes les ~120 s (trajets
+# de 5 à 8 m à 0.3 m/s, trois humains dont un collègue qui vient près du
+# poste de prise, ~8 min d'arrêts de sécurité, 15 % de prises ratées). Le
+# seuil protège
 # contre une régression ; la cible de la démo (>= 20 en 30 min) se règle
 # par la disposition de la scène — voir docs/demo_tri_usine.md.
-check(f"Au moins {int(DUREE / 110)} colis triés ({b.colis_tries})",
-      b.colis_tries >= int(DUREE / 110))
+check(f"Au moins {int(DUREE / 140)} colis triés ({b.colis_tries})",
+      b.colis_tries >= int(DUREE / 140))
 check("Chaque dépose au bon poste (bleus en C après l'ordre vocal)",
       bons == len([d for d in monde.deposes if d[1] in ("A", "B", "C")])
       and all(p in ("A", "B", "C") for c, p, t in monde.deposes if c != "vert"))
@@ -359,10 +368,13 @@ check("Aucun faux carton au sol pris", facade.stats["detections_filtrees"] > 0)
 check("Aucune collision avec une table ou une étagère", viol["collision"] == 0)
 check("Le robot ne s'est JAMAIS rapproché d'un humain à moins de 0.75 m",
       viol["vers_humain"] == 0)
+check("Aucun mouvement de bras pendant un arrêt de sécurité "
+      f"(gels : {manip.stats['gels_securite']})", viol["bras_pendant_arret"] == 0)
 check("Le gardien a bien eu à intervenir (le scénario l'exerce)",
       gardien.stats["arrets"] + gardien.stats["ralentissements"] > 0)
-check("Bleus livrés en C après l'ordre du superviseur",
-      any(c == "bleu" and p == "C" for c, p, _ in monde.deposes))
+apres = [p for c, p, t in monde.deposes if c == "bleu" and t > DUREE / 2 + 60]
+check(f"Bleus livrés après l'ordre du superviseur : tous en C ({len(apres)})",
+      all(p == "C" for p in apres) and (apres or DUREE < 1200))
 check("Fin propre, bras vides", tri.etat == "FIN" and manip.etat is Etat.LIBRE)
 print("\n  Journal (extrait) :")
 for l in journal[-6:]:

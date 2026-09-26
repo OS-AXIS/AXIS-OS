@@ -130,6 +130,13 @@ class GardienProximite:
     def lever_exemption(self) -> None:
         self._exemption = None
 
+    @property
+    def arrete(self) -> bool:
+        """Le gardien tient-il le robot à l'arrêt ? Lu par les autres
+        services (bras) : un arrêt de sécurité fige TOUT le robot, pas
+        seulement les jambes."""
+        return self._arrete
+
     def _dans_carte(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> np.ndarray:
         """Points expliqués par un obstacle CONNU — en trois dimensions.
 

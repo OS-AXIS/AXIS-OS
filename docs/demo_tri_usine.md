@@ -92,20 +92,27 @@ proximité, manipulation — sur un entrepôt simulé cinématiquement : robot
 qui imite GR00T WBC (bande morte, erreur d'exécution), lidar synthétique,
 deux humains qui circulent, faux carton détecté au sol, 15 % de prises
 ratées, réapprovisionnement, règle changée de vive voix à mi-parcours.
-30 minutes simulées en ~90 s sur un CPU.
+Trois humains : deux qui traversent, un collègue qui vient régulièrement
+près du poste de prise. 30 minutes simulées en ~90 s sur un CPU.
 
-Mesuré sur 30 min : **19 colis triés, 95 % de réussite, 0 collision, le
-robot ne s'est jamais rapproché d'un humain à moins de 0.75 m**, 177 s
-d'arrêts de sécurité journalisés, bleus envoyés au poste C après l'ordre
-vocal, fin bras vides.
+Mesuré sur 30 min : **15 colis triés, 100 % de réussite, 0 collision, le
+robot ne s'est jamais rapproché d'un humain à moins de 0.75 m, aucun
+mouvement de bras pendant un arrêt de sécurité**, ~8 min d'arrêts de
+sécurité journalisés, bleus envoyés au poste C après l'ordre vocal, fin
+bras vides. Sans le collègue : 19 à 20 colis.
 
 Constats à reporter dans la scène Isaac Sim :
-- **Débit** : un colis toutes les ~95 s, à 0.3 m/s avec des postes à 7 m.
-  Pour viser plus de 20 en 30 min, rapprocher les postes de dépose (4-5 m)
-  — c'est nous qui dessinons l'entrepôt.
+- **Débit** : un colis toutes les 90 à 120 s selon la présence humaine, à
+  0.3 m/s avec des postes à 7 m. Pour viser plus de 20 en 30 min,
+  rapprocher les postes de dépose (4-5 m) — c'est nous qui dessinons
+  l'entrepôt. Les arrêts de sécurité coûtent du débit : c'est à montrer,
+  pas à cacher.
 - **Zones de poste** : les tables doivent être déclarées au gardien avec
   leur hauteur de chargement (`Rectangle.zmax`), sinon les cartons voisins
   du carton visé arrêtent le robot à chaque prise.
+- **Bras figés pendant un arrêt** : quand le gardien arrête la marche, le
+  ManipulationService fige aussi les bras (sans lâcher l'objet) et reprend
+  le geste sans à-coup. Fait et vérifié.
 - **Accostage fin** : la navigation amène à une pré-pose dégagée, puis un
   contrôleur d'accostage fait les 45 derniers centimètres (le planificateur
   ne peut pas approcher à 29 cm d'une table, par construction).
@@ -114,9 +121,6 @@ Manques identifiés, non traités :
 - **Humain immobile sur le trajet** : le robot attend indéfiniment. Un
   robot industriel replanifie un autre chemin après quelques dizaines de
   secondes. À ajouter à la navigation.
-- **Bras pendant un arrêt de sécurité** : la manipulation poursuit son
-  geste quand le gardien arrête la marche. Les normes de cobotique
-  demandent de figer aussi les bras. À ajouter au ManipulationService.
 - **Dépose sur table** : le carton est encore relâché à hauteur de port.
 
 ## Budget GPU
