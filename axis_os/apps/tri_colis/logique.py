@@ -60,6 +60,7 @@ class ConfigTri:
     oubli_ignore_s: float = 300.0
     pause_prise_inaccessible_s: float = 30.0
     alerte_inactivite_s: float = 120.0     # rien à trier depuis ce temps
+    alerte_arret_prolonge_s: float = 60.0  # bloqué par la sécurité depuis ce temps
 
 
 @dataclass
@@ -102,6 +103,8 @@ class TriColis:
         self._essais_pose = 0
         self._echecs_accostage: List[Tuple[float, float, float]] = []
         self._inactif_depuis: Optional[float] = None
+        self._bloque_s = 0.0
+        self._blocage_signale = False
         self._inactivite_signalee = False
 
     # ------------------------------------------------------------------
@@ -119,9 +122,18 @@ class TriColis:
         dt, self._prec = max(0.0, t - self._prec), t
         if self.robot.bloque_par_securite():
             # L'OS a arrêté le robot : on attend, sans rien commander, et
-            # sans que ce temps ne compte dans les délais de l'état.
+            # sans que ce temps ne compte dans les délais de l'état. Si ça
+            # dure, quelqu'un est planté devant le robot : on le signale.
             self.bilan.temps_arret_securite_s += dt
+            self._bloque_s += dt
+            if self._bloque_s >= self.cfg.alerte_arret_prolonge_s \
+                    and not self._blocage_signale:
+                self._blocage_signale = True
+                self._alerte(f"arrêt de sécurité depuis {self._bloque_s:.0f} s "
+                             f"({self.etat}) — une personne ou un objet bloque "
+                             "le robot ; merci de dégager le passage")
             return
+        self._bloque_s, self._blocage_signale = 0.0, False
         self._temps_etat += dt
         getattr(self, "_etat_" + self.etat.lower())()
 

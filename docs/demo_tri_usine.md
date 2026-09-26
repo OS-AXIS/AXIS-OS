@@ -110,6 +110,14 @@ Constats à reporter dans la scène Isaac Sim :
 - **Zones de poste** : les tables doivent être déclarées au gardien avec
   leur hauteur de chargement (`Rectangle.zmax`), sinon les cartons voisins
   du carton visé arrêtent le robot à chaque prise.
+- **Obstacle immobile sur le trajet** : si le gardien voit un obstacle
+  inexpliqué qui reste immobile sur le chemin pendant 4 s, la navigation
+  le marque comme obstacle temporaire (60 s) et replanifie à 1.1 m de lui.
+  Une personne qui passe ne déclenche rien. Le contournement se décide
+  pendant le ralentissement : une fois arrêté (personne à moins de ~1 m),
+  le robot ne manœuvre pas près d'elle, il attend ; au bout de 60 s l'app
+  alerte l'opérateur. Couloir sans autre passage : attente, puis reprise.
+  Fait et vérifié (`test/test_navigation_contournement.py`).
 - **Bras figés pendant un arrêt** : quand le gardien arrête la marche, le
   ManipulationService fige aussi les bras (sans lâcher l'objet) et reprend
   le geste sans à-coup. Fait et vérifié.
@@ -118,9 +126,6 @@ Constats à reporter dans la scène Isaac Sim :
   ne peut pas approcher à 29 cm d'une table, par construction).
 
 Manques identifiés, non traités :
-- **Humain immobile sur le trajet** : le robot attend indéfiniment. Un
-  robot industriel replanifie un autre chemin après quelques dizaines de
-  secondes. À ajouter à la navigation.
 - **Dépose sur table** : le carton est encore relâché à hauteur de port.
 
 ## Budget GPU

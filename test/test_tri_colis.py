@@ -89,6 +89,8 @@ check("L'arrêt n'est PAS compté comme un échec de navigation",
 check(f"Le temps d'arrêt est compté à part ({tri.bilan.temps_arret_securite_s:.0f} s)",
       119.0 <= tri.bilan.temps_arret_securite_s <= 121.0)
 check("Aucune commande pendant l'arrêt", not m.violations)
+check("Arrêt prolongé (120 s) : UNE alerte pour l'opérateur, pas une par pas",
+      sum(1 for l in m.logs if "arrêt de sécurité depuis" in l) == 1)
 
 section("5 — Poste B inaccessible : bleu suspendu, colis ramené, rouge continue")
 m = MondeFactice([("bleu", P[0]), ("rouge", P[1]), ("bleu", P[2]), ("rouge", P[3])],

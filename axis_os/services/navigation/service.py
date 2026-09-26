@@ -114,8 +114,28 @@ class Planificateur:
         r = carte.resolution
         self.nx = int(math.ceil((carte.xmax - carte.xmin) / r))
         self.ny = int(math.ceil((carte.ymax - carte.ymin) / r))
+        self.temporaires: List[Rectangle] = []
         self._libre = [[self._case_libre(i, j) for j in range(self.ny)]
                        for i in range(self.nx)]
+
+    def _recalculer(self, o: "Rectangle") -> None:
+        g = self.gonflement
+        i0, j0 = self._case(o.xmin - g, o.ymin - g)
+        i1, j1 = self._case(o.xmax + g, o.ymax + g)
+        for i in range(max(0, i0), min(self.nx, i1 + 1)):
+            for j in range(max(0, j0), min(self.ny, j1 + 1)):
+                self._libre[i][j] = self._case_libre(i, j)
+
+    def bloquer(self, o: "Rectangle") -> None:
+        """Obstacle TEMPORAIRE, absent de la carte du site (une personne
+        immobile, une palette laissée là)."""
+        self.temporaires.append(o)
+        self._recalculer(o)
+
+    def debloquer(self, o: "Rectangle") -> None:
+        if o in self.temporaires:
+            self.temporaires.remove(o)
+            self._recalculer(o)
 
     def _centre(self, i: int, j: int) -> Tuple[float, float]:
         r = self.carte.resolution
@@ -131,7 +151,8 @@ class Planificateur:
         if not (c.xmin + self.gonflement <= x <= c.xmax - self.gonflement
                 and c.ymin + self.gonflement <= y <= c.ymax - self.gonflement):
             return False                     # les bords de la carte sont des murs
-        return not any(o.contient(x, y, self.gonflement) for o in c.obstacles)
+        return not any(o.contient(x, y, self.gonflement)
+                       for o in list(c.obstacles) + getattr(self, "temporaires", []))
 
     def libre(self, x: float, y: float) -> bool:
         i, j = self._case(x, y)
@@ -331,7 +352,25 @@ class NavigationService(IService):
                  locomotion, horloge: Callable[[], float] = time.monotonic,
                  pose_max_age_s: float = 0.5, ecart_replanif_m: float = 0.5,
                  rayon_robot: float = 0.30, marge: float = 0.10,
-                 suiveur: Optional[Suiveur] = None):
+                 suiveur: Optional[Suiveur] = None,
+                 attente_contournement_s: float = 4.0,
+                 passage_min_m: float = 1.1,
+                 duree_obstacle_temp_s: float = 60.0,
+                 obstacles_temp_max: int = 4):
+        """
+        Contournement : si le gardien de proximité signale un obstacle
+        INEXPLIQUÉ qui reste IMMOBILE (à 0.3 m près) sur le chemin restant
+        pendant `attente_contournement_s`, on l'ajoute comme obstacle
+        temporaire et on replanifie. Une personne qui passe bouge : elle ne
+        déclenche rien. Le contournement se décide pendant le RALENTISSEMENT :
+        une fois le robot arrêté par le gardien (personne à moins d'environ
+        1 m), il ne manœuvre pas près d'elle, il attend — et c'est l'app
+        qui alerte si l'attente dure.
+
+        passage_min_m : distance minimale entre le centre du robot et
+        l'obstacle sur le nouveau chemin. Au-dessus de la distance de
+        reprise du gardien, sinon le robot s'arrêterait en le longeant.
+        """
         self.carte = carte
         self._pose = source_pose
         self._loco = locomotion
@@ -345,8 +384,15 @@ class NavigationService(IService):
         self._but: Optional[Pose2D] = None
         self.raison = ""
         self._demarre = False
+        self._attente_ct = attente_contournement_s
+        self._passage = passage_min_m
+        self._duree_temp = duree_obstacle_temp_s
+        self._temp_max = obstacles_temp_max
+        self._temp: List[Tuple[Rectangle, float]] = []      # (obstacle, fin)
+        self._suspect: Optional[Tuple[Tuple[float, float], float]] = None
         self.stats = {"planifications": 0, "replanifications": 0,
-                      "arrets_pose_perimee": 0}
+                      "arrets_pose_perimee": 0, "contournements": 0,
+                      "contournements_impossibles": 0}
 
     @property
     def service_id(self) -> str:
@@ -382,6 +428,8 @@ class NavigationService(IService):
                     f"{sorted(self.carte.postes)}"))
             destination = self.carte.postes[destination]
         self._but = destination
+        self._suspect = None
+        self._expirer_temporaires(self._horloge())
         return self._planifier(premiere=True)
 
     def annuler(self) -> None:
@@ -400,11 +448,78 @@ class NavigationService(IService):
         self.chemin, self.etat, self.raison = chemin, EtatNavigation.EN_ROUTE, ""
         return ServiceResult(ok=True, value=chemin)
 
+    # ---- contournement ----------------------------------------------------
+
+    def _expirer_temporaires(self, t: float) -> None:
+        for o, fin in list(self._temp):
+            if t >= fin:
+                self._temp.remove((o, fin))
+                self.planif.debloquer(o)
+
+    def _sur_le_chemin(self, pose: Pose2D, pt: Tuple[float, float]) -> bool:
+        """Le point gênera-t-il la suite du chemin ?"""
+        ch = self.chemin
+        _, _, k = self.suiveur._cible(pose, ch)
+        reste = [(pose.x, pose.y)] + list(ch[k + 1:])
+        for a, b in zip(reste, reste[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            l2 = dx * dx + dy * dy or 1e-9
+            u = max(0.0, min(1.0, ((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy) / l2))
+            if math.hypot(a[0] + u * dx - pt[0], a[1] + u * dy - pt[1]) < self._passage:
+                return True
+        return False
+
+    def _surveiller_obstacle(self, pose: Pose2D) -> None:
+        t = self._horloge()
+        self._expirer_temporaires(t)
+        v = getattr(self._loco, "dernier_verdict", None)
+        pt = getattr(v, "point", None)
+        deja = any(o.contient(pt[0], pt[1], 0.5) for o, _ in self._temp) \
+            if pt is not None else False          # le même, vu sous un autre angle
+        if v is None or pt is None or v.facteur >= 1.0 or deja \
+                or not self._sur_le_chemin(pose, pt):
+            self._suspect = None
+            return
+        if self._suspect is None or math.dist(self._suspect[0], pt) > 0.3:
+            self._suspect = (pt, t)               # nouveau, ou il bouge
+            return
+        if t - self._suspect[1] < self._attente_ct:
+            return
+        self._suspect = None
+        if len(self._temp) >= self._temp_max:
+            return
+        # Le lidar voit la face de l'objet tournée vers le robot : son centre
+        # est un peu plus loin. On centre le carré sur ce centre estimé, et
+        # on l'élargit de la demi-taille supposée de l'objet (une personne,
+        # une palette) : le robot passe alors à `passage_min_m` de TOUTE sa
+        # surface, pas seulement du point vu.
+        demi_objet = 0.25
+        ux, uy = pt[0] - pose.x, pt[1] - pose.y
+        n = math.hypot(ux, uy) or 1.0
+        cx, cy = pt[0] + 0.2 * ux / n, pt[1] + 0.2 * uy / n
+        h = max(0.05, self._passage - self.planif.gonflement + demi_objet)
+        o = Rectangle(cx - h, cy - h, cx + h, cy + h)
+        self.planif.bloquer(o)
+        ancien = self.chemin
+        r = self._planifier(premiere=False)
+        if r.ok:
+            self._temp.append((o, t + self._duree_temp))
+            self.stats["contournements"] += 1
+            self.raison = (f"obstacle immobile en ({pt[0]:.1f}, {pt[1]:.1f}) — "
+                           f"contourné")
+        else:
+            # Pas d'autre passage : on garde le chemin et on attend.
+            self.planif.debloquer(o)
+            self.chemin, self.etat = ancien, EtatNavigation.EN_ROUTE
+            self.raison = "obstacle immobile, aucun autre passage — attente"
+            self.stats["contournements_impossibles"] += 1
+
     def tick(self) -> ServiceResult:
         """Un pas, au rythme du service de locomotion."""
         if self.etat is not EtatNavigation.EN_ROUTE:
             return ServiceResult(ok=True, value=self.etat)
         p = self._pose()
+        self._surveiller_obstacle(p)
         if self._horloge() - p.horodatage > self._age_max:
             self.stats["arrets_pose_perimee"] += 1
             self._loco.halt()

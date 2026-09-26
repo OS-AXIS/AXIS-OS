@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -64,6 +64,9 @@ class Verdict:
     facteur: float                 # 0 = arrêt, 1 = pleine vitesse
     distance: Optional[float]      # obstacle inexpliqué le plus proche
     raison: str
+    # Position MONDE (x, y) de ce point : la navigation s'en sert pour
+    # contourner un obstacle qui reste planté sur son chemin.
+    point: Optional[Tuple[float, float]] = None
 
 
 class GardienProximite:
@@ -168,8 +171,12 @@ class GardienProximite:
     def distance_inexpliquee(self, points: np.ndarray, pose,
                              maintenant: float = 0.0) -> Optional[float]:
         """Distance horizontale au point inexpliqué le plus proche."""
+        return self._plus_proche(points, pose, maintenant)[0]
+
+    def _plus_proche(self, points: np.ndarray, pose, maintenant: float = 0.0):
+        """(distance, (x, y) monde) du point inexpliqué le plus proche."""
         if points is None or len(points) == 0:
-            return None
+            return None, None
         px, py, cap = pose
         P = np.asarray(points, dtype=float)
         x, y, z = P[:, 0], P[:, 1], P[:, 2]
@@ -187,8 +194,9 @@ class GardienProximite:
         garde &= ~self._dans_carte(x, y, z)                          # étagères, tables
         garde &= ~self._dans_exemption(x, y, z, maintenant)          # objet manipulé
         if not garde.any():
-            return float("inf")
-        return float(d[garde].min())
+            return float("inf"), None
+        k = np.flatnonzero(garde)[np.argmin(d[garde])]
+        return float(d[k]), (float(x[k]), float(y[k]))
 
     def evaluer(self, maintenant: float) -> Verdict:
         s = self._scan()
@@ -202,23 +210,23 @@ class GardienProximite:
             self._arrete = True
             return Verdict(0.0, None, f"balayage périmé de "
                                       f"{maintenant - horodatage:.2f} s — ARRÊT")
-        d = self.distance_inexpliquee(points, self._pose(), maintenant)
+        d, pt = self._plus_proche(points, self._pose(), maintenant)
 
         if d is not None and d < self.c.d_arret:
             if not self._arrete:
                 self.stats["arrets"] += 1
             self._arrete, self._degage_depuis = True, None
-            return Verdict(0.0, d, f"obstacle inexpliqué à {d:.2f} m — ARRÊT")
+            return Verdict(0.0, d, f"obstacle inexpliqué à {d:.2f} m — ARRÊT", pt)
 
         if self._arrete:
             # Reprise : zone dégagée au-delà de d_reprise, pendant un délai.
             if d is None or d < self.c.d_reprise:
                 self._degage_depuis = None
-                return Verdict(0.0, d, "en attente : zone pas encore dégagée")
+                return Verdict(0.0, d, "en attente : zone pas encore dégagée", pt)
             if self._degage_depuis is None:
                 self._degage_depuis = maintenant
             if maintenant - self._degage_depuis < self.c.delai_reprise_s:
-                return Verdict(0.0, d, "zone dégagée — reprise imminente")
+                return Verdict(0.0, d, "zone dégagée — reprise imminente", pt)
             self._arrete, self._degage_depuis = False, None
 
         if d is not None and d < self.c.d_ralenti:
@@ -233,7 +241,7 @@ class GardienProximite:
                     self.stats["arrets"] += 1
                 self._arrete, self._degage_depuis = True, None
                 return Verdict(0.0, d, f"obstacle à {d:.2f} m — arrêt "
-                                       f"(vitesse plafonnée sous le minimum)")
+                                       f"(vitesse plafonnée sous le minimum)", pt)
             self.stats["ralentissements"] += 1
-            return Verdict(f, d, f"obstacle à {d:.2f} m — vitesse ×{f:.2f}")
-        return Verdict(1.0, d, "zone dégagée")
+            return Verdict(f, d, f"obstacle à {d:.2f} m — vitesse ×{f:.2f}", pt)
+        return Verdict(1.0, d, "zone dégagée", pt)
