@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from axis_os.apps.tri_colis.facade import FacadeServices
+from axis_os.apps.tri_colis.facade import FacadeServices, PosteDepose
 from axis_os.apps.tri_colis.logique import ConfigTri, TriColis
 from axis_os.apps.tri_colis.superviseur import InterpreteurRegles, Superviseur
 from axis_os.hal.core.types import Vector3
@@ -62,14 +62,24 @@ TABLE_PRISE = Rectangle(3.0, Y_BORD, 5.0, 2.6, zmax=PLATEAU + 0.25)
 ETAGERES = [Rectangle(6.2, 3.5, 6.6, 8.0), Rectangle(1.6, 4.0, 2.0, 8.0)]
 POSTE_A = Rectangle(8.6, 6.8, 9.6, 7.4, zmax=PLATEAU + 0.30)
 POSTE_B = Rectangle(0.2, 6.8, 1.2, 7.4, zmax=PLATEAU + 0.30)
-OBSTACLES = [TABLE_PRISE, POSTE_A, POSTE_B] + ETAGERES
+POSTE_C = Rectangle(4.5, 7.1, 5.5, 7.6, zmax=PLATEAU + 0.30)
+TABLES_DEPOSE = {"A": POSTE_A, "B": POSTE_B, "C": POSTE_C}
+OBSTACLES = [TABLE_PRISE, POSTE_A, POSTE_B, POSTE_C] + ETAGERES
 carte = Carte(0.0, 0.0, 10.0, 8.0, obstacles=OBSTACLES, postes={
     "prise": Pose2D(4.0, 1.2, CAP_PRISE),
-    "A": Pose2D(9.1, 6.0, math.pi / 2),
-    "B": Pose2D(0.7, 6.0, math.pi / 2),
-    "C": Pose2D(5.0, 6.5, math.pi / 2),
+    "A": Pose2D(9.1, 6.2, math.pi / 2),
+    "B": Pose2D(0.7, 6.2, math.pi / 2),
+    "C": Pose2D(5.0, 6.4, math.pi / 2),
 })
 EMPLACEMENTS_X = [3.3, 3.7, 4.1, 4.5]
+
+
+def poste_depose(nom):
+    """Accostage jusqu'à ce que le carton soit 12 cm à l'intérieur du
+    plateau (mains à 0.29 m devant la base)."""
+    bord = TABLES_DEPOSE[nom].ymin
+    return PosteDepose(avance_m=(bord + 0.12 - 0.29) - carte.postes[nom].y,
+                       hauteur=PLATEAU)
 Y_CARTON = Y_BORD + 0.10            # centre des cartons sur la table
 
 
@@ -128,7 +138,7 @@ def boite(r: Rectangle, zmin, zmax, pas=0.1):
 
 
 STATIQUE = np.vstack([boite(TABLE_PRISE, 0.1, PLATEAU), boite(POSTE_A, 0.1, PLATEAU),
-                      boite(POSTE_B, 0.1, PLATEAU)] +
+                      boite(POSTE_B, 0.1, PLATEAU), boite(POSTE_C, 0.1, PLATEAU)] +
                      [boite(e, 0.1, 1.8) for e in ETAGERES])
 
 
@@ -188,7 +198,9 @@ class Monde:
         self.robot = Robot(4.0, 0.6, CAP_PRISE, graine)
         self.cartons = {}           # emplacement x -> couleur
         self.porte = None           # (couleur,)
-        self.deposes = []           # (couleur, poste le plus proche)
+        self.deposes = []           # (couleur, poste, t)
+        self.chutes = []            # (table sous le carton, hauteur de chute)
+        self.bras = {}
         self.humains = [Humain((7.2, 0.5), (7.2, 7.5)),
                         Humain((0.5, 0.9), (9.5, 0.9), vitesse=0.8, pause=10.0),
                         # un collègue qui vient tout près du poste de prise
@@ -240,7 +252,10 @@ class Monde:
     def mains(self):
         r = self.robot
         c, s = math.cos(r.cap), math.sin(r.cap)
-        m = [np.array([r.x + 0.29 * c - l * s, r.y + 0.29 * s + l * c, 0.90])
+        # Les mains descendent quand le tangage d'épaule augmente.
+        tg = self.bras.get("left_shoulder_pitch_joint", -0.30)
+        z = 0.90 - 0.30 * (tg + 0.30)
+        m = [np.array([r.x + 0.29 * c - l * s, r.y + 0.29 * s + l * c, z])
              for l in (0.165, -0.165)]
         return m[0], m[1]
 
@@ -269,7 +284,9 @@ class Monde:
         return best[0] if math.hypot(best[1].x - r.x, best[1].y - r.y) < 0.5 else None
 
 
-def collision(robot, rayon=0.15):
+def collision(robot, rayon=0.12):
+    # 0.12 m : demi-profondeur du torse et des genoux du G1 devant le bassin.
+    # Aux postes, les mains (et le carton) passent AU-DESSUS du plateau.
     return any(o.contient(robot.x, robot.y, rayon) for o in OBSTACLES)
 
 
@@ -285,11 +302,13 @@ loco = LocomotionService(Adaptateur(R), lambda: ETAT, lambda c: {}, clock=horlog
                          gardien=gardien)
 nav = NavigationService(carte, R.pose, loco, horloge=horloge, rayon_robot=0.30)
 bras = {}
+monde.bras = bras
 manip = ManipulationService(bras, monde.mains, monde.vers_robot, monde.verifier_prise,
                             gardien=gardien, horloge=horloge)
 journal = []
 facade = FacadeServices(nav, loco, manip, monde, R.pose, horloge, CAP_PRISE,
-                        journal=journal.append)
+                        journal=journal.append,
+                        postes_depose={n: poste_depose(n) for n in TABLES_DEPOSE})
 tri = TriColis(facade, ConfigTri(regles={"rouge": "A", "bleu": "B"},
                                  duree_mission_s=DUREE))
 sup = Superviseur(tri, list(carte.postes), ["rouge", "bleu", "vert"],
@@ -324,11 +343,18 @@ while not tri.termine and R.t < t_fin:
         sup.ordonner("les colis bleus vont maintenant au poste C")
         ordre_donne = True
     # Le monde suit les mains : prise et dépose.
+    if manip.etat is Etat.OUVERTURE and etat_manip_prec is not Etat.OUVERTURE:
+        fond_ouverture = monde.mains()[0][2] - 0.10
     if manip.etat is Etat.TENU and etat_manip_prec is not Etat.TENU:
         x = monde.carton_entre_mains()
         monde.porte = monde.cartons.pop(x)
     if manip.etat is Etat.LIBRE and etat_manip_prec is Etat.OUVERTURE:
-        monde.deposes.append((monde.porte, monde.poste_proche(), R.t))
+        g, d = monde.mains()
+        mx, my = (g[0] + d[0]) / 2, (g[1] + d[1]) / 2
+        sur = [n for n, tb in TABLES_DEPOSE.items()
+               if tb.xmin + 0.1 <= mx <= tb.xmax - 0.1 and tb.ymin + 0.1 <= my <= tb.ymax]
+        monde.deposes.append((monde.porte, sur[0] if sur else monde.poste_proche(), R.t))
+        monde.chutes.append((sur[0] if sur else None, fond_ouverture - PLATEAU))
         monde.porte = None
     etat_manip_prec = manip.etat
     # Invariants de sécurité, à CHAQUE pas.
@@ -363,6 +389,14 @@ check(f"Au moins {int(DUREE / 140)} colis triés ({b.colis_tries})",
 check("Chaque dépose au bon poste (bleus en C après l'ordre vocal)",
       bons == len([d for d in monde.deposes if d[1] in ("A", "B", "C")])
       and all(p in ("A", "B", "C") for c, p, t in monde.deposes if c != "vert"))
+sur_table = [c for c in monde.chutes if c[0] is not None]
+check(f"Chaque carton livré est posé SUR le plateau de son poste "
+      f"({len(sur_table)}/{b.colis_tries})", len(sur_table) == b.colis_tries)
+chute_max = max((h for _, h in monde.chutes), default=0.0)
+check(f"… sans chute : ouverture au plus à 1.5 cm du plateau "
+      f"(max {100 * chute_max:.1f} cm)", all(0.0 <= h <= 0.015 for _, h in sur_table))
+check(f"Le robot recule avant de repartir d'une table ({facade.stats['reculs']} reculs)",
+      facade.stats["reculs"] >= b.colis_tries)
 check("Aucun vert (sans règle) déplacé", all(c != "vert" for c, _, _ in monde.deposes))
 check("Aucun faux carton au sol pris", facade.stats["detections_filtrees"] > 0)
 check("Aucune collision avec une table ou une étagère", viol["collision"] == 0)

@@ -63,6 +63,12 @@ class Postures:
     duree_levage_s: float = 0.8
     duree_pose_s: float = 0.8
     duree_ouverture_s: float = 0.5
+    # Dépose sur un plateau : descente en BOUCLE FERMÉE sur la hauteur
+    # mesurée des mains (proprioception), jusqu'à ce que le fond de l'objet
+    # soit à `jeu_depose` du plateau. Jamais au-delà de `tangage_bas`.
+    tangage_bas: float = 0.10
+    vitesse_descente: float = 0.25     # rad/s
+    jeu_depose: float = 0.01           # m : on ouvre juste au-dessus
 
 
 def posture_bras(roulis: float, tangage: float, coude: float) -> Dict[str, float]:
@@ -89,6 +95,7 @@ class Etat(Enum):
     LEVAGE = auto()
     TENU = auto()
     POSE = auto()
+    DESCENTE = auto()     # vers un plateau, en boucle fermée
     OUVERTURE = auto()
     ECHEC = auto()
 
@@ -135,9 +142,12 @@ class ManipulationService(IService):
                 and hasattr(type(gardien), "arrete"):
             arret_securite = lambda: gardien.arrete
         self._arret_securite = arret_securite
+        self._surface: Optional[float] = None
+        self._tangage_ouverture = postures.tangage_port
         self._dernier_tick: Optional[float] = None
         self.stats = {"prises": 0, "prises_ratees": 0, "refus": 0, "poses": 0,
-                      "gels_securite": 0}
+                      "gels_securite": 0, "deposes_plateau": 0,
+                      "deposes_impossibles": 0}
 
     # ---- IService --------------------------------------------------------
 
@@ -233,10 +243,29 @@ class ManipulationService(IService):
         self._aller(Etat.SERRAGE)
         return ServiceResult(ok=True)
 
-    def poser(self) -> ServiceResult:
+    def _fond_objet(self) -> float:
+        g, d = self._mains()
+        h = self.objet.hauteur if self.objet is not None else 0.0
+        return (float(g[2]) + float(d[2])) / 2.0 - h / 2.0
+
+    def poser(self, hauteur_surface: Optional[float] = None) -> ServiceResult:
+        """Sans plateau : redescend à hauteur de port et ouvre. Avec
+        `hauteur_surface` (m, monde) : descend jusqu'à ce que le fond de
+        l'objet effleure le plateau, PUIS ouvre — sans lâcher de haut."""
         if self.etat is not Etat.TENU:
             return ServiceResult(ok=False, reason="rien en main")
-        self._aller(Etat.POSE)
+        self.raison = ""
+        if hauteur_surface is None:
+            self._surface, self._tangage_ouverture = None, self.p.tangage_port
+            self._aller(Etat.POSE)
+            return ServiceResult(ok=True)
+        fond = self._fond_objet()
+        if fond < hauteur_surface + self.p.jeu_depose:
+            return ServiceResult(ok=False, reason=(
+                f"plateau trop haut ({hauteur_surface:.2f} m) : le fond de "
+                f"l'objet est déjà à {fond:.2f} m"))
+        self._surface = hauteur_surface
+        self._aller(Etat.DESCENTE)
         return ServiceResult(ok=True)
 
     def reinitialiser(self) -> None:
@@ -248,7 +277,8 @@ class ManipulationService(IService):
 
     # ---- boucle ----------------------------------------------------------
 
-    _EN_MOUVEMENT = (Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE)
+    _EN_MOUVEMENT = (Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
+                     Etat.DESCENTE)
 
     def tick(self) -> ServiceResult:
         p = self.p
@@ -290,12 +320,31 @@ class ManipulationService(IService):
             self._ecrire(p.roulis_serre, t)
             if fini:
                 self._aller(Etat.OUVERTURE)
+        elif self.etat is Etat.DESCENTE:
+            t = p.tangage_leve + p.vitesse_descente * (self._horloge() - self._t0)
+            if t >= p.tangage_bas:
+                # Le plateau est hors d'atteinte : on NE lâche PAS de haut.
+                # On remonte en tenant, et on le dit.
+                self.stats["deposes_impossibles"] += 1
+                self.raison = (f"dépose impossible : plateau à "
+                               f"{self._surface:.2f} m hors d'atteinte des bras")
+                self._ecrire(p.roulis_serre, p.tangage_leve)
+                self.etat = Etat.TENU
+            else:
+                self._ecrire(p.roulis_serre, t)
+                if self._fond_objet() <= self._surface + p.jeu_depose:
+                    self._tangage_ouverture = t
+                    self.stats["deposes_plateau"] += 1
+                    self._aller(Etat.OUVERTURE)
         elif self.etat is Etat.OUVERTURE:
             r, fini = self._interp(p.roulis_serre, p.roulis_ouvert, p.duree_ouverture_s)
-            self._ecrire(r, p.tangage_port)
+            self._ecrire(r, self._tangage_ouverture)
             if fini:
                 self.stats["poses"] += 1
                 self.objet = None
+                # Mains ouvertes, l'objet est posé : retour en posture de port.
+                self._ecrire(p.roulis_ouvert, p.tangage_port)
+                self._tangage_ouverture = p.tangage_port
                 self.etat = Etat.LIBRE
         return ServiceResult(ok=self.etat is not Etat.ECHEC, value=self.etat,
                              reason=self.raison or None)

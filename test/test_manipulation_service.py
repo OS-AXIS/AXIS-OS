@@ -168,6 +168,82 @@ m7 = ManipulationService({}, mains6, lambda p: np.asarray(p, dtype=float),
 check("Branché sur un vrai gardien : l'arrêt est lu sur lui par défaut",
       m7._arret_securite is not None and m7._arret_securite() is True)
 
+section("7 — Dépose SUR UN PLATEAU : descendre, effleurer, ouvrir")
+
+
+def monter_plateau(arret=lambda: False):
+    t = [0.0]
+    bras = {}
+
+    def mains():
+        # Proprioception simulée : les mains descendent quand le tangage
+        # augmente (~0.3 m/rad, cohérent avec « levé -0.2 rad = +6 cm »).
+        tg = bras.get("left_shoulder_pitch_joint", -0.30)
+        z = 0.90 - 0.30 * (tg + 0.30)
+        return np.array([0.29, 0.165, z]), np.array([0.29, -0.165, z])
+
+    m = ManipulationService(bras, mains, lambda p: np.asarray(p, dtype=float),
+                            lambda: True, horloge=lambda: t[0],
+                            arret_securite=arret)
+    m.start()
+    m.prendre(CARTON)
+    avancer(m, t, 2.0)
+    return m, bras, t, mains
+
+
+m, bras, t, mains = monter_plateau()
+check("Carton tenu, levé", m.etat is Etat.TENU)
+fond_leve = mains()[0][2] - CARTON.hauteur / 2
+res = m.poser(hauteur_surface=0.75)
+check("Dépose sur un plateau à 0.75 m acceptée", res.ok and m.etat is Etat.DESCENTE)
+fonds = []
+while m.etat is Etat.DESCENTE:
+    t[0] += 0.02
+    m.tick()
+    fonds.append(mains()[0][2] - CARTON.hauteur / 2)
+fond_ouv = fonds[-1]
+check(f"Ouverture quand le fond est à {100 * (fond_ouv - 0.75):.1f} cm du plateau "
+      f"(il partait de {100 * (fond_leve - 0.75):.0f} cm)",
+      0.0 <= fond_ouv - 0.75 <= 0.015)
+check("Les mains n'ont PAS bougé verticalement pendant l'ouverture",
+      m.etat is Etat.OUVERTURE)
+z_ouv = mains()[0][2]
+while m.etat is Etat.OUVERTURE:
+    t[0] += 0.02
+    m.tick()
+    if m.etat is Etat.OUVERTURE:
+        assert abs(mains()[0][2] - z_ouv) < 1e-9
+check("Posé : bras ouverts, puis retour en posture de port",
+      m.etat is Etat.LIBRE and m.stats["deposes_plateau"] == 1
+      and bras["left_shoulder_pitch_joint"] == Postures().tangage_port)
+
+m, bras, t, mains = monter_plateau()
+res = m.poser(hauteur_surface=1.10)
+check(f"Plateau plus haut que le carton : refus motivé (« {res.reason[:30]}… »), "
+      "carton toujours tenu", not res.ok and m.etat is Etat.TENU)
+
+m, bras, t, mains = monter_plateau()
+m.poser(hauteur_surface=0.40)
+avancer(m, t, 5.0)
+check("Plateau hors d'atteinte vers le bas : on NE lâche PAS de haut — "
+      "remonté et toujours TENU, raison donnée",
+      m.etat is Etat.TENU and "impossible" in m.raison
+      and m.stats["deposes_impossibles"] == 1)
+
+arret = [False]
+m, bras, t, mains = monter_plateau(lambda: arret[0])
+m.poser(hauteur_surface=0.75)
+avancer(m, t, 0.1)
+arret[0] = True
+fige = dict(bras)
+avancer(m, t, 3.0)
+check("Arrêt de sécurité pendant la descente : bras figés",
+      bras == fige and m.etat is Etat.DESCENTE)
+arret[0] = False
+avancer(m, t, 3.0)
+check("... puis la dépose se termine", m.etat is Etat.LIBRE
+      and m.stats["deposes_plateau"] == 1)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

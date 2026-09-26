@@ -95,7 +95,8 @@ ratées, réapprovisionnement, règle changée de vive voix à mi-parcours.
 Trois humains : deux qui traversent, un collègue qui vient régulièrement
 près du poste de prise. 30 minutes simulées en ~90 s sur un CPU.
 
-Mesuré sur 30 min : **15 colis triés, 100 % de réussite, 0 collision, le
+Mesuré sur 30 min (avec dépose sur plateau) : **15 colis triés, tous posés
+sur le plateau de leur poste, 100 % de réussite, 0 collision, le
 robot ne s'est jamais rapproché d'un humain à moins de 0.75 m, aucun
 mouvement de bras pendant un arrêt de sécurité**, ~8 min d'arrêts de
 sécurité journalisés, bleus envoyés au poste C après l'ordre vocal, fin
@@ -110,6 +111,13 @@ Constats à reporter dans la scène Isaac Sim :
 - **Zones de poste** : les tables doivent être déclarées au gardien avec
   leur hauteur de chargement (`Rectangle.zmax`), sinon les cartons voisins
   du carton visé arrêtent le robot à chaque prise.
+- **Dépose sur un plateau** : accostage fin au poste jusqu'à ce que le
+  carton soit 12 cm à l'intérieur du plateau, descente des bras en boucle
+  fermée sur la hauteur mesurée des mains, ouverture quand le fond du
+  carton est à 1 cm du plateau. Plateau hors d'atteinte : le carton n'est
+  PAS lâché de haut, il reste tenu et la raison est donnée. Pour repartir,
+  le robot recule de 35 cm en ligne droite au lieu de pivoter collé à la
+  table. Vérifié sur 30 min : 15/15 cartons posés sur leur plateau.
 - **Obstacle immobile sur le trajet** : si le gardien voit un obstacle
   inexpliqué qui reste immobile sur le chemin pendant 4 s, la navigation
   le marque comme obstacle temporaire (60 s) et replanifie à 1.1 m de lui.
@@ -126,7 +134,17 @@ Constats à reporter dans la scène Isaac Sim :
   ne peut pas approcher à 29 cm d'une table, par construction).
 
 Manques identifiés, non traités :
-- **Dépose sur table** : le carton est encore relâché à hauteur de port.
+- **Colis ramené au poste de prise** (poste de dépose inaccessible) : il
+  est encore relâché à hauteur de port, faute de place connue sur la table
+  de prise. Cas rare ; prévoir un emplacement de retour.
+- **Marche arrière** : la politique GR00T accepte des consignes négatives,
+  mais le recul de sortie n'a jamais été validé en simulation physique. À
+  vérifier en premier sur GPU.
+- **Hauteur des mains en fonction du tangage d'épaule** : modélisée ici à
+  ~0.3 m/rad (déduit de W3 : levé de 0.2 rad = +6 cm). La dépose est en
+  boucle fermée sur la hauteur mesurée, donc robuste à cette valeur, mais
+  le recul des mains vers le torse en descendant n'est pas modélisé : à
+  mesurer sur GPU pour régler la marge de 12 cm à l'intérieur du plateau.
 
 ## Budget GPU
 
