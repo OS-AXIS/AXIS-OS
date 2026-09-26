@@ -30,6 +30,9 @@ Usage (dans le conteneur) :
   --duree        secondes SIMULÉES (défaut 240 : premier essai court)
   --acceleration la vidéo montre 1 image pour N×2 pas de 20 ms
                  (10 : 30 min -> 3 min de vidéo)
+  --port-direct  suivi EN DIRECT dans un navigateur (défaut 8080) :
+                   ssh -L 8080:localhost:8080 <machine>, puis
+                   http://localhost:8080 — image, journal, bouton d'arrêt
 """
 import argparse
 import math
@@ -66,6 +69,8 @@ def main():
     ap.add_argument("--acceleration", type=int, default=10)
     ap.add_argument("--sans-video", action="store_true")
     ap.add_argument("--graine", type=int, default=3)
+    ap.add_argument("--port-direct", type=int, default=8080,
+                    help="page de suivi en direct (0 : désactivée)")
     args = ap.parse_args()
     DUREE = args.duree
     rng = random.Random(args.graine)
@@ -87,6 +92,7 @@ def main():
         FRAME_BASE, FRAME_CAMERA_OPTICAL, FRAME_WORLD, FrameTree, Transform,
     )
     from axis_os.hal.core.types import ActuatorCommand, ControlMode, Quaternion, Vector3
+    from axis_os.hal.drivers.isaac_sim.direct import SuiviDirect
     from axis_os.hal.drivers.isaac_sim.sim_camera import IsaacSimCamera
     from axis_os.hal.drivers.isaac_sim.sim_lidar import IsaacSimLidar
     from axis_os.hal.drivers.isaac_sim.video import SceneRecorder
@@ -335,10 +341,17 @@ def main():
                                        requetes=("a box", "a cardboard box"))
     journal = []
     rec = None
+    suivi = None
+    if args.port_direct:
+        suivi = SuiviDirect(str(VIDEOS / "direct"), port=args.port_direct)
+        if not suivi.demarrer():
+            suivi = None
 
     def journaliser(msg):
         journal.append(msg)
-        print("  " + msg)
+        print("  " + msg, flush=True)
+        if suivi is not None:
+            suivi.journal(msg)
         if rec is not None and any(k in msg for k in ("LIVRÉ", "ALERTE", "superviseur",
                                                        "SIGNALÉ", "repéré")):
             couleur = (200, 50, 45) if "ALERTE" in msg or "SIGNALÉ" in msg else (40, 140, 70)
@@ -430,6 +443,9 @@ def main():
         rec.suivre(lambda: robot.get_world_pose()[0], decalage=(2.6, -2.6, 2.2),
                    hauteur_visee=0.9, decalage_cadre=(-0.3, 0.3))
         video_ok = rec.start()
+        rec.direct = suivi
+    if suivi is not None and not video_ok:
+        print("  [direct] sans vidéo, la page ne montre que le journal")
     pas_video = 2 * max(1, args.acceleration)
 
     # ---- boucle à 50 Hz -----------------------------------------------------
@@ -445,6 +461,9 @@ def main():
     print(f"\n  T1 — {DUREE:.0f} s simulées, vidéo "
           f"{'non' if not video_ok else f'accélérée ×{args.acceleration}'}\n")
     while not tri.termine and sim_t[0] < DUREE + 300.0:
+        if suivi is not None and suivi.arret_demande:
+            print("  Arrêt demandé depuis la page de suivi — bilan et vidéo écrits.")
+            break
         t = sim_t[0]
         pr = pose2d()
         # Personnes
@@ -515,12 +534,19 @@ def main():
                 "Règles : " + ", ".join(f"{c}→{p}" for c, p in sorted(tri.cfg.regles.items())),
                 f"Garde-fou : {loco.stats['refused']} refus",
             ], t)
+        if suivi is not None and k % 25 == 0:
+            b_ = tri.bilan
+            suivi.resume(f"{int(t // 60):02d}:{int(t % 60):02d} simulé · "
+                         f"{b_.colis_tries} triés · tâche {tri.etat} · "
+                         f"{time.monotonic() - t_mur:.0f} s réelles")
         if k % 2500 == 0:
             print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
                   f"{tri.bilan.colis_tries} triés, état {tri.etat}")
 
     if video_ok:
         rec.terminer()
+    if suivi is not None:
+        suivi.resume("test terminé — bilan dans le terminal")
 
     # ---- bilan ----------------------------------------------------------------
     b = tri.bilan

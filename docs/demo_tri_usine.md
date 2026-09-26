@@ -176,6 +176,13 @@ politiques GR00T, meshes, OWL-ViT, code). Puis :
 | 2 | corrections, puis `lancer_t1.sh 600 4` | 10 min : premières pannes rares |
 | 3 | `lancer_t1.sh 1800 10` | la démo : 30 min, vidéo de 3 min |
 
+**Suivi en direct** (`axis_os/hal/drivers/isaac_sim/direct.py`) : pendant
+le test, une page web montre la dernière image avec le tableau de bord, le
+journal des événements, et un bouton « Arrêter proprement » — plus besoin
+d'attendre 30 minutes pour découvrir une erreur de la deuxième minute.
+Accès par tunnel SSH (`ssh … -L 8080:localhost:8080`, puis
+http://localhost:8080) : la page n'est jamais exposée sur Internet.
+
 Ce qui n'a jamais tourné sur GPU, donc à surveiller au premier essai :
 - **OWL-ViT sur des cartons colorés unis** (W4 : carton brun, confiance
   ~0.09, seuil 0.06). S'il ne les voit pas : texture, ou autre requête.

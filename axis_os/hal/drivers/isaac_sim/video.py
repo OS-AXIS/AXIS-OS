@@ -171,6 +171,9 @@ class SceneRecorder:
         self._panneau = panneau
         # Piste son : (instant de fin en secondes, échantillons 16 kHz).
         self._sons = []
+        # Suivi en direct (direct.SuiviDirect), optionnel : reçoit chaque
+        # image composée, au moment où elle est produite.
+        self.direct = None
 
     # ---- cycle de vie -------------------------------------------------
 
@@ -378,3 +381,5 @@ class SceneRecorder:
         img = Image.alpha_composite(img, calque).convert("RGB")
         self._writer.append_data(np.asarray(img))
         self.images += 1
+        if self.direct is not None:
+            self.direct.image(img)
