@@ -102,6 +102,15 @@ mouvement de bras pendant un arrêt de sécurité**, ~8 min d'arrêts de
 sécurité journalisés, bleus envoyés au poste C après l'ordre vocal, fin
 bras vides. Sans le collègue : 19 à 20 colis.
 
+Disposition v2, partagée avec la scène Isaac Sim
+(`axis_os/apps/tri_colis/scene_demo.py`) : postes de dépose à 4-6 m.
+Sur 30 min : 18 colis, 18/18 posés sur leur plateau, ~8 min d'arrêts de
+sécurité dus aux passages humains — le réglage à doser pour la démo.
+
+Couleur des colis : OWL-ViT trouve « une boîte », la couleur est lue sur
+les pixels au centre de chaque détection (`couleur.py`). On ne parie pas
+sur la capacité, non vérifiée, d'OWL-ViT à distinguer les couleurs.
+
 Constats à reporter dans la scène Isaac Sim :
 - **Débit** : un colis toutes les 90 à 120 s selon la présence humaine, à
   0.3 m/s avec des postes à 7 m. Pour viser plus de 20 en 30 min,
@@ -137,9 +146,11 @@ Manques identifiés, non traités :
 - **Colis ramené au poste de prise** (poste de dépose inaccessible) : il
   est encore relâché à hauteur de port, faute de place connue sur la table
   de prise. Cas rare ; prévoir un emplacement de retour.
-- **Marche arrière** : la politique GR00T accepte des consignes négatives,
-  mais le recul de sortie n'a jamais été validé en simulation physique. À
-  vérifier en premier sur GPU.
+- **Marche arrière** : déjà validée sur GPU — W3 a reculé de 68 cm carton
+  en main, W4 aussi, sans chute. Le recul de sortie s'appuie dessus.
+- **Glissement du carton** : W3 a mesuré 8 cm en 11 s. Les trajets de la
+  démo durent ~15-20 s carton en main : c'est le premier risque physique à
+  surveiller sur GPU (serrage plus fort, ou poignets raidis).
 - **Hauteur des mains en fonction du tangage d'épaule** : modélisée ici à
   ~0.3 m/rad (déduit de W3 : levé de 0.2 rad = +6 cm). La dépose est en
   boucle fermée sur la hauteur mesurée, donc robuste à cette valeur, mais

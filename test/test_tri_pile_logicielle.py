@@ -22,7 +22,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from axis_os.apps.tri_colis.facade import FacadeServices, PosteDepose
+from axis_os.apps.tri_colis import scene_demo as sd
+from axis_os.apps.tri_colis.facade import FacadeServices
 from axis_os.apps.tri_colis.logique import ConfigTri, TriColis
 from axis_os.apps.tri_colis.superviseur import InterpreteurRegles, Superviseur
 from axis_os.hal.core.types import Vector3
@@ -53,34 +54,13 @@ def section(t):
 
 DUREE = float(sys.argv[1]) if len(sys.argv) > 1 else 600.0
 DT = 0.02
-PLATEAU = 0.75                      # hauteur de la table de prise
-Y_BORD = 2.0                        # bord avant de la table de prise
-CAP_PRISE = math.pi / 2             # le robot fait face à +y pour prendre
-
-# ── Le site ─────────────────────────────────────────────────────────────
-TABLE_PRISE = Rectangle(3.0, Y_BORD, 5.0, 2.6, zmax=PLATEAU + 0.25)
-ETAGERES = [Rectangle(6.2, 3.5, 6.6, 8.0), Rectangle(1.6, 4.0, 2.0, 8.0)]
-POSTE_A = Rectangle(8.6, 6.8, 9.6, 7.4, zmax=PLATEAU + 0.30)
-POSTE_B = Rectangle(0.2, 6.8, 1.2, 7.4, zmax=PLATEAU + 0.30)
-POSTE_C = Rectangle(4.5, 7.1, 5.5, 7.6, zmax=PLATEAU + 0.30)
-TABLES_DEPOSE = {"A": POSTE_A, "B": POSTE_B, "C": POSTE_C}
-OBSTACLES = [TABLE_PRISE, POSTE_A, POSTE_B, POSTE_C] + ETAGERES
-carte = Carte(0.0, 0.0, 10.0, 8.0, obstacles=OBSTACLES, postes={
-    "prise": Pose2D(4.0, 1.2, CAP_PRISE),
-    "A": Pose2D(9.1, 6.2, math.pi / 2),
-    "B": Pose2D(0.7, 6.2, math.pi / 2),
-    "C": Pose2D(5.0, 6.4, math.pi / 2),
-})
-EMPLACEMENTS_X = [3.3, 3.7, 4.1, 4.5]
-
-
-def poste_depose(nom):
-    """Accostage jusqu'à ce que le carton soit 12 cm à l'intérieur du
-    plateau (mains à 0.29 m devant la base)."""
-    bord = TABLES_DEPOSE[nom].ymin
-    return PosteDepose(avance_m=(bord + 0.12 - 0.29) - carte.postes[nom].y,
-                       hauteur=PLATEAU)
-Y_CARTON = Y_BORD + 0.10            # centre des cartons sur la table
+# ── Le site : la MÊME définition que la scène Isaac Sim ─────────────────
+PLATEAU, CAP_PRISE = sd.PLATEAU, sd.CAP_PRISE
+TABLE_PRISE, TABLES_DEPOSE, ETAGERES = sd.TABLE_PRISE, sd.TABLES_DEPOSE, sd.ETAGERES
+OBSTACLES = sd.OBSTACLES
+carte = sd.carte()
+EMPLACEMENTS_X, Y_CARTON = sd.EMPLACEMENTS_X, sd.Y_CARTON
+Y_BORD = TABLE_PRISE.ymin
 
 
 # ── Le robot : cinématique qui imite GR00T WBC ─────────────────────────
@@ -137,52 +117,11 @@ def boite(r: Rectangle, zmin, zmax, pas=0.1):
     return g[bord]
 
 
-STATIQUE = np.vstack([boite(TABLE_PRISE, 0.1, PLATEAU), boite(POSTE_A, 0.1, PLATEAU),
-                      boite(POSTE_B, 0.1, PLATEAU), boite(POSTE_C, 0.1, PLATEAU)] +
-                     [boite(e, 0.1, 1.8) for e in ETAGERES])
+STATIQUE = np.vstack([boite(t, 0.1, PLATEAU) for t in [TABLE_PRISE, *TABLES_DEPOSE.values()]]
+                     + [boite(e, 0.1, 1.8) for e in ETAGERES])
 
 
-class Humain:
-    """Fait des allers-retours ; s'écarte d'un robot trop proche, comme le
-    ferait une personne. Ce n'est PAS lui qui garantit l'absence de contact :
-    le test vérifie que le ROBOT ne s'approche jamais d'un humain proche."""
-
-    def __init__(self, a, b, vitesse=1.0, pause=4.0, evitement=1.1):
-        self.a, self.b, self.v, self.pause = np.array(a), np.array(b), vitesse, pause
-        self.ev = evitement             # distance que la personne garde
-        self.p, self.vers_b, self.attente = np.array(a, float), True, 0.0
-
-    def pas(self, robot):
-        if self.attente > 0:
-            self.attente -= DT
-            return
-        but = self.b if self.vers_b else self.a
-        d = but - self.p
-        n = np.linalg.norm(d)
-        if n < 0.05:
-            self.vers_b, self.attente = not self.vers_b, self.pause
-            return
-        pas_ = d / n * min(self.v * DT, n)
-        suiv = self.p + pas_
-        r = np.array([robot.x, robot.y])
-        e = suiv - r
-        ne = max(np.linalg.norm(e), 1e-6)
-        if ne < self.ev and n < 1.5:
-            # Son but est à côté du robot : il fait demi-tour, comme le
-            # ferait une personne, plutôt que de rester plantée là.
-            self.vers_b = not self.vers_b
-            return
-        if ne < self.ev:
-            # Contourne le robot : marche en tangente, du côté de son but,
-            # en gardant ses distances.
-            tang = np.array([-e[1], e[0]]) / ne
-            if np.dot(tang, d) < 0:
-                tang = -tang
-            suiv = self.p + tang * self.v * DT
-            e = suiv - r
-            suiv = r + e / max(np.linalg.norm(e), 1e-6) * max(self.ev, ne)
-        self.p = suiv
-
+class Humain(sd.Figurant):
     def nuage(self):
         a = np.linspace(0, 2 * math.pi, 16, endpoint=False)
         z = np.linspace(0.1, 1.7, 8)
@@ -195,17 +134,16 @@ class Monde:
     def __init__(self, graine=3, p_rate=0.15):
         self.rng = random.Random(graine)
         self.p_rate = p_rate
-        self.robot = Robot(4.0, 0.6, CAP_PRISE, graine)
+        self.robot = Robot(sd.DEPART.x, sd.DEPART.y, sd.DEPART.cap, graine)
         self.cartons = {}           # emplacement x -> couleur
         self.porte = None           # (couleur,)
         self.deposes = []           # (couleur, poste, t)
         self.chutes = []            # (table sous le carton, hauteur de chute)
         self.bras = {}
-        self.humains = [Humain((7.2, 0.5), (7.2, 7.5)),
-                        Humain((0.5, 0.9), (9.5, 0.9), vitesse=0.8, pause=10.0),
-                        # un collègue qui vient tout près du poste de prise
-                        Humain((0.6, 0.6), (3.4, 1.6), vitesse=0.5, pause=45.0,
-                               evitement=0.6)]
+        self.humains = []
+        for f in sd.figurants():
+            h = Humain(f.a, f.b, f.v, f.pause, f.ev)
+            self.humains.append(h)
         self.faux_positif_sol = True
         for x in EMPLACEMENTS_X:
             self.cartons[x] = self.rng.choice(["rouge", "bleu", "vert"])
@@ -254,7 +192,7 @@ class Monde:
         c, s = math.cos(r.cap), math.sin(r.cap)
         # Les mains descendent quand le tangage d'épaule augmente.
         tg = self.bras.get("left_shoulder_pitch_joint", -0.30)
-        z = 0.90 - 0.30 * (tg + 0.30)
+        z = PLATEAU + 0.10 - 0.30 * (tg + 0.30)   # carton sur la table = mains au port
         m = [np.array([r.x + 0.29 * c - l * s, r.y + 0.29 * s + l * c, z])
              for l in (0.165, -0.165)]
         return m[0], m[1]
@@ -308,10 +246,10 @@ manip = ManipulationService(bras, monde.mains, monde.vers_robot, monde.verifier_
 journal = []
 facade = FacadeServices(nav, loco, manip, monde, R.pose, horloge, CAP_PRISE,
                         journal=journal.append,
-                        postes_depose={n: poste_depose(n) for n in TABLES_DEPOSE})
-tri = TriColis(facade, ConfigTri(regles={"rouge": "A", "bleu": "B"},
+                        postes_depose=sd.postes_depose())
+tri = TriColis(facade, ConfigTri(regles=dict(sd.REGLES_INITIALES),
                                  duree_mission_s=DUREE))
-sup = Superviseur(tri, list(carte.postes), ["rouge", "bleu", "vert"],
+sup = Superviseur(tri, list(carte.postes), sd.COULEURS,
                   InterpreteurRegles())
 for s in (loco, nav, manip):
     s.start()
@@ -326,7 +264,7 @@ t_fin = DUREE + 300.0
 while not tri.termine and R.t < t_fin:
     R.t += DT
     for h in monde.humains:
-        h.pas(R)
+        h.pas(DT, R.x, R.y)
     monde.reappro()
     nav.tick()
     facade.tick()
@@ -344,7 +282,7 @@ while not tri.termine and R.t < t_fin:
         ordre_donne = True
     # Le monde suit les mains : prise et dépose.
     if manip.etat is Etat.OUVERTURE and etat_manip_prec is not Etat.OUVERTURE:
-        fond_ouverture = monde.mains()[0][2] - 0.10
+        fond_ouverture = monde.mains()[0][2] - sd.HAUTEUR_CARTON / 2
     if manip.etat is Etat.TENU and etat_manip_prec is not Etat.TENU:
         x = monde.carton_entre_mains()
         monde.porte = monde.cartons.pop(x)
