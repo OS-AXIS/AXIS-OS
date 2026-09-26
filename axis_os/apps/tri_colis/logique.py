@@ -59,6 +59,7 @@ class ConfigTri:
     # l'opérateur peut l'avoir dégagé et un colis neuf y être posé.
     oubli_ignore_s: float = 300.0
     pause_prise_inaccessible_s: float = 30.0
+    alerte_inactivite_s: float = 120.0     # rien à trier depuis ce temps
 
 
 @dataclass
@@ -100,6 +101,8 @@ class TriColis:
         self._essais_nav = 0
         self._essais_pose = 0
         self._echecs_accostage: List[Tuple[float, float, float]] = []
+        self._inactif_depuis: Optional[float] = None
+        self._inactivite_signalee = False
 
     # ------------------------------------------------------------------
     def duree_ecoulee(self) -> float:
@@ -208,8 +211,18 @@ class TriColis:
             candidats += [c for c in self.robot.chercher(couleur)
                           if c.couleur == couleur and not self._ignore(c)]
         if not candidats:
+            t = self.duree_ecoulee()
+            if self._inactif_depuis is None:
+                self._inactif_depuis = t
+            elif (t - self._inactif_depuis >= self.cfg.alerte_inactivite_s
+                  and not self._inactivite_signalee):
+                self._inactivite_signalee = True
+                self._alerte(f"aucun colis à trier depuis "
+                             f"{t - self._inactif_depuis:.0f} s — table vide, "
+                             "ou encombrée de colis sans règle ?")
             self._aller("ATTENDRE")
             return
+        self._inactif_depuis, self._inactivite_signalee = None, False
         self.colis = max(candidats, key=lambda c: c.confiance)
         self._essais_prise = 0
         self._log(f"colis {self.colis.couleur} repéré "
