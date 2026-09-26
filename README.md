@@ -36,6 +36,7 @@ est documenté dans `docs/`.
 
 ### Documents clés
 
+- **[Créer une app pour AXIS-OS, de A à Z](docs/CREER_UNE_APP.md)** — sans robot ni GPU
 - [Ce qu'un robot doit avoir pour faire tourner AXIS-OS](docs/PREREQUIS_ROBOT.md)
 - [Saisie et port autonomes d'un carton](docs/validation_port_carton.md)
 - [Intégration de la politique GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)

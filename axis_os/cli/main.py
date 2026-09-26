@@ -102,6 +102,13 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     spec = importlib.util.spec_from_file_location("local_app", app_file)
     module = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(Path.cwd()))
+    # ENREGISTRER le module avant de l'exécuter : le sandbox transmet
+    # l'app au processus isolé par sérialisation (pickle), qui retrouve
+    # la classe par le nom de son module dans sys.modules. Sans cette
+    # ligne, TOUTE app générée par `axis-os init` plantait dès
+    # `axis-os simulate` (on_start : CRASHED / SANDBOX_ERROR, sans
+    # autre explication). Constaté en rédigeant docs/CREER_UNE_APP.md.
+    sys.modules["local_app"] = module
     spec.loader.exec_module(module)
 
     from axis_os.store.sdk.app_base import RobotApp
