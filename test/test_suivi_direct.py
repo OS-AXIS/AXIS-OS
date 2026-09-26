@@ -48,6 +48,27 @@ e = json.loads(lire(base + "/etat")[2])
 code, typ, corps = lire(base + "/image.jpg?1")
 check("Image publiée et servie en JPEG", e["image"] == 1 and code == 200
       and typ == "image/jpeg" and corps[:2] == b"\xff\xd8")
+img_hd = Image.new("RGB", (1920, 1080), (30, 30, 200))
+time.sleep(0.02)
+s.image(img_hd)
+corps = lire(base + "/image.jpg")[2]
+from io import BytesIO
+check("Image 1080p réduite pour le flux (960 px de large)",
+      Image.open(BytesIO(corps)).size == (960, 540))
+import socket
+c = socket.create_connection(("127.0.0.1", 18080), timeout=5)
+c.sendall(b"GET /flux HTTP/1.1\r\nHost: x\r\n\r\n")
+recu = b""
+t0 = time.time()
+while recu.count(b"--image") < 1 and time.time() - t0 < 3:
+    recu += c.recv(65536)
+time.sleep(0.02)
+s.image(Image.new("RGB", (64, 36), (30, 200, 30)))
+while recu.count(b"--image") < 2 and time.time() - t0 < 3:
+    recu += c.recv(65536)
+c.close()
+check("Flux continu : l'image suivante est POUSSÉE au navigateur (MJPEG)",
+      b"multipart/x-mixed-replace" in recu and recu.count(b"--image") >= 2)
 s2 = SuiviDirect(tempfile.mkdtemp(), port=18081, images_par_s=1.0)
 s2.image(Image.new("RGB", (8, 8)))
 s2.image(Image.new("RGB", (8, 8)))

@@ -9,8 +9,14 @@ le test :
   - un bouton « Arrêter proprement » : la boucle s'interrompt, la vidéo
     et le bilan sont écrits normalement (un Ctrl+C perdrait la vidéo).
 
+L'image est un FLUX CONTINU (MJPEG, comme une caméra de surveillance :
+le navigateur l'affiche comme une vidéo), jusqu'à 15 images par seconde.
+Limite honnête : la fluidité ne peut dépasser le rythme auquel la
+simulation produit des images, et la simulation est plus lente que le
+temps réel — on voit le robot au ralenti, mais sans attendre.
+
 Serveur HTTP minimal, dans un fil d'exécution à part, qui ne touche
-JAMAIS Isaac Sim : il ne lit que des fichiers et une file de textes. Il
+JAMAIS Isaac Sim : il ne lit que la dernière image et une file de textes. Il
 écoute sur localhost par défaut : on y accède par un tunnel SSH, sans
 exposer la machine sur Internet.
 
@@ -19,8 +25,8 @@ exposer la machine sur Internet.
 """
 from __future__ import annotations
 
+import io
 import json
-import os
 import threading
 import time
 from collections import deque
@@ -52,7 +58,7 @@ _PAGE = """<!doctype html>
 </style></head><body>
 <header><h1>AXIS-OS — test en direct</h1><span id="etat">connexion…</span>
 <button id="stop">Arrêter proprement</button></header>
-<main><img id="img" alt="dernière image du test"><pre id="journal"></pre></main>
+<main><img id="img" src="/flux" alt="image du test en direct"><pre id="journal"></pre></main>
 <script>
 const img = document.getElementById('img'), j = document.getElementById('journal'),
       etat = document.getElementById('etat'), stop = document.getElementById('stop');
@@ -61,10 +67,11 @@ async function maj() {
     const r = await fetch('/etat', {cache: 'no-store'}); const e = await r.json();
     etat.textContent = e.resume;
     j.textContent = e.journal.join('\\n'); j.scrollTop = j.scrollHeight;
-    if (e.image) img.src = '/image.jpg?' + e.image;
     if (e.arret_demande) { stop.disabled = true; stop.textContent = 'Arrêt demandé'; }
   } catch (_) { etat.textContent = 'test terminé ou injoignable'; }
 }
+// Flux coupé (réseau, redémarrage) : on se reconnecte.
+img.onerror = () => setTimeout(() => { img.src = '/flux?' + Date.now(); }, 2000);
 stop.onclick = async () => {
   if (!confirm('Arrêter le test ? La vidéo et le bilan seront écrits.')) return;
   await fetch('/arreter', {method: 'POST'}); maj();
@@ -76,7 +83,8 @@ setInterval(maj, 1000); maj();
 
 class SuiviDirect:
     def __init__(self, dossier: str, port: int = 8080, hote: str = "127.0.0.1",
-                 lignes_max: int = 200, images_par_s: float = 2.0):
+                 lignes_max: int = 200, images_par_s: float = 15.0,
+                 largeur_flux: int = 960):
         self.dossier = Path(dossier)
         self.dossier.mkdir(parents=True, exist_ok=True)
         self.port, self.hote = port, hote
@@ -86,6 +94,9 @@ class SuiviDirect:
         self._periode_image = 1.0 / images_par_s
         self._t_image = 0.0
         self._verrou = threading.Lock()
+        self._largeur = largeur_flux
+        self._jpeg: Optional[bytes] = None
+        self._nouvelle = threading.Condition()
         self.arret_demande = False
         self._serveur: Optional[ThreadingHTTPServer] = None
 
@@ -112,13 +123,39 @@ class SuiviDirect:
                     self._envoyer(200, json.dumps(suivi.etat()).encode(),
                                   "application/json")
                 elif self.path.startswith("/image.jpg"):
-                    p = suivi.dossier / "direct.jpg"
-                    if p.exists():
-                        self._envoyer(200, p.read_bytes(), "image/jpeg")
+                    j = suivi._jpeg
+                    if j is not None:
+                        self._envoyer(200, j, "image/jpeg")
                     else:
                         self._envoyer(404, b"", "text/plain")
+                elif self.path.startswith("/flux"):
+                    self._flux()
                 else:
                     self._envoyer(404, b"", "text/plain")
+
+            def _flux(self):
+                """MJPEG : chaque nouvelle image est poussée au navigateur."""
+                self.send_response(200)
+                self.send_header("Content-Type",
+                                 "multipart/x-mixed-replace; boundary=image")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                vue = -1
+                try:
+                    while suivi._serveur is not None:
+                        with suivi._nouvelle:
+                            suivi._nouvelle.wait_for(
+                                lambda: suivi._image_n != vue or suivi._serveur is None,
+                                timeout=5.0)
+                        j, vue = suivi._jpeg, suivi._image_n
+                        if j is None:
+                            continue
+                        self.wfile.write(b"--image\r\nContent-Type: image/jpeg\r\n"
+                                         + f"Content-Length: {len(j)}\r\n\r\n".encode()
+                                         + j + b"\r\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass                         # onglet fermé : rien de grave
 
             def do_POST(self):
                 if self.path == "/arreter":
@@ -140,8 +177,10 @@ class SuiviDirect:
 
     def arreter(self) -> None:
         if self._serveur is not None:
-            self._serveur.shutdown()
-            self._serveur = None
+            srv, self._serveur = self._serveur, None
+            with self._nouvelle:
+                self._nouvelle.notify_all()      # libère les flux en cours
+            srv.shutdown()
 
     def journal(self, ligne: str) -> None:
         with self._verrou:
@@ -151,16 +190,23 @@ class SuiviDirect:
         self._resume = texte
 
     def image(self, img_pil) -> None:
-        """Dernière image composée (PIL). Écriture ATOMIQUE, limitée à
-        `images_par_s` par seconde réelle : l'encodage coûte du temps."""
+        """Dernière image composée (PIL), réduite et encodée en mémoire.
+        Limitée à `images_par_s` par seconde réelle : l'encodage se fait
+        dans la boucle de simulation, il ne doit pas la ralentir."""
         t = time.monotonic()
         if t - self._t_image < self._periode_image:
             return
         self._t_image = t
-        tmp = self.dossier / "direct.tmp.jpg"
-        img_pil.save(tmp, "JPEG", quality=80)
-        os.replace(tmp, self.dossier / "direct.jpg")
-        self._image_n += 1
+        if img_pil.width > self._largeur:
+            # reduce() par un facteur entier : ~5x plus rapide qu'un
+            # resize() bicubique (4.5 ms contre 20 ms en 1080p, mesuré).
+            img_pil = img_pil.reduce(-(-img_pil.width // self._largeur))
+        tampon = io.BytesIO()
+        img_pil.save(tampon, "JPEG", quality=75)
+        with self._nouvelle:
+            self._jpeg = tampon.getvalue()
+            self._image_n += 1
+            self._nouvelle.notify_all()
 
     def etat(self) -> dict:
         with self._verrou:
