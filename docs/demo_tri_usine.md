@@ -65,6 +65,19 @@ situation inconnue → s'arrêter proprement et le signaler. Un réapprovisionne
 remet des colis sur la table de départ.
 **Démo : la vidéo accélérée de 30 minutes.**
 
+### 5b. Superviseur en langage naturel
+L'opérateur parle au robot : « les bleus vont au poste C », « arrête les
+rouges », « fais le point ». Un modèle de langage (ou, hors ligne, un
+analyseur à règles) traduit la phrase en ordres, **validés contre une liste
+fermée** avant d'être appliqués. Le superviseur ne peut que changer les
+règles de tri, suspendre ou reprendre une couleur, et produire un rapport.
+Il ne reçoit **jamais** l'accès au robot : « va plus vite » ou « coupe la
+sécurité » sont refusés avec une explication. Le rapport est calculé par le
+code à partir du bilan, jamais rédigé par le modèle.
+Code : `axis_os/apps/tri_colis/superviseur.py` ; tests :
+`test/test_superviseur_tri.py`.
+**Démo : l'opérateur change une règle en pleine mission, le robot suit.**
+
 ### 6. Présentation
 Tableau de bord en incrustation — colis triés, taux de réussite, arrêts de
 sécurité —, vidéo accélérée, dossier investisseur.
