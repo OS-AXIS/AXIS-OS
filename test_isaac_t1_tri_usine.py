@@ -200,6 +200,19 @@ def main():
             UsdShade.MaterialBindingAPI.Apply(prim).Bind(
                 mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
+    # Éclairage. Premier essai GPU : la seule lumière venait de derrière la
+    # table, la face des cartons tournée vers le robot était NOIRE sur la
+    # caméra de tête — couleur illisible, aucun colis trié. Un entrepôt est
+    # éclairé de partout : lumière ambiante (dôme) + lumière venant du côté
+    # du robot (vers +y, en plongée de 30°).
+    from pxr import UsdLux
+    dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
+    dome.CreateIntensityAttr(900.0)
+    face = UsdLux.DistantLight.Define(stage, "/World/eclairage_face")
+    face.CreateIntensityAttr(2500.0)
+    face.CreateAngleAttr(1.0)
+    UsdGeom.Xformable(face).AddRotateXOp().Set(60.0)     # -Z -> (0, +0.87, -0.5)
+
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
     cam = IsaacSimCamera("tete_rgb", prim_path="/World/tete_rgb", width=640, height=480,

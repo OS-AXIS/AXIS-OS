@@ -45,12 +45,24 @@ def couleur_de(rgb: Tuple[float, float, float],
 
 def couleur_boite(data: bytes, largeur: int, hauteur: int,
                   bbox: Sequence[int], couleurs: Iterable[str] = TEINTES,
-                  part_centrale: float = 0.5, majorite: float = 0.6) -> Optional[str]:
-    """Couleur majoritaire au CENTRE d'une boîte englobante, image rgb8.
+                  part_centrale: float = 0.85, part_coloree_min: float = 0.08,
+                  majorite: float = 0.7) -> Optional[str]:
+    """Couleur d'un objet dans sa boîte englobante, image rgb8.
 
-    Le centre seulement : les bords d'une détection débordent sur la table
-    ou le fond. Une couleur n'est rendue que si elle couvre `majorite` des
-    pixels jugés — sinon None, plutôt qu'un tri au mauvais poste.
+    On VOTE PARMI LES PIXELS FRANCHEMENT COLORÉS SEULEMENT. Première
+    version : couleur majoritaire au centre de la boîte, tous pixels
+    confondus — sur GPU, la face tournée vers le robot était dans l'OMBRE,
+    noire ; seul le rebord éclairé portait la couleur, et chaque carton
+    était rejeté. Les pixels sombres, gris ou beiges (ombre, table, fond)
+    ne votent donc pas.
+
+    Garde-fous, pour ne jamais trier au mauvais poste :
+      - au moins `part_coloree_min` des pixels examinés sont colorés,
+        sinon None (un objet gris n'a pas de couleur de tri) ;
+      - la couleur gagnante fait au moins `majorite` des pixels colorés,
+        sinon None (une boîte à cheval sur deux cartons est ambiguë).
+    Les bords extrêmes (`part_centrale`) sont exclus : une détection déborde
+    souvent sur le voisin.
     """
     x, y, w, h = (int(v) for v in bbox)
     mx, my = int(w * (1 - part_centrale) / 2), int(h * (1 - part_centrale) / 2)
@@ -58,20 +70,21 @@ def couleur_boite(data: bytes, largeur: int, hauteur: int,
     y0, y1 = max(0, y + my), min(hauteur, y + h - my)
     if x1 <= x0 or y1 <= y0:
         return None
-    votes: Dict[Optional[str], int] = {}
-    pas = max(1, min(x1 - x0, y1 - y0) // 12)      # ~150 pixels suffisent
+    votes: Dict[str, int] = {}
+    pas = max(1, min(x1 - x0, y1 - y0) // 25)      # ~600 pixels examinés
     n = 0
     for yy in range(y0, y1, pas):
         for xx in range(x0, x1, pas):
             i = 3 * (yy * largeur + xx)
             c = couleur_de((data[i] / 255, data[i + 1] / 255, data[i + 2] / 255), couleurs)
-            votes[c] = votes.get(c, 0) + 1
             n += 1
-    if not n:
+            if c is not None:
+                votes[c] = votes.get(c, 0) + 1
+    colores = sum(votes.values())
+    if not n or colores < part_coloree_min * n:
         return None
-    meilleure = max((c for c in votes if c is not None), key=lambda c: votes[c],
-                    default=None)
-    if meilleure is None or votes[meilleure] < majorite * n:
+    meilleure = max(votes, key=lambda c: votes[c])
+    if votes[meilleure] < majorite * colores:
         return None
     return meilleure
 

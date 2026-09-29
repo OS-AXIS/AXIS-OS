@@ -62,6 +62,16 @@ check("Boîte trop large (déborde sur la table) : le centre suffit -> rouge",
 check("Boîte à cheval sur deux cartons : pas de majorité -> None",
       couleur_boite(img, L, H, (40, 40, 80, 40)) is None)
 check("Boîte sur la table grise -> None", couleur_boite(img, L, H, (60, 0, 30, 30)) is None)
+NOIR = (0.03, 0.03, 0.03)
+img2 = image(L, H, GRIS, [((20, 30, 40, 8), COULEURS_RGB["rouge"]),   # rebord éclairé
+                          ((20, 38, 40, 42), NOIR),                     # face à l'ombre
+                          ((100, 30, 40, 8), COULEURS_RGB["bleu"]),
+                          ((100, 38, 40, 42), NOIR)])
+check("Constaté sur GPU : face à l'OMBRE (noire), seul le rebord coloré -> rouge",
+      couleur_boite(img2, L, H, (20, 30, 40, 50)) == "rouge")
+check("… et bleu pour l'autre", couleur_boite(img2, L, H, (100, 30, 40, 50)) == "bleu")
+check("Objet entièrement noir : pas de couleur de tri -> None",
+      couleur_boite(img2, L, H, (20, 40, 40, 38)) is None)
 check("Boîte hors de l'image -> None", couleur_boite(img, L, H, (500, 500, 20, 20)) is None)
 
 section("3 — PerceptionCouleur : même interface que le service")
