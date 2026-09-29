@@ -470,7 +470,7 @@ def main():
     ordre_donne = False
     chute = None
     k = 0
-    etat_prec, diag_image = None, False
+    etat_prec, diag_image, arret_signale = None, False, False
     t_mur = time.monotonic()
     print(f"\n  T1 — {DUREE:.0f} s simulées, vidéo "
           f"{'non' if not video_ok else f'accélérée ×{args.acceleration}'}\n")
@@ -516,6 +516,32 @@ def main():
                     print("      vue de la tête enregistrée : /tete.jpg sur la page de suivi",
                           flush=True)
         etat_prec = tri.etat
+        # DIAGNOSTIC SÉCURITÉ : à chaque arrêt, dire OÙ est l'obstacle et CE
+        # QUE c'est — une personne, ou autre chose (le robot lui-même mal
+        # filtré par le lidar, une table mal déclarée…). Premier essai GPU :
+        # arrêt près de la table de prise, cause non identifiable sans ça.
+        v_ = loco.dernier_verdict
+        if v_ is not None and v_.facteur <= 0.0 and not arret_signale:
+            arret_signale = True
+            pt = v_.point
+            pr_ = pose2d()
+            quoi = "aucun point (capteur muet ?)"
+            if pt is not None:
+                proches = sorted((math.hypot(f.p[0] - pt[0], f.p[1] - pt[1]), i)
+                                 for i, f in enumerate(figurants))
+                d_pers, i_pers = proches[0]
+                quoi = (f"PERSONNE n°{i_pers} (à {d_pers:.2f} m du point)" if d_pers < 0.35
+                        else f"PAS une personne (la plus proche à {d_pers:.2f} m du point)")
+                sur_robot = math.hypot(pt[0] - pr_.x, pt[1] - pr_.y)
+                quoi += f", point à {sur_robot:.2f} m du centre du robot"
+            msg = (f"[{t:7.1f}s] SÉCURITÉ arrêt : {v_.raison} — obstacle en "
+                   f"{None if pt is None else (round(pt[0], 2), round(pt[1], 2))}, "
+                   f"robot en ({pr_.x:.2f}, {pr_.y:.2f}) — {quoi}")
+            print("  " + msg, flush=True)
+            if suivi is not None:
+                suivi.journal(msg)
+        elif v_ is not None and v_.facteur > 0.0:
+            arret_signale = False
         if not ordre_donne and t > DUREE / 2:
             sup.ordonner("les colis bleus vont maintenant au poste C")
             ordre_donne = True
