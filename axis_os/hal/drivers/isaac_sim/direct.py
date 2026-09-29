@@ -70,8 +70,23 @@ async function maj() {
     if (e.arret_demande) { stop.disabled = true; stop.textContent = 'Arrêt demandé'; }
   } catch (_) { etat.textContent = 'test terminé ou injoignable'; }
 }
-// Flux coupé (réseau, redémarrage) : on se reconnecte.
-img.onerror = () => setTimeout(() => { img.src = '/flux?' + Date.now(); }, 2000);
+// Certains tunnels (ssheasy.com, proxys web) attendent la FIN d'une
+// réponse avant de la transmettre : un flux continu n'arrive alors jamais.
+// Si aucune image n'est affichée après 3 s, on passe en images
+// successives, qui traversent n'importe quel intermédiaire.
+let modeImages = false;
+function imagesSuccessives() {
+  if (modeImages) return; modeImages = true;
+  const suivante = () => {
+    const i = new Image();
+    i.onload = () => { img.src = i.src; setTimeout(suivante, 200); };
+    i.onerror = () => setTimeout(suivante, 1000);
+    i.src = '/image.jpg?' + Date.now();
+  };
+  suivante();
+}
+setTimeout(() => { if (!img.naturalWidth) { img.removeAttribute('src'); imagesSuccessives(); } }, 3000);
+img.onerror = () => imagesSuccessives();
 stop.onclick = async () => {
   if (!confirm('Arrêter le test ? La vidéo et le bilan seront écrits.')) return;
   await fetch('/arreter', {method: 'POST'}); maj();
