@@ -513,6 +513,21 @@ def main():
             break
         # DIAGNOSTIC PERCEPTION : une recherche vient de ne rien donner.
         # On dit ce qu'OWL-ViT a vu, et on garde ce que voyait la tête.
+        if etat_prec == "CHERCHER" and tri.etat not in ("CHERCHER", "ATTENDRE") \
+                and suivi is not None:
+            # Recherche RÉUSSIE : on garde aussi ce que voyait la tête, pour
+            # comparer avec une recherche vide (/tete_ok.jpg).
+            f_ = cam.capture()
+            if f_ is not None:
+                from PIL import Image as _I, ImageDraw as _D
+                im_ = _I.frombytes("RGB", (f_.width, f_.height), f_.data)
+                dr_ = _D.Draw(im_)
+                for d_ in percep_couleur.diagnostic.get("detections", [])[:8]:
+                    x_, y_, w_, h_ = d_["bbox"]
+                    dr_.rectangle([x_, y_, x_ + w_, y_ + h_], outline=(0, 255, 0), width=2)
+                    dr_.text((x_ + 3, max(0, y_ - 12)), str(d_["couleur"]), fill=(0, 255, 0))
+                dr_.text((5, 5), f"t = {t:.1f} s (recherche réussie)", fill=(255, 255, 255))
+                im_.save(str(VIDEOS / "direct" / "tete_ok.jpg"))
         if etat_prec == "CHERCHER" and tri.etat == "ATTENDRE":
             dg = percep_couleur.diagnostic
             print(f"  [perception {t:5.1f} s] rien de triable — détections par "

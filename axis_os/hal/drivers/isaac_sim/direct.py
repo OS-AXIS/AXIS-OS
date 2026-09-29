@@ -143,8 +143,10 @@ class SuiviDirect:
                         self._envoyer(200, j, "image/jpeg")
                     else:
                         self._envoyer(404, b"", "text/plain")
-                elif self.path.startswith("/tete.jpg"):
-                    p = suivi.dossier / "tete.jpg"      # vue de la tête du robot
+                elif self.path.split("?")[0] in ("/tete.jpg", "/tete_ok.jpg"):
+                    # vue de la tête du robot : dernière recherche vide, et
+                    # dernière recherche RÉUSSIE (pour comparer)
+                    p = suivi.dossier / self.path.split("?")[0].lstrip("/")
                     if p.exists():
                         self._envoyer(200, p.read_bytes(), "image/jpeg")
                     else:
