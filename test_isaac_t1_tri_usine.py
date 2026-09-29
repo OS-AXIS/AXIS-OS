@@ -267,7 +267,11 @@ def main():
     def pose_tete():
         p, q = robot.get_world_pose()
         R = quat_wxyz_to_matrix(q)
-        return np.asarray(p, dtype=float) + R @ np.array([0.0, 0.0, 0.45]), R
+        # 0.62 m au-dessus du bassin, soit ~1.42 m : AU-DESSUS de la tête du
+        # G1 (1.32 m). Premier essai GPU à 0.45 m : le capteur était DANS le
+        # volume de collision de la tête, chaque rayon s'y arrêtait — balayage
+        # vide, robot arrêté pour de bon.
+        return np.asarray(p, dtype=float) + R @ np.array([0.0, 0.0, 0.62]), R
 
     lidar = IsaacSimLidar("mid360", pose_tete, horloge)
     lidar.initialize()
@@ -551,6 +555,7 @@ def main():
             print(f"  [sécurité {t:6.1f} s] toujours arrêté : {v_.raison} — point "
                   f"{None if v_.point is None else tuple(round(c, 2) for c in v_.point)}, "
                   f"robot ({pr_.x:.2f}, {pr_.y:.2f})", flush=True)
+            print(f"      lidar : {lidar.stats}", flush=True)
             for i_, (f_, s_) in enumerate(zip(figurants, silhouettes)):
                 ph = s_.get_world_pose()[0]
                 print(f"      personne n°{i_} : prévue ({f_.p[0]:.2f}, {f_.p[1]:.2f}), "

@@ -104,7 +104,11 @@ def murs(obstacles):
 def scenario(carte, depart, but, position_personne, t_max=120.0):
     """position_personne(t) -> (x, y) ou None."""
     R = Robot(*depart)
-    fixes = murs(carte.obstacles)
+    # Un vrai lidar voit toujours le sol ; sans lui, un balayage vide
+    # arrête (à juste titre) le robot.
+    X, Y = np.meshgrid(np.arange(0.5, 9.5, 0.5), np.arange(0.5, 5.5, 0.5))
+    sol = np.c_[X.ravel(), Y.ravel(), np.zeros(X.size)]
+    fixes = np.vstack([murs(carte.obstacles), sol])
 
     def scan():
         p = position_personne(R.t)

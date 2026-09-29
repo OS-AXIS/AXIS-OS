@@ -130,11 +130,15 @@ class IsaacSimLidar(ILidar):
                 return p
             self.stats["impacts_sur_soi"] += 1
             p = np.asarray(p, dtype=float)
-            parcouru = float(np.dot(p - origine, d)) + 0.02
-            reste -= parcouru
+            parcouru = float(np.dot(p - origine, d))
+            # Impact à distance ~0 : le rayon est parti de L'INTÉRIEUR d'un
+            # corps du robot (PhysX signale le chevauchement initial). Un pas
+            # de 2 cm ne suffit pas à en sortir : on saute 15 cm.
+            saut = 0.15 if parcouru < 0.01 else 0.02
+            reste -= parcouru + saut
             if reste <= 0:
                 return None
-            origine = p + 0.02 * d
+            origine = p + saut * d
         return None
 
     def balayer(self) -> LidarScan:
@@ -147,6 +151,9 @@ class IsaacSimLidar(ILidar):
             if p is not None:
                 pts.append(p)
         self.stats["balayages"] += 1
+        self.stats["points_dernier_balayage"] = len(pts)
+        if not pts:
+            self.stats["balayages_vides"] = self.stats.get("balayages_vides", 0) + 1
         t = self._horloge()
         return LidarScan(points=np.asarray(pts, dtype=float).reshape(-1, 3),
                          frame_id="world", timestamp_ns=int(t * 1e9))

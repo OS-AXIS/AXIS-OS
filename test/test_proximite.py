@@ -218,6 +218,12 @@ contournement = [m for m in methodes
 check(f"Aucune méthode publique pour désactiver le gardien "
       f"(trouvé : {contournement or 'aucune'})", not contournement)
 
+import numpy as _np
+gv = GardienProximite(lambda: (_np.zeros((0, 3)), 0.0), lambda: POSE, horloge=lambda: 0.0)
+vv = gv.evaluer(0.0)
+check("Balayage VIDE (lidar aveugle, masqué par le robot lui-même) : ARRÊT, "
+      "avec la vraie raison", vv.facteur == 0.0 and "VIDE" in vv.raison)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

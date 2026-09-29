@@ -210,6 +210,15 @@ class GardienProximite:
             self._arrete = True
             return Verdict(0.0, None, f"balayage périmé de "
                                       f"{maintenant - horodatage:.2f} s — ARRÊT")
+        if points is None or len(points) == 0:
+            # Un lidar voit TOUJOURS quelque chose (au moins le sol). Un
+            # balayage vide, c'est un capteur aveugle ou masqué — constaté
+            # sur GPU : capteur placé DANS la tête du robot, chaque rayon
+            # s'arrêtait sur le robot lui-même. Arrêt, avec la vraie raison
+            # (la version précédente disait « zone pas encore dégagée »).
+            self.stats["capteur_muet"] += 1
+            self._arrete = True
+            return Verdict(0.0, None, "balayage VIDE — lidar aveugle ou masqué — ARRÊT")
         d, pt = self._plus_proche(points, self._pose(), maintenant)
 
         if d is not None and d < self.c.d_arret:
