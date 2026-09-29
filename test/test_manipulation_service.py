@@ -275,6 +275,33 @@ m2.reinitialiser()
 check("Pré-saisie abandonnée (accostage raté) : retour en posture de port",
       m2.etat is Etat.LIBRE and bras2["left_shoulder_roll_joint"] == p8.roulis_ouvert)
 
+section("9 — Franchir : lever l'objet AU-DESSUS du plateau avant d'avancer")
+m, bras, t, mains = monter_plateau()
+fond = lambda: mains()[0][2] - CARTON.hauteur / 2
+check(f"Porté : fond à {fond():.2f} m — trop bas pour passer au-dessus d'un "
+      f"plateau à 0.85 m avec 10 cm de marge", not m.degage_au_dessus(0.85))
+check("franchir() accepté", m.franchir(0.85).ok and m.etat is Etat.MONTEE)
+avancer(m, t, 3.0)
+check(f"Monté jusqu'à dégager le plateau (fond à {fond():.2f} m), toujours TENU",
+      m.etat is Etat.TENU and fond() >= 0.85 + Postures().marge_franchissement - 0.01)
+check("Sans monter plus que nécessaire (fond < plateau + 15 cm)", fond() < 0.85 + 0.15)
+m.poser(hauteur_surface=0.85)
+avancer(m, t, 5.0)
+check("Puis dépose sur ce plateau depuis la hauteur atteinte, jusqu'au bout",
+      m.etat is Etat.LIBRE and m.stats["deposes_plateau"] == 1)
+m, bras, t, mains = monter_plateau()
+r = m.franchir(0.60)
+check("Déjà au-dessus : rien à faire, pas de mouvement", r.ok and m.etat is Etat.TENU)
+m.franchir(1.40)
+avancer(m, t, 5.0)
+check("Plateau trop haut : on s'arrête à la limite des épaules, carton TENU, "
+      "raison donnée", m.etat is Etat.TENU and "trop haut" in m.raison
+      and bras["left_shoulder_pitch_joint"] >= Postures().tangage_haut - 1e-9)
+lim = {d.joint_id: d.limits for d in build_g1_joint_definitions("29dof")}
+po = posture_bras(Postures().roulis_serre, Postures().tangage_haut, Postures().coude)
+check("Posture la plus haute dans les butées de l'URDF 29 DOF",
+      all(lim[j].pos_min <= v <= lim[j].pos_max for j, v in po.items()))
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

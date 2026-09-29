@@ -257,10 +257,12 @@ check("Services démarrés, façade branchée", True)
 
 # ── Boucle à 50 Hz ──────────────────────────────────────────────────────
 viol = {"collision": 0, "vers_humain": 0, "poste_errone": 0, "bras_pendant_arret": 0,
-        "main_dans_carton": 0}
+        "main_dans_carton": 0, "carton_contre_table": 0}
+GLISSEMENT = 0.09   # le carton porté descend dans les mains : maximum mesuré dans W3
 d_min_humain = float("inf")
 etat_manip_prec = Etat.LIBRE
 ordre_donne = False
+mains_prec = None
 t_fin = DUREE + 300.0
 while not tri.termine and R.t < t_fin:
     R.t += DT
@@ -276,6 +278,18 @@ while not tri.termine and R.t < t_fin:
         viol["bras_pendant_arret"] += 1
     x0, y0 = R.x, R.y
     R.pas()
+    # Physique du carton porté : s'il arrive trop BAS, il bute contre le bord
+    # d'une table de dépose — le robot ne peut plus avancer (constaté sur GPU).
+    if monde.porte:
+        g_, d_ = monde.mains()
+        fond_reel = (g_[2] + d_[2]) / 2 - sd.HAUTEUR_CARTON / 2 - GLISSEMENT
+        avant = R.y + math.sin(R.cap) * (0.29 + sd.PROFONDEUR_CARTON / 2)
+        cx_ = R.x + math.cos(R.cap) * 0.29
+        for tb in TABLES_DEPOSE.values():
+            if fond_reel < PLATEAU and tb.xmin < cx_ < tb.xmax and avant > tb.ymin \
+                    and (R.x, R.y) != (x0, y0):  # il AVANCE et le carton bute
+                R.x, R.y = x0, y0
+                viol["carton_contre_table"] += 1
     tri.pas()
     # À mi-parcours, l'opérateur change une règle de vive voix.
     if not ordre_donne and R.t > DUREE / 2:
@@ -284,7 +298,7 @@ while not tri.termine and R.t < t_fin:
     # Le monde suit les mains : prise et dépose.
     if manip.etat is Etat.OUVERTURE and etat_manip_prec is not Etat.OUVERTURE:
         fond_ouverture = monde.mains()[0][2] - sd.HAUTEUR_CARTON / 2
-    if manip.etat is Etat.TENU and etat_manip_prec is not Etat.TENU:
+    if manip.etat is Etat.TENU and etat_manip_prec is Etat.LEVAGE:     # vraie prise
         x = monde.carton_entre_mains()
         monde.porte = monde.cartons.pop(x)
     if manip.etat is Etat.LIBRE and etat_manip_prec is Etat.OUVERTURE:
@@ -299,9 +313,12 @@ while not tri.termine and R.t < t_fin:
     # Constaté sur GPU : le robot HEURTAIT le carton en arrivant bras au port.
     # Aucune main ne doit entrer dans l'emprise d'un carton tant que les bras
     # ne sont pas grands ouverts (PRÊT) ou en train de serrer.
+    mains_avant = monde.mains()
     if manip.etat in (Etat.LIBRE, Etat.PRESAISIE):
-        g_, d_ = monde.mains()
-        for main in (g_, d_):
+        g_, d_ = mains_avant
+        for main, prec in zip((g_, d_), mains_prec or (g_, d_)):
+            if main[1] <= prec[1] + 1e-4:
+                continue            # seules les mains qui AVANCENT comptent
             for x_ in monde.cartons:
                 # Plus strict qu'un contact : avant l'ouverture, les mains ne
                 # dépassent PAS le plan de la face avant d'un carton proche
@@ -309,6 +326,7 @@ while not tri.termine and R.t < t_fin:
                 if abs(main[0] - x_) < sd.LARGEUR_CARTON / 2 + 0.10 and \
                         Y_BORD - 0.01 < main[1] < Y_BORD + sd.PROFONDEUR_CARTON:
                     viol["main_dans_carton"] += 1
+    mains_prec = mains_avant
     # Invariants de sécurité, à CHAQUE pas.
     if collision(R):
         viol["collision"] += 1
@@ -347,6 +365,10 @@ check(f"Chaque carton livré est posé SUR le plateau de son poste "
 chute_max = max((h for _, h in monde.chutes), default=0.0)
 check(f"… sans chute : ouverture au plus à 1.5 cm du plateau "
       f"(max {100 * chute_max:.1f} cm)", all(0.0 <= h <= 0.015 for _, h in sur_table))
+check(f"Carton levé AU-DESSUS du plateau avant d'avancer "
+      f"({manip.stats.get('franchissements', 0)} franchissements) : jamais contre "
+      f"le bord ({viol['carton_contre_table']} pas bloqués)",
+      viol["carton_contre_table"] == 0)
 check(f"Le robot recule avant de repartir d'une table ({facade.stats['reculs']} reculs)",
       facade.stats["reculs"] >= b.colis_tries)
 check("Aucun vert (sans règle) déplacé", all(c != "vert" for c, _, _ in monde.deposes))

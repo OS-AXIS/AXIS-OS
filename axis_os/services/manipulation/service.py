@@ -69,6 +69,14 @@ class Postures:
     # (constaté sur GPU, T1).
     roulis_presaisie: float = 0.32
     duree_presaisie_s: float = 0.6
+    # Franchissement : avant d'avancer au-dessus d'un plateau, le fond de
+    # l'objet porté doit le dépasser de `marge_franchissement`. Constaté sur
+    # GPU : le carton, qui glisse dans les mains pendant le trajet (jusqu'à
+    # 9 cm mesurés dans W3), butait contre le bord de la table. Marge large
+    # pour cette raison : la hauteur du fond est ESTIMÉE par les mains.
+    marge_franchissement: float = 0.10
+    tangage_haut: float = -0.85        # jamais plus haut
+    vitesse_montee: float = 0.30       # rad/s
     # Dépose sur un plateau : descente en BOUCLE FERMÉE sur la hauteur
     # mesurée des mains (proprioception), jusqu'à ce que le fond de l'objet
     # soit à `jeu_depose` du plateau. Jamais au-delà de `tangage_bas`.
@@ -104,6 +112,7 @@ class Etat(Enum):
     TENU = auto()
     POSE = auto()
     DESCENTE = auto()     # vers un plateau, en boucle fermée
+    MONTEE = auto()       # au-dessus d'un plateau avant d'avancer
     OUVERTURE = auto()
     ECHEC = auto()
 
@@ -152,6 +161,8 @@ class ManipulationService(IService):
         self._arret_securite = arret_securite
         self._surface: Optional[float] = None
         self._roulis_depart_serrage = postures.roulis_ouvert
+        self._tangage_courant = postures.tangage_port
+        self._tangage_depart = postures.tangage_leve
         self._tangage_ouverture = postures.tangage_port
         self._dernier_tick: Optional[float] = None
         self.stats = {"prises": 0, "prises_ratees": 0, "refus": 0, "poses": 0,
@@ -185,6 +196,7 @@ class ManipulationService(IService):
     # ---- outils ----------------------------------------------------------
 
     def _ecrire(self, roulis: float, tangage: float) -> None:
+        self._tangage_courant = tangage
         self._bras.update(posture_bras(roulis, tangage, self.p.coude))
 
     def _interp(self, a: float, b: float, duree: float) -> Tuple[float, bool]:
@@ -271,6 +283,23 @@ class ManipulationService(IService):
         h = self.objet.hauteur if self.objet is not None else 0.0
         return (float(g[2]) + float(d[2])) / 2.0 - h / 2.0
 
+    def degage_au_dessus(self, hauteur_surface: float) -> bool:
+        """L'objet porté passe-t-il au-dessus d'un plateau à cette hauteur ?"""
+        return self._fond_objet() >= hauteur_surface + self.p.marge_franchissement
+
+    def franchir(self, hauteur_surface: float) -> ServiceResult:
+        """Soulève l'objet tenu au-dessus d'un plateau AVANT d'avancer vers
+        lui — ce que fait quelqu'un qui pose un carton sur une table. Non
+        bloquant : état MONTEE puis TENU. Déjà assez haut : rien à faire."""
+        if self.etat is not Etat.TENU:
+            return ServiceResult(ok=False, reason="rien en main")
+        if self.degage_au_dessus(hauteur_surface):
+            return ServiceResult(ok=True, value="déjà au-dessus")
+        self._surface, self._tangage_depart = hauteur_surface, self._tangage_courant
+        self.raison = ""
+        self._aller(Etat.MONTEE)
+        return ServiceResult(ok=True)
+
     def poser(self, hauteur_surface: Optional[float] = None) -> ServiceResult:
         """Sans plateau : redescend à hauteur de port et ouvre. Avec
         `hauteur_surface` (m, monde) : descend jusqu'à ce que le fond de
@@ -288,6 +317,7 @@ class ManipulationService(IService):
                 f"plateau trop haut ({hauteur_surface:.2f} m) : le fond de "
                 f"l'objet est déjà à {fond:.2f} m"))
         self._surface = hauteur_surface
+        self._tangage_depart = self._tangage_courant    # d'où qu'on parte
         self._aller(Etat.DESCENTE)
         return ServiceResult(ok=True)
 
@@ -300,7 +330,7 @@ class ManipulationService(IService):
 
     # ---- boucle ----------------------------------------------------------
 
-    _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
+    _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.MONTEE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
                      Etat.DESCENTE)
 
     def tick(self) -> ServiceResult:
@@ -349,8 +379,22 @@ class ManipulationService(IService):
             self._ecrire(p.roulis_serre, t)
             if fini:
                 self._aller(Etat.OUVERTURE)
+        elif self.etat is Etat.MONTEE:
+            t = self._tangage_depart - p.vitesse_montee * (self._horloge() - self._t0)
+            if t <= p.tangage_haut:
+                self.stats["franchissements_impossibles"] = \
+                    self.stats.get("franchissements_impossibles", 0) + 1
+                self.raison = (f"plateau à {self._surface:.2f} m trop haut pour y "
+                               f"passer l'objet")
+                self._ecrire(p.roulis_serre, p.tangage_haut)
+                self.etat = Etat.TENU
+            else:
+                self._ecrire(p.roulis_serre, t)
+                if self.degage_au_dessus(self._surface):
+                    self.stats["franchissements"] = self.stats.get("franchissements", 0) + 1
+                    self.etat = Etat.TENU
         elif self.etat is Etat.DESCENTE:
-            t = p.tangage_leve + p.vitesse_descente * (self._horloge() - self._t0)
+            t = self._tangage_depart + p.vitesse_descente * (self._horloge() - self._t0)
             if t >= p.tangage_bas:
                 # Le plateau est hors d'atteinte : on NE lâche PAS de haut.
                 # On remonte en tenant, et on le dit.

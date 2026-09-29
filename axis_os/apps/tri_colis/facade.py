@@ -65,6 +65,11 @@ class ConfigFacade:
     # large des bras, à l'arrêt ; puis avance lente pour les glisser autour.
     recul_insertion: float = 0.18
     v_insertion: float = 0.08
+    # Blocage : s'il pousse sans se rapprocher de la cible de 1 cm en 2 s,
+    # le robot est bloqué (constaté sur GPU : carton contre le bord de la
+    # table de dépose, robot qui insistait). Il s'arrête, et l'app réessaie
+    # après un recul.
+    delai_blocage_s: float = 2.0
     tol_position: float = 0.015
     tol_cap: float = 0.04
     gain: float = 1.2
@@ -126,6 +131,7 @@ class FacadeServices:
         self._poste_depose: Optional[str] = None
         self._d0 = 0.0
         self._insertion: Optional[Pose2D] = None   # cible finale, après pré-saisie
+        self._progres = None                       # (distance, instant, cible)
         self._vmax = cfg.v_max
         self.stats = {"accostages": 0, "accostages_ratees": 0,
                       "detections_filtrees": 0, "reculs": 0}
@@ -230,7 +236,7 @@ class FacadeServices:
         ph = self._phase
         if ph == "ECHEC":
             return "ECHEC"
-        if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION"):
+        if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION", "FRANCHISSEMENT"):
             return self._etat_accostage
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
@@ -252,10 +258,29 @@ class FacadeServices:
             self._cible = self._apres_nav
             self._vmax = self.cfg.v_max
             self._phase, self._etat_accostage = "ACCOSTAGE", "EN_ROUTE"
+            pd = self.postes_depose.get(self._poste_depose)
+            if pd is not None and self.manip.etat is Etat.TENU \
+                    and not self.manip.degage_au_dessus(pd.hauteur):
+                # Devant la table, AVANT d'avancer : lever le carton au-dessus.
+                self.manip.franchir(pd.hauteur)
+                self._phase = "FRANCHISSEMENT"
             self._t_accostage = self._horloge()
             p = self._pose()
             self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
             self.stats["accostages"] += 1
+        if self._phase == "FRANCHISSEMENT" and self._etat_accostage == "EN_ROUTE":
+            if self.manip.etat is Etat.TENU:
+                pd = self.postes_depose.get(self._poste_depose)
+                if pd is not None and self.manip.degage_au_dessus(pd.hauteur):
+                    self._phase = "ACCOSTAGE"
+                    self._t_accostage = self._horloge()
+                    p = self._pose()
+                    self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
+                else:
+                    self._journal(f"dépose : {self.manip.raison or 'objet trop bas'}")
+                    self._etat_accostage = "ECHEC"
+                    self.stats["accostages_ratees"] += 1
+            return
         if self._phase == "PRESAISIE" and self._etat_accostage == "EN_ROUTE":
             if self.manip.etat is Etat.PRET:           # bras grands ouverts
                 self._phase, self._cible = "INSERTION", self._insertion
@@ -286,9 +311,13 @@ class FacadeServices:
         elif etat == "ARRIVE":
             self._accoste = True
             self._etat_accostage = "ARRIVE"
-        elif etat == "ECHEC":
+        elif etat in ("ECHEC", "BLOQUE"):
             self._etat_accostage = "ECHEC"
             self.stats["accostages_ratees"] += 1
+            if etat == "BLOQUE":
+                # Collé à quelque chose : la prochaine sortie commence par un
+                # recul, au lieu de repartir droit dans l'obstacle.
+                self._accoste = True
 
     def _pas_accostage(self) -> str:
         """Contrôleur d'accostage : vers self._cible, en ligne quasi droite,
@@ -300,6 +329,21 @@ class FacadeServices:
         ex, ey = c * dxw + s * dyw, -s * dxw + c * dyw     # repère du robot
         ecap = _angle(b.cap - p.cap)
         d = math.hypot(ex, ey)
+        t = self._horloge()
+        v = getattr(self.loco, "dernier_verdict", None)
+        if self._progres is None or self._progres[2] is not self._cible \
+                or d < self._progres[0] - 0.01 \
+                or (v is not None and v.facteur < 0.5):
+            # Il avance — ou la SÉCURITÉ le retient (personne proche) : ce
+            # n'est pas un blocage, le délai repart de zéro.
+            self._progres = (d, t, self._cible)          # il avance : on repart
+        elif t - self._progres[1] > cfg.delai_blocage_s and d > cfg.tol_position * 2:
+            self.loco.halt()
+            self.stats["blocages"] = self.stats.get("blocages", 0) + 1
+            self._journal(f"accostage BLOQUÉ à {d:.2f} m de la cible — arrêt, "
+                          f"pas d'insistance")
+            self._progres = None
+            return "BLOQUE"
         if d > self._d0 + cfg.marge_divergence or d > cfg.distance_max_accostage \
                 or self._horloge() - self._t_accostage > cfg.delai_accostage_s:
             self.loco.halt()
