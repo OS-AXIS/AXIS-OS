@@ -12,6 +12,14 @@
 set -euo pipefail
 CONTENEUR="isim-isaac-sim-1"
 DUREE="${1:-240}"; ACC="${2:-1}"; shift $(( $# > 2 ? 2 : $# )) || true
+# Un Ctrl+C sur « docker exec » coupe l'AFFICHAGE, pas la simulation dans
+# le conteneur : d'anciens tests continuaient de tourner, se partageaient
+# le GPU et occupaient le port du suivi en direct. On les arrête d'abord.
+if sudo docker exec "$CONTENEUR" pgrep -f test_isaac_ >/dev/null 2>&1; then
+  echo "Arrêt des anciens tests encore en cours dans le conteneur…"
+  sudo docker exec "$CONTENEUR" pkill -f test_isaac_ || true
+  sleep 5
+fi
 bash "$HOME/AXIS-OS/deploy/machine_gpu/copier_code.sh"
 mkdir -p "$HOME/videos"
 JOURNAL="$HOME/videos/t1_$(date +%Y%m%d_%H%M).log"
