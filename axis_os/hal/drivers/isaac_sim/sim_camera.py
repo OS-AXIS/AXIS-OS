@@ -116,6 +116,15 @@ class IsaacSimCamera(ICamera):
                 self._camera.add_distance_to_image_plane_to_frame()
             self._camera.set_focal_length(self._focal_mm / 10.0)
             self._camera.set_horizontal_aperture(self._aperture_mm / 10.0)
+            # Plan de coupe PROCHE à 1 cm. La valeur par défaut d'une caméra
+            # USD est 1 UNITÉ de scène, soit 1 m ici : tout ce qui est à
+            # moins d'un mètre était coupé, et on voyait l'INTÉRIEUR des
+            # objets, rendu en noir pur. Constaté sur GPU (T1) : faces des
+            # cartons tournées vers le robot noires (RGB 0,0,0) quel que
+            # soit l'éclairage, avec une frontière en biais là où le plan
+            # de coupe traversait un carton. Une caméra de tête doit voir
+            # ce qui est devant les mains.
+            self._camera.set_clipping_range(0.01, 1000.0)
         except Exception as exc:        # noqa: BLE001
             self._last_error = f"création de la caméra : {exc}"
             print(f"  [{self.sensor_id}] échec — {self._last_error}")
