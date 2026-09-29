@@ -97,9 +97,13 @@ class Figurant:
     Ce n'est PAS lui qui garantit l'absence de contact : les tests vérifient
     que le ROBOT ne s'approche jamais d'une personne proche."""
 
-    def __init__(self, a, b, vitesse=1.0, pause=4.0, evitement=1.1):
+    def __init__(self, a, b, vitesse=1.0, pause=4.0, evitement=1.1,
+                 pause_a=None):
+        """pause : à l'arrivée en b ; pause_a : à l'arrivée en a (par
+        défaut la même)."""
         self.a, self.b = np.array(a, float), np.array(b, float)
         self.v, self.pause, self.ev = vitesse, pause, evitement
+        self.pause_a = pause if pause_a is None else pause_a
         self.p, self.vers_b, self.attente = np.array(a, float), True, 0.0
 
     def pas(self, dt: float, rx: float, ry: float) -> None:
@@ -110,7 +114,8 @@ class Figurant:
         d = but - self.p
         n = float(np.linalg.norm(d))
         if n < 0.05:
-            self.vers_b, self.attente = not self.vers_b, self.pause
+            self.attente = self.pause if self.vers_b else self.pause_a
+            self.vers_b = not self.vers_b
             return
         suiv = self.p + d / n * min(self.v * dt, n)
         r = np.array([rx, ry])
@@ -137,5 +142,8 @@ def figurants() -> List[Figurant]:
         # un collègue qui vient régulièrement près du poste de prise
         # Pause de 15 s (45 s au premier essai GPU : trop de temps à attendre
         # pour une démonstration, sans rien montrer de plus).
-        Figurant((0.8, 0.5), (3.2, 1.2), vitesse=0.5, pause=15.0, evitement=0.6),
+        # Visite toutes les ~2 min (au premier essai GPU : toutes les 40 s,
+        # le robot ne faisait plus qu'attendre).
+        Figurant((0.8, 0.5), (3.2, 1.2), vitesse=0.5, pause=15.0, evitement=0.6,
+                 pause_a=90.0),
     ]

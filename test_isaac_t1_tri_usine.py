@@ -209,9 +209,12 @@ def main():
     dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
     dome.CreateIntensityAttr(500.0)   # 900 délavait les couleurs
     face = UsdLux.DistantLight.Define(stage, "/World/eclairage_face")
-    face.CreateIntensityAttr(1500.0)
+    face.CreateIntensityAttr(1800.0)
     face.CreateAngleAttr(1.0)
-    UsdGeom.Xformable(face).AddRotateXOp().Set(60.0)     # -Z -> (0, +0.87, -0.5)
+    # Presque À LA VERTICALE (15°) : à 60°, la lumière venait de derrière le
+    # robot et son OMBRE tombait sur les cartons qu'il regardait — couleur
+    # illisible (constaté sur GPU). D'en haut, l'ombre tombe à ses pieds.
+    UsdGeom.Xformable(face).AddRotateXOp().Set(15.0)
 
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
@@ -510,6 +513,8 @@ def main():
             for d_ in dg.get("detections", [])[:8]:
                 print(f"      vu : couleur={d_['couleur']} conf={d_['confiance']} "
                       f"pos={d_['position']} bbox={d_['bbox']}", flush=True)
+                if d_.get("mesure"):
+                    print(f"           {d_['mesure']}", flush=True)
             if suivi is not None and not diag_image:
                 f_ = cam.capture()
                 if f_ is not None:

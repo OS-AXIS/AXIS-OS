@@ -132,6 +132,7 @@ class FacadeServices:
         self._d0 = 0.0
         self._insertion: Optional[Pose2D] = None   # cible finale, après pré-saisie
         self._progres = None                       # (distance, instant, cible)
+        self._t_tick: Optional[float] = None
         self._vmax = cfg.v_max
         self.stats = {"accostages": 0, "accostages_ratees": 0,
                       "detections_filtrees": 0, "reculs": 0}
@@ -254,6 +255,15 @@ class FacadeServices:
 
     def tick(self) -> None:
         """À appeler à chaque pas de commande, APRÈS navigation.tick()."""
+        # Le temps passé arrêté par la SÉCURITÉ ne compte pas dans les délais
+        # d'accostage : attendre qu'une personne s'éloigne n'est pas un échec.
+        # (Constaté sur GPU : un collègue resté près du poste faisait échouer
+        # l'accostage par dépassement de délai.)
+        maintenant = self._horloge()
+        dt = 0.0 if self._t_tick is None else maintenant - self._t_tick
+        self._t_tick = maintenant
+        if self.bloque_par_securite():
+            self._t_accostage += dt
         if self._phase == "NAV_ACCOSTAGE" and self.nav.etat is EtatNavigation.ARRIVE:
             self._cible = self._apres_nav
             self._vmax = self.cfg.v_max

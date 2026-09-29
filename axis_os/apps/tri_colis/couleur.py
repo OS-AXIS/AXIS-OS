@@ -30,7 +30,9 @@ TEINTES: Dict[str, Tuple[Tuple[float, float], ...]] = {
 # (saturation 0.38), un bleu devient bleu ciel (0.40). Gris et blanc de la
 # scène restent sous 0.10.
 SATURATION_MIN = 0.25        # en dessous : gris, blanc
-LUMINOSITE_MIN = 0.12        # en dessous : trop sombre pour juger
+# 0.08 : un carton dans l'OMBRE du robot garde sa teinte, mais devient sombre
+# (constaté sur GPU) ; le noir pur reste exclu par la saturation.
+LUMINOSITE_MIN = 0.08
 
 
 def couleur_de(rgb: Tuple[float, float, float],
@@ -90,6 +92,31 @@ def couleur_boite(data: bytes, largeur: int, hauteur: int,
     if votes[meilleure] < majorite * colores:
         return None
     return meilleure
+
+
+def mesure_couleur(data: bytes, largeur: int, hauteur: int, bbox: Sequence[int]) -> str:
+    """Pour le diagnostic : RGB moyen au centre de la boîte, et part des
+    pixels jugés colorés par couleur. Dit POURQUOI une couleur est rejetée."""
+    x, y, w, h = (int(v) for v in bbox)
+    x0, x1 = max(0, x + w // 4), min(largeur, x + 3 * w // 4)
+    y0, y1 = max(0, y + h // 4), min(hauteur, y + 3 * h // 4)
+    if x1 <= x0 or y1 <= y0:
+        return "hors image"
+    somme, n, votes = [0.0, 0.0, 0.0], 0, {}
+    pas = max(1, min(x1 - x0, y1 - y0) // 20)
+    for yy in range(y0, y1, pas):
+        for xx in range(x0, x1, pas):
+            i = 3 * (yy * largeur + xx)
+            rgb = (data[i] / 255, data[i + 1] / 255, data[i + 2] / 255)
+            for k in range(3):
+                somme[k] += rgb[k]
+            c = couleur_de(rgb)
+            votes[c] = votes.get(c, 0) + 1
+            n += 1
+    moy = tuple(round(v / n, 2) for v in somme)
+    parts = ", ".join(f"{k or 'aucune'} {100 * v // n}%" for k, v in
+                      sorted(votes.items(), key=lambda kv: -kv[1]))
+    return f"RGB moyen {moy} — {parts}"
 
 
 def _recouvrement(a, b) -> float:
@@ -162,6 +189,7 @@ class PerceptionCouleur:
                                                "position": None})
                     continue
                 c = couleur_boite(img.data, img.width, img.height, d.bbox, self.couleurs)
+                mesure = mesure_couleur(img.data, img.width, img.height, d.bbox)
                 if c is None:
                     self.stats["sans_couleur"] += 1
                 classees.append((c, d))
@@ -170,7 +198,8 @@ class PerceptionCouleur:
                     "couleur": c, "confiance": round(float(d.confidence), 3),
                     "bbox": tuple(int(v) for v in d.bbox),
                     "position": None if p is None else
-                    (round(p.x, 2), round(p.y, 2), round(p.z, 2))})
+                    (round(p.x, 2), round(p.y, 2), round(p.z, 2)),
+                    "mesure": mesure})
         diag["image"] = img is not None
         self.diagnostic = diag
         self._cache_ns, self._cache = now_ns, classees

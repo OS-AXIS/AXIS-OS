@@ -142,7 +142,7 @@ class Monde:
         self.bras = {}
         self.humains = []
         for f in sd.figurants():
-            h = Humain(f.a, f.b, f.v, f.pause, f.ev)
+            h = Humain(f.a, f.b, f.v, f.pause, f.ev, f.pause_a)
             self.humains.append(h)
         self.faux_positif_sol = True
         for x in EMPLACEMENTS_X:

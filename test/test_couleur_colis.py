@@ -36,6 +36,9 @@ check("Constaté sur GPU : rouge DÉLAVÉ par l'éclairage (rose) -> rouge",
 check("… bleu délavé (bleu ciel) -> bleu", couleur_de((0.6, 0.78, 1.0)) == "bleu")
 check("Blanc bleuté, gris clair : toujours rien",
       couleur_de((0.88, 0.92, 0.97)) is None and couleur_de((0.85, 0.85, 0.9)) is None)
+check("Constaté sur GPU : carton dans l'OMBRE du robot (sombre) -> sa couleur quand même",
+      couleur_de((0.8 * 0.13, 0.1 * 0.13, 0.1 * 0.13)) == "rouge"
+      and couleur_de((0.1 * 0.13, 0.25 * 0.13, 0.8 * 0.13)) == "bleu")
 check("Carton brun (0.72, 0.52, 0.30) : PAS une couleur de tri",
       couleur_de((0.72, 0.52, 0.30)) is None)
 check("Gris de table : rien", couleur_de((0.45, 0.45, 0.50)) is None)
