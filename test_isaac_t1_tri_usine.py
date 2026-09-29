@@ -507,6 +507,12 @@ def main():
     # sans la politique d'équilibre, le robot tomberait avant de commencer.
     operateur(0.0, stats)
     viol_humain, d_min_humain = 0, float("inf")
+    # Rapprochement CUMULÉ vers chaque personne tant qu'elle est à moins de
+    # 0.75 m. Un robot debout oscille de quelques millimètres en gardant
+    # l'équilibre : ce n'est pas « aller vers » quelqu'un. Est en défaut un
+    # rapprochement de plus de 1 cm pendant un même épisode de proximité.
+    rapproche = {}                      # index personne -> cumul (m)
+    pas_vers_humain, rapproche_max, lignes_rappr = 0, 0.0, 0
     ordre_donne = False
     chute = None
     k = 0
@@ -660,8 +666,27 @@ def main():
             d = math.hypot(f.p[0] - pa.x, f.p[1] - pa.y) - 0.28   # surface de la silhouette
             d_min_humain = min(d_min_humain, d)
             d_av = math.hypot(f.p[0] - pr.x, f.p[1] - pr.y) - 0.28
-            if d < 0.75 and d < d_av - 1e-3:
-                viol_humain += 1
+            i_f = figurants.index(f)
+            if d >= 0.75:
+                rapproche.pop(i_f, None)
+                continue
+            if d < d_av - 1e-3:
+                pas_vers_humain += 1
+                cumul = rapproche.get(i_f, 0.0) + (d_av - d)
+                rapproche[i_f] = cumul
+                rapproche_max = max(rapproche_max, cumul)
+                if cumul > 0.01:
+                    viol_humain += 1
+                if lignes_rappr < 12:
+                    lignes_rappr += 1
+                    t_ = getattr(loco, "_twist", None)
+                    tw_ = None if t_ is None else \
+                        f"vx {t_.vx:+.2f} vy {t_.vy:+.2f} wz {t_.wz:+.2f}"
+                    print(f"  [rapprochement {sim_t[0]:6.1f} s] PERSONNE n°{i_f} à {d:.2f} m, "
+                          f"robot rapproché de {100 * (d_av - d):.1f} cm (cumul "
+                          f"{100 * cumul:.1f} cm), tâche {tri.etat}, "
+                          f"sécurité x{getattr(loco.dernier_verdict, 'facteur', float('nan')):.2f}"
+                          f"{'' if tw_ is None else f', consigne {tw_}'}", flush=True)
         if filmer:
             b = tri.bilan
             v = loco.dernier_verdict
@@ -708,8 +733,9 @@ def main():
             if lieu in ("A", "B", "C")]
     check(f"Cartons arrivés sur un plateau de dépose : {len(bons)}", len(bons) >= b.colis_tries)
     check(f"Aucun carton tombé au sol ({stats['chutes_carton']})", stats["chutes_carton"] == 0)
-    check(f"Le robot ne s'est jamais rapproché d'une personne à moins de 0.75 m "
-          f"({viol_humain} pas en défaut)", viol_humain == 0)
+    check(f"Le robot ne s'est jamais rapproché de plus de 1 cm d'une personne à moins "
+          f"de 0.75 m ({viol_humain} pas en défaut ; {pas_vers_humain} pas d'oscillation, "
+          f"rapprochement cumulé max {100 * rapproche_max:.1f} cm)", viol_humain == 0)
     check("Aucune consigne refusée par le garde-fou", loco.stats["refused"] == 0)
     check("Fin propre, bras vides", tri.etat == "FIN" and manip.etat is Etat.LIBRE)
     print(f"\n{'=' * 66}")
