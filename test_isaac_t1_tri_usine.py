@@ -335,10 +335,26 @@ def main():
         # Simulation : le carton a-t-il quitté la table avec les mains ? Sur
         # le vrai robot : l'effort mesuré aux épaules.
         c = carton_aux_mains()
-        if c is None:
-            return False
-        z = float(c["obj"].get_world_pose()[0][2])
-        return z > sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.015
+        ok_ = c is not None and float(c["obj"].get_world_pose()[0][2]) > \
+            sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.015
+        if not ok_:
+            # DIAGNOSTIC d'une prise ratée : où étaient les mains, le carton,
+            # et dans quel sens le carton était tourné (poussé en avançant ?).
+            g_, d_ = mains()
+            pr_ = pose2d()
+            print(f"  [prise ratée {sim_t[0]:5.1f} s] robot ({pr_.x:.2f}, {pr_.y:.2f}, "
+                  f"cap {math.degrees(pr_.cap):.0f}°), main G {np.round(g_, 3)}, "
+                  f"main D {np.round(d_, 3)}, écart des mains {np.linalg.norm(g_ - d_):.3f} m",
+                  flush=True)
+            for c_ in cartons:
+                if c_["lieu"] != "prise":
+                    continue
+                pc_, q_ = c_["obj"].get_world_pose()
+                lacet = math.degrees(2 * math.atan2(float(q_[3]), float(q_[0])))
+                print(f"      carton {c_['couleur']} en ({pc_[0]:.3f}, {pc_[1]:.3f}, "
+                      f"{pc_[2]:.3f}), tourné de {lacet:.0f}°"
+                      f"{'  <- entre les mains' if c_ is c else ''}", flush=True)
+        return ok_
 
     # ---- pile AXIS-OS -----------------------------------------------------
     hal = bridge.build_hal()
