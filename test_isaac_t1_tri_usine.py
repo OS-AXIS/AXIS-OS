@@ -542,6 +542,21 @@ def main():
                 suivi.journal(msg)
         elif v_ is not None and v_.facteur > 0.0:
             arret_signale = False
+        # Pendant un arrêt qui DURE : toutes les 10 s simulées, l'état complet.
+        # Premier essai GPU : arrêt de plus de 60 s alors que la personne
+        # devait partir après 45 s — on veut voir où elle est vraiment, pour
+        # la simulation (f.p) ET pour la physique (ce que voit le lidar).
+        if v_ is not None and v_.facteur <= 0.0 and k % 500 == 0:
+            pr_ = pose2d()
+            print(f"  [sécurité {t:6.1f} s] toujours arrêté : {v_.raison} — point "
+                  f"{None if v_.point is None else tuple(round(c, 2) for c in v_.point)}, "
+                  f"robot ({pr_.x:.2f}, {pr_.y:.2f})", flush=True)
+            for i_, (f_, s_) in enumerate(zip(figurants, silhouettes)):
+                ph = s_.get_world_pose()[0]
+                print(f"      personne n°{i_} : prévue ({f_.p[0]:.2f}, {f_.p[1]:.2f}), "
+                      f"physique ({float(ph[0]):.2f}, {float(ph[1]):.2f}), "
+                      f"à {math.hypot(f_.p[0] - pr_.x, f_.p[1] - pr_.y):.2f} m du robot, "
+                      f"pause {max(0.0, f_.attente):.0f} s", flush=True)
         if not ordre_donne and t > DUREE / 2:
             sup.ordonner("les colis bleus vont maintenant au poste C")
             ordre_donne = True

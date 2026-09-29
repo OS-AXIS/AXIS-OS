@@ -133,5 +133,7 @@ def figurants() -> List[Figurant]:
         Figurant((6.4, 0.5), (6.4, 7.5)),                       # traverse vers A
         Figurant((0.3, 3.2), (9.7, 3.2), vitesse=0.8, pause=10.0),
         # un collègue qui vient régulièrement près du poste de prise
-        Figurant((0.8, 0.5), (3.2, 1.2), vitesse=0.5, pause=45.0, evitement=0.6),
+        # Pause de 15 s (45 s au premier essai GPU : trop de temps à attendre
+        # pour une démonstration, sans rien montrer de plus).
+        Figurant((0.8, 0.5), (3.2, 1.2), vitesse=0.5, pause=15.0, evitement=0.6),
     ]
