@@ -111,7 +111,10 @@ dans /isaac-sim/python.sh -c "import torch" 2>/dev/null \
   || dans_root /isaac-sim/python.sh -m pip install -q torch torchvision \
        --index-url https://download.pytorch.org/whl/cu128
 dans /isaac-sim/python.sh -c "import torch; print('PyTorch', torch.__version__, '- GPU :', torch.cuda.is_available())"
-dans_root /isaac-sim/python.sh -m pip install -q onnxruntime-gpu transformers pillow
+# imageio-ffmpeg : encodeur des vidéos MP4 (et donc des images du suivi en
+# direct). Absent de l'image : « Could not find a backend to open .mp4 ».
+dans_root /isaac-sim/python.sh -m pip install -q onnxruntime-gpu transformers pillow \
+  "imageio[ffmpeg]" imageio-ffmpeg
 # Pré-télécharge OWL-ViT (sinon au premier test)
 dans /isaac-sim/python.sh -c "from transformers import OwlViTProcessor, OwlViTForObjectDetection as M; \
 OwlViTProcessor.from_pretrained('google/owlvit-base-patch32'); M.from_pretrained('google/owlvit-base-patch32'); print('OWL-ViT prêt')"
