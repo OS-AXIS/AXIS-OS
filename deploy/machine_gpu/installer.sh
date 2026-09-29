@@ -104,6 +104,13 @@ for f in "$HOME"/unitree_ros/robots/g1_description/meshes/*.STL; do
 done
 
 etape "8/9 Python d'Isaac Sim : ONNX Runtime GPU, OWL-ViT"
+# PyTorch n'est PAS fourni dans le Python de l'image Isaac Sim 6.1 : sans
+# lui, OWL-ViT ne se charge pas (« OwlViTForObjectDetection requires the
+# PyTorch library »). Roues CUDA 12.8, compatibles avec les pilotes récents.
+dans /isaac-sim/python.sh -c "import torch" 2>/dev/null \
+  || dans_root /isaac-sim/python.sh -m pip install -q torch torchvision \
+       --index-url https://download.pytorch.org/whl/cu128
+dans /isaac-sim/python.sh -c "import torch; print('PyTorch', torch.__version__, '- GPU :', torch.cuda.is_available())"
 dans_root /isaac-sim/python.sh -m pip install -q onnxruntime-gpu transformers pillow
 # Pré-télécharge OWL-ViT (sinon au premier test)
 dans /isaac-sim/python.sh -c "from transformers import OwlViTProcessor, OwlViTForObjectDetection as M; \
