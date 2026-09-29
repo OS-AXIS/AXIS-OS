@@ -244,6 +244,37 @@ avancer(m, t, 3.0)
 check("... puis la dépose se termine", m.etat is Etat.LIBRE
       and m.stats["deposes_plateau"] == 1)
 
+section("8 — Pré-saisie : ouvrir en grand AVANT d'entourer l'objet")
+m, bras, t = monter()
+lim = {d.joint_id: d.limits for d in build_g1_joint_definitions("29dof")}
+p8 = Postures()
+po = posture_bras(p8.roulis_presaisie, p8.tangage_port, p8.coude)
+check("Posture de pré-saisie dans les butées de l'URDF 29 DOF",
+      all(lim[j].pos_min <= v <= lim[j].pos_max for j, v in po.items()))
+check("Plus ouverte que la posture de port (les mains s'écartent)",
+      p8.roulis_presaisie > p8.roulis_ouvert)
+check("presaisir() accepté depuis LIBRE", m.presaisir().ok and m.etat is Etat.PRESAISIE)
+avancer(m, t, 0.3)
+mi = bras["left_shoulder_roll_joint"]
+check("Ouverture PROGRESSIVE, pas un à-coup",
+      p8.roulis_ouvert < mi < p8.roulis_presaisie)
+avancer(m, t, 0.5)
+check("Puis PRÊT, bras grands ouverts", m.etat is Etat.PRET
+      and abs(bras["left_shoulder_roll_joint"] - p8.roulis_presaisie) < 1e-9)
+check("prendre() accepté depuis PRÊT", m.prendre(CARTON).ok and m.etat is Etat.SERRAGE)
+t[0] += 0.02
+m.tick()
+check("Le serrage part de l'ouverture LARGE (pas de saut vers la posture de port)",
+      abs(bras["left_shoulder_roll_joint"] - p8.roulis_presaisie) < 0.05)
+avancer(m, t, 2.0)
+check("… et la prise se termine normalement", m.etat is Etat.TENU)
+m2, bras2, t2 = monter()
+m2.presaisir()
+avancer(m2, t2, 1.0)
+m2.reinitialiser()
+check("Pré-saisie abandonnée (accostage raté) : retour en posture de port",
+      m2.etat is Etat.LIBRE and bras2["left_shoulder_roll_joint"] == p8.roulis_ouvert)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

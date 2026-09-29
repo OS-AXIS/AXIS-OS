@@ -56,7 +56,9 @@ OBSTACLES: List[Rectangle] = [TABLE_PRISE, *TABLES_DEPOSE.values(), *ETAGERES]
 # Emplacements des cartons sur la table de prise : resserrés pour rester
 # dans le champ de la caméra (±30° avec une focale de 18 mm) depuis le
 # poste de prise, à 1 m.
-EMPLACEMENTS_X = [3.65, 4.00, 4.35]
+# Espacés de 40 cm (35 au premier essai GPU) : 16 cm entre deux cartons,
+# la place de glisser une main ouverte de part et d'autre du carton visé.
+EMPLACEMENTS_X = [3.60, 4.00, 4.40]
 Y_CARTON = TABLE_PRISE.ymin + 0.10   # centre des cartons
 
 POSTES = {

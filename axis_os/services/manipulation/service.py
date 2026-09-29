@@ -63,6 +63,12 @@ class Postures:
     duree_levage_s: float = 0.8
     duree_pose_s: float = 0.8
     duree_ouverture_s: float = 0.5
+    # Pré-saisie : bras OUVERTS PLUS LARGE avant de glisser les mains autour
+    # de l'objet, comme le ferait un humain. Sans elle, le robot avançait
+    # mains à 33 cm l'une de l'autre vers un carton de 24 cm, et le heurtait
+    # (constaté sur GPU, T1).
+    roulis_presaisie: float = 0.32
+    duree_presaisie_s: float = 0.6
     # Dépose sur un plateau : descente en BOUCLE FERMÉE sur la hauteur
     # mesurée des mains (proprioception), jusqu'à ce que le fond de l'objet
     # soit à `jeu_depose` du plateau. Jamais au-delà de `tangage_bas`.
@@ -91,6 +97,8 @@ class Objet:
 
 class Etat(Enum):
     LIBRE = auto()        # bras en posture de port, rien en main
+    PRESAISIE = auto()    # ouverture large, avant l'approche finale
+    PRET = auto()         # bras grands ouverts, prêts à entourer l'objet
     SERRAGE = auto()
     LEVAGE = auto()
     TENU = auto()
@@ -143,6 +151,7 @@ class ManipulationService(IService):
             arret_securite = lambda: gardien.arrete
         self._arret_securite = arret_securite
         self._surface: Optional[float] = None
+        self._roulis_depart_serrage = postures.roulis_ouvert
         self._tangage_ouverture = postures.tangage_port
         self._dernier_tick: Optional[float] = None
         self.stats = {"prises": 0, "prises_ratees": 0, "refus": 0, "poses": 0,
@@ -217,11 +226,23 @@ class ManipulationService(IService):
 
     # ---- API des apps ----------------------------------------------------
 
+    def presaisir(self) -> ServiceResult:
+        """Ouvre les bras en grand, À L'ARRÊT, avant l'approche finale.
+        Non bloquant : suivre l'état jusqu'à PRET."""
+        if not self._demarre:
+            return ServiceResult(ok=False, reason="service non démarré")
+        if self.etat is Etat.PRET:
+            return ServiceResult(ok=True)
+        if self.etat is not Etat.LIBRE:
+            return ServiceResult(ok=False, reason=f"occupé : {self.etat.name}")
+        self._aller(Etat.PRESAISIE)
+        return ServiceResult(ok=True)
+
     def prendre(self, objet: Objet) -> ServiceResult:
         """Non bloquant. Suivre la progression par etat, ou tick()."""
         if not self._demarre:
             return ServiceResult(ok=False, reason="service non démarré")
-        if self.etat is not Etat.LIBRE:
+        if self.etat not in (Etat.LIBRE, Etat.PRET):
             return ServiceResult(ok=False, reason=f"occupé : {self.etat.name}")
         ok, raison = self.entre_les_mains(objet)
         if not ok:
@@ -240,6 +261,8 @@ class ManipulationService(IService):
                 self.stats["refus"] += 1
                 return ServiceResult(ok=False, reason=f"exemption refusée — {r_e}")
         self.objet, self.raison = objet, ""
+        self._roulis_depart_serrage = (self.p.roulis_presaisie if self.etat is Etat.PRET
+                                       else self.p.roulis_ouvert)
         self._aller(Etat.SERRAGE)
         return ServiceResult(ok=True)
 
@@ -277,7 +300,7 @@ class ManipulationService(IService):
 
     # ---- boucle ----------------------------------------------------------
 
-    _EN_MOUVEMENT = (Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
+    _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
                      Etat.DESCENTE)
 
     def tick(self) -> ServiceResult:
@@ -293,8 +316,14 @@ class ManipulationService(IService):
             self.stats["gels_securite"] += 1
             return ServiceResult(ok=True, value=self.etat,
                                  reason="bras figés : arrêt de sécurité en cours")
-        if self.etat is Etat.SERRAGE:
-            r, fini = self._interp(p.roulis_ouvert, p.roulis_serre, p.duree_serrage_s)
+        if self.etat is Etat.PRESAISIE:
+            r, fini = self._interp(p.roulis_ouvert, p.roulis_presaisie, p.duree_presaisie_s)
+            self._ecrire(r, p.tangage_port)
+            if fini:
+                self.etat = Etat.PRET
+        elif self.etat is Etat.SERRAGE:
+            r, fini = self._interp(self._roulis_depart_serrage, p.roulis_serre,
+                                   p.duree_serrage_s)
             self._ecrire(r, p.tangage_port)
             if fini:
                 self._aller(Etat.LEVAGE)

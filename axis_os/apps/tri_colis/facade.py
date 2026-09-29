@@ -59,6 +59,12 @@ class ConfigFacade:
     position_face_avant: bool = True
     distance_prise: float = 0.29   # centre des mains devant la base
     recul_pre_pose: float = 0.45   # pré-pose, en arrière de la cible
+    # Approche finale « comme un humain » (constaté sur GPU : le robot
+    # avançait bras en posture de port et HEURTAIT le carton) : arrêt à
+    # `recul_insertion` de la cible, mains encore DEVANT le carton ; ouverture
+    # large des bras, à l'arrêt ; puis avance lente pour les glisser autour.
+    recul_insertion: float = 0.18
+    v_insertion: float = 0.08
     tol_position: float = 0.015
     tol_cap: float = 0.04
     gain: float = 1.2
@@ -119,6 +125,8 @@ class FacadeServices:
         self._apres_nav: Optional[Pose2D] = None # accostage à faire ensuite
         self._poste_depose: Optional[str] = None
         self._d0 = 0.0
+        self._insertion: Optional[Pose2D] = None   # cible finale, après pré-saisie
+        self._vmax = cfg.v_max
         self.stats = {"accostages": 0, "accostages_ratees": 0,
                       "detections_filtrees": 0, "reculs": 0}
 
@@ -168,6 +176,8 @@ class FacadeServices:
                 poste_depose: Optional[str] = None) -> Tuple[bool, str]:
         self._dest, self._apres_nav = dest, accostage
         self._poste_depose = poste_depose
+        if self.manip.etat is Etat.PRET:
+            self.manip.reinitialiser()      # pré-saisie abandonnée : bras au port
         if self._accoste:
             self._accoste = False
             p = self._pose()
@@ -175,6 +185,7 @@ class FacadeServices:
             self._cible = Pose2D(p.x - r0 * math.cos(p.cap),
                                  p.y - r0 * math.sin(p.cap), p.cap)
             self._phase, self._etat_accostage = "RECUL", "EN_ROUTE"
+            self._vmax = self.cfg.v_max
             self._t_accostage = self._horloge()
             self._d0 = self.cfg.recul_sortie
             self.stats["reculs"] += 1
@@ -197,6 +208,7 @@ class FacadeServices:
             return False, f"poste inconnu : « {poste} »"
         c, s = math.cos(but.cap), math.sin(but.cap)
         cible = Pose2D(but.x + pd.avance_m * c, but.y + pd.avance_m * s, but.cap)
+        self._insertion = None
         return self._partir(poste, cible, poste_depose=poste)
 
     def accoster(self, colis: Colis) -> Tuple[bool, str]:
@@ -207,15 +219,18 @@ class FacadeServices:
         p = self._pose()
         if math.hypot(cible.x - p.x, cible.y - p.y) > 3.0:
             return False, "colis à plus de 3 m : ce n'est pas celui de la table"
-        r0 = self.cfg.recul_pre_pose
+        r0, ri = self.cfg.recul_pre_pose, self.cfg.recul_insertion
         pre = Pose2D(cible.x - r0 * c, cible.y - r0 * s, self.cap_prise)
-        return self._partir(pre, cible)
+        attente = Pose2D(cible.x - ri * c, cible.y - ri * s, self.cap_prise)
+        ok, raison = self._partir(pre, attente)
+        self._insertion = cible
+        return ok, raison
 
     def navigation(self) -> str:
         ph = self._phase
         if ph == "ECHEC":
             return "ECHEC"
-        if ph == "ACCOSTAGE":
+        if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION"):
             return self._etat_accostage
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
@@ -235,17 +250,39 @@ class FacadeServices:
         """À appeler à chaque pas de commande, APRÈS navigation.tick()."""
         if self._phase == "NAV_ACCOSTAGE" and self.nav.etat is EtatNavigation.ARRIVE:
             self._cible = self._apres_nav
+            self._vmax = self.cfg.v_max
             self._phase, self._etat_accostage = "ACCOSTAGE", "EN_ROUTE"
             self._t_accostage = self._horloge()
             p = self._pose()
             self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
             self.stats["accostages"] += 1
-        if self._phase not in ("ACCOSTAGE", "RECUL") \
+        if self._phase == "PRESAISIE" and self._etat_accostage == "EN_ROUTE":
+            if self.manip.etat is Etat.PRET:           # bras grands ouverts
+                self._phase, self._cible = "INSERTION", self._insertion
+                self._vmax = self.cfg.v_insertion
+                self._t_accostage = self._horloge()
+                p = self._pose()
+                self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
+            elif self._horloge() - self._t_accostage > self.cfg.delai_accostage_s:
+                self._etat_accostage = "ECHEC"
+                self.stats["accostages_ratees"] += 1
+            return
+        if self._phase not in ("ACCOSTAGE", "INSERTION", "RECUL") \
                 or self._etat_accostage != "EN_ROUTE":
             return
         etat = self._pas_accostage()
         if etat == "ARRIVE" and self._phase == "RECUL":
             self._lancer_nav()
+        elif etat == "ARRIVE" and self._phase == "ACCOSTAGE" \
+                and self._insertion is not None:
+            # Arrêté devant le carton : on ouvre les bras en grand, à l'arrêt.
+            r = self.manip.presaisir()
+            if not r.ok:
+                self._etat_accostage = "ECHEC"
+                self.stats["accostages_ratees"] += 1
+                return
+            self._phase, self._t_accostage = "PRESAISIE", self._horloge()
+            self.stats["presaisies"] = self.stats.get("presaisies", 0) + 1
         elif etat == "ARRIVE":
             self._accoste = True
             self._etat_accostage = "ARRIVE"
@@ -267,8 +304,8 @@ class FacadeServices:
                 or self._horloge() - self._t_accostage > cfg.delai_accostage_s:
             self.loco.halt()
             return "ECHEC"
-        vx = self._franche(cfg.gain * ex, cfg.v_max) if abs(ex) > cfg.tol_position else 0.0
-        vy = self._franche(cfg.gain * ey, cfg.v_max) if abs(ey) > cfg.tol_position else 0.0
+        vx = self._franche(cfg.gain * ex, self._vmax) if abs(ex) > cfg.tol_position else 0.0
+        vy = self._franche(cfg.gain * ey, self._vmax) if abs(ey) > cfg.tol_position else 0.0
         wz = self._franche(cfg.gain * ecap, cfg.w_max) if abs(ecap) > cfg.tol_cap else 0.0
         if vx == vy == wz == 0.0:
             self.loco.halt()

@@ -256,7 +256,8 @@ for s in (loco, nav, manip):
 check("Services démarrés, façade branchée", True)
 
 # ── Boucle à 50 Hz ──────────────────────────────────────────────────────
-viol = {"collision": 0, "vers_humain": 0, "poste_errone": 0, "bras_pendant_arret": 0}
+viol = {"collision": 0, "vers_humain": 0, "poste_errone": 0, "bras_pendant_arret": 0,
+        "main_dans_carton": 0}
 d_min_humain = float("inf")
 etat_manip_prec = Etat.LIBRE
 ordre_donne = False
@@ -295,6 +296,19 @@ while not tri.termine and R.t < t_fin:
         monde.chutes.append((sur[0] if sur else None, fond_ouverture - PLATEAU))
         monde.porte = None
     etat_manip_prec = manip.etat
+    # Constaté sur GPU : le robot HEURTAIT le carton en arrivant bras au port.
+    # Aucune main ne doit entrer dans l'emprise d'un carton tant que les bras
+    # ne sont pas grands ouverts (PRÊT) ou en train de serrer.
+    if manip.etat in (Etat.LIBRE, Etat.PRESAISIE):
+        g_, d_ = monde.mains()
+        for main in (g_, d_):
+            for x_ in monde.cartons:
+                # Plus strict qu'un contact : avant l'ouverture, les mains ne
+                # dépassent PAS le plan de la face avant d'un carton proche
+                # (sur GPU, un désalignement de quelques cm suffisait au choc).
+                if abs(main[0] - x_) < sd.LARGEUR_CARTON / 2 + 0.10 and \
+                        Y_BORD - 0.01 < main[1] < Y_BORD + sd.PROFONDEUR_CARTON:
+                    viol["main_dans_carton"] += 1
     # Invariants de sécurité, à CHAQUE pas.
     if collision(R):
         viol["collision"] += 1
@@ -338,6 +352,9 @@ check(f"Le robot recule avant de repartir d'une table ({facade.stats['reculs']} 
 check("Aucun vert (sans règle) déplacé", all(c != "vert" for c, _, _ in monde.deposes))
 check("Aucun faux carton au sol pris", facade.stats["detections_filtrees"] > 0)
 check("Aucune collision avec une table ou une étagère", viol["collision"] == 0)
+check(f"Bras grands ouverts AVANT d'entourer chaque carton "
+      f"({facade.stats.get('presaisies', 0)} pré-saisies) : aucune main dans un carton",
+      viol["main_dans_carton"] == 0 and facade.stats.get("presaisies", 0) >= b.colis_tries)
 check("Le robot ne s'est JAMAIS rapproché d'un humain à moins de 0.75 m",
       viol["vers_humain"] == 0)
 check("Aucun mouvement de bras pendant un arrêt de sécurité "
