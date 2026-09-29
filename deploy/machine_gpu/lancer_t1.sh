@@ -22,13 +22,19 @@ if sudo docker exec "$CONTENEUR" pgrep -f test_isaac_ >/dev/null 2>&1; then
 fi
 bash "$HOME/AXIS-OS/deploy/machine_gpu/copier_code.sh"
 mkdir -p "$HOME/videos"
-JOURNAL="$HOME/videos/t1_$(date +%Y%m%d_%H%M).log"
-echo "Suivi en direct : http://localhost:8080 (après le tunnel SSH, voir en tête de ce script)"
-echo "Journal complet : $JOURNAL"
-# Affiché AU FIL DE L'EAU (pas seulement à la fin), et gardé dans le journal.
-sudo docker exec "$CONTENEUR" /isaac-sim/python.sh -u /isaac-sim/axis_os/test_isaac_t1_tri_usine.py \
-  --duree "$DUREE" --acceleration "$ACC" "$@" 2>&1 \
-  | grep --line-buffered -v -e "ext:" -e "Warning" | tee "$JOURNAL" || true
-sudo docker cp "$CONTENEUR:/isaac-sim/videos/t1_tri_usine.mp4" "$HOME/videos/" 2>/dev/null \
-  && echo "Vidéo : $HOME/videos/t1_tri_usine.mp4"
-echo "Journal complet : $JOURNAL"
+# Le test tourne DÉTACHÉ dans le conteneur : une connexion SSH qui se coupe
+# (onglet fermé, ordinateur en veille) n'arrête plus rien. Constaté : essai
+# de 30 min perdu sur « connexion terminée » — journal et vidéo jamais
+# récupérés. Ici, on ne fait que SUIVRE le journal ; si le suivi se coupe,
+#   bash ~/AXIS-OS/deploy/machine_gpu/suivre_t1.sh      reprend l'affichage
+#   bash ~/AXIS-OS/deploy/machine_gpu/recuperer_t1.sh   récupère vidéo et journal
+sudo docker exec "$CONTENEUR" rm -f /isaac-sim/videos/t1.log /isaac-sim/videos/t1.fini
+ARGS="--duree $DUREE --acceleration $ACC $*"
+sudo docker exec -d "$CONTENEUR" bash -c \
+  "mkdir -p /isaac-sim/videos && /isaac-sim/python.sh -u /isaac-sim/axis_os/test_isaac_t1_tri_usine.py $ARGS \
+   > /isaac-sim/videos/t1.log 2>&1; touch /isaac-sim/videos/t1.fini"
+echo "Test lancé en arrière-plan (il continue même si tu te déconnectes)."
+echo "Suivi en direct : http://localhost:8080 (via le tunnel SSH)"
+sleep 3
+bash "$HOME/AXIS-OS/deploy/machine_gpu/suivre_t1.sh"
+bash "$HOME/AXIS-OS/deploy/machine_gpu/recuperer_t1.sh"
