@@ -99,6 +99,7 @@ class TriColis:
         self._temps_etat = 0.0          # temps ACTIF passé dans l'état
         self._entree = True             # premier pas dans l'état courant
         self._essais_prise = 0
+        self._derniere_prise_ratee = None   # (position, couleur, essais) de la dernière prise ratée
         self._essais_nav = 0
         self._essais_pose = 0
         self._echecs_accostage: List[Tuple[float, float, float]] = []
@@ -236,7 +237,13 @@ class TriColis:
             return
         self._inactif_depuis, self._inactivite_signalee = None, False
         self.colis = max(candidats, key=lambda c: c.confiance)
-        self._essais_prise = 0
+        # Même colis qu'une prise ratée juste avant (même couleur, même
+        # place) : les essais continuent de compter. Sinon, on repart à zéro.
+        rate = self._derniere_prise_ratee
+        self._essais_prise = rate[2] if (
+            rate is not None and rate[1] == self.colis.couleur
+            and math.dist(rate[0], self.colis.position) < self.cfg.rayon_ignore_m) else 0
+        self._derniere_prise_ratee = None
         self._log(f"colis {self.colis.couleur} repéré "
                   f"(confiance {self.colis.confiance:.2f})")
         self._aller("ACCOSTER")
@@ -303,7 +310,14 @@ class TriColis:
         self._log(f"prise ratée ({raison}), essai {self._essais_prise}"
                   f"/{self.cfg.essais_prise_max}")
         if self._essais_prise < self.cfg.essais_prise_max:
-            self._aller("ACCOSTER")         # se replacer, puis réessayer
+            # On RE-REGARDE la table avant de réessayer. Constaté sur GPU :
+            # le carton, bousculé par la prise ratée, était tombé au sol ; le
+            # robot a refermé deux fois les mains sur le vide, à l'ancienne
+            # position. Une prise ratée peut avoir déplacé le colis.
+            self._derniere_prise_ratee = (self.colis.position, self.colis.couleur,
+                                          self._essais_prise)
+            self.colis = None
+            self._aller("REVENIR")          # recul, puis nouvelle recherche
         else:
             self._abandonner_colis(f"{self._essais_prise} prises ratées")
 

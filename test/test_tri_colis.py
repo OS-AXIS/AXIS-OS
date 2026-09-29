@@ -72,6 +72,17 @@ check("Passé le délai d'oubli, l'emplacement est réexaminé (l'opérateur a p
       "le dégager) — puis réabandonné proprement",
       tri.bilan.prises_ratees == 9 and tri.bilan.colis_abandonnes == 3)
 
+section("3c — Prise ratée qui fait TOMBER le colis : on re-regarde, pas de prise dans le vide")
+m = MondeFactice([("rouge", P[0]), ("bleu", P[1])], prises={0: 1})
+m.tombe_si_rate = {0}
+tri = executer(m, 300)
+check("Aucune prise refermée sur le vide (le robot re-regarde la table)",
+      m.prises_dans_le_vide == 0, )
+check("Une seule prise ratée, rien d'abandonné, l'autre colis livré",
+      tri.bilan.prises_ratees == 1 and tri.bilan.colis_abandonnes == 0
+      and tri.bilan.colis_tries == 1)
+check("Aucune violation", not m.violations)
+
 section("3b — Accostage raté : retour au poste, puis nouvel essai")
 m = MondeFactice([("rouge", P[0])])
 m.echecs_accostage = 2

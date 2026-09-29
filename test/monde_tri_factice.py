@@ -20,6 +20,8 @@ class MondeFactice:
         self.table = [dict(id=i, couleur=c, pos=p) for i, (c, p) in enumerate(colis)]
         self.prochain_id = len(self.table)
         self.prises = dict(prises or {})       # id -> nb d'échecs avant succès
+        self.tombe_si_rate = set()              # ids qui tombent quand la prise rate
+        self.prises_dans_le_vide = 0
         self.inaccessibles = set(inaccessibles)
         self.humains = list(humains)           # (début, fin) d'arrêt sécurité
         self.duree_trajet = duree_trajet
@@ -136,6 +138,7 @@ class MondeFactice:
             self.violations.append(f"{self.t:.1f}s prise sans être accosté")
         c = self._colis_a(colis)
         if c is None:
+            self.prises_dans_le_vide += 1
             return False, "plus de colis ici"
         restant = self.prises.get(c["id"], 0)
         rate = restant > 0 or self.rng.random() < self.p_rate
@@ -144,6 +147,10 @@ class MondeFactice:
         self.manip, self._reste_manip = "PRISE", 2.0
         if rate:
             self._manip_resultat = "ECHEC"
+            if c["id"] in self.tombe_si_rate:
+                # Constaté sur GPU : bousculé par la prise ratée, le carton
+                # tombe de la table.
+                self.table.remove(c)
         else:
             self._manip_resultat = "TENU"
             self.table.remove(c)
