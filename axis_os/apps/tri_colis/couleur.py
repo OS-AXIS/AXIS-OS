@@ -106,18 +106,27 @@ class PerceptionCouleur:
         self._cache_ns: Optional[int] = None
         self._cache: List = []
         self.stats = {"inferences": 0, "sans_couleur": 0}
+        # Ce qu'a vu la DERNIÈRE recherche, détection par détection : pour
+        # comprendre un « rien trouvé » (IA muette ? couleur rejetée ?
+        # position filtrée ?) sans deviner.
+        self.diagnostic: dict = {}
 
     def _detections(self, now_ns, frame) -> Tuple[List, Optional[str]]:
         if now_ns is not None and now_ns == self._cache_ns:
             return self._cache, None
         dets, raison = [], None
+        diag = {"par_requete": {}, "raisons": [], "detections": []}
         for rq in self.requetes:
             r = self.perception.find(rq, now_ns=now_ns, frame=frame)
             self.stats["inferences"] += 1
             if r.ok:
                 dets += list(r.value or [])
+                diag["par_requete"][rq] = len(r.value or [])
             else:
                 raison = r.reason
+                diag["par_requete"][rq] = 0
+            if r.reason:
+                diag["raisons"].append(f"{rq} : {r.reason}")
         dets = sans_doublons(dets)
         img = self.camera.capture()
         classees = []
@@ -127,6 +136,14 @@ class PerceptionCouleur:
                 if c is None:
                     self.stats["sans_couleur"] += 1
                 classees.append((c, d))
+                p = d.position_3d
+                diag["detections"].append({
+                    "couleur": c, "confiance": round(float(d.confidence), 3),
+                    "bbox": tuple(int(v) for v in d.bbox),
+                    "position": None if p is None else
+                    (round(p.x, 2), round(p.y, 2), round(p.z, 2))})
+        diag["image"] = img is not None
+        self.diagnostic = diag
         self._cache_ns, self._cache = now_ns, classees
         return classees, (raison if not dets else None)
 

@@ -457,6 +457,7 @@ def main():
     ordre_donne = False
     chute = None
     k = 0
+    etat_prec, diag_image = None, False
     t_mur = time.monotonic()
     print(f"\n  T1 — {DUREE:.0f} s simulées, vidéo "
           f"{'non' if not video_ok else f'accélérée ×{args.acceleration}'}\n")
@@ -481,6 +482,27 @@ def main():
         if loco.state is LocomotionState.FALLEN:
             chute = (t, tri.etat)
             break
+        # DIAGNOSTIC PERCEPTION : une recherche vient de ne rien donner.
+        # On dit ce qu'OWL-ViT a vu, et on garde ce que voyait la tête.
+        if etat_prec == "CHERCHER" and tri.etat == "ATTENDRE":
+            dg = percep_couleur.diagnostic
+            print(f"  [perception {t:5.1f} s] rien de triable — détections par "
+                  f"requête {dg.get('par_requete')}, image={dg.get('image')}", flush=True)
+            for r_ in dg.get("raisons", []):
+                print(f"      raison : {r_}", flush=True)
+            for d_ in dg.get("detections", [])[:8]:
+                print(f"      vu : couleur={d_['couleur']} conf={d_['confiance']} "
+                      f"pos={d_['position']} bbox={d_['bbox']}", flush=True)
+            if suivi is not None and not diag_image:
+                f_ = cam.capture()
+                if f_ is not None:
+                    from PIL import Image as _I
+                    _I.frombytes("RGB", (f_.width, f_.height), f_.data).save(
+                        str(VIDEOS / "direct" / "tete.jpg"))
+                    diag_image = True
+                    print("      vue de la tête enregistrée : /tete.jpg sur la page de suivi",
+                          flush=True)
+        etat_prec = tri.etat
         if not ordre_donne and t > DUREE / 2:
             sup.ordonner("les colis bleus vont maintenant au poste C")
             ordre_donne = True
