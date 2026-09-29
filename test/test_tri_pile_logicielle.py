@@ -69,11 +69,22 @@ class Robot:
         self.x, self.y, self.cap, self.t = x, y, cap, 0.0
         self.twist = Twist()
         self.rng = random.Random(graine)
+        # Constaté sur GPU : après la consigne d'arrêt, la politique de marche
+        # finit ses pas — le robot PIÉTINE encore ~0.5 s, et dérive un peu.
+        self.inertie, self.v_res = 0.0, (0.0, 0.0)
 
     def pas(self):
         tw = self.twist
         if math.sqrt(tw.vx ** 2 + tw.vy ** 2 + tw.wz ** 2) < 0.05:
+            if self.inertie > 0:         # derniers pas après l'arrêt
+                self.inertie -= DT
+                c, s = math.cos(self.cap), math.sin(self.cap)
+                vx, vy = self.v_res
+                self.x += (vx * c - vy * s) * DT
+                self.y += (vx * s + vy * c) * DT
             return                       # mode équilibre : ne marche pas
+        self.inertie = 0.5
+        self.v_res = (0.3 * tw.vx, 0.3 * tw.vy)
         f = 1.0 + self.rng.uniform(-0.08, 0.08)
         self.cap += tw.wz * f * DT
         c, s = math.cos(self.cap), math.sin(self.cap)
@@ -257,7 +268,7 @@ check("Services démarrés, façade branchée", True)
 
 # ── Boucle à 50 Hz ──────────────────────────────────────────────────────
 viol = {"collision": 0, "vers_humain": 0, "poste_errone": 0, "bras_pendant_arret": 0,
-        "main_dans_carton": 0, "carton_contre_table": 0}
+        "main_dans_carton": 0, "carton_contre_table": 0, "bras_en_piétinant": 0}
 GLISSEMENT = 0.09   # le carton porté descend dans les mains : maximum mesuré dans W3
 d_min_humain = float("inf")
 etat_manip_prec = Etat.LIBRE
@@ -278,6 +289,11 @@ while not tri.termine and R.t < t_fin:
         viol["bras_pendant_arret"] += 1
     x0, y0 = R.x, R.y
     R.pas()
+    # Constaté sur GPU : ouvrir, serrer ou poser en PIÉTINANT touche et
+    # déplace le carton. Ces gestes-là se font robot immobile.
+    if bras != bras_avant and (R.x, R.y) != (x0, y0) and manip.etat in (
+            Etat.PRESAISIE, Etat.SERRAGE, Etat.DESCENTE, Etat.OUVERTURE):
+        viol["bras_en_piétinant"] += 1
     # Physique du carton porté : s'il arrive trop BAS, il bute contre le bord
     # d'une table de dépose — le robot ne peut plus avancer (constaté sur GPU).
     if monde.porte:
@@ -377,6 +393,10 @@ check("Aucune collision avec une table ou une étagère", viol["collision"] == 0
 check(f"Bras grands ouverts AVANT d'entourer chaque carton "
       f"({facade.stats.get('presaisies', 0)} pré-saisies) : aucune main dans un carton",
       viol["main_dans_carton"] == 0 and facade.stats.get("presaisies", 0) >= b.colis_tries)
+check(f"Bras ouverts, serrés ou posés robot IMMOBILE, jamais en piétinant "
+      f"({viol['bras_en_piétinant']} pas en défaut, "
+      f"{facade.stats.get('stabilisations', 0)} immobilisations)",
+      viol["bras_en_piétinant"] == 0 and facade.stats.get("stabilisations", 0) > 0)
 check("Le robot ne s'est JAMAIS rapproché d'un humain à moins de 0.75 m",
       viol["vers_humain"] == 0)
 check("Aucun mouvement de bras pendant un arrêt de sécurité "

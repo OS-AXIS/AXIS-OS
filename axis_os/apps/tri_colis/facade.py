@@ -70,6 +70,15 @@ class ConfigFacade:
     # table de dépose, robot qui insistait). Il s'arrête, et l'app réessaie
     # après un recul.
     delai_blocage_s: float = 2.0
+    # Stabilisation : arrivé, le robot s'IMMOBILISE avant de bouger les
+    # bras (ouvrir, prendre, poser). Constaté sur GPU : il ouvrait ou
+    # serrait les bras en piétinant encore — la politique de marche finit
+    # ses pas après la consigne d'arrêt —, touchait et déplaçait le carton.
+    # Immobile = moins de `derive_stable_m` de déplacement pendant
+    # `duree_stabilisation_s`, attendu au plus `stabilisation_max_s`.
+    duree_stabilisation_s: float = 0.6
+    derive_stable_m: float = 0.01
+    stabilisation_max_s: float = 3.0
     tol_position: float = 0.015
     tol_cap: float = 0.04
     gain: float = 1.2
@@ -131,6 +140,8 @@ class FacadeServices:
         self._poste_depose: Optional[str] = None
         self._d0 = 0.0
         self._insertion: Optional[Pose2D] = None   # cible finale, après pré-saisie
+        self._apres_stab, self._phase_avant_stab = "ARRIVE", "ACCOSTAGE"
+        self._t_stab0, self._ref_stab = 0.0, (0.0, 0.0, 0.0)
         self._progres = None                       # (distance, instant, cible)
         self._t_tick: Optional[float] = None
         self._vmax = cfg.v_max
@@ -237,7 +248,8 @@ class FacadeServices:
         ph = self._phase
         if ph == "ECHEC":
             return "ECHEC"
-        if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION", "FRANCHISSEMENT"):
+        if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION", "FRANCHISSEMENT",
+                  "STABILISATION"):
             return self._etat_accostage
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
@@ -264,6 +276,7 @@ class FacadeServices:
         self._t_tick = maintenant
         if self.bloque_par_securite():
             self._t_accostage += dt
+            self._t_stab0 += dt
         if self._phase == "NAV_ACCOSTAGE" and self.nav.etat is EtatNavigation.ARRIVE:
             self._cible = self._apres_nav
             self._vmax = self.cfg.v_max
@@ -291,6 +304,25 @@ class FacadeServices:
                     self._etat_accostage = "ECHEC"
                     self.stats["accostages_ratees"] += 1
             return
+        if self._phase == "STABILISATION" and self._etat_accostage == "EN_ROUTE":
+            self.loco.halt()
+            if not self._immobile():
+                return
+            self.stats["stabilisations"] = self.stats.get("stabilisations", 0) + 1
+            if self._apres_stab == "PRESAISIE":
+                # Immobile devant le carton : on ouvre les bras en grand.
+                r = self.manip.presaisir()
+                if not r.ok:
+                    self._etat_accostage = "ECHEC"
+                    self.stats["accostages_ratees"] += 1
+                    return
+                self._phase, self._t_accostage = "PRESAISIE", self._horloge()
+                self.stats["presaisies"] = self.stats.get("presaisies", 0) + 1
+            else:
+                self._phase = self._phase_avant_stab
+                self._accoste = True
+                self._etat_accostage = "ARRIVE"
+            return
         if self._phase == "PRESAISIE" and self._etat_accostage == "EN_ROUTE":
             if self.manip.etat is Etat.PRET:           # bras grands ouverts
                 self._phase, self._cible = "INSERTION", self._insertion
@@ -308,19 +340,10 @@ class FacadeServices:
         etat = self._pas_accostage()
         if etat == "ARRIVE" and self._phase == "RECUL":
             self._lancer_nav()
-        elif etat == "ARRIVE" and self._phase == "ACCOSTAGE" \
-                and self._insertion is not None:
-            # Arrêté devant le carton : on ouvre les bras en grand, à l'arrêt.
-            r = self.manip.presaisir()
-            if not r.ok:
-                self._etat_accostage = "ECHEC"
-                self.stats["accostages_ratees"] += 1
-                return
-            self._phase, self._t_accostage = "PRESAISIE", self._horloge()
-            self.stats["presaisies"] = self.stats.get("presaisies", 0) + 1
         elif etat == "ARRIVE":
-            self._accoste = True
-            self._etat_accostage = "ARRIVE"
+            # Arrivé : d'abord s'immobiliser, PUIS bouger les bras.
+            ouvrir = self._phase == "ACCOSTAGE" and self._insertion is not None
+            self._stabiliser("PRESAISIE" if ouvrir else "ARRIVE")
         elif etat in ("ECHEC", "BLOQUE"):
             self._etat_accostage = "ECHEC"
             self.stats["accostages_ratees"] += 1
@@ -328,6 +351,25 @@ class FacadeServices:
                 # Collé à quelque chose : la prochaine sortie commence par un
                 # recul, au lieu de repartir droit dans l'obstacle.
                 self._accoste = True
+
+    def _stabiliser(self, ensuite: str) -> None:
+        self.loco.halt()
+        self._phase_avant_stab, self._apres_stab = self._phase, ensuite
+        self._phase = "STABILISATION"
+        t, p = self._horloge(), self._pose()
+        self._t_stab0, self._ref_stab = t, (t, p.x, p.y)
+
+    def _immobile(self) -> bool:
+        """Vrai quand la base n'a pas bougé de plus de derive_stable_m depuis
+        duree_stabilisation_s (ou au bout de stabilisation_max_s). Le temps
+        d'arrêt de SÉCURITÉ ne compte pas : on attend d'être libre."""
+        cfg, t, p = self.cfg, self._horloge(), self._pose()
+        t_ref, x_ref, y_ref = self._ref_stab
+        if math.hypot(p.x - x_ref, p.y - y_ref) > cfg.derive_stable_m:
+            self._ref_stab = (t, p.x, p.y)       # il bouge encore
+            t_ref = t
+        return (t - t_ref >= cfg.duree_stabilisation_s
+                or t - self._t_stab0 >= cfg.stabilisation_max_s)
 
     def _pas_accostage(self) -> str:
         """Contrôleur d'accostage : vers self._cible, en ligne quasi droite,
