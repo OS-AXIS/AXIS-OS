@@ -281,7 +281,7 @@ class FacadeServices:
         if self._phase == "FRANCHISSEMENT" and self._etat_accostage == "EN_ROUTE":
             if self.manip.etat is Etat.TENU:
                 pd = self.postes_depose.get(self._poste_depose)
-                if pd is not None and self.manip.degage_au_dessus(pd.hauteur):
+                if pd is not None and self.manip.peut_franchir(pd.hauteur):
                     self._phase = "ACCOSTAGE"
                     self._t_accostage = self._horloge()
                     p = self._pose()

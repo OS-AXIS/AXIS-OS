@@ -207,14 +207,23 @@ def main():
     # du robot (vers +y, en plongée de 30°).
     from pxr import UsdLux
     dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
-    dome.CreateIntensityAttr(500.0)   # 900 délavait les couleurs
-    face = UsdLux.DistantLight.Define(stage, "/World/eclairage_face")
-    face.CreateIntensityAttr(1800.0)
-    face.CreateAngleAttr(1.0)
-    # Presque À LA VERTICALE (15°) : à 60°, la lumière venait de derrière le
-    # robot et son OMBRE tombait sur les cartons qu'il regardait — couleur
-    # illisible (constaté sur GPU). D'en haut, l'ombre tombe à ses pieds.
-    UsdGeom.Xformable(face).AddRotateXOp().Set(15.0)
+    dome.CreateIntensityAttr(400.0)   # 900 délavait les couleurs
+    # DEUX lumières venant du côté du robot, en diagonale (40° à gauche et à
+    # droite, plongée de 50°). Historique GPU :
+    #   - lumière de face à 60° : l'ombre du robot couvrait les cartons ;
+    #   - lumière presque verticale (15°) : la face des cartons tournée vers
+    #     le robot ne recevait presque rien — RGB mesuré (0, 0, 0), aucune
+    #     couleur lisible ; le dôme seul n'éclaire pas ces faces.
+    # En diagonale, les faces avant sont éclairées, et l'ombre de la tête,
+    # au poste de prise, tombe 0.5 m DEVANT la table, décalée de côté
+    # (calcul : y = 1.46 pour un bord de table à y = 2.0).
+    for nom_l, lacet in (("eclairage_gauche", 40.0), ("eclairage_droite", -40.0)):
+        lum = UsdLux.DistantLight.Define(stage, f"/World/{nom_l}")
+        lum.CreateIntensityAttr(1100.0)
+        lum.CreateAngleAttr(1.0)
+        xf_l = UsdGeom.Xformable(lum)
+        xf_l.AddRotateZOp().Set(lacet)       # appliquée APRÈS la plongée
+        xf_l.AddRotateXOp().Set(50.0)        # plongée, lumière vers +y
 
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
@@ -515,15 +524,24 @@ def main():
                       f"pos={d_['position']} bbox={d_['bbox']}", flush=True)
                 if d_.get("mesure"):
                     print(f"           {d_['mesure']}", flush=True)
-            if suivi is not None and not diag_image:
+            if suivi is not None:
+                # Vue de la tête À CHAQUE recherche vide (écrasée), avec les
+                # boîtes d'OWL-ViT et la couleur retenue : on VOIT pourquoi.
                 f_ = cam.capture()
                 if f_ is not None:
-                    from PIL import Image as _I
-                    _I.frombytes("RGB", (f_.width, f_.height), f_.data).save(
-                        str(VIDEOS / "direct" / "tete.jpg"))
-                    diag_image = True
-                    print("      vue de la tête enregistrée : /tete.jpg sur la page de suivi",
-                          flush=True)
+                    from PIL import Image as _I, ImageDraw as _D
+                    im_ = _I.frombytes("RGB", (f_.width, f_.height), f_.data)
+                    dr_ = _D.Draw(im_)
+                    for d_ in dg.get("detections", [])[:8]:
+                        x_, y_, w_, h_ = d_["bbox"]
+                        dr_.rectangle([x_, y_, x_ + w_, y_ + h_], outline=(255, 255, 0), width=2)
+                        dr_.text((x_ + 3, max(0, y_ - 12)), str(d_["couleur"]), fill=(255, 255, 0))
+                    dr_.text((5, 5), f"t = {t:.1f} s", fill=(255, 255, 255))
+                    im_.save(str(VIDEOS / "direct" / "tete.jpg"))
+                    if not diag_image:
+                        diag_image = True
+                        print("      vue de la tête (mise à jour à chaque recherche vide) : "
+                              "/tete.jpg sur la page de suivi", flush=True)
         etat_prec = tri.etat
         # DIAGNOSTIC SÉCURITÉ : à chaque arrêt, dire OÙ est l'obstacle et CE
         # QUE c'est — une personne, ou autre chose (le robot lui-même mal

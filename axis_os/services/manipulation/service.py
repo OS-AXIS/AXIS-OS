@@ -77,6 +77,14 @@ class Postures:
     marge_franchissement: float = 0.10
     tangage_haut: float = -0.85        # jamais plus haut
     vitesse_montee: float = 0.30       # rad/s
+    # Le bras CHARGÉ suit la consigne avec retard (gains doux, poids du
+    # carton). Constaté sur GPU : l'échec « plateau trop haut » tombait à
+    # l'instant où la CONSIGNE touchait la limite, les mains encore en
+    # train de monter. On laisse le bras rejoindre avant de conclure.
+    stabilisation_montee_s: float = 1.2
+    # Après stabilisation, une marge réduite suffit : la détection de
+    # blocage de la façade reste le filet si le carton touche malgré tout.
+    marge_franchissement_min: float = 0.05
     # Dépose sur un plateau : descente en BOUCLE FERMÉE sur la hauteur
     # mesurée des mains (proprioception), jusqu'à ce que le fond de l'objet
     # soit à `jeu_depose` du plateau. Jamais au-delà de `tangage_bas`.
@@ -160,6 +168,8 @@ class ManipulationService(IService):
             arret_securite = lambda: gardien.arrete
         self._arret_securite = arret_securite
         self._surface: Optional[float] = None
+        self._franchi: Optional[float] = None     # plateau dégagé par la dernière montée
+        self._t_limite: Optional[float] = None
         self._roulis_depart_serrage = postures.roulis_ouvert
         self._tangage_courant = postures.tangage_port
         self._tangage_depart = postures.tangage_leve
@@ -272,7 +282,7 @@ class ManipulationService(IService):
             if not ok_e:
                 self.stats["refus"] += 1
                 return ServiceResult(ok=False, reason=f"exemption refusée — {r_e}")
-        self.objet, self.raison = objet, ""
+        self.objet, self.raison, self._franchi = objet, "", None
         self._roulis_depart_serrage = (self.p.roulis_presaisie if self.etat is Etat.PRET
                                        else self.p.roulis_ouvert)
         self._aller(Etat.SERRAGE)
@@ -287,6 +297,13 @@ class ManipulationService(IService):
         """L'objet porté passe-t-il au-dessus d'un plateau à cette hauteur ?"""
         return self._fond_objet() >= hauteur_surface + self.p.marge_franchissement
 
+    def peut_franchir(self, hauteur_surface: float) -> bool:
+        """Dégagé avec la marge pleine, ou montée terminée avec la marge
+        réduite pour CE plateau."""
+        return (self.degage_au_dessus(hauteur_surface)
+                or (self.etat is Etat.TENU and self._franchi is not None
+                    and abs(self._franchi - hauteur_surface) < 1e-6))
+
     def franchir(self, hauteur_surface: float) -> ServiceResult:
         """Soulève l'objet tenu au-dessus d'un plateau AVANT d'avancer vers
         lui — ce que fait quelqu'un qui pose un carton sur une table. Non
@@ -296,7 +313,7 @@ class ManipulationService(IService):
         if self.degage_au_dessus(hauteur_surface):
             return ServiceResult(ok=True, value="déjà au-dessus")
         self._surface, self._tangage_depart = hauteur_surface, self._tangage_courant
-        self.raison = ""
+        self.raison, self._franchi, self._t_limite = "", None, None
         self._aller(Etat.MONTEE)
         return ServiceResult(ok=True)
 
@@ -306,7 +323,7 @@ class ManipulationService(IService):
         l'objet effleure le plateau, PUIS ouvre — sans lâcher de haut."""
         if self.etat is not Etat.TENU:
             return ServiceResult(ok=False, reason="rien en main")
-        self.raison = ""
+        self.raison, self._franchi = "", None
         if hauteur_surface is None:
             self._surface, self._tangage_ouverture = None, self.p.tangage_port
             self._aller(Etat.POSE)
@@ -325,7 +342,7 @@ class ManipulationService(IService):
         """Après un échec : bras ouverts en posture de port, exemption levée."""
         self._lever_exemption()
         self._ecrire(self.p.roulis_ouvert, self.p.tangage_port)
-        self.objet = None
+        self.objet, self._franchi = None, None
         self.etat = Etat.LIBRE
 
     # ---- boucle ----------------------------------------------------------
@@ -380,18 +397,33 @@ class ManipulationService(IService):
             if fini:
                 self._aller(Etat.OUVERTURE)
         elif self.etat is Etat.MONTEE:
-            t = self._tangage_depart - p.vitesse_montee * (self._horloge() - self._t0)
-            if t <= p.tangage_haut:
-                self.stats["franchissements_impossibles"] = \
-                    self.stats.get("franchissements_impossibles", 0) + 1
-                self.raison = (f"plateau à {self._surface:.2f} m trop haut pour y "
-                               f"passer l'objet")
-                self._ecrire(p.roulis_serre, p.tangage_haut)
+            maintenant = self._horloge()
+            t = max(p.tangage_haut,
+                    self._tangage_depart - p.vitesse_montee * (maintenant - self._t0))
+            self._ecrire(p.roulis_serre, t)
+            if self.degage_au_dessus(self._surface):
+                self.stats["franchissements"] = self.stats.get("franchissements", 0) + 1
+                self._franchi = self._surface
                 self.etat = Etat.TENU
-            else:
-                self._ecrire(p.roulis_serre, t)
-                if self.degage_au_dessus(self._surface):
-                    self.stats["franchissements"] = self.stats.get("franchissements", 0) + 1
+            elif t <= p.tangage_haut:
+                # Consigne à la limite : on attend que le bras y arrive.
+                if self._t_limite is None:
+                    self._t_limite = maintenant
+                elif maintenant - self._t_limite >= p.stabilisation_montee_s:
+                    fond = self._fond_objet()
+                    if fond >= self._surface + p.marge_franchissement_min:
+                        self.stats["franchissements"] = \
+                            self.stats.get("franchissements", 0) + 1
+                        self.stats["franchissements_justes"] = \
+                            self.stats.get("franchissements_justes", 0) + 1
+                        self._franchi = self._surface
+                    else:
+                        self.stats["franchissements_impossibles"] = \
+                            self.stats.get("franchissements_impossibles", 0) + 1
+                        self.raison = (
+                            f"plateau à {self._surface:.2f} m trop haut pour y passer "
+                            f"l'objet : bras au plus haut, fond du carton à "
+                            f"{fond:.2f} m (il faut {self._surface + p.marge_franchissement_min:.2f})")
                     self.etat = Etat.TENU
         elif self.etat is Etat.DESCENTE:
             t = self._tangage_depart + p.vitesse_descente * (self._horloge() - self._t0)

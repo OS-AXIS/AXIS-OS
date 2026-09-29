@@ -64,6 +64,7 @@ check("ManipulationService est un IService", isinstance(m, IService))
 check("Au démarrage : bras en posture de port, ouverts", bras and m.etat is Etat.LIBRE)
 check("Le service n'écrit QUE des articulations de bras — jamais une jambe",
       all(("shoulder" in j or "elbow" in j) for j in bras))
+
 lim = {d.joint_id: d.limits for d in build_g1_joint_definitions("29dof")}
 p = Postures()
 toutes = [posture_bras(r, tg, p.coude) for r in (p.roulis_ouvert, p.roulis_serre)
@@ -246,6 +247,7 @@ check("... puis la dépose se termine", m.etat is Etat.LIBRE
 
 section("8 — Pré-saisie : ouvrir en grand AVANT d'entourer l'objet")
 m, bras, t = monter()
+
 lim = {d.joint_id: d.limits for d in build_g1_joint_definitions("29dof")}
 p8 = Postures()
 po = posture_bras(p8.roulis_presaisie, p8.tangage_port, p8.coude)
@@ -297,6 +299,51 @@ avancer(m, t, 5.0)
 check("Plateau trop haut : on s'arrête à la limite des épaules, carton TENU, "
       "raison donnée", m.etat is Etat.TENU and "trop haut" in m.raison
       and bras["left_shoulder_pitch_joint"] >= Postures().tangage_haut - 1e-9)
+
+# Constaté sur GPU : bras CHARGÉ en retard sur la consigne. Échec déclaré à
+# l'instant où la consigne touchait la limite, mains encore en montée.
+t_l = [0.0]
+bras_l = {}
+z_l = [0.96]
+
+
+def mains_lentes():
+    return np.array([0.29, 0.165, z_l[0]]), np.array([0.29, -0.165, z_l[0]])
+
+
+def tick_lent(m_):
+    # Mains qui suivent la consigne avec une constante de temps de 0.8 s,
+    # et plafonnent 7 cm sous le modèle (bras chargé qui s'affaisse).
+    tg = bras_l.get("left_shoulder_pitch_joint", -0.50)
+    cible = 0.90 - 0.30 * (tg + 0.30) - 0.07
+    z_l[0] += (cible - z_l[0]) * 0.02 / 0.8
+    t_l[0] += 0.02
+    m_.tick()
+
+
+ml = ManipulationService(bras_l, mains_lentes, lambda p: np.asarray(p, dtype=float),
+                         lambda: True, horloge=lambda: t_l[0])
+ml.start()
+ml.prendre(CARTON)
+for _ in range(150):
+    tick_lent(ml)
+ml.franchir(0.80)
+for _ in range(300):
+    tick_lent(ml)
+    if ml.etat is not Etat.MONTEE:
+        break
+fond_l = z_l[0] - CARTON.hauteur / 2
+check(f"Bras chargé en retard : on attend qu'il rejoigne la limite avant de "
+      f"conclure (fond {fond_l:.2f} m), et la marge réduite suffit",
+      ml.etat is Etat.TENU and ml.peut_franchir(0.80) and not ml.raison)
+check("… sans prétendre avoir la marge pleine", not ml.degage_au_dessus(0.80))
+check("Le franchissement ne vaut QUE pour ce plateau", not ml.peut_franchir(0.85))
+ml.poser(hauteur_surface=0.80)
+check("… et il est oublié dès qu'on pose", not ml.peut_franchir(0.80))
+check("Plateau vraiment trop haut : la raison donne la hauteur atteinte",
+      "fond du carton à" in m.raison)
+print("      raison :", m.raison)
+
 lim = {d.joint_id: d.limits for d in build_g1_joint_definitions("29dof")}
 po = posture_bras(Postures().roulis_serre, Postures().tangage_haut, Postures().coude)
 check("Posture la plus haute dans les butées de l'URDF 29 DOF",
