@@ -33,7 +33,11 @@ etape "2/9 Docker + NVIDIA Container Toolkit"
 if ! command -v docker >/dev/null; then
   curl -fsSL https://get.docker.com | sudo sh
 fi
-if ! sudo docker info 2>/dev/null | grep -qi nvidia; then
+# On TESTE l'accès au GPU depuis un conteneur, au lieu de chercher le mot
+# « nvidia » dans `docker info` : sur une VM Vast.ai, le mot y figurait
+# alors que Docker ne pouvait pas utiliser le GPU (« could not select
+# device driver "" with capabilities: [[gpu]] »).
+if ! sudo docker run --rm --gpus all ubuntu:22.04 nvidia-smi -L >/dev/null 2>&1; then
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
     | sudo gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
@@ -42,6 +46,8 @@ if ! sudo docker info 2>/dev/null | grep -qi nvidia; then
   sudo apt-get update -qq && sudo apt-get install -y -qq nvidia-container-toolkit
   sudo nvidia-ctk runtime configure --runtime=docker
   sudo systemctl restart docker
+  sudo docker run --rm --gpus all ubuntu:22.04 nvidia-smi -L \
+    || { echo "ÉCHEC : Docker ne voit toujours pas le GPU."; exit 1; }
 fi
 sudo usermod -aG docker "$USER" 2>/dev/null || true
 command -v git-lfs >/dev/null || sudo apt-get install -y -qq git-lfs
