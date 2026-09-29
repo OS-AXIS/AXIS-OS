@@ -43,7 +43,11 @@ DEPART = Pose2D(4.0, 0.5, CAP_PRISE)
 
 # Zones de poste : zmax = plateau + hauteur de chargement. Les cartons posés
 # dessus sont « expliqués » pour le gardien ; un humain penché, plus haut, non.
-TABLE_PRISE = Rectangle(3.4, 2.0, 4.6, 2.6, zmax=PLATEAU + 0.25)
+# 1.6 m de long : 28 cm entre les cartons des bouts et le bord de la table.
+# (1.2 m au départ : 8 cm seulement. Constaté sur GPU, vidéo T1 : en
+# serrant, une main a poussé le carton du bout, qui a basculé par-dessus le
+# bord et est tombé.)
+TABLE_PRISE = Rectangle(3.2, 2.0, 4.8, 2.6, zmax=PLATEAU + 0.25)
 TABLES_DEPOSE: Dict[str, Rectangle] = {
     "A": Rectangle(7.0, 4.4, 8.0, 5.0, zmax=PLATEAU + 0.30),
     "B": Rectangle(0.8, 4.4, 1.8, 5.0, zmax=PLATEAU + 0.30),
