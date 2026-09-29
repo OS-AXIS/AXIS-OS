@@ -26,7 +26,10 @@ TEINTES: Dict[str, Tuple[Tuple[float, float], ...]] = {
     "bleu": ((195.0, 255.0),),
     "jaune": ((45.0, 70.0),),
 }
-SATURATION_MIN = 0.45        # en dessous : gris, beige, carton brun pâle
+# 0.25 : mesuré sur GPU, un carton rouge sous éclairage fort devient rose
+# (saturation 0.38), un bleu devient bleu ciel (0.40). Gris et blanc de la
+# scène restent sous 0.10.
+SATURATION_MIN = 0.25        # en dessous : gris, blanc
 LUMINOSITE_MIN = 0.12        # en dessous : trop sombre pour juger
 
 
@@ -112,7 +115,13 @@ class PerceptionCouleur:
     """find(couleur) : boîtes détectées par l'IA, filtrées par leur couleur."""
 
     def __init__(self, perception, camera, couleurs: Iterable[str],
-                 requetes: Sequence[str] = ("a box", "a cardboard box")):
+                 requetes: Sequence[str] = ("a box", "a cardboard box"),
+                 surface_max: float = 0.25):
+        """surface_max : fraction de l'image au-delà de laquelle une
+        détection n'est pas UN carton. Constaté sur GPU : OWL-ViT rend aussi
+        une boîte couvrant toute l'image ; le sol de la scène étant bleu,
+        elle aurait pu passer pour un carton bleu fantôme."""
+        self.surface_max = surface_max
         self.perception, self.camera = perception, camera
         self.couleurs = list(couleurs)
         self.requetes = tuple(requetes)
@@ -144,7 +153,14 @@ class PerceptionCouleur:
         img = self.camera.capture()
         classees = []
         if img is not None:
+            aire_img = float(img.width * img.height)
             for d in dets:
+                if d.bbox[2] * d.bbox[3] > self.surface_max * aire_img:
+                    diag["detections"].append({"couleur": "écartée : trop grande",
+                                               "confiance": round(float(d.confidence), 3),
+                                               "bbox": tuple(int(v) for v in d.bbox),
+                                               "position": None})
+                    continue
                 c = couleur_boite(img.data, img.width, img.height, d.bbox, self.couleurs)
                 if c is None:
                     self.stats["sans_couleur"] += 1

@@ -207,9 +207,9 @@ def main():
     # du robot (vers +y, en plongée de 30°).
     from pxr import UsdLux
     dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
-    dome.CreateIntensityAttr(900.0)
+    dome.CreateIntensityAttr(500.0)   # 900 délavait les couleurs
     face = UsdLux.DistantLight.Define(stage, "/World/eclairage_face")
-    face.CreateIntensityAttr(2500.0)
+    face.CreateIntensityAttr(1500.0)
     face.CreateAngleAttr(1.0)
     UsdGeom.Xformable(face).AddRotateXOp().Set(60.0)     # -Z -> (0, +0.87, -0.5)
 

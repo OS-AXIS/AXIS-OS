@@ -31,6 +31,11 @@ for nom, rgb in COULEURS_RGB.items():
     for eclairage in (1.0, 0.6, 0.35):          # ombre, lumière faible
         c = couleur_de(tuple(v * eclairage for v in rgb))
         check(f"{nom} de la scène, éclairage ×{eclairage} -> {c}", c == nom)
+check("Constaté sur GPU : rouge DÉLAVÉ par l'éclairage (rose) -> rouge",
+      couleur_de((1.0, 0.62, 0.62)) == "rouge")
+check("… bleu délavé (bleu ciel) -> bleu", couleur_de((0.6, 0.78, 1.0)) == "bleu")
+check("Blanc bleuté, gris clair : toujours rien",
+      couleur_de((0.88, 0.92, 0.97)) is None and couleur_de((0.85, 0.85, 0.9)) is None)
 check("Carton brun (0.72, 0.52, 0.30) : PAS une couleur de tri",
       couleur_de((0.72, 0.52, 0.30)) is None)
 check("Gris de table : rien", couleur_de((0.45, 0.45, 0.50)) is None)
@@ -108,6 +113,22 @@ class PerceptionEnPanne:
     def find(self, *a, **k):
         return ServiceResult(ok=False, reason="détecteur en panne")
 
+
+SOL = (0.45, 0.70, 0.85)                 # le sol bleu de la scène GPU
+img3 = image(L, H, SOL, [((60, 40, 40, 40), COULEURS_RGB["rouge"])])
+
+
+class PerceptionImageEntiere:
+    def find(self, query, now_ns=None, frame=None):
+        return ServiceResult(ok=True, value=[Detection(query, 0.2, (0, 0, L, H)),
+                                             Detection(query, 0.3, (60, 40, 40, 40))])
+
+
+cam3 = SimpleNamespace(capture=lambda: SimpleNamespace(data=img3, width=L, height=H))
+pc3 = PerceptionCouleur(PerceptionImageEntiere(), cam3, ["rouge", "bleu"])
+check("Détection couvrant toute l'image (sol bleu) : écartée, PAS de carton bleu fantôme",
+      pc3.find("bleu", now_ns=1).value == [])
+check("… le vrai carton rouge, lui, est gardé", len(pc3.find("rouge", now_ns=1).value) == 1)
 
 r = PerceptionCouleur(PerceptionEnPanne(), cam, ["rouge"]).find("rouge", now_ns=1)
 from axis_os.apps.tri_colis.couleur import sans_doublons
