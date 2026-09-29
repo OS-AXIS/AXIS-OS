@@ -205,25 +205,33 @@ def main():
     # caméra de tête — couleur illisible, aucun colis trié. Un entrepôt est
     # éclairé de partout : lumière ambiante (dôme) + lumière venant du côté
     # du robot (vers +y, en plongée de 30°).
-    from pxr import UsdLux
+    from pxr import Gf, UsdLux
     dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
     dome.CreateIntensityAttr(400.0)   # 900 délavait les couleurs
-    # DEUX lumières venant du côté du robot, en diagonale (40° à gauche et à
-    # droite, plongée de 50°). Historique GPU :
-    #   - lumière de face à 60° : l'ombre du robot couvrait les cartons ;
-    #   - lumière presque verticale (15°) : la face des cartons tournée vers
-    #     le robot ne recevait presque rien — RGB mesuré (0, 0, 0), aucune
-    #     couleur lisible ; le dôme seul n'éclaire pas ces faces.
-    # En diagonale, les faces avant sont éclairées, et l'ombre de la tête,
-    # au poste de prise, tombe 0.5 m DEVANT la table, décalée de côté
-    # (calcul : y = 1.46 pour un bord de table à y = 2.0).
-    for nom_l, lacet in (("eclairage_gauche", 40.0), ("eclairage_droite", -40.0)):
+    # QUATRE lumières en diagonale (une par coin, plongée de 50°), comme
+    # les rampes d'un entrepôt. Historique GPU, faces des cartons TOURNÉES
+    # VERS LE ROBOT restées NOIRES (RGB 0,0,0) avec :
+    #   - une lumière de face à 60°, puis presque verticale (15°) ;
+    #   - deux lumières en diagonale du côté du robot (±40°) — les faces
+    #     latérales des cartons s'allumaient, les faces avant restaient
+    #     noires (/tete.jpg, /tete_ok.jpg). Le dôme ne suffit pas à les
+    #     éclairer, et le sens réel des lumières n'avait jamais été vérifié.
+    # Avec une lumière par coin, toute face verticale en reçoit au moins
+    # deux, quel que soit le sens de rotation retenu par USD ; l'ombre du
+    # robot n'en masque qu'une à la fois. Le sens réel est affiché au
+    # démarrage (« éclairage : … vers »).
+    for nom_l, lacet in (("eclairage_1", 45.0), ("eclairage_2", -45.0),
+                         ("eclairage_3", 135.0), ("eclairage_4", -135.0)):
         lum = UsdLux.DistantLight.Define(stage, f"/World/{nom_l}")
-        lum.CreateIntensityAttr(1100.0)
+        lum.CreateIntensityAttr(700.0)
         lum.CreateAngleAttr(1.0)
         xf_l = UsdGeom.Xformable(lum)
-        xf_l.AddRotateZOp().Set(lacet)       # appliquée APRÈS la plongée
-        xf_l.AddRotateXOp().Set(50.0)        # plongée, lumière vers +y
+        xf_l.AddRotateZOp().Set(lacet)
+        xf_l.AddRotateXOp().Set(50.0)
+        m_l = xf_l.ComputeLocalToWorldTransform(0.0)
+        d_l = m_l.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
+        print(f"  éclairage : {nom_l} vers ({d_l[0]:+.2f}, {d_l[1]:+.2f}, {d_l[2]:+.2f})",
+              flush=True)
 
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
