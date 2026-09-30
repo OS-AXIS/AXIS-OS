@@ -463,6 +463,46 @@ def main():
             if limite is not None and t - c["t"] > limite:
                 poser_carton(c, c["parc"])
                 c["lieu"], c["t"] = "stock", t
+        # 2b. Carton BOUSCULÉ sur la table de prise. Constaté sur GPU (T1,
+        #     30 min) : un carton poussé à 5 cm au-delà du bord ; le gardien le
+        #     voit comme un obstacle inconnu à 52 cm et arrête le robot —
+        #     à raison, il ne peut pas savoir que ce n'est pas une main —,
+        #     qui reste bloqué et le SIGNALE. Dans un vrai atelier, l'opérateur
+        #     alerté vient remettre le carton en place : on fait de même
+        #     après 20 s, et on le journalise (le déplacement aussi, pour
+        #     comprendre quel geste l'a causé).
+        pr_op = pose2d()
+        for c in cartons:
+            if c["lieu"] != "prise" or c is carton_aux_mains():
+                continue
+            pc, q = c["obj"].get_world_pose()
+            pc = np.asarray(pc, dtype=float)
+            lacet = abs(math.degrees(2 * math.atan2(float(q[3]), float(q[0]))))
+            lacet = min(lacet, abs(180.0 - lacet))
+            place = c.get("place")
+            if place is None:
+                c["place"] = place = pc.copy()
+            depl = float(np.linalg.norm(pc[:2] - place[:2]))
+            if depl > 0.03 and not c.get("deplace_signale"):
+                c["deplace_signale"] = True
+                journaliser(f"[{t:7.1f}s] OPÉRATEUR : carton {c['couleur']} DÉPLACÉ de "
+                            f"{100 * depl:.0f} cm (tourné de {lacet:.0f}°) — robot en "
+                            f"({pr_op.x:.2f}, {pr_op.y:.2f}), tâche {tri.etat}, "
+                            f"manipulation {manip.etat.name}")
+            depasse = pc[1] - sd.PROFONDEUR_CARTON / 2 < sd.TABLE_PRISE.ymin - 0.01
+            if (depasse or lacet > 15.0 or depl > 0.08):
+                c.setdefault("t_derange", t)
+                if t - c["t_derange"] > 20.0:
+                    x_ = min(sd.EMPLACEMENTS_X, key=lambda v: abs(v - pc[0]))
+                    poser_carton(c, (x_, sd.Y_CARTON, sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003))
+                    c["place"] = np.array([x_, sd.Y_CARTON, pc[2]])
+                    c.pop("t_derange", None)
+                    c["deplace_signale"] = False
+                    stats["remises_en_place"] = stats.get("remises_en_place", 0) + 1
+                    journaliser(f"[{t:7.1f}s] OPÉRATEUR : carton {c['couleur']} remis en "
+                                f"place (il dépassait ou était de travers)")
+            else:
+                c.pop("t_derange", None)
         # 3. Réapprovisionner : table remplie au départ, puis un emplacement
         #    toutes les ~20 s. Jamais celui devant lequel le robot travaille.
         if t >= stats["prochain_reappro"]:
@@ -485,6 +525,8 @@ def main():
                 libres.remove(x)
                 poser_carton(c, (x, sd.Y_CARTON, sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003))
                 c["lieu"], c["t"] = "prise", t
+                c["place"], c["deplace_signale"] = None, False
+                c.pop("t_derange", None)
 
     # ---- vidéo ------------------------------------------------------------
     video_ok = False
@@ -722,7 +764,8 @@ def main():
     print("  " + sup.rapport())
     print(f"  gardien : {gardien.stats}\n  navigation : {nav.stats}\n  façade : {facade.stats}"
           f"\n  manipulation : {manip.stats}\n  lidar : {lidar.stats}"
-          f"\n  couleur : {percep_couleur.stats}\n  personne la plus proche : {d_min_humain:.2f} m"
+          f"\n  couleur : {percep_couleur.stats}\n  cartons remis en place par l'opérateur : {stats.get('remises_en_place', 0)}"
+          f"\n  personne la plus proche : {d_min_humain:.2f} m"
           f"\n  temps réel : {time.monotonic() - t_mur:.0f} s")
     if chute:
         print(f"  CHUTE à t = {chute[0]:.1f} s, état {chute[1]}")
