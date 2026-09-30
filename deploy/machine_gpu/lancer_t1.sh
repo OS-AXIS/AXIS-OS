@@ -20,6 +20,25 @@ if sudo docker exec "$CONTENEUR" pgrep -f test_isaac_ >/dev/null 2>&1; then
   sudo docker exec "$CONTENEUR" pkill -f test_isaac_ || true
   sleep 5
 fi
+# La CARTE GRAPHIQUE doit être visible DANS le conteneur. Constaté deux fois :
+# après une nuit ou un redémarrage de la machine, le conteneur l'avait
+# perdue — test lancé sur CPU, caméras noires, « CHUTE à 0 s ». On vérifie
+# avant, on tente un redémarrage du conteneur, sinon on s'arrête en le disant.
+if ! sudo docker exec "$CONTENEUR" nvidia-smi -L >/dev/null 2>&1; then
+  echo "Le conteneur ne voit pas la carte graphique — redémarrage du conteneur…"
+  if ! nvidia-smi -L >/dev/null 2>&1; then
+    echo "ERREUR : la MACHINE elle-même ne voit plus la carte graphique (nvidia-smi échoue)."
+    echo "Redémarre l'instance depuis la page Vast.ai (Reboot), puis relance ce script."
+    exit 1
+  fi
+  sudo docker restart "$CONTENEUR" >/dev/null
+  sleep 10
+  if ! sudo docker exec "$CONTENEUR" nvidia-smi -L >/dev/null 2>&1; then
+    echo "ERREUR : toujours pas de carte graphique dans le conteneur après redémarrage."
+    exit 1
+  fi
+fi
+echo "Carte graphique : $(sudo docker exec "$CONTENEUR" nvidia-smi -L | head -1)"
 bash "$HOME/AXIS-OS/deploy/machine_gpu/copier_code.sh"
 mkdir -p "$HOME/videos"
 # Le test tourne DÉTACHÉ dans le conteneur : une connexion SSH qui se coupe
