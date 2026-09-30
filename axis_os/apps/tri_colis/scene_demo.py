@@ -148,6 +148,11 @@ def figurants() -> List[Figurant]:
         # pour une démonstration, sans rien montrer de plus).
         # Visite toutes les ~2 min (au premier essai GPU : toutes les 40 s,
         # le robot ne faisait plus qu'attendre).
-        Figurant((0.8, 0.5), (3.2, 1.2), vitesse=0.5, pause=15.0, evitement=0.6,
+        # Arrêt à (2.6, 1.1) : 1.4 m du poste de prise (3.2 au départ — sur
+        # GPU, il se tenait à 0.7 m du robot 15 s à chaque visite : 2 min
+        # d'accostage perdues dès le début de l'essai de 30 min). Le robot
+        # ralentit à son passage, s'arrête s'il travaille à l'emplacement
+        # de gauche.
+        Figurant((0.8, 0.5), (2.6, 1.1), vitesse=0.5, pause=15.0, evitement=0.6,
                  pause_a=90.0),
     ]

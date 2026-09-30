@@ -77,6 +77,9 @@ class ConfigFacade:
     # Immobile = moins de `derive_stable_m` de déplacement pendant
     # `duree_stabilisation_s`, attendu au plus `stabilisation_max_s`.
     duree_stabilisation_s: float = 0.6
+    # Après une prise ratée : temps laissé aux mains pour s'ouvrir en grand
+    # avant de reculer (voir reinitialiser_manipulation).
+    duree_liberation_s: float = 1.0
     derive_stable_m: float = 0.01
     stabilisation_max_s: float = 3.0
     tol_position: float = 0.015
@@ -141,6 +144,7 @@ class FacadeServices:
         self._d0 = 0.0
         self._insertion: Optional[Pose2D] = None   # cible finale, après pré-saisie
         self._apres_stab, self._phase_avant_stab = "ARRIVE", "ACCOSTAGE"
+        self._liberation_jusqua = 0.0
         self._t_stab0, self._ref_stab = 0.0, (0.0, 0.0, 0.0)
         self._progres = None                       # (distance, instant, cible)
         self._t_tick: Optional[float] = None
@@ -337,8 +341,14 @@ class FacadeServices:
         if self._phase not in ("ACCOSTAGE", "INSERTION", "RECUL") \
                 or self._etat_accostage != "EN_ROUTE":
             return
+        if self._phase == "RECUL" and self._horloge() < self._liberation_jusqua:
+            self.loco.halt()                  # mains en train de lâcher
+            self._t_accostage = self._horloge()
+            return
         etat = self._pas_accostage()
         if etat == "ARRIVE" and self._phase == "RECUL":
+            if self.manip.etat is Etat.LIBRE:
+                self.manip.reinitialiser()    # dégagé : bras au port
             self._lancer_nav()
         elif etat == "ARRIVE":
             # Arrivé : d'abord s'immobiliser, PUIS bouger les bras.
@@ -427,4 +437,7 @@ class FacadeServices:
         return "EN_COURS"
 
     def reinitialiser_manipulation(self) -> None:
-        self.manip.reinitialiser()
+        """Après une prise ratée : on OUVRE GRAND et on attend que les mains
+        aient lâché avant de reculer — sinon on emporte le carton avec soi."""
+        self.manip.reinitialiser(large=True)
+        self._liberation_jusqua = self._horloge() + self.cfg.duree_liberation_s

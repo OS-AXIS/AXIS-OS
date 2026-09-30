@@ -285,7 +285,18 @@ class GR00TWBCAdapter:
     """
 
     def __init__(self, policy: GR00TWBCPolicy, tilt_limit: float = -0.7,
-                 pose_bras: Optional[Dict[str, float]] = None):
+                 pose_bras: Optional[Dict[str, float]] = None,
+                 limites: Optional[Dict[str, Tuple[float, float]]] = None):
+        """limites : {articulation: (min, max)} — les butées du robot (URDF).
+        Les cibles de la politique sont RAMENÉES dans ces butées avant
+        envoi, comme le fait tout code de déploiement : constaté sur GPU, au
+        démarrage (robot qui se pose), GR00T demandait jusqu'à 0.61 rad à la
+        cheville pour une butée à 0.52 ; le JointSafetyGuard refusait ces
+        pas (9 refus). Le garde reste la barrière finale et n'est PAS
+        contourné : il revérifie chaque cible. Chaque écrêtage est compté
+        (stats), pour qu'un écrêtage fréquent se voie."""
+        self._limites = dict(limites or {})
+        self.stats: Dict[str, object] = {"ecretages": 0, "ecretages_par_articulation": {}}
         self._policy = policy
         self._tilt_limit = tilt_limit
         bras = policy.cfg.body_joints[policy.cfg.num_actions:]
@@ -328,6 +339,16 @@ class GR00TWBCAdapter:
             ang_vel_frame="body",
         )
         cibles.update(self.pose_bras)
+        for j, v in cibles.items():
+            lim = self._limites.get(j)
+            if lim is None:
+                continue
+            c = min(max(v, lim[0]), lim[1])
+            if c != v:
+                cibles[j] = c
+                self.stats["ecretages"] += 1
+                par = self.stats["ecretages_par_articulation"]
+                par[j] = par.get(j, 0) + 1
         return cibles
 
     def is_fallen(self, state) -> bool:

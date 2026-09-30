@@ -338,10 +338,18 @@ class ManipulationService(IService):
         self._aller(Etat.DESCENTE)
         return ServiceResult(ok=True)
 
-    def reinitialiser(self) -> None:
-        """Après un échec : bras ouverts en posture de port, exemption levée."""
+    def reinitialiser(self, large: bool = False) -> None:
+        """Après un échec : bras ouverts en posture de port, exemption levée.
+
+        large=True : ouverture GRANDE (celle de la pré-saisie), pour LÂCHER
+        un objet coincé entre les mains. Constaté sur GPU (T1, 30 min) :
+        après une prise ratée sur les coins d'un carton, les mains rouvertes
+        à 33 cm le tenaient encore ; le robot a reculé en le tirant de 11 cm,
+        jusqu'à le faire dépasser du bord de la table — et s'est bloqué
+        devant lui."""
         self._lever_exemption()
-        self._ecrire(self.p.roulis_ouvert, self.p.tangage_port)
+        self._ecrire(self.p.roulis_presaisie if large else self.p.roulis_ouvert,
+                     self.p.tangage_port)
         self.objet, self._franchi = None, None
         self.etat = Etat.LIBRE
 

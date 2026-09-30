@@ -374,7 +374,10 @@ def main():
             {j: ActuatorCommand(mode=ControlMode.POSITION, position=v)
              for j, v in targets.items()})
 
-    adapt = GR00TWBCAdapter(pol, pose_bras=bras_depart)
+    from axis_os.hal.drivers.unitree_g1.robot import build_g1_joint_definitions as _defs
+    adapt = GR00TWBCAdapter(pol, pose_bras=bras_depart,
+                            limites={d.joint_id: (d.limits.pos_min, d.limits.pos_max)
+                                     for d in _defs("29dof")})
     gardien = GardienProximite(lidar.source_gardien(),
                                lambda: (pose2d().x, pose2d().y, pose2d().cap),
                                obstacles=sd.OBSTACLES, horloge=horloge)
@@ -765,6 +768,7 @@ def main():
     print(f"  gardien : {gardien.stats}\n  navigation : {nav.stats}\n  façade : {facade.stats}"
           f"\n  manipulation : {manip.stats}\n  lidar : {lidar.stats}"
           f"\n  couleur : {percep_couleur.stats}\n  cartons remis en place par l'opérateur : {stats.get('remises_en_place', 0)}"
+          f"\n  écrêtages dans les butées (avant le garde-fou) : {adapt.stats}"
           f"\n  personne la plus proche : {d_min_humain:.2f} m"
           f"\n  temps réel : {time.monotonic() - t_mur:.0f} s")
     if chute:

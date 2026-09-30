@@ -276,6 +276,10 @@ avancer(m2, t2, 1.0)
 m2.reinitialiser()
 check("Pré-saisie abandonnée (accostage raté) : retour en posture de port",
       m2.etat is Etat.LIBRE and bras2["left_shoulder_roll_joint"] == p8.roulis_ouvert)
+m3, bras3, t3 = monter()
+m3.reinitialiser(large=True)
+check("Après une prise ratée : ouverture GRANDE pour lâcher un objet coincé",
+      bras3["left_shoulder_roll_joint"] == p8.roulis_presaisie and m3.etat is Etat.LIBRE)
 
 section("9 — Franchir : lever l'objet AU-DESSUS du plateau avant d'avancer")
 m, bras, t, mains = monter_plateau()

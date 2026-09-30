@@ -188,6 +188,22 @@ couche = BaseState((math.cos(math.pi / 4), math.sin(math.pi / 4), 0, 0),
                    (0, 0, 0), {}, {})
 check("Robot couché : chute détectée", ad.is_fallen(couche))
 
+# Constaté sur GPU : au démarrage, GR00T demandait 0.61 rad à la cheville
+# (butée URDF 0.5236) ; le JointSafetyGuard refusait. L'adaptateur ramène
+# les cibles dans les butées, et le compte.
+brut = GR00TWBCAdapter(p).step(st, Twist())
+j0 = "left_elbow_joint"
+lim = {j0: (-0.1, 0.1), "right_elbow_joint": (0.7, 0.9)}
+ad2 = GR00TWBCAdapter(p, pose_bras={j0: 0.6, "right_elbow_joint": 0.6}, limites=lim)
+t2 = ad2.step(st, Twist())
+check("Cibles hors butées ramenées DANS les butées (0.6 -> 0.1 et 0.6 -> 0.7)",
+      t2[j0] == 0.1 and t2["right_elbow_joint"] == 0.7)
+check("… et chaque écrêtage est compté, par articulation",
+      ad2.stats["ecretages"] == 2
+      and ad2.stats["ecretages_par_articulation"] == {j0: 1, "right_elbow_joint": 1})
+check("Les articulations sans butée donnée ne sont pas touchées",
+      all(t2[j] == v for j, v in brut.items() if j not in lim))
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)
