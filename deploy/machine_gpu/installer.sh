@@ -34,6 +34,20 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader \
 # machine ni dans le conteneur, jusqu'au redémarrage.
 sudo systemctl disable --now unattended-upgrades apt-daily.timer apt-daily-upgrade.timer \
   >/dev/null 2>&1 || true
+# Une mise à jour déjà EN COURS garde le verrou d'apt (constaté sur une
+# machine neuve : « Could not get lock … held by unattended-upgr »). On attend
+# qu'elle finisse — l'interrompre peut laisser les paquets à moitié installés.
+while pgrep -f unattended-upgr >/dev/null 2>&1 \
+      || sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+  echo "  mise à jour automatique d'Ubuntu en cours — attente (10 s)…"
+  sleep 10
+done
+# Si elle a mis à jour le pilote NVIDIA, il faut redémarrer la machine.
+if ! nvidia-smi -L >/dev/null 2>&1; then
+  echo "Le pilote NVIDIA vient d'être mis à jour : tape « reboot », reconnecte-toi"
+  echo "dans 2-3 minutes, puis relance ce script (il reprend où il en était)."
+  exit 1
+fi
 
 etape "2/9 Docker + NVIDIA Container Toolkit"
 if ! command -v docker >/dev/null; then
