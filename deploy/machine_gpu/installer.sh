@@ -61,11 +61,15 @@ command -v gh >/dev/null || sudo apt-get install -y -qq gh || true
 
 etape "3/9 Dépôt AXIS-OS"
 if [ ! -d "$DEPOT/.git" ]; then
-  gh auth status >/dev/null 2>&1 || gh auth login --web --git-protocol https
+  # Le gh d'Ubuntu 22.04 est ancien : pas d'option --git-protocol (constaté).
+  gh auth status >/dev/null 2>&1 || gh auth login --web --git-protocol https \
+    || gh auth login --web
   gh repo clone OS-AXIS/AXIS-OS "$DEPOT"
 else
   git -C "$DEPOT" pull --ff-only origin main
 fi
+# Sans ça, git redemande un nom d'utilisateur à chaque pull (constaté).
+gh auth setup-git 2>/dev/null || true
 
 etape "4/9 Image Isaac Sim 6.1 (plusieurs Go, patience)"
 sudo docker pull "$IMAGE"
