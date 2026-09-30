@@ -26,8 +26,6 @@ dans() { sudo docker exec "$CONTENEUR" "$@"; }
 dans_root() { sudo docker exec -u root "$CONTENEUR" "$@"; }
 
 etape "1/9 GPU et pilote"
-nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader \
-  || { echo "ÉCHEC : pas de GPU NVIDIA visible (nvidia-smi)."; exit 1; }
 # Mises à jour automatiques COUPÉES. Constaté sur Vast.ai : pendant la nuit,
 # Ubuntu a mis à jour la bibliothèque du pilote NVIDIA mais pas le module du
 # noyau (« Driver/library version mismatch ») — plus aucun GPU, ni sur la
@@ -48,6 +46,8 @@ if ! nvidia-smi -L >/dev/null 2>&1; then
   echo "dans 2-3 minutes, puis relance ce script (il reprend où il en était)."
   exit 1
 fi
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader \
+  || { echo "ÉCHEC : pas de GPU NVIDIA visible (nvidia-smi)."; exit 1; }
 
 etape "2/9 Docker + NVIDIA Container Toolkit"
 if ! command -v docker >/dev/null; then
