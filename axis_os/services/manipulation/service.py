@@ -122,6 +122,7 @@ class Etat(Enum):
     DESCENTE = auto()     # vers un plateau, en boucle fermée
     MONTEE = auto()       # au-dessus d'un plateau avant d'avancer
     OUVERTURE = auto()
+    LACHER = auto()       # après un échec : ouverture large PROGRESSIVE
     ECHEC = auto()
 
 
@@ -172,6 +173,8 @@ class ManipulationService(IService):
         self._t_limite: Optional[float] = None
         self._roulis_depart_serrage = postures.roulis_ouvert
         self._tangage_courant = postures.tangage_port
+        self._roulis_courant = postures.roulis_ouvert
+        self._lacher_de = self._lacher_vers = (postures.roulis_ouvert, postures.tangage_port)
         self._tangage_depart = postures.tangage_leve
         self._tangage_ouverture = postures.tangage_port
         self._dernier_tick: Optional[float] = None
@@ -206,7 +209,7 @@ class ManipulationService(IService):
     # ---- outils ----------------------------------------------------------
 
     def _ecrire(self, roulis: float, tangage: float) -> None:
-        self._tangage_courant = tangage
+        self._tangage_courant, self._roulis_courant = tangage, roulis
         self._bras.update(posture_bras(roulis, tangage, self.p.coude))
 
     def _interp(self, a: float, b: float, duree: float) -> Tuple[float, bool]:
@@ -346,17 +349,24 @@ class ManipulationService(IService):
         après une prise ratée sur les coins d'un carton, les mains rouvertes
         à 33 cm le tenaient encore ; le robot a reculé en le tirant de 11 cm,
         jusqu'à le faire dépasser du bord de la table — et s'est bloqué
-        devant lui."""
+        devant lui.
+
+        Le geste est PROGRESSIF (état LACHER, durée d'ouverture), jamais un
+        saut : constaté sur GPU, le saut de « serré » (-0.40) à « grand
+        ouvert » (0.32) dépassait l'écart maximal consigne/position du
+        JointSafetyGuard (0.625 rad) — 570 consignes refusées, bras restés
+        SERRÉS, carton tiré hors de la table et tombé."""
         self._lever_exemption()
-        self._ecrire(self.p.roulis_presaisie if large else self.p.roulis_ouvert,
-                     self.p.tangage_port)
         self.objet, self._franchi = None, None
-        self.etat = Etat.LIBRE
+        self._lacher_de = (self._roulis_courant, self._tangage_courant)
+        self._lacher_vers = (self.p.roulis_presaisie if large else self.p.roulis_ouvert,
+                             self.p.tangage_port)
+        self._aller(Etat.LACHER)
 
     # ---- boucle ----------------------------------------------------------
 
     _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.MONTEE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
-                     Etat.DESCENTE)
+                     Etat.DESCENTE, Etat.LACHER)
 
     def tick(self) -> ServiceResult:
         p = self.p
@@ -371,7 +381,14 @@ class ManipulationService(IService):
             self.stats["gels_securite"] += 1
             return ServiceResult(ok=True, value=self.etat,
                                  reason="bras figés : arrêt de sécurité en cours")
-        if self.etat is Etat.PRESAISIE:
+        if self.etat is Etat.LACHER:
+            r, _ = self._interp(self._lacher_de[0], self._lacher_vers[0], p.duree_ouverture_s)
+            t, fini = self._interp(self._lacher_de[1], self._lacher_vers[1],
+                                   p.duree_ouverture_s)
+            self._ecrire(r, t)
+            if fini:
+                self.etat = Etat.LIBRE
+        elif self.etat is Etat.PRESAISIE:
             r, fini = self._interp(p.roulis_ouvert, p.roulis_presaisie, p.duree_presaisie_s)
             self._ecrire(r, p.tangage_port)
             if fini:
@@ -397,7 +414,9 @@ class ManipulationService(IService):
                     self.stats["prises_ratees"] += 1
                     self.raison = "prise NON confirmée — l'objet n'a pas suivi"
                     self._lever_exemption()
-                    self._ecrire(p.roulis_ouvert, p.tangage_port)
+                    # Pas de saut vers la posture de port (0.6 rad d'un coup,
+                    # à la limite du JointSafetyGuard) : reinitialiser() rouvre
+                    # PROGRESSIVEMENT.
                     self.etat = Etat.ECHEC
         elif self.etat is Etat.POSE:
             t, fini = self._interp(p.tangage_leve, p.tangage_port, p.duree_pose_s)

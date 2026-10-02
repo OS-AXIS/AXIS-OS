@@ -109,8 +109,19 @@ m.prendre(CARTON)
 avancer(m, t, 1.4)
 check("L'objet n'a pas suivi : ÉCHEC, avec la raison",
       m.etat is Etat.ECHEC and "NON confirmée" in m.raison)
-check("… bras rouverts, exemption levée", bras["left_shoulder_roll_joint"] > 0 and g.levees >= 1)
-m.reinitialiser()
+check("… exemption levée", g.levees >= 1)
+r_av = bras["left_shoulder_roll_joint"]
+m.reinitialiser(large=True)
+sauts = []
+for _ in range(60):
+    prec = dict(bras)
+    t[0] += 0.02
+    m.tick()
+    sauts.append(max(abs(bras[j] - prec[j]) for j in bras))
+check(f"Bras rouverts PROGRESSIVEMENT (de {r_av:+.2f} rad, plus grand pas "
+      f"{max(sauts):.3f} rad) — jamais le saut de 0.72 rad que le garde-fou "
+      f"refusait sur GPU", max(sauts) < 0.1
+      and abs(bras["left_shoulder_roll_joint"] - Postures().roulis_presaisie) < 1e-9)
 check("reinitialiser() : prêt pour un nouvel essai", m.etat is Etat.LIBRE)
 
 section("4 — Poser")
@@ -274,10 +285,12 @@ m2, bras2, t2 = monter()
 m2.presaisir()
 avancer(m2, t2, 1.0)
 m2.reinitialiser()
+avancer(m2, t2, 1.0)
 check("Pré-saisie abandonnée (accostage raté) : retour en posture de port",
       m2.etat is Etat.LIBRE and bras2["left_shoulder_roll_joint"] == p8.roulis_ouvert)
 m3, bras3, t3 = monter()
 m3.reinitialiser(large=True)
+avancer(m3, t3, 1.0)
 check("Après une prise ratée : ouverture GRANDE pour lâcher un objet coincé",
       bras3["left_shoulder_roll_joint"] == p8.roulis_presaisie and m3.etat is Etat.LIBRE)
 
