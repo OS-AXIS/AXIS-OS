@@ -153,6 +153,9 @@ def figurants() -> List[Figurant]:
         # d'accostage perdues dès le début de l'essai de 30 min). Le robot
         # ralentit à son passage, s'arrête s'il travaille à l'emplacement
         # de gauche.
-        Figurant((0.8, 0.5), (2.6, 1.1), vitesse=0.5, pause=15.0, evitement=0.6,
+        # (2.2, 0.8) ensuite : à (2.6, 1.1), il se tenait à 1.0 m de la
+        # pré-pose de l'emplacement de GAUCHE (3.60) — robot arrêté par la
+        # sécurité, deux accostages du carton bleu perdus par délai (RTX 5090).
+        Figurant((0.8, 0.5), (2.2, 0.8), vitesse=0.5, pause=15.0, evitement=0.6,
                  pause_a=90.0),
     ]
