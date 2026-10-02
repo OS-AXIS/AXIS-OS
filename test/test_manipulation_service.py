@@ -106,7 +106,7 @@ section("3 — Prise ratée : ÉCHEC propre, jamais partir les mains vides")
 g = GardienFactice()
 m, bras, t = monter(verif=False, gardien=g)
 m.prendre(CARTON)
-avancer(m, t, 1.4)
+avancer(m, t, 1.4 + Postures().attente_confirmation_s)
 check("L'objet n'a pas suivi : ÉCHEC, avec la raison",
       m.etat is Etat.ECHEC and "NON confirmée" in m.raison)
 check("… exemption levée", g.levees >= 1)
@@ -123,6 +123,17 @@ check(f"Bras rouverts PROGRESSIVEMENT (de {r_av:+.2f} rad, plus grand pas "
       f"refusait sur GPU", max(sauts) < 0.1
       and abs(bras["left_shoulder_roll_joint"] - Postures().roulis_presaisie) < 1e-9)
 check("reinitialiser() : prêt pour un nouvel essai", m.etat is Etat.LIBRE)
+
+t_l = [0.0]
+fin_consigne = Postures().duree_serrage_s + Postures().duree_levage_s
+ml = ManipulationService({}, lambda: (np.array([0.29, 0.165, 0.90]), np.array([0.29, -0.165, 0.90])),
+                         lambda p: np.asarray(p, dtype=float),
+                         lambda: t_l[0] > fin_consigne + 0.5, horloge=lambda: t_l[0])
+ml.start()
+ml.prendre(CARTON)
+avancer(ml, t_l, 3.0)
+check("Objet qui suit avec RETARD (bras chargé) : prise confirmée, pas ratée",
+      ml.etat is Etat.TENU and ml.stats["prises_ratees"] == 0)
 
 section("4 — Poser")
 m, bras, t = monter(verif=True)

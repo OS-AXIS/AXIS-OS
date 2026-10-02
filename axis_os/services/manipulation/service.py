@@ -61,6 +61,12 @@ class Postures:
     roulis_serre: float = -0.40        # vise AU-DELÀ du contact
     duree_serrage_s: float = 0.5
     duree_levage_s: float = 0.8
+    # Le bras CHARGÉ rejoint la consigne avec retard (voir la montée) : la
+    # prise est confirmée dès que l'objet a suivi, en laissant jusqu'à ce
+    # délai après la fin de la consigne de levage. Constaté sur RTX 5090 :
+    # carton bien serré, déclaré « non confirmé » à l'instant exact où la
+    # consigne finissait, prise refaite en boucle.
+    attente_confirmation_s: float = 1.0
     duree_pose_s: float = 0.8
     duree_ouverture_s: float = 0.5
     # Pré-saisie : bras OUVERTS PLUS LARGE avant de glisser les mains autour
@@ -403,7 +409,11 @@ class ManipulationService(IService):
             t, fini = self._interp(p.tangage_port, p.tangage_leve, p.duree_levage_s)
             self._ecrire(p.roulis_serre, t)
             if fini:
-                if self._verifier():
+                confirme = self._verifier()
+                if not confirme and (self._horloge() - self._t0 - p.duree_levage_s
+                                     < p.attente_confirmation_s):
+                    pass                     # on laisse le bras rejoindre
+                elif confirme:
                     self.stats["prises"] += 1
                     # L'objet a quitté la table : l'exemption n'a plus lieu
                     # d'être. Le carton porté est couvert par le volume de
