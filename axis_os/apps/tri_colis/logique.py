@@ -99,7 +99,9 @@ class TriColis:
         self._temps_etat = 0.0          # temps ACTIF passé dans l'état
         self._entree = True             # premier pas dans l'état courant
         self._essais_prise = 0
-        self._derniere_prise_ratee = None   # (position, couleur, essais) de la dernière prise ratée
+        # Prises ratées par colis (position, couleur, essais) : un colis
+        # garde son compte même si le robot en a pris un autre entre-temps.
+        self._prises_ratees: List[Tuple[Tuple[float, float, float], str, int]] = []
         self._essais_nav = 0
         self._essais_pose = 0
         self._echecs_accostage: List[Tuple[float, float, float]] = []
@@ -237,13 +239,15 @@ class TriColis:
             return
         self._inactif_depuis, self._inactivite_signalee = None, False
         self.colis = max(candidats, key=lambda c: c.confiance)
-        # Même colis qu'une prise ratée juste avant (même couleur, même
-        # place) : les essais continuent de compter. Sinon, on repart à zéro.
-        rate = self._derniere_prise_ratee
-        self._essais_prise = rate[2] if (
-            rate is not None and rate[1] == self.colis.couleur
-            and math.dist(rate[0], self.colis.position) < self.cfg.rayon_ignore_m) else 0
-        self._derniere_prise_ratee = None
+        # Colis déjà raté (même couleur, même place) : ses essais continuent
+        # de compter, même si un autre a été pris entre-temps.
+        self._essais_prise = 0
+        for i, (pos, coul, n) in enumerate(self._prises_ratees):
+            if coul == self.colis.couleur and \
+                    math.dist(pos, self.colis.position) < self.cfg.rayon_ignore_m:
+                self._essais_prise = n
+                del self._prises_ratees[i]
+                break
         self._log(f"colis {self.colis.couleur} repéré "
                   f"(confiance {self.colis.confiance:.2f})")
         self._aller("ACCOSTER")
@@ -314,8 +318,8 @@ class TriColis:
             # le carton, bousculé par la prise ratée, était tombé au sol ; le
             # robot a refermé deux fois les mains sur le vide, à l'ancienne
             # position. Une prise ratée peut avoir déplacé le colis.
-            self._derniere_prise_ratee = (self.colis.position, self.colis.couleur,
-                                          self._essais_prise)
+            self._prises_ratees.append((self.colis.position, self.colis.couleur,
+                                        self._essais_prise))
             self.colis = None
             self._aller("REVENIR")          # recul, puis nouvelle recherche
         else:

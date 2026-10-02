@@ -76,6 +76,14 @@ class ConfigFacade:
     # ses pas après la consigne d'arrêt —, touchait et déplaçait le carton.
     # Immobile = moins de `derive_stable_m` de déplacement pendant
     # `duree_stabilisation_s`, attendu au plus `stabilisation_max_s`.
+    # Visée : arrivé à la pré-pose, face au carton, le robot le REGARDE à
+    # nouveau avant l'approche finale. Constaté sur RTX 5090 : position
+    # perçue depuis le poste de prise fausse de 4 à 9 cm en latéral — l'erreur
+    # croît avec l'angle de vue —, une main poussait le carton. Vu de face,
+    # le carton est près de l'axe de la caméra : l'erreur est bien plus
+    # faible. Correction bornée (au-delà, ce n'est pas le même carton).
+    duree_visee_s: float = 0.6
+    correction_visee_max_m: float = 0.15
     duree_stabilisation_s: float = 0.6
     # Après une prise ratée : temps laissé aux mains pour s'ouvrir en grand
     # avant de reculer (voir reinitialiser_manipulation).
@@ -145,6 +153,9 @@ class FacadeServices:
         self._insertion: Optional[Pose2D] = None   # cible finale, après pré-saisie
         self._apres_stab, self._phase_avant_stab = "ARRIVE", "ACCOSTAGE"
         self._liberation_jusqua = 0.0
+        self._colis_vise: Optional[Colis] = None
+        self.veut_percevoir = False        # la boucle doit rendre la caméra
+        self._t_visee = 0.0
         self._t_stab0, self._ref_stab = 0.0, (0.0, 0.0, 0.0)
         self._progres = None                       # (distance, instant, cible)
         self._t_tick: Optional[float] = None
@@ -198,6 +209,7 @@ class FacadeServices:
                 poste_depose: Optional[str] = None) -> Tuple[bool, str]:
         self._dest, self._apres_nav = dest, accostage
         self._poste_depose = poste_depose
+        self._colis_vise, self.veut_percevoir = None, False
         if self.manip.etat is Etat.PRET:
             self.manip.reinitialiser()      # pré-saisie abandonnée : bras au port
         if self._accoste:
@@ -246,6 +258,7 @@ class FacadeServices:
         attente = Pose2D(cible.x - ri * c, cible.y - ri * s, self.cap_prise)
         ok, raison = self._partir(pre, attente)
         self._insertion = cible
+        self._colis_vise = colis
         return ok, raison
 
     def navigation(self) -> str:
@@ -253,7 +266,7 @@ class FacadeServices:
         if ph == "ECHEC":
             return "ECHEC"
         if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION", "FRANCHISSEMENT",
-                  "STABILISATION"):
+                  "STABILISATION", "VISEE"):
             return self._etat_accostage
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
@@ -295,6 +308,20 @@ class FacadeServices:
             p = self._pose()
             self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
             self.stats["accostages"] += 1
+            if self._colis_vise is not None and self._phase == "ACCOSTAGE":
+                self.loco.halt()
+                self._phase, self._t_visee = "VISEE", self._horloge()
+                self.veut_percevoir = True
+        if self._phase == "VISEE" and self._etat_accostage == "EN_ROUTE":
+            self.loco.halt()
+            if self._horloge() - self._t_visee < self.cfg.duree_visee_s:
+                return                   # immobile, et une image fraîche rendue
+            self._viser()
+            self.veut_percevoir = False
+            self._phase, self._t_accostage = "ACCOSTAGE", self._horloge()
+            p = self._pose()
+            self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
+            return
         if self._phase == "FRANCHISSEMENT" and self._etat_accostage == "EN_ROUTE":
             if self.manip.etat is Etat.TENU:
                 pd = self.postes_depose.get(self._poste_depose)
@@ -362,6 +389,31 @@ class FacadeServices:
                 # recul, au lieu de repartir droit dans l'obstacle.
                 self._accoste = True
 
+    def _viser(self) -> None:
+        """Corrige la cible latérale d'après une détection faite DE FACE."""
+        v = self._colis_vise
+        vus = [c for c in self.chercher(v.couleur)
+               if math.dist(c.position[:2], v.position[:2]) < self.cfg.correction_visee_max_m]
+        if not vus:
+            self.stats["visees_sans_detection"] = self.stats.get("visees_sans_detection", 0) + 1
+            self._journal(f"visée : colis {v.couleur} pas revu de face — cible inchangée")
+            return
+        n = min(vus, key=lambda c: math.dist(c.position[:2], v.position[:2]))
+        # Seulement la composante LATÉRALE (perpendiculaire au cap de prise) :
+        # la profondeur est fixée par le bord de la table.
+        lx, ly = -math.sin(self.cap_prise), math.cos(self.cap_prise)
+        e = (n.position[0] - v.position[0]) * lx + (n.position[1] - v.position[1]) * ly
+        dx, dy = e * lx, e * ly
+        for nom in ("_insertion", "_cible"):
+            q = getattr(self, nom)
+            if q is not None:
+                setattr(self, nom, Pose2D(q.x + dx, q.y + dy, q.cap))
+        self._colis_vise = Colis(v.couleur, (v.position[0] + dx, v.position[1] + dy,
+                                             v.position[2]), v.confiance)
+        self.stats["visees"] = self.stats.get("visees", 0) + 1
+        self._journal(f"visée : colis {v.couleur} revu de face — correction latérale "
+                      f"{100 * e:+.1f} cm")
+
     def _stabiliser(self, ensuite: str) -> None:
         self.loco.halt()
         self._phase_avant_stab, self._apres_stab = self._phase, ensuite
@@ -421,6 +473,10 @@ class FacadeServices:
 
     # ---- manipulation -----------------------------------------------------
     def prendre(self, colis: Colis) -> Tuple[bool, str]:
+        v = self._colis_vise
+        if v is not None and v.couleur == colis.couleur \
+                and math.dist(v.position[:2], colis.position[:2]) < self.cfg.correction_visee_max_m:
+            colis = v                    # position corrigée par la visée
         r = self.manip.prendre(Objet(colis.position, self.cfg.largeur,
                                      self.cfg.profondeur, self.cfg.hauteur))
         return r.ok, r.reason or ""

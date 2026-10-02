@@ -188,8 +188,12 @@ class Monde:
         for x, couleur in self.cartons.items():
             if couleur not in query or math.hypot(x - r.x, Y_BORD - r.y) > 3.0:
                 continue
+            # Erreur LATÉRALE proportionnelle à l'angle de vue (constaté sur
+            # RTX 5090 : 4 à 9 cm depuis le poste de prise, toujours vers
+            # l'axe de la caméra) : position perçue « rapprochée » de 12 %.
+            xp = r.x + (1.0 - ERREUR_ANGULAIRE) * (x - r.x)
             dets.append(Detection(query, self.rng.uniform(0.3, 0.9), (0, 0, 10, 10),
-                                  position_3d=Vector3(x + self.rng.gauss(0, 0.005),
+                                  position_3d=Vector3(xp + self.rng.gauss(0, 0.005),
                                                       Y_BORD + self.rng.gauss(0, 0.005),
                                                       PLATEAU + 0.10)))
         if self.faux_positif_sol:       # le sol pris pour un carton (constaté en P2)
@@ -270,6 +274,7 @@ check("Services démarrés, façade branchée", True)
 viol = {"collision": 0, "vers_humain": 0, "poste_errone": 0, "bras_pendant_arret": 0,
         "main_dans_carton": 0, "carton_contre_table": 0, "bras_en_piétinant": 0}
 GLISSEMENT = 0.09   # le carton porté descend dans les mains : maximum mesuré dans W3
+ERREUR_ANGULAIRE = 0.12   # perception : erreur latérale relative (RTX 5090)
 d_min_humain = float("inf")
 etat_manip_prec = Etat.LIBRE
 ordre_donne = False

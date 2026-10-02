@@ -698,7 +698,7 @@ def main():
             ordre_donne = True
         # Rendu : pour la perception (au prochain pas, la logique cherche)
         # et pour la vidéo.
-        percevoir = tri.etat == "CHERCHER"
+        percevoir = tri.etat == "CHERCHER" or facade.veut_percevoir
         filmer = video_ok and k % pas_video == 0
         if percevoir or filmer:
             p_, q_ = robot.get_world_pose()
