@@ -588,6 +588,24 @@ def main():
             break
         # DIAGNOSTIC PERCEPTION : une recherche vient de ne rien donner.
         # On dit ce qu'OWL-ViT a vu, et on garde ce que voyait la tête.
+        if etat_prec == "CHERCHER" and tri.colis is not None \
+                and tri.etat not in ("CHERCHER", "ATTENDRE"):
+            # DIAGNOSTIC : position PERÇUE du colis visé contre sa position
+            # RÉELLE. Un écart latéral de quelques cm suffit à ce qu'une main
+            # pousse le carton en approchant (constaté sur RTX 5090).
+            pp = tri.colis.position
+            reel = min((c_ for c_ in cartons if c_["lieu"] == "prise"),
+                       key=lambda c_: math.hypot(
+                           float(c_["obj"].get_world_pose()[0][0]) - pp[0],
+                           float(c_["obj"].get_world_pose()[0][1]) - pp[1]),
+                       default=None)
+            if reel is not None:
+                pr_ = np.asarray(reel["obj"].get_world_pose()[0], dtype=float)
+                msg_ = (f"[{t:7.1f}s] PERCEPTION : colis {tri.colis.couleur} perçu en "
+                        f"({pp[0]:.3f}, {pp[1]:.3f}, {pp[2]:.3f}), réel {reel['couleur']} en "
+                        f"({pr_[0]:.3f}, {pr_[1]:.3f}, {pr_[2]:.3f}) — écart x "
+                        f"{100 * (pp[0] - pr_[0]):+.1f} cm, y {100 * (pp[1] - pr_[1]):+.1f} cm")
+                journaliser(msg_)
         if etat_prec == "CHERCHER" and tri.etat not in ("CHERCHER", "ATTENDRE") \
                 and suivi is not None:
             # Recherche RÉUSSIE : on garde aussi ce que voyait la tête, pour
