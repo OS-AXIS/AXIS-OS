@@ -70,6 +70,8 @@ class ConfigFacade:
     # table de dépose, robot qui insistait). Il s'arrête, et l'app réessaie
     # après un recul.
     delai_blocage_s: float = 2.0
+    # Blocage tout près d'une cible de prise : accepté comme arrivée.
+    tol_blocage_prise: float = 0.06
     # Stabilisation : arrivé, le robot s'IMMOBILISE avant de bouger les
     # bras (ouvrir, prendre, poser). Constaté sur GPU : il ouvrait ou
     # serrait les bras en piétinant encore — la politique de marche finit
@@ -453,10 +455,22 @@ class FacadeServices:
             self._progres = (d, t, self._cible)          # il avance : on repart
         elif t - self._progres[1] > cfg.delai_blocage_s and d > cfg.tol_position * 2:
             self.loco.halt()
-            self.stats["blocages"] = self.stats.get("blocages", 0) + 1
-            self._journal(f"accostage BLOQUÉ à {d:.2f} m de la cible — arrêt, "
-                          f"pas d'insistance")
             self._progres = None
+            if self._phase in ("ACCOSTAGE", "INSERTION") and self._insertion is not None \
+                    and d < cfg.tol_blocage_prise:
+                # Presque arrivé devant le carton (constaté sur RTX 5090 :
+                # « BLOQUÉ à 0.05 m », la marche n'avançant plus par si petits
+                # pas). Mains grandes ouvertes, 10 cm de jeu de chaque côté :
+                # on continue ; la règle « entre les mains » décide de la prise.
+                self.stats["arrivees_approchees"] = self.stats.get("arrivees_approchees", 0) + 1
+                self._journal(f"accostage : {self._phase} arrêté à {100 * d:.0f} cm de la "
+                              f"cible (devant {100 * ex:+.0f}, côté {100 * ey:+.0f} cm) — assez "
+                              f"près, on continue")
+                return "ARRIVE"
+            self.stats["blocages"] = self.stats.get("blocages", 0) + 1
+            self._journal(f"accostage BLOQUÉ ({self._phase}) à {d:.2f} m de la cible "
+                          f"(devant {100 * ex:+.0f}, côté {100 * ey:+.0f} cm) — arrêt, "
+                          f"pas d'insistance")
             return "BLOQUE"
         if d > self._d0 + cfg.marge_divergence or d > cfg.distance_max_accostage \
                 or self._horloge() - self._t_accostage > cfg.delai_accostage_s:
