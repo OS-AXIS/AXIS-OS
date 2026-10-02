@@ -66,7 +66,27 @@ def start_simulation_app(headless: bool = False):
         return _simulation_app
     from isaacsim import SimulationApp
     _simulation_app = SimulationApp({"headless": headless})
+    desactiver_dlss()
     return _simulation_app
+
+
+def desactiver_dlss() -> None:
+    """Anticrénelage SANS DLSS (TAA). Constaté sur Vast.ai (RTX 5090,
+    GeForce, en conteneur) : « NGX CreateFeature failed: 0xbad00002 »,
+    « RenderOp 'DLSS RenderOp' failed » à chaque image — AUCUNE image
+    rendue, caméras noires, test arrêté à t = 0. Le DLSS (réseau de
+    neurones de NVIDIA, bibliothèque NGX) n'est pas disponible partout ;
+    nos caméras n'en ont pas besoin. Réglage valable sur toutes les cartes :
+    les tests ne dépendent plus de sa présence."""
+    try:
+        import carb
+        s = carb.settings.get_settings()
+        s.set("/rtx/post/aa/op", 1)                 # 1 = TAA (3 = DLSS, défaut)
+        s.set("/rtx/post/dlss/execMode", 0)
+        s.set("/rtx-transient/dlssg/enabled", False)
+        print("  [rendu] DLSS désactivé (anticrénelage TAA)", flush=True)
+    except Exception as exc:                        # noqa: BLE001
+        print(f"  [rendu] impossible de désactiver le DLSS : {exc}", flush=True)
 
 
 
