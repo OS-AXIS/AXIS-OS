@@ -29,10 +29,10 @@ uv run python -c "import gr00t; print('GR00T installé')"
 # en accès restreint. « huggingface-cli whoami » répondait OK sans connexion
 # (constaté) : on teste le vrai accès au dépôt, et on utilise la commande
 # actuelle « hf auth login ».
-if ! uv run python -c "from huggingface_hub import HfApi; HfApi().model_info('nvidia/Cosmos-Reason2-2B')" >/dev/null 2>&1; then
+if ! uv run python -c "from huggingface_hub import hf_hub_download; hf_hub_download('nvidia/Cosmos-Reason2-2B', 'config.json')" >/dev/null 2>&1; then
   echo "Connexion à Hugging Face — colle ton jeton d'accès (il ne s'affiche pas) :"
   uv run hf auth login || uv run huggingface-cli login
-  uv run python -c "from huggingface_hub import HfApi; HfApi().model_info('nvidia/Cosmos-Reason2-2B')" \
+  uv run python -c "from huggingface_hub import hf_hub_download; hf_hub_download('nvidia/Cosmos-Reason2-2B', 'config.json')" \
     || { echo "Pas d'accès à nvidia/Cosmos-Reason2-2B : accepter la licence sur huggingface.co, puis relancer."; exit 1; }
 fi
 echo "Entraînement : $PAS pas, journal dans $HOME/vla_entrainement.log"
