@@ -25,9 +25,15 @@ fi
 cd "$HOME/Isaac-GR00T"
 uv sync --python 3.12
 uv run python -c "import gr00t; print('GR00T installé')"
-if ! uv run huggingface-cli whoami >/dev/null 2>&1; then
-  echo "Connexion à Hugging Face (colle ton jeton d'accès) :"
-  uv run huggingface-cli login
+# Connexion Hugging Face : le modèle de base de GR00T (Cosmos-Reason2-2B) est
+# en accès restreint. « huggingface-cli whoami » répondait OK sans connexion
+# (constaté) : on teste le vrai accès au dépôt, et on utilise la commande
+# actuelle « hf auth login ».
+if ! uv run python -c "from huggingface_hub import HfApi; HfApi().model_info('nvidia/Cosmos-Reason2-2B')" >/dev/null 2>&1; then
+  echo "Connexion à Hugging Face — colle ton jeton d'accès (il ne s'affiche pas) :"
+  uv run hf auth login || uv run huggingface-cli login
+  uv run python -c "from huggingface_hub import HfApi; HfApi().model_info('nvidia/Cosmos-Reason2-2B')" \
+    || { echo "Pas d'accès à nvidia/Cosmos-Reason2-2B : accepter la licence sur huggingface.co, puis relancer."; exit 1; }
 fi
 echo "Entraînement : $PAS pas, journal dans $HOME/vla_entrainement.log"
 nohup env CUDA_VISIBLE_DEVICES=0 uv run python gr00t/experiment/launch_finetune.py \
