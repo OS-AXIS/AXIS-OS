@@ -201,6 +201,28 @@ res6 = nav6.aller_vers("enclos")
 check("Destination inaccessible : ÉCHEC immédiat, robot à l'arrêt",
       not res6.ok and nav6.etat is EtatNavigation.ECHEC and r6.cmd == (0.0, 0.0, 0.0))
 
+section("Alignement final : pas de va-et-vient quand pivoter fait dériver")
+# Constaté sur GPU : en pivotant sur place, la marche déplace le robot de
+# quelques cm ; il sortait de la tolérance, repartait, revenait — 90 s.
+def aligner(sv, pas_max=6000):
+    x, y, cap = 0.05, 0.0, 0.0
+    for k in range(pas_max):
+        c, ok = sv.commande(Pose2D(x, y, cap), [(0.0, 0.0)], math.pi)
+        if ok:
+            return k
+        dt = 0.02
+        cap += c.wz * dt
+        x += (c.vx * math.cos(cap) - c.vy * math.sin(cap)) * dt
+        y += (c.vx * math.sin(cap) + c.vy * math.cos(cap)) * dt
+        if c.vx == 0.0 and c.wz != 0.0:       # pivot : la marche fait un pas de côté
+            x += 0.0025 * math.cos(cap + math.pi / 2)
+            y += 0.0025 * math.sin(cap + math.pi / 2)
+    return None
+k_arr = aligner(Suiveur())
+check(f"Arrivée malgré la dérive en pivotant (pas {k_arr}, soit "
+      f"{'jamais' if k_arr is None else f'{k_arr * 0.02:.0f} s'})",
+      k_arr is not None and k_arr * 0.02 < 30)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

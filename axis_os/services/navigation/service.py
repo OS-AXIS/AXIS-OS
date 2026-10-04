@@ -269,6 +269,21 @@ class Suiveur:
         self.anticipation = anticipation
         self.tol_position, self.tol_cap = tol_position, tol_cap
         self.cap_avant_avance = cap_avant_avance
+        # Alignement final : HYSTÉRÉSIS et arrivée par stagnation. Constaté
+        # sur GPU (essai 30 min) : « navigation vers prise en échec » 4 fois,
+        # robot tout près du poste pendant 90 s. En pivotant sur place, la
+        # marche le déplace de quelques cm : il sortait de la tolérance de
+        # position, repartait « en avance », revenait… sans fin. Désormais, une
+        # fois arrivé, il reste en alignement tant qu'il est à moins de
+        # 2 × tol_position ; et si le cap ne s'améliore plus pendant
+        # `pas_stagnation` appels alors qu'il est à moins de 2 × tol_cap, il
+        # est déclaré arrivé (un poste de navigation n'est pas une prise : la
+        # précision fine, c'est l'accostage qui la donne).
+        self._alignement = False
+        self._but = None
+        self._meilleur_e, self._pas_sans_progres = math.inf, 0
+        self.pas_stagnation = 150            # ~3 s à 50 Hz
+        self.arrivees_par_stagnation = 0
 
     def _franche(self, v: float, vmax: float) -> float:
         """Jamais dans la bande morte de la politique de marche."""
@@ -317,14 +332,26 @@ class Suiveur:
                  ) -> Tuple[Consigne, bool]:
         """(consigne, arrivé)."""
         fx, fy = chemin[-1]
+        if self._but != (fx, fy, cap_final):
+            self._but, self._alignement = (fx, fy, cap_final), False
+            self._meilleur_e, self._pas_sans_progres = math.inf, 0
         d_fin = math.hypot(fx - pose.x, fy - pose.y)
-        if d_fin < self.tol_position:
+        if d_fin < self.tol_position or (self._alignement and d_fin < 2 * self.tol_position):
+            self._alignement = True
             if cap_final is None:
                 return Consigne(0.0, 0.0, 0.0), True
             e = _angle(cap_final - pose.cap)
             if abs(e) < self.tol_cap:
                 return Consigne(0.0, 0.0, 0.0), True
+            if abs(e) < self._meilleur_e - 0.02:
+                self._meilleur_e, self._pas_sans_progres = abs(e), 0
+            else:
+                self._pas_sans_progres += 1
+            if self._pas_sans_progres >= self.pas_stagnation and abs(e) < 2 * self.tol_cap:
+                self.arrivees_par_stagnation += 1
+                return Consigne(0.0, 0.0, 0.0), True
             return Consigne(0.0, 0.0, self._franche(1.2 * e, self.w_max)), False
+        self._alignement = False
 
         tx, ty, _ = self._cible(pose, chemin)
         e = _angle(math.atan2(ty - pose.y, tx - pose.x) - pose.cap)

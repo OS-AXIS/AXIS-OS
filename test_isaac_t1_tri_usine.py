@@ -413,6 +413,19 @@ def main():
     def journaliser(msg):
         journal.append(msg)
         print("  " + msg, flush=True)
+        if "navigation vers" in msg and "échec" in msg:
+            # DIAGNOSTIC (essai 30 min : 4 fois « navigation vers prise en
+            # échec » sans arrêt de sécurité) : où est le robot, où va-t-il,
+            # et ce que fait le suiveur.
+            pr_ = pose2d()
+            but_ = getattr(nav, "_but", None)
+            but_ = nav.carte.postes.get(but_, but_) if isinstance(but_, str) else but_
+            sv_ = nav.suiveur
+            print(f"      robot ({pr_.x:.3f}, {pr_.y:.3f}, cap {math.degrees(pr_.cap):.1f}°), "
+                  f"but {but_}, chemin {None if nav.chemin is None else nav.chemin[-3:]}, "
+                  f"alignement {getattr(sv_, '_alignement', '?')}, "
+                  f"stagnation {getattr(sv_, '_pas_sans_progres', '?')}, "
+                  f"consigne {loco._twist}, nav {nav.stats}", flush=True)
         if suivi is not None:
             suivi.journal(msg)
         if rec is not None and any(k in msg for k in ("LIVRÉ", "ALERTE", "superviseur",
