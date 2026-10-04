@@ -731,7 +731,8 @@ def main():
             if pt is not None:
                 proches = sorted((math.hypot(f.p[0] - pt[0], f.p[1] - pt[1]), i)
                                  for i, f in enumerate(figurants))
-                d_pers, i_pers = proches[0]
+                # Collecte VLA : aucune personne dans la scène.
+                d_pers, i_pers = proches[0] if proches else (math.inf, -1)
                 quoi = (f"PERSONNE n°{i_pers} (à {d_pers:.2f} m du point)" if d_pers < 0.35
                         else f"PAS une personne (la plus proche à {d_pers:.2f} m du point)")
                 sur_robot = math.hypot(pt[0] - pr_.x, pt[1] - pr_.y)
