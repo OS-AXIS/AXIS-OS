@@ -17,6 +17,19 @@ JEU="$HOME/vla_lerobot"
 SORTIE="$HOME/vla_gr00t_g1"
 [ -d "$JEU" ] || { echo "Pas de jeu d'entraînement ($JEU) : lancer recuperer_vla.sh d'abord."; exit 1; }
 command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg
+# DeepSpeed (utilisé par l'entraîneur de GR00T) exige le compilateur CUDA
+# (nvcc) même sans rien compiler : « CUDA_HOME does not exist » (constaté).
+# La VM Vast n'a que le pilote : on installe la boîte à outils CUDA 12.8.
+if [ ! -x /usr/local/cuda-12.8/bin/nvcc ]; then
+  . /etc/os-release
+  DEPOT_CUDA="ubuntu${VERSION_ID/./}"
+  wget -q "https://developer.download.nvidia.com/compute/cuda/repos/${DEPOT_CUDA}/x86_64/cuda-keyring_1.1-1_all.deb" -O /tmp/cuda-keyring.deb
+  sudo dpkg -i /tmp/cuda-keyring.deb
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq cuda-toolkit-12-8
+fi
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH="$CUDA_HOME/bin:$PATH"
 command -v uv >/dev/null || { curl -LsSf https://astral.sh/uv/install.sh | sh; }
 export PATH="$HOME/.local/bin:$PATH"
 if [ ! -d "$HOME/Isaac-GR00T" ]; then
@@ -36,7 +49,7 @@ if ! uv run python -c "from huggingface_hub import hf_hub_download; hf_hub_downl
     || { echo "Pas d'accès à nvidia/Cosmos-Reason2-2B : accepter la licence sur huggingface.co, puis relancer."; exit 1; }
 fi
 echo "Entraînement : $PAS pas, journal dans $HOME/vla_entrainement.log"
-nohup env CUDA_VISIBLE_DEVICES=0 uv run python gr00t/experiment/launch_finetune.py \
+nohup env CUDA_VISIBLE_DEVICES=0 CUDA_HOME="$CUDA_HOME" uv run python gr00t/experiment/launch_finetune.py \
   --base-model-path nvidia/GR00T-N1.7-3B \
   --dataset-path "$JEU" \
   --embodiment-tag NEW_EMBODIMENT \
