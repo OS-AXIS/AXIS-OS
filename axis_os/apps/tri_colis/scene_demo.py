@@ -36,7 +36,7 @@ from axis_os.services.navigation.service import Carte, Pose2D, Rectangle
 PLATEAU = 0.80                       # hauteur des plateaux (m)
 LARGEUR_CARTON, PROFONDEUR_CARTON, HAUTEUR_CARTON = 0.24, 0.20, 0.20
 MAINS_DEVANT = 0.29                  # centre des mains devant le bassin
-DANS_PLATEAU = 0.12                  # carton déposé à 12 cm du bord
+DANS_PLATEAU = 0.17                  # centre du carton à 17 cm du bord (12 au départ : sur GPU, carton posé de travers au bord, tombé)
 
 CAP_PRISE = math.pi / 2              # face à +y pour prendre
 DEPART = Pose2D(4.0, 0.5, CAP_PRISE)
