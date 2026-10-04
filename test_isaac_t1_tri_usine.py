@@ -66,6 +66,10 @@ def check(label, cond):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--duree", type=float, default=240.0)
+    # Collecte de démonstrations pour le VLA (axis_os/vla/collecte.py) :
+    # prises répétées, cartons placés au hasard, sans personnes.
+    ap.add_argument("--collecte-vla", default=None, metavar="DOSSIER")
+    ap.add_argument("--episodes", type=int, default=200)
     ap.add_argument("--acceleration", type=int, default=10)
     ap.add_argument("--sans-video", action="store_true")
     ap.add_argument("--graine", type=int, default=3)
@@ -178,7 +182,10 @@ def main():
                             "parc": np.array([30.0 + 0.5 * k, 30.0, sd.HAUTEUR_CARTON / 2])})
 
     # Personnes : silhouettes CINÉMATIQUES (déplacées, pas poussées).
-    figurants = sd.figurants()
+    COLLECTE = args.collecte_vla is not None
+    # Collecte VLA : pas de personnes (le geste de prise seul est enregistré ;
+    # la sécurité reste active, elle n'a simplement personne à protéger).
+    figurants = [] if COLLECTE else sd.figurants()
     silhouettes = []
     for i, f in enumerate(figurants):
         path = f"/World/personne_{i}"
@@ -426,9 +433,10 @@ def main():
     perception.start()
 
     # ---- l'opérateur simulé -------------------------------------------------
-    def poser_carton(c, xyz):
+    def poser_carton(c, xyz, lacet_deg=0.0):
+        a = math.radians(lacet_deg) / 2.0
         c["obj"].set_world_pose(position=np.array(xyz, dtype=float),
-                                orientation=np.array([1.0, 0.0, 0.0, 0.0]))
+                                orientation=np.array([math.cos(a), 0.0, 0.0, math.sin(a)]))
         c["obj"].set_linear_velocity(np.zeros(3))
         c["obj"].set_angular_velocity(np.zeros(3))
 
@@ -546,11 +554,56 @@ def main():
         print("  [direct] sans vidéo, la page ne montre que le journal")
     pas_video = 2 * max(1, args.acceleration)
 
+    # ---- collecte VLA -------------------------------------------------------
+    collecteur, enreg = None, None
+    if COLLECTE:
+        from PIL import Image as _Img
+        from axis_os.vla.collecte import CollecteurPrises
+        from axis_os.vla.enregistreur import EnregistreurEpisodes
+        bras_j = list(cfg.body_joints[cfg.num_actions:])
+        enreg = EnregistreurEpisodes(args.collecte_vla, fps=10, noms_etat=bras_j,
+                                     noms_action=bras_j + ["base_vx", "base_vy", "base_wz"])
+
+        def placer_vla(rng_):
+            dispo = [c for c in cartons if c["lieu"] == "stock" and c["couleur"] != "vert"]
+            c = rng_.choice(dispo)
+            x = rng_.uniform(3.55, 4.45)
+            y = sd.Y_CARTON + rng_.uniform(0.0, 0.05)
+            lacet = rng_.uniform(-12.0, 12.0)
+            poser_carton(c, (x, y, sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003), lacet)
+            c["lieu"], c["t"] = "prise", sim_t[0]
+            return c["couleur"], {"x": round(x, 3), "y": round(y, 3), "lacet": round(lacet, 1)}
+
+        def retirer_vla():
+            for c in cartons:
+                if c["lieu"] != "stock":
+                    poser_carton(c, c["parc"])
+                    c["lieu"] = "stock"
+
+        def etat_action_vla():
+            st = read_state()
+            tw = loco._twist
+            return ([st.joint_pos[j] for j in bras_j],
+                    [adapt.pose_bras[j] for j in bras_j] + [tw.vx, tw.vy, tw.wz])
+
+        def image_vla():
+            f_ = cam.capture()
+            if f_ is None:
+                return None
+            im = _Img.frombytes("RGB", (f_.width, f_.height), f_.data).reduce(2)
+            return np.asarray(im)
+
+        collecteur = CollecteurPrises(facade, enreg, placer_vla, retirer_vla, horloge,
+                                      etat_action_vla, image_vla, n_episodes=args.episodes,
+                                      graine=args.graine, journal=journaliser)
+        DUREE = 1e9                          # la collecte s'arrête d'elle-même
+
     # ---- boucle à 50 Hz -----------------------------------------------------
     stats = {"chutes_carton": 0, "sur_plateau": [], "prochain_reappro": 0.0}
     # Table de prise remplie au départ. Pas de pas de physique « à vide » :
     # sans la politique d'équilibre, le robot tomberait avant de commencer.
-    operateur(0.0, stats)
+    if not COLLECTE:
+        operateur(0.0, stats)
     viol_humain, d_min_humain = 0, float("inf")
     # Rapprochement CUMULÉ vers chaque personne tant qu'elle est à moins de
     # 0.75 m. Un robot debout oscille de quelques millimètres en gardant
@@ -565,7 +618,8 @@ def main():
     t_mur = time.monotonic()
     print(f"\n  T1 — {DUREE:.0f} s simulées, vidéo "
           f"{'non' if not video_ok else f'accélérée ×{args.acceleration}'}\n")
-    while not tri.termine and sim_t[0] < DUREE + 300.0:
+    pilote = collecteur if COLLECTE else tri
+    while not pilote.termine and sim_t[0] < DUREE + 300.0:
         if suivi is not None and suivi.arret_demande:
             print("  Arrêt demandé depuis la page de suivi — bilan et vidéo écrits.")
             break
@@ -575,14 +629,14 @@ def main():
         for f, s in zip(figurants, silhouettes):
             f.pas(cfg.control_dt, pr.x, pr.y)
             s.set_world_pose(position=np.array([f.p[0], f.p[1], 0.85]))
-        if k % 10 == 0:
+        if k % 10 == 0 and not COLLECTE:
             operateur(t, stats)
         # Pile AXIS-OS
         nav.tick()
         facade.tick()
         loco.tick()
         manip.tick()
-        tri.pas()
+        pilote.pas()
         if loco.state is LocomotionState.FALLEN:
             chute = (t, tri.etat)
             break
@@ -693,12 +747,13 @@ def main():
                       f"physique ({float(ph[0]):.2f}, {float(ph[1]):.2f}), "
                       f"à {math.hypot(f_.p[0] - pr_.x, f_.p[1] - pr_.y):.2f} m du robot, "
                       f"pause {max(0.0, f_.attente):.0f} s", flush=True)
-        if not ordre_donne and t > DUREE / 2:
+        if not ordre_donne and t > DUREE / 2 and not COLLECTE:
             sup.ordonner("les colis bleus vont maintenant au poste C")
             ordre_donne = True
         # Rendu : pour la perception (au prochain pas, la logique cherche)
         # et pour la vidéo.
-        percevoir = tri.etat == "CHERCHER" or facade.veut_percevoir
+        percevoir = tri.etat == "CHERCHER" or facade.veut_percevoir or (
+            COLLECTE and collecteur.veut_rendu(t + cfg.control_dt))
         filmer = video_ok and k % pas_video == 0
         if percevoir or filmer:
             p_, q_ = robot.get_world_pose()
@@ -771,8 +826,12 @@ def main():
                          f"{b_.colis_tries} triés · tâche {tri.etat} · "
                          f"{time.monotonic() - t_mur:.0f} s réelles")
         if k % 2500 == 0:
-            print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
-                  f"{tri.bilan.colis_tries} triés, état {tri.etat}")
+            if COLLECTE:
+                print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
+                      f"collecte {collecteur.stats}, état {collecteur.etat}", flush=True)
+            else:
+                print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
+                      f"{tri.bilan.colis_tries} triés, état {tri.etat}")
 
     if video_ok:
         rec.terminer()
@@ -780,6 +839,17 @@ def main():
         suivi.resume("test terminé — bilan dans le terminal")
 
     # ---- bilan ----------------------------------------------------------------
+    if COLLECTE:
+        if enreg.actif:
+            enreg.fin(False, sim_t[0], raison="collecte interrompue")
+        print(f"\n{'=' * 66}\n  COLLECTE VLA\n{'=' * 66}")
+        print(f"  épisodes : {collecteur.stats}\n  images : {enreg.stats['images']}"
+              f"\n  dossier : {args.collecte_vla}\n  garde-fou : {loco.stats['refused']} refus"
+              f"\n  gardien : {gardien.stats}\n  temps réel : {time.monotonic() - t_mur:.0f} s")
+        if chute:
+            print(f"  CHUTE à t = {chute[0]:.1f} s")
+        simulation_app.close()
+        sys.exit(0)
     b = tri.bilan
     print(f"\n{'=' * 66}\n  RÉSULTATS T1\n{'=' * 66}")
     print("  " + sup.rapport())
