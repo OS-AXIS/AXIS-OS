@@ -114,7 +114,9 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os") -> D
         "state": _decoupage(noms_etat),
         "action": _decoupage(noms_action),
         "video": {"ego_view": {"original_key": CLE_VIDEO}},
-        "annotation": {"human.action.task_description": {}},
+        # Clé lue par la configuration de modalités de GR00T :
+        # "annotation.human.task_description" -> colonne task_index.
+        "annotation": {"human.task_description": {"original_key": "task_index"}},
     }
     (dst / "meta" / "modality.json").write_text(json.dumps(modalite, indent=2))
     info = {
