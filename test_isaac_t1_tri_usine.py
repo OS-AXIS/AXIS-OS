@@ -338,13 +338,16 @@ def main():
                 best, dmin = c, d
         return best
 
+    diag_prise = [-1e9]
+
     def verifier_prise():
         # Simulation : le carton a-t-il quitté la table avec les mains ? Sur
         # le vrai robot : l'effort mesuré aux épaules.
         c = carton_aux_mains()
         ok_ = c is not None and float(c["obj"].get_world_pose()[0][2]) > \
             sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.015
-        if not ok_:
+        if not ok_ and sim_t[0] - diag_prise[0] > 5.0:
+            diag_prise[0] = sim_t[0]          # une fois par tentative, pas à chaque pas
             # DIAGNOSTIC d'une prise ratée : où étaient les mains, le carton,
             # et dans quel sens le carton était tourné (poussé en avançant ?).
             g_, d_ = mains()
