@@ -13,7 +13,8 @@ DEPOT="OS-AXIS/AXIS-OS"
 ETIQUETTE="vla-episodes"
 if [ "${1:-}" = "--restaurer" ]; then
   cd "$HOME"
-  gh release download "$ETIQUETTE" --repo "$DEPOT" --pattern "vla_episodes.tar" --clobber
+  rm -f vla_episodes.tar   # (le gh d'Ubuntu 22.04 n'a pas --clobber pour download)
+  gh release download "$ETIQUETTE" --repo "$DEPOT" --pattern "vla_episodes.tar"
   tar xf vla_episodes.tar
   sudo docker exec "$CONTENEUR" mkdir -p /isaac-sim/videos
   sudo docker cp "$HOME/vla_episodes" "$CONTENEUR:/isaac-sim/videos/"
