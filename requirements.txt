@@ -62,3 +62,9 @@ protobuf>=4.25.0
 # ce fichier.
 transformers==5.17.0
 pillow>=10.0.0
+
+# Connecteur GR00T (axis_os/store/sdk/ai/gr00t_connector.py) — requis
+# uniquement pour parler à un serveur NVIDIA Isaac GR00T (run_gr00t_server.py).
+# pyzmq>=25
+# msgpack>=1.0
+# msgpack-numpy>=0.4.8
