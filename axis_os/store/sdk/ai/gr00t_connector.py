@@ -116,6 +116,11 @@ class GR00TConnector(IVLAConnector):
         self._ctx = self._sock = None
         self._connected = False
 
+    @property
+    def arm_joints(self) -> list:
+        """Les 14 joint_id, bras gauche puis droit (copie)."""
+        return list(self._arm_joints)
+
     # ---- sérialisation (même contrat que MsgSerializer de NVIDIA) -------
     @staticmethod
     def _enc(obj):
