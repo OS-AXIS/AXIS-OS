@@ -70,6 +70,19 @@ def debut_prise(action: np.ndarray, n_base: int = 3, seuil: float = 0.01) -> int
     return int(bouge[-1]) + 1 if len(bouge) else 0
 
 
+def debut_geste(action: np.ndarray, i0: int, n_base: int = 3, seuil: float = 0.02) -> int:
+    """Après l'arrêt de la base, la première image où la consigne des BRAS
+    change (début du serrage) — moins une image. Constaté sur GPU (prise
+    seule, bras figés 30 s autour du carton) : les démonstrations commençaient
+    par 0.6 à 3 s d'immobilité (stabilisation de la base) ; pour la même image
+    et le même état, le modèle avait surtout appris « ne rien faire »."""
+    bras = action[:, :-n_base]
+    if i0 >= len(bras):
+        return i0
+    bouge = np.flatnonzero(np.abs(bras[i0:] - bras[i0]).max(axis=1) > seuil)
+    return i0 + max(0, int(bouge[0]) - 1) if len(bouge) else i0
+
+
 def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
               prise_seule: bool = False, images_min: int = 10) -> Dict:
     import pandas as pd
@@ -93,7 +106,7 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
     for e in eps:
         d = np.load(src / f"{e['episode']}.npz")
         etat, action, temps = d["etat"], d["action"], d["temps"]
-        i0 = debut_prise(action) if prise_seule else 0
+        i0 = debut_geste(action, debut_prise(action)) if prise_seule else 0
         if len(temps) - i0 < images_min:
             trop_courts += 1
             continue

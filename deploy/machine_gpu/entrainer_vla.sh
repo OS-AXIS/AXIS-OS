@@ -23,10 +23,11 @@ SORTIE="$HOME/vla_gr00t_g1"
 if [ "${3:-}" = "prise" ]; then
   JEU="$HOME/vla_lerobot_prise"
   SORTIE="$HOME/vla_gr00t_g1_prise"
-  if [ ! -d "$JEU" ]; then
-    [ -d "$HOME/vla_episodes" ] || { echo "Pas d'épisodes : lancer recuperer_vla.sh d'abord."; exit 1; }
-    (cd "$HOME/AXIS-OS" && python3 -m axis_os.vla.vers_lerobot "$HOME/vla_episodes" "$JEU" --prise-seule)
-  fi
+  # Toujours reconverti (quelques secondes) : le découpage a évolué. L'ancien
+  # modèle de prise est effacé — plusieurs dizaines de Go (disque plein constaté).
+  [ -d "$HOME/vla_episodes" ] || { echo "Pas d'épisodes : lancer recuperer_vla.sh d'abord."; exit 1; }
+  rm -rf "$JEU" "$SORTIE"
+  (cd "$HOME/AXIS-OS" && python3 -m axis_os.vla.vers_lerobot "$HOME/vla_episodes" "$JEU" --prise-seule)
 fi
 [ -d "$JEU" ] || { echo "Pas de jeu d'entraînement ($JEU) : lancer recuperer_vla.sh d'abord."; exit 1; }
 command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg

@@ -111,7 +111,8 @@ else:
                                noms_action=NOMS_ACTION)
     ep_.debut("pick up the red box", 0.0)
     for k in range(27):
-        act = np.full(17, 0.1 * k)
+        # bras : immobiles (0.5) de l'image 12 à 15 (stabilisation), puis serrage
+        act = np.full(17, 0.1 * k if k < 12 else (0.5 if k < 16 else 0.5 + 0.1 * (k - 15)))
         act[14:] = [0.2, 0.0, 0.05] if k < 12 else [0.0, 0.0, 0.0]
         ep_.pas(k * 0.1, image(k), np.full(14, k, float), act)
     ep_.fin(True, 2.7)
@@ -121,9 +122,11 @@ else:
     ep_.fin(True, 12.0)
     r = convertir(str(d / "brut_prise"), str(d / "lerobot_prise"), prise_seule=True)
     dfp = pd.read_parquet(d / "lerobot_prise" / "data" / "chunk-000" / "episode_000000.parquet")
-    check(f"Prise seule : 15 images après le dernier mouvement de la base ({r})",
-          r["episodes"] == 1 and r["trop_courts"] == 1 and len(dfp) == 15
-          and abs(dfp["action"][0][0] - 1.2) < 1e-6 and dfp["observation.state"][0][0] == 12)
+    check(f"Prise seule : base arrêtée, immobilité de stabilisation sautée — "
+          f"commence 1 image avant le serrage ({r})",
+          r["episodes"] == 1 and r["trop_courts"] == 1 and len(dfp) == 12
+          and abs(dfp["action"][0][0] - 0.5) < 1e-6 and dfp["observation.state"][0][0] == 15
+          and dfp["action"][1][0] > 0.55)
     check("Prise seule : base à zéro partout, temps et index repartent de 0",
           all(abs(x) < 1e-9 for row in dfp["action"] for x in row[14:])
           and dfp["frame_index"][0] == 0 and abs(dfp["timestamp"][0]) < 1e-9)
@@ -131,7 +134,7 @@ else:
     with _iio.get_reader(str(d / "lerobot_prise" / "videos" / "chunk-000"
                              / "observation.images.ego_view" / "episode_000000.mp4")) as rd_:
         n_im = sum(1 for _ in rd_)
-    check(f"Prise seule : vidéo découpée pareil ({n_im} images)", n_im == 15)
+    check(f"Prise seule : vidéo découpée pareil ({n_im} images)", n_im == 12)
     info_p = json.loads((d / "lerobot_prise" / "meta" / "info.json").read_text())
     check("Prise seule : info.json compte les épisodes gardés", info_p["total_episodes"] == 1)
 
