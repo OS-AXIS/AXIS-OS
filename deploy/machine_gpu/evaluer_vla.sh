@@ -46,20 +46,24 @@ if pgrep -f run_gr00t_server >/dev/null 2>&1; then
   sleep 3
 fi
 cd "$HOME/Isaac-GR00T"
-nohup uv run python gr00t/eval/run_gr00t_server.py \
+# -u : sans lui, Python garde ses messages en mémoire quand ils vont dans un
+# fichier — « Server is ready » n'apparaissait jamais (constaté, RTX PRO 5000).
+nohup env PYTHONUNBUFFERED=1 uv run python -u gr00t/eval/run_gr00t_server.py \
   --model-path "$MODELE" --embodiment-tag NEW_EMBODIMENT \
   --host 127.0.0.1 --port "$PORT" > "$HOME/vla_serveur.log" 2>&1 &
 echo "Serveur GR00T en cours de chargement (journal : ~/vla_serveur.log)…"
+# Prêt = le port écoute (plus sûr que de chercher un message dans le journal).
+pret() { ss -ltn 2>/dev/null | grep -q ":$PORT " || grep -q "Server is ready" "$HOME/vla_serveur.log" 2>/dev/null; }
 for i in $(seq 1 60); do
-  if grep -q "Server is ready" "$HOME/vla_serveur.log" 2>/dev/null; then break; fi
+  if pret; then break; fi
   if ! pgrep -f run_gr00t_server >/dev/null 2>&1; then
     echo "ÉCHEC : le serveur GR00T s'est arrêté. Fin du journal :"; tail -20 "$HOME/vla_serveur.log"
     exit 1
   fi
   sleep 5
 done
-grep -q "Server is ready" "$HOME/vla_serveur.log" \
-  || { echo "ÉCHEC : serveur pas prêt après 5 min."; tail -20 "$HOME/vla_serveur.log"; exit 1; }
+pret || { echo "ÉCHEC : serveur pas prêt après 5 min."; tail -20 "$HOME/vla_serveur.log";
+           pkill -f run_gr00t_server || true; exit 1; }
 echo "Serveur GR00T prêt sur 127.0.0.1:$PORT."
 
 # ---- 2. client dans le conteneur Isaac Sim --------------------------------
