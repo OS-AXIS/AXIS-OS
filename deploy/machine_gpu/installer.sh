@@ -50,6 +50,13 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader \
   || { echo "ÉCHEC : pas de GPU NVIDIA visible (nvidia-smi)."; exit 1; }
 
 etape "2/9 Docker + NVIDIA Container Toolkit"
+# Noyau FIGÉ. Constaté (RTX PRO 5000) : la mise à jour automatique installait
+# un nouveau noyau (5.15.0-1109-kvm) pour lequel le pilote NVIDIA ne se
+# compile pas — dpkg en erreur, et au redémarrage, plus de GPU.
+for p_ in linux-kvm linux-image-kvm linux-headers-kvm linux-generic \
+          linux-image-generic linux-headers-generic; do
+  dpkg -s "$p_" >/dev/null 2>&1 && sudo apt-mark hold "$p_" >/dev/null 2>&1 || true
+done
 # Constaté (RTX PRO 5000) : une mise à jour automatique a pris le verrou d'apt
 # APRÈS l'attente de l'étape 1 — on attend à nouveau, juste avant d'installer.
 while pgrep -f unattended-upgr >/dev/null 2>&1 \
