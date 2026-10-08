@@ -2,7 +2,7 @@
 # Entraînement (fine-tuning) de NVIDIA Isaac GR00T N1.7 sur les démonstrations
 # collectées en simulation (collecte_vla.sh puis recuperer_vla.sh).
 #
-#   bash entrainer_vla.sh [pas_d_entrainement]      (2000 par défaut)
+#   bash entrainer_vla.sh [pas_d_entrainement] [taille_de_lot]   (2000 et 32 par défaut)
 #
 # Prérequis :
 #   - carte avec au moins 40 Go de mémoire (RTX PRO 6000 : 96 Go) ;
@@ -13,6 +13,9 @@
 # par uv), en arrière-plan : une déconnexion ne l'arrête pas.
 set -euo pipefail
 PAS="${1:-2000}"
+# Taille de lot : 32 validé sur RTX PRO 6000 (96 Go). Sur une carte de 48 Go,
+# si le journal dit « CUDA out of memory », relancer avec 16.
+LOT="${2:-32}"
 JEU="$HOME/vla_lerobot"
 SORTIE="$HOME/vla_gr00t_g1"
 [ -d "$JEU" ] || { echo "Pas de jeu d'entraînement ($JEU) : lancer recuperer_vla.sh d'abord."; exit 1; }
@@ -55,6 +58,6 @@ nohup env CUDA_VISIBLE_DEVICES=0 CUDA_HOME="$CUDA_HOME" uv run python gr00t/expe
   --embodiment-tag NEW_EMBODIMENT \
   --modality-config-path "$HOME/AXIS-OS/axis_os/vla/config_gr00t_g1.py" \
   --num-gpus 1 --output-dir "$SORTIE" \
-  --max-steps "$PAS" --global-batch-size 32 --dataloader-num-workers 4 \
+  --max-steps "$PAS" --global-batch-size "$LOT" --dataloader-num-workers 4 \
   > "$HOME/vla_entrainement.log" 2>&1 &
 echo "Lancé (PID $!). Suivre : tail -f ~/vla_entrainement.log"
