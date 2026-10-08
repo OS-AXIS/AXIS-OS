@@ -163,6 +163,13 @@ class VLAService(IService):
             self._loco.halt()
         self.etat, self._action = EtatVLA.INACTIF, None
 
+    def veut_image(self, t: float) -> bool:
+        """Vrai si le tick à l'instant t fera une inférence : en simulation, la
+        boucle ne rend la caméra de tête que dans ce cas (10 fois par seconde,
+        pas 50 — comme à la collecte)."""
+        return self.etat in (EtatVLA.ACTIF, EtatVLA.PERIME, EtatVLA.GEL) and (
+            self._t_infer is None or t - self._t_infer >= self._intervalle - 1e-9)
+
     # ---- boucle de commande (à appeler à chaque tick du robot) -------------
     def tick(self) -> ServiceResult:
         if self.etat in (EtatVLA.INACTIF, EtatVLA.DEFAUT):

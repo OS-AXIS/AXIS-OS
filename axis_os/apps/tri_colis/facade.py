@@ -506,6 +506,21 @@ class FacadeServices:
             return e.name
         return "EN_COURS"
 
+    def suspendre(self, au_contact: bool = False) -> None:
+        """Un AUTRE pilote prend la base (le VLA, en évaluation) : la façade
+        cesse toute consigne — navigation annulée, accostage abandonné, base à
+        l'arrêt en équilibre. Deux pilotes sur la même base, c'est une consigne
+        qui saute de l'un à l'autre sans que personne ne l'ait décidé.
+
+        au_contact : l'autre pilote a laissé le robot contre une table ; la
+        prochaine sortie commencera par un recul, comme après un accostage."""
+        self.nav.annuler()
+        self._phase, self._etat_accostage = "NAV", "ARRIVE"
+        self._apres_nav, self._insertion, self._colis_vise = None, None, None
+        self.veut_percevoir = False
+        self._accoste = self._accoste or au_contact
+        self.loco.halt()
+
     def reinitialiser_manipulation(self) -> None:
         """Après une prise ratée : on OUVRE GRAND et on attend que les mains
         aient lâché avant de reculer — sinon on emporte le carton avec soi."""

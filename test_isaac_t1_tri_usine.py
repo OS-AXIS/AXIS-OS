@@ -70,6 +70,13 @@ def main():
     # prises répétées, cartons placés au hasard, sans personnes.
     ap.add_argument("--collecte-vla", default=None, metavar="DOSSIER")
     ap.add_argument("--episodes", type=int, default=200)
+    # Évaluation du VLA contre les réflexes (axis_os/vla/evaluation.py) : les
+    # MÊMES cartons, essayés par chaque mode. ENDPOINT : serveur GR00T
+    # (tcp://127.0.0.1:5555) ; --episodes = nombre de cartons.
+    ap.add_argument("--evaluer-vla", default=None, metavar="ENDPOINT")
+    ap.add_argument("--modes", default="reflexes,vla")
+    ap.add_argument("--graine-eval", type=int, default=1000,
+                    help="cartons de l'évaluation (≠ graine de la collecte : positions jamais vues)")
     ap.add_argument("--acceleration", type=int, default=10)
     ap.add_argument("--sans-video", action="store_true")
     ap.add_argument("--graine", type=int, default=3)
@@ -182,9 +189,13 @@ def main():
                             "parc": np.array([30.0 + 0.5 * k, 30.0, sd.HAUTEUR_CARTON / 2])})
 
     # Personnes : silhouettes CINÉMATIQUES (déplacées, pas poussées).
-    COLLECTE = args.collecte_vla is not None
+    EVAL = args.evaluer_vla is not None
+    # Collecte et évaluation VLA (même scène, même geste) : on ne fait que des
+    # prises répétées. Dans la suite, COLLECTE couvre les deux.
+    COLLECTE = args.collecte_vla is not None or EVAL
     # Collecte VLA : pas de personnes (le geste de prise seul est enregistré ;
     # la sécurité reste active, elle n'a simplement personne à protéger).
+    # Évaluation : pas de personnes non plus — le modèle a appris sans.
     figurants = [] if COLLECTE else sd.figurants()
     silhouettes = []
     for i, f in enumerate(figurants):
@@ -571,13 +582,14 @@ def main():
     pas_video = 2 * max(1, args.acceleration)
 
     # ---- collecte VLA -------------------------------------------------------
-    collecteur, enreg = None, None
+    collecteur, enreg, vla = None, None, None
     if COLLECTE:
         from PIL import Image as _Img
         from axis_os.vla.collecte import CollecteurPrises
         from axis_os.vla.enregistreur import EnregistreurEpisodes
         bras_j = list(cfg.body_joints[cfg.num_actions:])
-        enreg = EnregistreurEpisodes(args.collecte_vla, fps=10, noms_etat=bras_j,
+        enreg = EnregistreurEpisodes(args.collecte_vla or str(VIDEOS / "_eval_vide"), fps=10,
+                                     noms_etat=bras_j,
                                      noms_action=bras_j + ["base_vx", "base_vy", "base_wz"])
 
         def placer_vla(rng_):
@@ -609,9 +621,60 @@ def main():
             im = _Img.frombytes("RGB", (f_.width, f_.height), f_.data).reduce(2)
             return np.asarray(im)
 
-        collecteur = CollecteurPrises(facade, enreg, placer_vla, retirer_vla, horloge,
-                                      etat_action_vla, image_vla, n_episodes=args.episodes,
-                                      graine=args.graine, journal=journaliser)
+        if not EVAL:
+            collecteur = CollecteurPrises(facade, enreg, placer_vla, retirer_vla, horloge,
+                                          etat_action_vla, image_vla, n_episodes=args.episodes,
+                                          graine=args.graine, journal=journaliser)
+        else:
+            from axis_os.services.policy.vla_service import VLAService
+            from axis_os.store.sdk.ai.gr00t_connector import GR00TConnector
+            from axis_os.vla.evaluation import EvaluateurPrises, tirer_placements
+            modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+            if "vla" in modes:
+                # Image : la MÊME qu'à la collecte (tête 640x480 réduite de
+                # moitié) — le connecteur refuse toute autre taille.
+                con = GR00TConnector(args.evaluer_vla, arm_joints=bras_j, image_shape=(240, 320),
+                                     request_timeout_ms=10000)
+                if not con.connect():
+                    print(f"\n  ERREUR : serveur GR00T injoignable sur {args.evaluer_vla} — "
+                          "lancer d'abord deploy/machine_gpu/evaluer_vla.sh (il le démarre).")
+                    simulation_app.close()
+                    sys.exit(2)
+                # Bras : au plus 0.04 x 0.5 = 0.02 rad par pas de 20 ms (1 rad/s),
+                # puis butées de l'adaptateur, puis JointSafetyGuard. Base :
+                # LocomotionService (vitesses bornées) et gardien de proximité.
+                vla = VLAService(
+                    con, adapt.pose_bras, loco,
+                    lire_etat_bras=lambda: {j: read_state().joint_pos[j] for j in bras_j},
+                    lire_image=image_vla, delta_max_par_joint={j: 0.04 for j in bras_j},
+                    horloge=horloge, intervalle_s=0.1, max_age_s=0.5, facteur_securite=0.5,
+                    arret_securite=lambda: gardien.arrete,
+                    autre_ecrivain=lambda: manip.etat in manip._EN_MOUVEMENT,
+                    journal=journaliser)
+                vla.start()
+
+            def placer_eval(couleur, meta):
+                c = next(c for c in cartons if c["lieu"] == "stock" and c["couleur"] == couleur)
+                poser_carton(c, (meta["x"], sd.Y_CARTON + meta["dy"],
+                                 sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003), meta["lacet"])
+                c["lieu"], c["t"] = "prise", sim_t[0]
+
+            def carton_souleve():
+                c = carton_aux_mains()
+                return c is not None and float(c["obj"].get_world_pose()[0][2]) > \
+                    sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.015
+
+            def carton_au_sol():
+                return any(c["lieu"] != "stock" and float(c["obj"].get_world_pose()[0][2]) < 0.3
+                           for c in cartons)
+
+            collecteur = EvaluateurPrises(
+                tirer_placements(args.episodes, args.graine_eval), modes, placer_eval,
+                retirer_vla, horloge, facade, vla, adapt.pose_bras, carton_souleve,
+                carton_au_sol, arret_securite=lambda: gardien.arrete, halt=loco.halt,
+                compteurs=lambda: {"refus": loco.stats["refused"],
+                                   "arrets": gardien.stats["arrets"]},
+                journal=journaliser)
         DUREE = 1e9                          # la collecte s'arrête d'elle-même
 
     # ---- boucle à 50 Hz -----------------------------------------------------
@@ -843,7 +906,11 @@ def main():
                          f"{b_.colis_tries} triés · tâche {tri.etat} · "
                          f"{time.monotonic() - t_mur:.0f} s réelles")
         if k % 2500 == 0:
-            if COLLECTE:
+            if EVAL:
+                print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
+                      f"essai {collecteur.k + 1}/{len(collecteur.essais)} ({collecteur.mode}), "
+                      f"état {collecteur.etat}", flush=True)
+            elif COLLECTE:
                 print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
                       f"collecte {collecteur.stats}, état {collecteur.etat}", flush=True)
             else:
@@ -856,6 +923,21 @@ def main():
         suivi.resume("test terminé — bilan dans le terminal")
 
     # ---- bilan ----------------------------------------------------------------
+    if EVAL:
+        from axis_os.vla.evaluation import ecrire, texte_bilan
+        sortie = VIDEOS / "eval_vla.json"
+        b_ = ecrire(collecteur.resultats, str(sortie))
+        print(f"\n{'=' * 66}\n  ÉVALUATION VLA CONTRE RÉFLEXES (mêmes cartons)\n{'=' * 66}")
+        print(texte_bilan(b_))
+        print(f"  cartons : {args.episodes} (graine {args.graine_eval}), essais faits : "
+              f"{len(collecteur.resultats)}\n  garde-fou : {loco.stats['refused']} refus au total"
+              f"\n  gardien : {gardien.stats}"
+              f"{'' if vla is None else chr(10) + '  VLA : ' + str(vla.stats)}"
+              f"\n  détail : {sortie}\n  temps réel : {time.monotonic() - t_mur:.0f} s")
+        if chute:
+            print(f"  CHUTE à t = {chute[0]:.1f} s (pendant l'essai {collecteur.mode})")
+        simulation_app.close()
+        sys.exit(0)
     if COLLECTE:
         if enreg.actif:
             enreg.fin(False, sim_t[0], raison="collecte interrompue")
