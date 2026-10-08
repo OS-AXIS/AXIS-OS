@@ -67,9 +67,27 @@ pret || { echo "ÉCHEC : serveur pas prêt après 5 min."; tail -20 "$HOME/vla_s
 echo "Serveur GR00T prêt sur 127.0.0.1:$PORT."
 
 # ---- 2. client dans le conteneur Isaac Sim --------------------------------
-sudo docker exec -u root "$CONTENEUR" /isaac-sim/python.sh -c "import zmq, msgpack, msgpack_numpy" \
-  2>/dev/null || sudo docker exec -u root "$CONTENEUR" /isaac-sim/python.sh -m pip install -q \
-  pyzmq msgpack msgpack-numpy
+# pyzmq, msgpack, msgpack-numpy. Constaté (RTX PRO 5000) : le pip d'Isaac Sim
+# est cassé (« No module named pip._vendor.idna.core »). On copie alors les
+# paquets depuis l'environnement de GR00T, qui les a déjà : même Python 3.12.
+importe() { sudo docker exec "$CONTENEUR" /isaac-sim/python.sh -c \
+  "import zmq, msgpack, msgpack_numpy" >/dev/null 2>&1; }
+if ! importe; then
+  sudo docker exec -u root "$CONTENEUR" /isaac-sim/python.sh -m pip install -q \
+    pyzmq msgpack msgpack-numpy >/dev/null 2>&1 || true
+fi
+if ! importe; then
+  SP_GROOT=$(ls -d "$HOME"/Isaac-GR00T/.venv/lib/python3.12/site-packages)
+  SP_ISAAC=$(sudo docker exec "$CONTENEUR" /isaac-sim/python.sh -c \
+    "import site; print(site.getsitepackages()[0])" 2>/dev/null | tail -1)
+  echo "Copie de pyzmq/msgpack depuis GR00T vers $SP_ISAAC…"
+  for m in zmq pyzmq.libs msgpack msgpack_numpy.py; do
+    [ -e "$SP_GROOT/$m" ] && sudo docker cp "$SP_GROOT/$m" "$CONTENEUR:$SP_ISAAC/"
+  done
+fi
+importe || { echo "ÉCHEC : pyzmq/msgpack introuvables dans le conteneur."; \
+             pkill -f run_gr00t_server || true; exit 1; }
+echo "Client GR00T prêt dans le conteneur."
 
 # ---- 3. évaluation ---------------------------------------------------------
 # Durée « 60 » ignorée : l'évaluation s'arrête d'elle-même après le dernier carton.
