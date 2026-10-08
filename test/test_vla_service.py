@@ -209,6 +209,56 @@ tourner(s, h, 2)
 check("action visant une jambe → DÉFAUT, jamais écrite", s.etat is EtatVLA.DEFAUT
       and all(v == 0.0 for v in bras.values()) and "left_hip_pitch" not in bras)
 
+section("Exécution du CHUNK : le geste vient dans les pas suivants, pas dans le premier")
+
+
+class ConnecteurChunk(FauxConnecteur):
+    """Chunk de 16 pas : le pas k vise 0.1 × k (le pas 0 dit « rester là »),
+    base à 0.01 × k."""
+    def predict_action(self, image, instruction, state):
+        self.appels.append((image, instruction, dict(state)))
+        ch = {"bras_gauche": np.tile((0.1 * np.arange(16))[:, None], (1, 7)).astype(np.float32),
+              "bras_droit": np.tile((0.1 * np.arange(16))[:, None], (1, 7)).astype(np.float32),
+              "base": np.tile((0.01 * np.arange(16))[:, None], (1, 3)).astype(np.float32)}
+        return GR00TAction(target_angles={j: 0.0 for j in ARMS}, base_velocity=(0.0, 0.0, 0.0),
+                           chunk=ch, latency_s=0.05)
+
+
+c1 = ConnecteurChunk()
+s1, h1, _, l1, b1 = monter(connecteur=c1, delta_max_par_joint={j: 1.0 for j in ARMS})
+s1.start(); s1.demarrer_mission("pick up the red box")
+tourner(s1, h1, 40)                                    # 0.8 s
+check(f"pas_executes=1 (ancien comportement) : bras FIGÉS au pas 0 ({b1[ARMS[0]]:.2f})",
+      abs(b1[ARMS[0]]) < 1e-9)
+c8 = ConnecteurChunk()
+s8, h8, _, l8, b8 = monter(connecteur=c8, delta_max_par_joint={j: 1.0 for j in ARMS},
+                            intervalle_s=0.8, max_age_s=0.9, pas_executes=8)
+s8.start(); s8.demarrer_mission("pick up the red box")
+vus = []
+for _ in range(40):                                    # 0.8 s : une seule décision
+    s8.tick(); vus.append(round(b8[ARMS[0]], 3)); h8.t += DT
+check(f"pas_executes=8 : un pas du chunk toutes les 0.1 s, jusqu'au pas 7 ({sorted(set(vus))})",
+      sorted(set(vus)) == [round(0.1 * k, 3) for k in range(8)] and len(c8.appels) == 1)
+check("Base : vitesses du pas courant du chunk", l8.vitesses[-1] == (0.07, 0.07, 0.07)
+      or all(abs(x - 0.07) < 1e-6 for x in l8.vitesses[-1]))
+s8.tick()
+check("Nouvelle décision à la fin des 8 pas (0.8 s)", len(c8.appels) == 2)
+try:
+    monter(intervalle_s=0.8, max_age_s=0.5, pas_executes=8)
+    trop_court = False
+except ValueError:
+    trop_court = True
+check("max_age_s plus court que les pas exécutés : refusé à la construction", trop_court)
+cg = ConnecteurChunk()
+sg, hg, _, lg, bg = monter(connecteur=cg, delta_max_par_joint={j: 1.0 for j in ARMS},
+                            intervalle_s=0.8, max_age_s=0.9, pas_executes=8,
+                            arret_securite=lambda: 0.3 <= hg.t < 0.6)
+sg.start(); sg.demarrer_mission("x")
+tourner(sg, hg, 32)                                    # gel de 0.3 à 0.6 s, puis reprise
+check("Après un arrêt de sécurité : nouvelle décision, pas la suite du vieux chunk",
+      len(cg.appels) == 2)
+
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

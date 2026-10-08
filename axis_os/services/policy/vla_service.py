@@ -81,6 +81,8 @@ class VLAService(IService):
         arret_securite: Optional[Callable[[], bool]] = None,
         autre_ecrivain: Optional[Callable[[], bool]] = None,
         journal: Callable[[str], None] = print,
+        pas_executes: int = 1,
+        periode_pas_s: float = 0.1,
     ):
         """
         connecteur          : GR00TConnector (ou équivalent : arm_joints, reset(),
@@ -92,7 +94,21 @@ class VLAService(IService):
         lire_image          : () -> image (H, W, 3) uint8 de la tête, ou None.
         delta_max_par_joint : {joint_id: rad max par tick} — mêmes valeurs que
                               pour SetpointFollower (position_delta_max).
+        pas_executes        : nombre de pas du CHUNK exécutés à la suite (un pas
+                              toutes les periode_pas_s, cadence de l'entraînement)
+                              avant la décision suivante. 1 = seulement le premier
+                              pas, à chaque inférence. Constaté sur GPU (prise
+                              seule) : avec 1, les bras restaient FIGÉS 25 s en
+                              pré-saisie — le premier pas d'un chunk ne dit que
+                              « rester là », le geste vient dans les pas suivants,
+                              et il n'arrivait jamais. NVIDIA exécute le chunk.
         """
+        if pas_executes < 1:
+            raise ValueError("pas_executes >= 1")
+        if max_age_s < pas_executes * periode_pas_s:
+            raise ValueError(f"max_age_s ({max_age_s}) doit couvrir les {pas_executes} pas "
+                             f"exécutés ({pas_executes * periode_pas_s:.2f} s)")
+        self._pas_executes, self._periode_pas = pas_executes, periode_pas_s
         self._c, self._bras, self._loco = connecteur, bras, loco
         self._etat_bras, self._image = lire_etat_bras, lire_image
         self._horloge = horloge
@@ -186,9 +202,10 @@ class VLAService(IService):
         if self._arret is not None and self._arret():
             self.etat = EtatVLA.GEL
             self.stats["gels"] += 1
+            self._t_infer = None          # à la reprise : nouvelle décision, pas la suite d'un chunk
             return ServiceResult(ok=True, value=self.etat,
                                  reason="bras figés : arrêt de sécurité en cours")
-        if self._t_infer is None or t - self._t_infer >= self._intervalle:
+        if self._t_infer is None or t - self._t_infer >= self._intervalle - 1e-9:
             self._inferer(t)
             if self.etat is EtatVLA.DEFAUT:
                 return ServiceResult(ok=False, reason=self.raison)
@@ -201,9 +218,9 @@ class VLAService(IService):
             self._loco.halt()
             return ServiceResult(ok=True, value=self.etat, reason="action périmée")
         self.etat = EtatVLA.ACTIF
-        self._suivre(self._action)
+        angles, v = self._pas_courant(t)
+        self._suivre_angles(angles)
         if self._piloter_base:
-            v = self._action.base_velocity
             self._loco.set_velocity(v[0], v[1], v[2])
         else:
             self._loco.halt()
@@ -241,9 +258,29 @@ class VLAService(IService):
         # Âge compté depuis la CAPTURE (t, avant l'appel), pas depuis la réponse.
         self._action, self._t_action = action, t
 
+    def _pas_courant(self, t: float):
+        """(angles, vitesses de base) du pas du chunk qui correspond à l'instant t."""
+        a = self._action
+        k = 0
+        if self._pas_executes > 1:
+            k = min(int((t - self._t_action) / self._periode_pas + 1e-6), self._pas_executes - 1)
+        ch = getattr(a, "chunk", None) or {}
+        if k == 0 or not ch:
+            return a.target_angles, a.base_velocity
+        g, d = ch.get("bras_gauche"), ch.get("bras_droit")
+        k = min(k, len(g) - 1, len(d) - 1)
+        valeurs = list(g[k]) + list(d[k])
+        base = ch.get("base")
+        v = tuple(float(x) for x in base[min(k, len(base) - 1)]) if base is not None \
+            else a.base_velocity
+        return {j: float(x) for j, x in zip(self._arm_joints, valeurs)}, v
+
     def _suivre(self, action: Any) -> None:
+        self._suivre_angles(action.target_angles)
+
+    def _suivre_angles(self, angles: Dict[str, float]) -> None:
         """Un pas vers la cible, d'au plus delta_max × facteur par articulation."""
-        for j, cible in action.target_angles.items():
+        for j, cible in angles.items():
             if not math.isfinite(cible):
                 continue
             budget = self._delta[j] * self._facteur

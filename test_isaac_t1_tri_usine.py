@@ -75,6 +75,8 @@ def main():
     # (tcp://127.0.0.1:5555) ; --episodes = nombre de cartons.
     ap.add_argument("--evaluer-vla", default=None, metavar="ENDPOINT")
     ap.add_argument("--modes", default="reflexes,vla")
+    ap.add_argument("--vla-pas", type=int, default=8,
+                    help="pas du chunk GR00T exécutés avant chaque nouvelle décision (≤ 16)")
     ap.add_argument("--graine-eval", type=int, default=1000,
                     help="cartons de l'évaluation (≠ graine de la collecte : positions jamais vues)")
     ap.add_argument("--acceleration", type=int, default=10)
@@ -640,14 +642,19 @@ def main():
                           "lancer d'abord deploy/machine_gpu/evaluer_vla.sh (il le démarre).")
                     simulation_app.close()
                     sys.exit(2)
-                # Bras : au plus 0.04 x 0.5 = 0.02 rad par pas de 20 ms (1 rad/s),
+                # Bras : au plus 0.04 x 0.75 = 0.03 rad par pas de 20 ms (1.5 rad/s,
+                # le serrage des réflexes va à 1.44 rad/s),
                 # puis butées de l'adaptateur, puis JointSafetyGuard. Base :
                 # LocomotionService (vitesses bornées) et gardien de proximité.
                 vla = VLAService(
                     con, adapt.pose_bras, loco,
                     lire_etat_bras=lambda: {j: read_state().joint_pos[j] for j in bras_j},
                     lire_image=image_vla, delta_max_par_joint={j: 0.04 for j in bras_j},
-                    horloge=horloge, intervalle_s=0.1, max_age_s=0.5, facteur_securite=0.5,
+                    # Chunk exécuté : args.vla_pas pas à 10 Hz, puis nouvelle
+                    # décision (1 seul pas : bras figés en pré-saisie, constaté).
+                    horloge=horloge, intervalle_s=0.1 * args.vla_pas,
+                    max_age_s=0.1 * args.vla_pas + 0.1, pas_executes=args.vla_pas,
+                    facteur_securite=0.75,
                     arret_securite=lambda: gardien.arrete,
                     autre_ecrivain=lambda: manip.etat in manip._EN_MOUVEMENT,
                     journal=journaliser)
