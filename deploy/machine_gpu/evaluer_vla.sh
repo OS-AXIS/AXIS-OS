@@ -19,6 +19,8 @@
 # Le VLA ne fait que PROPOSER : bras à 1 rad/s au plus, butées, JointSafetyGuard,
 # gardien de proximité — comme les réflexes. Les refus sont comptés par essai.
 set -euo pipefail
+# Jamais d'arrêt muet : constaté, le script s'arrêtait sans un mot.
+trap 'echo "ÉCHEC (ligne $LINENO) : $BASH_COMMAND"; pkill -f run_gr00t_server || true' ERR
 CARTONS="${1:-20}"; ACC="${2:-2}"; shift $(( $# > 2 ? 2 : $# )) || true
 # « --prise » : modèle de prise seule (entrainer_vla.sh … prise) ; les réflexes
 # s'approchent, le VLA ne fait que la prise. Comparé aux réflexes complets.
@@ -75,6 +77,11 @@ pret || { echo "ÉCHEC : serveur pas prêt après 5 min."; tail -20 "$HOME/vla_s
 echo "Serveur GR00T prêt sur 127.0.0.1:$PORT."
 
 # ---- 2. client dans le conteneur Isaac Sim --------------------------------
+if [ "$(sudo docker inspect -f '{{.State.Running}}' "$CONTENEUR" 2>/dev/null)" != "true" ]; then
+  echo "Le conteneur Isaac Sim est arrêté — démarrage…"
+  sudo docker start "$CONTENEUR" >/dev/null
+  sleep 10
+fi
 # pyzmq, msgpack, msgpack-numpy. Constaté (RTX PRO 5000) : le pip d'Isaac Sim
 # est cassé (« No module named pip._vendor.idna.core »). On copie alors les
 # paquets depuis l'environnement de GR00T, qui les a déjà : même Python 3.12.
@@ -87,10 +94,11 @@ fi
 if ! importe; then
   SP_GROOT=$(ls -d "$HOME"/Isaac-GR00T/.venv/lib/python3.12/site-packages)
   SP_ISAAC=$(sudo docker exec "$CONTENEUR" /isaac-sim/python.sh -c \
-    "import site; print(site.getsitepackages()[0])" 2>/dev/null | tail -1)
+    "import site; print(site.getsitepackages()[0])" 2>/dev/null | tail -1 || true)
+  [ -n "$SP_ISAAC" ] || SP_ISAAC=/isaac-sim/kit/python/lib/python3.12/site-packages
   echo "Copie de pyzmq/msgpack depuis GR00T vers $SP_ISAAC…"
   for m in zmq pyzmq.libs msgpack msgpack_numpy.py; do
-    [ -e "$SP_GROOT/$m" ] && sudo docker cp "$SP_GROOT/$m" "$CONTENEUR:$SP_ISAAC/"
+    if [ -e "$SP_GROOT/$m" ]; then sudo docker cp "$SP_GROOT/$m" "$CONTENEUR:$SP_ISAAC/"; fi
   done
 fi
 importe || { echo "ÉCHEC : pyzmq/msgpack introuvables dans le conteneur."; \
