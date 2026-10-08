@@ -630,7 +630,7 @@ def main():
             from axis_os.store.sdk.ai.gr00t_connector import GR00TConnector
             from axis_os.vla.evaluation import EvaluateurPrises, tirer_placements
             modes = [m.strip() for m in args.modes.split(",") if m.strip()]
-            if "vla" in modes:
+            if any(m in ("vla", "vla_prise") for m in modes):
                 # Image : la MÊME qu'à la collecte (tête 640x480 réduite de
                 # moitié) — le connecteur refuse toute autre taille.
                 con = GR00TConnector(args.evaluer_vla, arm_joints=bras_j, image_shape=(240, 320),

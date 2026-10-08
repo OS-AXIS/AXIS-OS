@@ -521,6 +521,11 @@ class FacadeServices:
         self._accoste = self._accoste or au_contact
         self.loco.halt()
 
+    def reprendre_bras(self) -> None:
+        """Après un autre écrivain des bras (VLA), bras revenus en posture de
+        port : la manipulation repart de là, sans saut."""
+        self.manip.resynchroniser()
+
     def reinitialiser_manipulation(self) -> None:
         """Après une prise ratée : on OUVRE GRAND et on attend que les mains
         aient lâché avant de reculer — sinon on emporte le carton avec soi."""

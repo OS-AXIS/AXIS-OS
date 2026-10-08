@@ -2,7 +2,9 @@
 # Entraînement (fine-tuning) de NVIDIA Isaac GR00T N1.7 sur les démonstrations
 # collectées en simulation (collecte_vla.sh puis recuperer_vla.sh).
 #
-#   bash entrainer_vla.sh [pas_d_entrainement] [taille_de_lot]   (2000 et 32 par défaut)
+#   bash entrainer_vla.sh [pas_d_entrainement] [taille_de_lot] [prise]   (2000 et 32 par défaut)
+#   « prise » : modèle de PRISE SEULE (bras, base immobile), entraîné sur la fin
+#   de chaque démonstration — jeu ~/vla_lerobot_prise, modèle ~/vla_gr00t_g1_prise.
 #
 # Prérequis :
 #   - carte avec au moins 40 Go de mémoire (RTX PRO 6000 : 96 Go) ;
@@ -18,6 +20,14 @@ PAS="${1:-2000}"
 LOT="${2:-32}"
 JEU="$HOME/vla_lerobot"
 SORTIE="$HOME/vla_gr00t_g1"
+if [ "${3:-}" = "prise" ]; then
+  JEU="$HOME/vla_lerobot_prise"
+  SORTIE="$HOME/vla_gr00t_g1_prise"
+  if [ ! -d "$JEU" ]; then
+    [ -d "$HOME/vla_episodes" ] || { echo "Pas d'épisodes : lancer recuperer_vla.sh d'abord."; exit 1; }
+    (cd "$HOME/AXIS-OS" && python3 -m axis_os.vla.vers_lerobot "$HOME/vla_episodes" "$JEU" --prise-seule)
+  fi
+fi
 [ -d "$JEU" ] || { echo "Pas de jeu d'entraînement ($JEU) : lancer recuperer_vla.sh d'abord."; exit 1; }
 command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg
 # DeepSpeed (utilisé par l'entraîneur de GR00T) exige le compilateur CUDA

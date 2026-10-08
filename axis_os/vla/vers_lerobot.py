@@ -2,7 +2,14 @@
 Conversion des épisodes enregistrés au format LeRobot v2 — celui que lisent
 les scripts d'entraînement de NVIDIA Isaac GR00T.
 
-    python -m axis_os.vla.vers_lerobot <dossier_episodes> <dossier_sortie>
+    python -m axis_os.vla.vers_lerobot <dossier_episodes> <dossier_sortie> [--prise-seule]
+
+--prise-seule : ne garde de chaque épisode que la PRISE, base immobile —
+les images qui suivent le dernier mouvement de la base (serrage, levage).
+Constaté au premier essai GPU (VLA complet, approche comprise) : le modèle
+marchait jusqu'à la table et tendait les bras, mais se plaçait 20-30 cm à
+côté du carton et ne serrait jamais. Partage des rôles retenu : les réflexes
+codés s'approchent (navigation, visée de face), le VLA ne fait que le geste.
 
 Seuls les épisodes RÉUSSIS sont gardés : le VLA imite le professeur quand
 il a bien fait, jamais quand il a raté.
@@ -56,7 +63,15 @@ def _decoupage(noms: List[str]) -> Dict[str, Dict[str, int]]:
     return out
 
 
-def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os") -> Dict:
+def debut_prise(action: np.ndarray, n_base: int = 3, seuil: float = 0.01) -> int:
+    """Indice de la première image après le dernier mouvement de la base
+    (les n_base dernières composantes de l'action : vx, vy, wz)."""
+    bouge = np.flatnonzero(np.abs(action[:, -n_base:]).max(axis=1) > seuil)
+    return int(bouge[-1]) + 1 if len(bouge) else 0
+
+
+def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
+              prise_seule: bool = False, images_min: int = 10) -> Dict:
     import pandas as pd
 
     eps = [e for e in lire_episodes(dossier) if e["succes"]]
@@ -70,14 +85,24 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os") -> D
     (dst / "videos" / "chunk-000" / CLE_VIDEO).mkdir(parents=True)
 
     taches: Dict[str, int] = {}
-    index_global, lignes_ep = 0, []
+    index_global, lignes_ep, longueurs, trop_courts = 0, [], [], 0
     fps = eps[0]["fps"]
     noms_etat, noms_action = eps[0]["noms_etat"], eps[0]["noms_action"]
     h, w = eps[0]["hauteur"], eps[0]["largeur"]
-    for k, e in enumerate(eps):
+    k = -1
+    for e in eps:
         d = np.load(src / f"{e['episode']}.npz")
         etat, action, temps = d["etat"], d["action"], d["temps"]
-        n = len(temps)
+        i0 = debut_prise(action) if prise_seule else 0
+        if len(temps) - i0 < images_min:
+            trop_courts += 1
+            continue
+        k += 1
+        etat, action = etat[i0:], action[i0:].copy()
+        if prise_seule:
+            action[:, -3:] = 0.0              # base immobile, par construction
+        n = len(etat)
+        longueurs.append(n)
         t_idx = taches.setdefault(e["instruction"], len(taches))
         df = pd.DataFrame({
             "observation.state": [r.astype(np.float32).tolist() for r in etat],
@@ -93,13 +118,18 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os") -> D
         })
         df.to_parquet(dst / "data" / "chunk-000" / f"episode_{k:06d}.parquet")
         video = dst / "videos" / "chunk-000" / CLE_VIDEO / f"episode_{k:06d}.mp4"
-        if e.get("video") and (src / f"{e['episode']}.mp4").exists():
+        if i0 == 0 and e.get("video") and (src / f"{e['episode']}.mp4").exists():
             shutil.copyfile(src / f"{e['episode']}.mp4", video)
         else:
             import imageio.v2 as imageio
+            if "images" in d.files:
+                images = d["images"]
+            else:                             # découper la vidéo d'origine
+                with imageio.get_reader(str(src / f"{e['episode']}.mp4")) as rd:
+                    images = [im for im in rd]
             with imageio.get_writer(str(video), fps=fps, codec="libx264",
                                     macro_block_size=1) as wr:
-                for im in d["images"]:
+                for im in images[i0:i0 + n]:
                     wr.append_data(im)
         lignes_ep.append({"episode_index": k, "tasks": [e["instruction"]], "length": n})
         index_global += n
@@ -121,9 +151,9 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os") -> D
     (dst / "meta" / "modality.json").write_text(json.dumps(modalite, indent=2))
     info = {
         "codebase_version": "v2.0", "robot_type": robot,
-        "total_episodes": len(eps), "total_frames": index_global,
-        "total_tasks": len(taches), "total_videos": len(eps), "total_chunks": 1,
-        "chunks_size": 1000, "fps": fps, "splits": {"train": f"0:{len(eps)}"},
+        "total_episodes": k + 1, "total_frames": index_global,
+        "total_tasks": len(taches), "total_videos": k + 1, "total_chunks": 1,
+        "chunks_size": 1000, "fps": fps, "splits": {"train": f"0:{k + 1}"},
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
         "features": {
@@ -145,11 +175,17 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os") -> D
         },
     }
     (dst / "meta" / "info.json").write_text(json.dumps(info, indent=2))
-    return {"episodes": len(eps), "images": index_global, "taches": len(taches),
-            "ignores_rates": len(lire_episodes(dossier)) - len(eps)}
+    out = {"episodes": k + 1, "images": index_global, "taches": len(taches),
+           "ignores_rates": len(lire_episodes(dossier)) - len(eps)}
+    if prise_seule:
+        out.update({"trop_courts": trop_courts,
+                    "images_par_episode_min_med_max": (
+                        min(longueurs), int(np.median(longueurs)), max(longueurs))})
+    return out
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    args = [a for a in sys.argv[1:] if a != "--prise-seule"]
+    if len(args) != 2:
         raise SystemExit(__doc__)
-    print(convertir(sys.argv[1], sys.argv[2]))
+    print(convertir(args[0], args[1], prise_seule="--prise-seule" in sys.argv))

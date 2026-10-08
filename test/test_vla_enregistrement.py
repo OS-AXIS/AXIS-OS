@@ -106,6 +106,35 @@ else:
     tache = json.loads((d / "lerobot" / "meta" / "tasks.jsonl").read_text().splitlines()[0])
     check("La consigne en langage naturel est la tâche", tache["task"] == "pick up the red box")
 
+    # Prise seule : la base bouge pendant 12 images, puis s'arrête 15 images.
+    ep_ = EnregistreurEpisodes(str(d / "brut_prise"), fps=10, noms_etat=NOMS_ETAT,
+                               noms_action=NOMS_ACTION)
+    ep_.debut("pick up the red box", 0.0)
+    for k in range(27):
+        act = np.full(17, 0.1 * k)
+        act[14:] = [0.2, 0.0, 0.05] if k < 12 else [0.0, 0.0, 0.0]
+        ep_.pas(k * 0.1, image(k), np.full(14, k, float), act)
+    ep_.fin(True, 2.7)
+    ep_.debut("pick up the blue box", 10.0)          # base jamais arrêtée : trop court
+    for k in range(20):
+        ep_.pas(10.0 + k * 0.1, image(k), np.zeros(14), np.full(17, 0.3))
+    ep_.fin(True, 12.0)
+    r = convertir(str(d / "brut_prise"), str(d / "lerobot_prise"), prise_seule=True)
+    dfp = pd.read_parquet(d / "lerobot_prise" / "data" / "chunk-000" / "episode_000000.parquet")
+    check(f"Prise seule : 15 images après le dernier mouvement de la base ({r})",
+          r["episodes"] == 1 and r["trop_courts"] == 1 and len(dfp) == 15
+          and abs(dfp["action"][0][0] - 1.2) < 1e-6 and dfp["observation.state"][0][0] == 12)
+    check("Prise seule : base à zéro partout, temps et index repartent de 0",
+          all(abs(x) < 1e-9 for row in dfp["action"] for x in row[14:])
+          and dfp["frame_index"][0] == 0 and abs(dfp["timestamp"][0]) < 1e-9)
+    import imageio.v2 as _iio
+    with _iio.get_reader(str(d / "lerobot_prise" / "videos" / "chunk-000"
+                             / "observation.images.ego_view" / "episode_000000.mp4")) as rd_:
+        n_im = sum(1 for _ in rd_)
+    check(f"Prise seule : vidéo découpée pareil ({n_im} images)", n_im == 15)
+    info_p = json.loads((d / "lerobot_prise" / "meta" / "info.json").read_text())
+    check("Prise seule : info.json compte les épisodes gardés", info_p["total_episodes"] == 1)
+
 section("3 — Collecte : boucle placer / chercher / accoster / prendre / reposer")
 from axis_os.vla.collecte import CollecteurPrises, consigne  # noqa: E402
 

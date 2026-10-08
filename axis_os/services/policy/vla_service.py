@@ -113,6 +113,7 @@ class VLAService(IService):
         self.etat = EtatVLA.INACTIF
         self.raison = ""
         self._instruction = ""
+        self._piloter_base = True
         self._action = None
         self._t_action = 0.0
         self._t_infer: Optional[float] = None
@@ -142,7 +143,10 @@ class VLAService(IService):
                              detail=self.raison or self.etat.name)
 
     # ---- API des apps ------------------------------------------------------
-    def demarrer_mission(self, instruction: str) -> ServiceResult:
+    def demarrer_mission(self, instruction: str, piloter_base: bool = True) -> ServiceResult:
+        """piloter_base=False : le VLA ne commande QUE les bras ; la base est
+        tenue à l'arrêt (ses vitesses proposées sont ignorées). Mode « prise
+        seule » : la navigation codée a déjà placé le robot devant l'objet."""
         if self._autre is not None and self._autre():
             return ServiceResult(ok=False, reason="un autre service écrit les bras "
                                                   "(manipulation en cours) — un seul écrivain")
@@ -152,7 +156,7 @@ class VLAService(IService):
             self._c.reset()
         except Exception as exc:                          # noqa: BLE001
             return ServiceResult(ok=False, reason=f"reset du serveur GR00T impossible : {exc}")
-        self._instruction = instruction
+        self._instruction, self._piloter_base = instruction, piloter_base
         self._action, self._t_infer, self._defauts, self.raison = None, None, 0, ""
         self.etat = EtatVLA.ACTIF
         return ServiceResult(ok=True, value=instruction)
@@ -198,8 +202,11 @@ class VLAService(IService):
             return ServiceResult(ok=True, value=self.etat, reason="action périmée")
         self.etat = EtatVLA.ACTIF
         self._suivre(self._action)
-        v = self._action.base_velocity
-        self._loco.set_velocity(v[0], v[1], v[2])
+        if self._piloter_base:
+            v = self._action.base_velocity
+            self._loco.set_velocity(v[0], v[1], v[2])
+        else:
+            self._loco.halt()
         return ServiceResult(ok=True, value=self.etat)
 
     # ---- internes ----------------------------------------------------------

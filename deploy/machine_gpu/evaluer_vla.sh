@@ -20,9 +20,17 @@
 # gardien de proximité — comme les réflexes. Les refus sont comptés par essai.
 set -euo pipefail
 CARTONS="${1:-20}"; ACC="${2:-2}"; shift $(( $# > 2 ? 2 : $# )) || true
+# « --prise » : modèle de prise seule (entrainer_vla.sh … prise) ; les réflexes
+# s'approchent, le VLA ne fait que la prise. Comparé aux réflexes complets.
+MODELES="$HOME/vla_gr00t_g1"
+EXTRA=()
+for a in "$@"; do
+  if [ "$a" = "--prise" ]; then MODELES="$HOME/vla_gr00t_g1_prise"; EXTRA+=(--modes reflexes,vla_prise)
+  else EXTRA+=("$a"); fi
+done
+set -- "${EXTRA[@]}"
 CONTENEUR="isim-isaac-sim-1"
 PORT=5555
-MODELES="$HOME/vla_gr00t_g1"
 export PATH="$HOME/.local/bin:$PATH"
 
 # ---- le modèle : dernier point de sauvegarde ------------------------------

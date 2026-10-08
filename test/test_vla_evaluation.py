@@ -116,6 +116,7 @@ class FausseFacade:
         return "ARRIVE" if self.fin_nav is not None and self.m.t >= self.fin_nav else "EN_ROUTE"
 
     def prendre(self, colis):
+        self.prises = getattr(self, "prises", 0) + 1
         self.fin_manip, self.manip = self.m.t + 2.0, "EN_COURS"
         return True, ""
 
@@ -139,8 +140,12 @@ class FausseFacade:
     def suspendre(self, au_contact=False):
         self.suspensions.append(au_contact)
 
+    def reprendre_bras(self):
+        self.reprises = getattr(self, "reprises", 0) + 1
 
-def monter(n=3, modes=("reflexes", "vla"), repere=True, duree_max_s=45.0, **kw_vla):
+
+def monter(n=3, modes=("reflexes", "vla"), repere=True, duree_max_s=45.0, avec_loco=False,
+           **kw_vla):
     m = Monde()
     con = FauxConnecteur()
     loco = FauxLoco(m)
@@ -270,6 +275,36 @@ check("Phase 2 : ouverture, jusqu'à la posture de départ exacte",
 check(f"Bras figés pendant l'arrêt de sécurité ({len(ordre)} ticks de libération, dont 24 gelés)", gele[0] and len(ordre) > 60)
 check("VLA rendu inactif, base à l'arrêt", vla.etat is EtatVLA.INACTIF and m.halts >= 1)
 
+section("5b — Mode vla_prise : approche codée, puis le VLA fait SEUL la prise, base immobile")
+m, con, vla, f, ev = monter(2, modes=("reflexes", "vla_prise"))
+vitesses_politique, rendus_p = [], []
+loco_ = vla._loco
+
+
+def suivre_p(m_, ev_):
+    if ev_.etat == "ESSAI" and ev_.sous_etat == "POLITIQUE":
+        vitesses_politique.append(len(loco_.v))
+    if ev_.veut_rendu(m_.t + DT):
+        rendus_p.append((ev_.mode, ev_.sous_etat))
+
+
+tourner(m, ev, chaque=suivre_p)
+rp = [r for r in ev.resultats if r["mode"] == "vla_prise"]
+check(f"2 essais vla_prise réussis ({[(r['succes'], r['duree_s']) for r in rp]})",
+      len(rp) == 2 and all(r["succes"] for r in rp))
+check("Approche par les réflexes : recherche + accostage avant la politique (≥ 3.3 s)",
+      all(r["duree_s"] >= 3.3 for r in rp))
+check("La politique n'envoie AUCUNE vitesse de base (base tenue à l'arrêt)",
+      vitesses_politique and len(set(vitesses_politique)) == 1)
+check("La prise codée n'est PAS appelée en mode vla_prise (2 prises : celles des réflexes)",
+      f.prises == 2)
+check("Façade suspendue au contact à l'arrivée, puis manipulation resynchronisée après",
+      f.suspensions.count(True) >= 2 and f.reprises == 2)
+check("Rendu : recherche, puis inférences de la politique",
+      {s_ for md, s_ in rendus_p if md == "vla_prise"} == {"CHERCHER", "POLITIQUE"})
+bl_p = bilan(ev.resultats)
+check("Bilan apparié réflexes contre vla_prise", bl_p["apparie"]["vla_prise"]["cartons"] == 2)
+
 section("6 — Garde-fou et sécurité comptés PAR ESSAI ; bilan apparié")
 m, con, vla, f, ev = monter(2)
 
@@ -302,7 +337,7 @@ check("Durée médiane des seules réussites (réflexes 22 s, VLA 13 s)",
       bl["par_mode"]["reflexes"]["duree_mediane_s"] == 22.0
       and bl["par_mode"]["vla"]["duree_mediane_s"] == 13.0)
 check("Comparaison carton par carton : 1 les deux, 1 VLA seul, 1 réflexes seuls",
-      bl["apparie"] == {"cartons": 3, "les_deux": 1, "vla_seul": 1, "reflexes_seuls": 1,
+      bl["apparie"]["vla"] == {"cartons": 3, "les_deux": 1, "vla_seul": 1, "reflexes_seuls": 1,
                         "aucun": 0})
 check("Échecs regroupés par cause", bl["par_mode"]["vla"]["echecs"] == {"délai de 45 s dépassé": 1})
 d = Path(tempfile.mkdtemp())

@@ -7,6 +7,9 @@
             ATTENTE  1 s, le carton se pose ;
             ESSAI    reflexes : chercher (caméra + OWL-ViT), accoster, prendre —
                                exactement le chemin de la collecte ;
+                     vla_prise: les réflexes cherchent et accostent (bras
+                               ouverts autour du carton), puis le VLA fait
+                               SEUL la prise, base immobile ;
                      vla      : la politique GR00T reçoit l'image de la tête,
                                l'état des bras et la consigne (« pick up the
                                red box ») et pilote BRAS et BASE. Rien d'autre :
@@ -43,7 +46,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from axis_os.vla.collecte import consigne
 
-MODES = ("reflexes", "vla")
+MODES = ("reflexes", "vla", "vla_prise")
+MODES_VLA = ("vla", "vla_prise")
 
 
 def tirer_placements(n: int, graine: int, couleurs: Sequence[str] = ("rouge", "bleu"),
@@ -84,7 +88,7 @@ class EvaluateurPrises:
         inconnus = [m for m in modes if m not in MODES]
         if inconnus or not modes:
             raise ValueError(f"modes inconnus : {inconnus} (possibles : {MODES})")
-        if "vla" in modes and vla is None:
+        if any(m in MODES_VLA for m in modes) and vla is None:
             raise ValueError("mode vla demandé sans VLAService")
         self.essais = [(i, m) for i in range(len(placements)) for m in modes]
         self.placements = list(placements)
@@ -122,7 +126,7 @@ class EvaluateurPrises:
         """La boucle rend la caméra de tête au pas suivant si vrai."""
         if self.etat != "ESSAI":
             return False
-        if self.mode == "vla":
+        if self.sous_etat == "POLITIQUE":
             return self.vla.veut_image(t_prochain)
         return self.sous_etat == "CHERCHER"
 
@@ -170,7 +174,7 @@ class EvaluateurPrises:
         self._aller("ESSAI")
         if mode == "vla":
             self.f.suspendre()                        # un seul pilote sur la base
-            r = self.vla.demarrer_mission(consigne(couleur))
+            r = self.vla.demarrer_mission(consigne(couleur), piloter_base=True)
             if not r.ok:
                 self._finir(False, f"VLA non démarré : {r.reason}")
             self.sous_etat = "POLITIQUE"
@@ -189,7 +193,7 @@ class EvaluateurPrises:
              "duree_s": round(self._horloge() - self._t_essai, 2),
              "refus_garde_fou": int(c1.get("refus", 0) - self._c0.get("refus", 0)),
              "arrets_securite": int(c1.get("arrets", 0) - self._c0.get("arrets", 0))}
-        if mode == "vla":
+        if mode in MODES_VLA:
             r["vla"] = dict(self.vla.stats)
         self.resultats.append(r)
         self._succes = succes
@@ -209,7 +213,7 @@ class EvaluateurPrises:
         if self._horloge() - self._t_essai > self.duree_max_s:
             self._finir(False, f"délai de {self.duree_max_s:.0f} s dépassé ({self.sous_etat})")
             return
-        if self.mode == "vla":
+        if self.sous_etat == "POLITIQUE":
             self._essai_vla()
         else:
             self._essai_reflexes()
@@ -252,7 +256,18 @@ class EvaluateurPrises:
             self.sous_etat = "ACCOSTER"
         elif se == "ACCOSTER":
             e = self.f.navigation()
-            if e == "ARRIVE":
+            if e == "ARRIVE" and self.mode == "vla_prise":
+                # Approche codée terminée, bras ouverts autour du carton :
+                # le VLA prend la main sur les BRAS seuls, base à l'arrêt.
+                self.f.suspendre(au_contact=True)
+                i, _ = self.essais[self.k]
+                r = self.vla.demarrer_mission(consigne(self.placements[i][0]),
+                                              piloter_base=False)
+                if not r.ok:
+                    self._finir(False, f"VLA non démarré : {r.reason}")
+                    return
+                self.sous_etat = "POLITIQUE"
+            elif e == "ARRIVE":
                 ok, raison = self.f.prendre(self._colis)
                 if not ok:
                     self._finir(False, f"prise refusée : {raison}")
@@ -269,7 +284,7 @@ class EvaluateurPrises:
 
     # ---- LIBERER -------------------------------------------------------------
     def _etat_liberer(self) -> None:
-        if self.mode == "vla":
+        if self.mode in MODES_VLA:
             self._liberer_vla()
         else:
             self._liberer_reflexes()
@@ -315,6 +330,7 @@ class EvaluateurPrises:
             reste = max(reste, abs(e))
         if reste <= 1e-6 or self._duree() > 8.0:
             if ouvrir:
+                self.f.reprendre_bras()               # la manipulation repart d'ici
                 self._aller("RETOUR")
             else:
                 self.sous_etat, self._t_etat = "OUVRIR", self._horloge()
@@ -362,15 +378,17 @@ def bilan(resultats: Sequence[Dict]) -> Dict:
     par_carton: Dict[int, Dict[str, bool]] = {}
     for r in resultats:
         par_carton.setdefault(r["carton"], {})[r["mode"]] = r["succes"]
-    paires = [v for v in par_carton.values() if all(m in v for m in MODES)]
-    if paires:
-        out["apparie"] = {
-            "cartons": len(paires),
-            "les_deux": sum(v["vla"] and v["reflexes"] for v in paires),
-            "vla_seul": sum(v["vla"] and not v["reflexes"] for v in paires),
-            "reflexes_seuls": sum(v["reflexes"] and not v["vla"] for v in paires),
-            "aucun": sum(not v["vla"] and not v["reflexes"] for v in paires),
-        }
+    # Comparaison appariée : réflexes contre CHAQUE mode VLA présent.
+    for vm in MODES_VLA:
+        paires = [v for v in par_carton.values() if "reflexes" in v and vm in v]
+        if paires:
+            out["apparie"][vm] = {
+                "cartons": len(paires),
+                "les_deux": sum(v[vm] and v["reflexes"] for v in paires),
+                "vla_seul": sum(v[vm] and not v["reflexes"] for v in paires),
+                "reflexes_seuls": sum(v["reflexes"] and not v[vm] for v in paires),
+                "aucun": sum(not v[vm] and not v["reflexes"] for v in paires),
+            }
     return out
 
 
@@ -383,11 +401,10 @@ def texte_bilan(b: Dict) -> str:
         if s["echecs"]:
             lignes.append("              échecs : " + ", ".join(
                 f"{k} ×{v}" for k, v in sorted(s["echecs"].items(), key=lambda kv: -kv[1])))
-    a = b.get("apparie")
-    if a:
-        lignes.append(f"  même carton : les deux {a['les_deux']}, VLA seul {a['vla_seul']}, "
-                      f"réflexes seuls {a['reflexes_seuls']}, aucun {a['aucun']} "
-                      f"(sur {a['cartons']})")
+    for vm, a in b.get("apparie", {}).items():
+        lignes.append(f"  même carton, réflexes contre {vm} : les deux {a['les_deux']}, "
+                      f"{vm} seul {a['vla_seul']}, réflexes seuls {a['reflexes_seuls']}, "
+                      f"aucun {a['aucun']} (sur {a['cartons']})")
     return "\n".join(lignes)
 
 

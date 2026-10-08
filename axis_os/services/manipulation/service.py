@@ -369,6 +369,19 @@ class ManipulationService(IService):
                              self.p.tangage_port)
         self._aller(Etat.LACHER)
 
+    def resynchroniser(self) -> None:
+        """Un AUTRE écrivain (le VLA) a tenu les bras, puis les a ramenés en
+        posture de port, mains vides. Le service reprend la main sans saut :
+        il croit les bras là où ils sont vraiment (roulis ouvert, tangage de
+        port), état LIBRE, exemption levée. Sans cela, le geste suivant
+        partirait d'une posture périmée — un saut que le JointSafetyGuard
+        refuserait."""
+        self._lever_exemption()
+        self.objet, self._franchi, self.raison = None, None, ""
+        self._roulis_courant, self._tangage_courant = self.p.roulis_ouvert, self.p.tangage_port
+        self._tangage_ouverture = self.p.tangage_port
+        self.etat = Etat.LIBRE
+
     # ---- boucle ----------------------------------------------------------
 
     _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.MONTEE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
