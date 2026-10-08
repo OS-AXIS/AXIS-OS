@@ -50,6 +50,13 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader \
   || { echo "ÉCHEC : pas de GPU NVIDIA visible (nvidia-smi)."; exit 1; }
 
 etape "2/9 Docker + NVIDIA Container Toolkit"
+# Constaté (RTX PRO 5000) : une mise à jour automatique a pris le verrou d'apt
+# APRÈS l'attente de l'étape 1 — on attend à nouveau, juste avant d'installer.
+while pgrep -f unattended-upgr >/dev/null 2>&1 \
+      || sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+  echo "  mise à jour automatique d'Ubuntu en cours — attente (10 s)…"
+  sleep 10
+done
 if ! command -v docker >/dev/null; then
   curl -fsSL https://get.docker.com | sudo sh
 fi
