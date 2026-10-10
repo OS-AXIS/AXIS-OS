@@ -30,6 +30,7 @@ Licence : Apache 2.0 (SDK public)
 """
 
 from __future__ import annotations
+import math
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -341,6 +342,12 @@ class VLACppConnector(IVLAConnector):
         img.width = width
         img.data = data
 
+        # Horodatage = instant de la CAPTURE, juste avant l'envoi (comme
+        # GR00TConnector) : la décision a au moins cet âge. L'ancienne version
+        # horodatait à la réception, ce qui rajeunissait l'action de toute la
+        # latence réseau — erreur dans le MAUVAIS sens pour l'échéance de
+        # fraîcheur de SetpointFollower (audit du 2026-10-10).
+        t_capture_ns = time.monotonic_ns()
         try:
             self._socket.send(req.SerializeToString())
             raw_response = self._socket.recv()
@@ -357,7 +364,7 @@ class VLACppConnector(IVLAConnector):
         if resp.error:
             raise RuntimeError(f"vla-server a retourné une erreur : {resp.error}")
 
-        return self._response_to_action(resp)
+        return self._response_to_action(resp, t_capture_ns)
 
     def _extract_image_bytes(self, image: Any) -> tuple:
         """Duck typing volontaire (voir docstring predict_action) —
@@ -374,7 +381,7 @@ class VLACppConnector(IVLAConnector):
             "dict {'height', 'width', 'data'}."
         )
 
-    def _response_to_action(self, resp) -> VLAAction:
+    def _response_to_action(self, resp, t_capture_ns: Optional[int] = None) -> VLAAction:
         """
         Convertit action_chunk (vecteur plat de floats) en dict
         {joint_id: angle}. Le schéma proto peut transporter PLUSIEURS
@@ -384,11 +391,22 @@ class VLACppConnector(IVLAConnector):
         que d'exécuter plusieurs actions à l'aveugle sans que l'app
         appelante l'ait explicitement demandé.
         """
+        t_ns = t_capture_ns if t_capture_ns is not None else time.monotonic_ns()
         if resp.chunk_size == 0 or resp.action_dim == 0:
-            return VLAAction(target_angles={}, confidence=None,
-                             timestamp_ns=time.monotonic_ns())
+            return VLAAction(target_angles={}, confidence=None, timestamp_ns=t_ns)
 
         first_step = list(resp.action_chunk[:resp.action_dim])
+        if len(first_step) != resp.action_dim:
+            raise RuntimeError(
+                f"vla-server annonce action_dim={resp.action_dim} mais n'envoie "
+                f"que {len(first_step)} valeurs — action rejetée"
+            )
+        # NaN/inf rejetés ICI, comme dans GR00TConnector : une cible NaN
+        # faisait dériver l'articulation jusqu'à sa butée dans le suiveur
+        # (pas de -budget à chaque tick, que le garde ne refuse pas).
+        if not all(math.isfinite(v) for v in first_step):
+            raise RuntimeError("vla-server a retourné une action contenant "
+                               "NaN/inf — action rejetée")
 
         if self._joint_order is not None:
             if len(first_step) != len(self._joint_order):
@@ -403,15 +421,11 @@ class VLACppConnector(IVLAConnector):
         else:
             target_angles = {f"joint_{i}": v for i, v in enumerate(first_step)}
 
-        # Horodaté à la RÉCEPTION de la réponse serveur, faute de mieux :
-        # le protocole vla-server ne transporte pas l'instant d'inférence.
-        # ATTENTION, l'erreur va dans le MAUVAIS sens : l'action paraît
-        # plus JEUNE qu'elle n'est (de toute la latence réseau), donc
-        # SetpointFollower la conserve légèrement trop longtemps avant de
-        # la déclarer périmée. Écart faible en pratique (quelques dizaines
-        # de ms contre un max_age_s de 500 ms, ~10 % de marge rognée),
-        # mais ce n'est PAS conservateur. À corriger dès qu'un protocole
-        # expose l'instant d'inférence ; sinon, compenser en raccourcissant
-        # max_age_s côté suiveur.
+        # Horodaté à la CAPTURE (avant l'envoi de la requête) : le protocole
+        # vla-server ne transporte pas l'instant d'inférence, mais l'image a
+        # été prise avant. L'action paraît donc plus VIEILLE qu'elle n'est,
+        # jamais plus jeune : erreur dans le sens conservateur pour
+        # l'échéance de fraîcheur. (Avant l'audit du 2026-10-10 : horodatage
+        # à la réception, qui rognait la marge de toute la latence réseau.)
         return VLAAction(target_angles=target_angles, confidence=None,
-                         timestamp_ns=time.monotonic_ns())
+                         timestamp_ns=t_ns)

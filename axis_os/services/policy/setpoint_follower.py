@@ -35,9 +35,20 @@ max_age_s, le suiveur NE CONTINUE PAS vers la dernière cible. Il
 gèle sur la position mesurée (HOLD), puis relâche (DAMPING). Une
 consigne périmée exécutée indéfiniment est le mode de défaillance
 déjà rencontré deux fois sur ce projet.
+
+VALEURS NON FINIES (audit du 2026-10-10) : une cible NaN donnait
+« erreur = NaN », donc « abs(erreur) <= budget » faux et « erreur > 0 »
+faux : un pas de -budget à CHAQUE tick. Chaque pas était fini et sous
+position_delta_max — le JointSafetyGuard n'avait rien à refuser — et
+l'articulation dérivait jusqu'à sa butée. Une cible non finie est
+désormais ignorée : l'articulation garde sa consigne active (comme en
+HOLD). Un horodatage dans le FUTUR rendait un âge négatif, donc une
+consigne jamais périmée : il compte désormais comme périmé — de même
+qu'un horodatage NaN, infini ou négatif.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -62,6 +73,7 @@ class FollowerStats:
     commands_sent: int = 0
     commands_rejected: int = 0
     stale_events: int = 0
+    non_finite_targets: int = 0   # cibles NaN/inf ignorées (voir en-tête)
     last_tick_ms: float = 0.0
     max_tick_ms: float = 0.0
     total_tick_ms: float = 0.0
@@ -119,16 +131,35 @@ class SetpointFollower:
         Sans lui, l'échéance de fraîcheur mesurerait la latence réseau
         au lieu de l'âge réel de la décision.
         """
+        if not timestamp_ns:
+            ts = time.monotonic_ns()       # None ou 0 : comportement inchangé
+        elif isinstance(timestamp_ns, bool) or not isinstance(timestamp_ns, (int, float)) \
+                or not math.isfinite(timestamp_ns) or timestamp_ns < 0:
+            # Horodatage INVALIDE (NaN, infini, négatif, pas un nombre) : la
+            # consigne est tenue pour périmée d'emblée. POURQUOI (revue de
+            # l'audit du 2026-10-10) : NaN est « vrai » en booléen et passait
+            # le « or » ; son âge NaN ne dépassait jamais max_age_s — la
+            # consigne ne périmait JAMAIS. 0 signifie « aucune consigne ».
+            ts = 0
+        else:
+            ts = int(timestamp_ns)
         with self._lock:
             self._target = dict(target_angles)
-            self._target_ts_ns = timestamp_ns or time.monotonic_ns()
+            self._target_ts_ns = ts
 
     def _age_s(self) -> float:
         with self._lock:
             ts = self._target_ts_ns
         if ts == 0:
             return float("inf")
-        return (time.monotonic_ns() - ts) / 1e9
+        age = (time.monotonic_ns() - ts) / 1e9
+        if not math.isfinite(age) or age < 0.0:
+            # Horodatage dans le FUTUR : impossible avec time.monotonic_ns du
+            # même processus — horloge étrangère ou valeur corrompue. Un âge
+            # négatif ne dépasserait jamais max_age_s : la consigne ne
+            # périmerait jamais. On la traite comme périmée.
+            return float("inf")
+        return age
 
     # ---- boucle de contrôle ----------------------------------------------
 
@@ -194,12 +225,19 @@ class SetpointFollower:
         state = self._ctx.get_full_state()
 
         commands: Dict[str, ActuatorCommand] = {}
+        non_finis = []
         for jid, target_pos in target.items():
             fb = state.get(jid)
             if fb is None:
                 continue
             delta_max = self._delta_max.get(jid)
             if delta_max is None:
+                continue
+            if not (math.isfinite(target_pos) and math.isfinite(fb.position)):
+                # Cible (ou mesure) non finie : AUCUN pas pour ce joint, qui
+                # garde sa consigne active. Sans ce refus, NaN donnait un pas
+                # de -budget à chaque tick, jusqu'à la butée (voir en-tête).
+                non_finis.append(jid)
                 continue
             budget = delta_max * self._safety_factor
             error = target_pos - fb.position
@@ -210,6 +248,11 @@ class SetpointFollower:
             commands[jid] = ActuatorCommand(
                 mode=ControlMode.POSITION, position=next_pos,
             )
+
+        if non_finis:
+            self.stats.non_finite_targets += len(non_finis)
+            self._ctx.log(f"SetpointFollower: cible non finie pour "
+                          f"{sorted(non_finis)} — ignorée, joint(s) tenu(s).")
 
         if not commands:
             return
