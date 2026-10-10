@@ -24,7 +24,7 @@ from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.watchdog.config import WatchdogConfig
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from axis_os.store.sdk.app_base import RobotApp, RobotContext, MissionResult, EstopActiveError
 from axis_os.store.sdk.manifest import (
     AppManifest, AppCategory, Permission, PricingModel, HardwareRequirements
@@ -94,7 +94,7 @@ def make_stack():
     norm = NormalizedRobotHAL(robot, build_g1_normalizer())
     wd = WatchdogSystem(robot, WatchdogConfig.standard())
     wd.start()
-    runtime = PlayStoreRuntime(norm, wd)
+    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION)
     return robot, norm, wd, runtime
 
 

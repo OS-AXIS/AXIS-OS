@@ -59,7 +59,15 @@ class Permission(Enum):
     # APPRISE (GR00T, VLA...) plutôt que d'un script. Ne remplace pas
     # ACTUATORS_WRITE_* : une app pilotée par IA déclare les DEUX, ce
     # qui rend le pilotage IA visible à l'installation plutôt
-    # qu'implicite. Le profil de risque justifie la distinction : les
+    # qu'implicite.
+    # LIMITE HONNÊTE (revue de l'audit du 2026-10-10) : DANGEROUS, donc
+    # confirmée à l'installation quand elle est déclarée — mais NON
+    # APPLIQUÉE à l'exécution : aucune méthode de RobotContext ne la
+    # vérifie, et une app qui fait tourner un connecteur VLA dans sa
+    # mission en ne déclarant que ACTUATORS_WRITE_ARMS n'est pas détectée.
+    # La règle « Capability.AI_POLICY exige ACTUATORS_AI_DRIVEN »
+    # (validate) vaudra pour le futur service VLA ; le runtime ne fournit
+    # pas encore AI_POLICY. Le profil de risque justifie la distinction : les
     # mouvements d'une app scriptée sont auditables à l'avance, ceux
     # d'une politique apprise ne le sont pas. Tranche la question
     # explicitement reportée dans docs/ ("distinction IA/script dans
@@ -93,7 +101,10 @@ class ProtectionLevel(Enum):
     codée en dur à maintenir séparément.
     """
     NORMAL    = auto()   # accordée automatiquement — ex. ACTUATORS_READ
-    DANGEROUS = auto()   # demande confirmation humaine — ex. ACTUATORS_WRITE_ALL
+    # Confirmation humaine EXPLICITE exigée à l'installation (appliqué
+    # depuis l'audit du 2026-10-10 : PlayStoreRuntime(confirmer_permissions=
+    # ...) ; sans confirmation, l'installation est refusée).
+    DANGEROUS = auto()   # ex. ACTUATORS_WRITE_ALL, ACTUATORS_AI_DRIVEN
     SIGNATURE = auto()   # réservée aux apps signées par la clé plateforme
 
 
@@ -326,10 +337,31 @@ class AppManifest:
         return round(self.store_price_eur - self.base_price_eur, 2)
 
     def has_permission(self, perm: Permission) -> bool:
-        return perm in self.permissions
+        # Par IDENTITÉ, pas par « in » (qui appelle __eq__) : trouvé à la revue
+        # de l'audit du 2026-10-10, un objet dont __eq__ rend toujours True,
+        # glissé dans permissions, passait pour TOUTES les permissions.
+        return any(p is perm for p in self.permissions)
 
     def validate(self) -> list[str]:
         errors = []
+        # Types EXACTS (revue de l'audit du 2026-10-10) : une entrée qui n'est
+        # pas une Permission était tenue pour NORMAL (get_protection_level ne
+        # la connaît pas) et échappait à la confirmation DANGEROUS comme au
+        # contrôle SIGNATURE. Idem pour une liste dont « in » répondrait oui à
+        # tout. Même règle pour les capacités.
+        if type(self.permissions) is not list \
+                or any(type(p) is not Permission for p in self.permissions):
+            errors.append("permissions doit être une liste de Permission (rien d'autre)")
+        if type(self.capabilities_required) is not list \
+                or any(type(c) is not Capability for c in self.capabilities_required):
+            errors.append("capabilities_required doit être une liste de Capability")
+        # Texte affiché à l'utilisateur au moment de confirmer : pas de
+        # caractère de contrôle (séquences d'échappement qui réécriraient
+        # l'écran, sauts de ligne qui imiteraient une autre question).
+        for champ in ("app_id", "name", "author"):
+            v = getattr(self, champ)
+            if not isinstance(v, str) or any(not c.isprintable() for c in v):
+                errors.append(f"{champ} doit être un texte sans caractère de contrôle")
         if not self.app_id or "." not in self.app_id:
             errors.append("app_id doit être en format 'com.author.name'")
         if self.base_price_eur < 0:
@@ -362,6 +394,16 @@ class AppManifest:
                 SemVer.parse(self.sdk_version_min)
             except ValueError as e:
                 errors.append(f"sdk_version_min invalide : {e}")
+        # Une app qui exige une politique apprise (Capability.AI_POLICY) DOIT
+        # déclarer ACTUATORS_AI_DRIVEN (audit du 2026-10-10) : sinon le
+        # pilotage par IA resterait invisible à l'installation — la
+        # permission, DANGEROUS, est justement ce que l'humain confirme.
+        if Capability.AI_POLICY in self.capabilities_required \
+                and Permission.ACTUATORS_AI_DRIVEN not in self.permissions:
+            errors.append(
+                "Capability.AI_POLICY exige la permission ACTUATORS_AI_DRIVEN : une "
+                "app pilotée par une politique apprise doit le déclarer, pour que "
+                "l'utilisateur le confirme à l'installation.")
         if (self.code_signature is None) != (self.developer_public_key is None):
             errors.append(
                 "code_signature et developer_public_key doivent être renseignés "

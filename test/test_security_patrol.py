@@ -22,7 +22,7 @@ from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.watchdog.config import WatchdogConfig
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from axis_os.store.sdk.manifest import Permission
 from axis_os.apps.security_patrol.app import (
     SecurityPatrolApp, SECURITY_PATROL_MANIFEST, PatrolCheckpoint,
@@ -52,7 +52,7 @@ def make_runtime():
     norm = NormalizedRobotHAL(robot, build_g1_normalizer())
     wd = WatchdogSystem(robot, WatchdogConfig.simulation())
     wd.start()
-    return PlayStoreRuntime(norm, wd), robot, wd
+    return PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION), robot, wd
 
 
 # ══════════════════════════════════════════════════════════════════

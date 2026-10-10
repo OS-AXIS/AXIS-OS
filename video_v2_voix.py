@@ -134,7 +134,7 @@ def main():
     from axis_os.services.perception.service import PerceptionService
     from axis_os.services.speech.service import SpeechService
     from axis_os.services.speech.whisper_recognizer import WhisperRecognizer
-    from axis_os.store.runtime.play_store import PlayStoreRuntime
+    from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 
     sim_t = [0.0]
 
@@ -252,7 +252,8 @@ def main():
                                perception_service=perception,
                                locomotion_service=loco,
                                speech_service=speech,
-                               clock=lambda: sim_t[0])
+                               clock=lambda: sim_t[0],
+                               confirmer_permissions=accepter_tout_SIMULATION)
     app = VoiceInspectorApp()
     runtime.install(app)
     runtime.start_app(app.manifest().app_id)

@@ -199,14 +199,22 @@ sera, à juste titre, refusée par l'utilisateur.
 | `ACTUATORS_WRITE_ARMS` / `_LEGS` / `_ALL` | commander les bras, les jambes, tout | **dangereux** |
 | `LOCOMOTION_WALK` | faire se déplacer le robot | **dangereux** |
 | `EMERGENCY_STOP` | déclencher l'arrêt d'urgence | **dangereux** |
-| `ACTUATORS_AI_DRIVEN` | mouvements décidés par une IA (et non un script) | **dangereux** |
+| `ACTUATORS_AI_DRIVEN` | mouvements décidés par une IA (et non un script) — confirmée à l'installation, mais pas encore vérifiée à l'exécution | **dangereux** |
 | `ACTUATORS_RAW` | commandes moteur brutes | **réservé** aux apps signées par AXIS-OS |
 | `FLEET_BROADCAST` | parler aux autres robots | **réservé** |
 
-Les permissions **dangereuses** sont affichées à l'installation ; la
-demande de confirmation explicite à l'utilisateur, prévue par la
-conception, n'est pas encore implémentée (§ 12). Les permissions
-**réservées** sont, elles, réellement refusées à toute app qui n'est pas
+Les permissions **dangereuses** exigent une confirmation EXPLICITE à
+l'installation : sans elle, l'app est refusée. Le robot fournit cette
+confirmation par `PlayStoreRuntime(confirmer_permissions=...)` —
+`confirmer_au_terminal` sur un vrai robot (seul « o » ou « oui »
+accorde), `accepter_tout_SIMULATION` en simulation et dans les tests
+(refusé sur un robot réel). Une app qui exige `Capability.AI_POLICY` doit
+déclarer `ACTUATORS_AI_DRIVEN`, sinon son manifest est invalide (le
+runtime ne fournit pas encore `AI_POLICY` : cette règle vaudra pour le
+futur service VLA). Déclarez `ACTUATORS_AI_DRIVEN` dès qu'une IA décide
+des mouvements : rien ne vous y force encore à l'exécution, mais
+l'utilisateur doit le savoir avant d'accepter. Les
+permissions **réservées** sont, elles, refusées à toute app qui n'est pas
 signée par la clé de la plateforme.
 
 Honnêteté sur l'état actuel : `NETWORK_CLOUD`, `NETWORK_LOCAL`,
@@ -536,8 +544,6 @@ du Play Store n'est pas encore connecté.
 
 Dit franchement, pour ne pas vous faire perdre de temps :
 
-- **Confirmation des permissions dangereuses** : affichées à
-  l'installation, sans demande de confirmation à l'utilisateur.
 - **Faire parler le robot** : pas de `ctx.speak()`. La synthèse vocale est
   la prochaine brique naturelle.
 - **Navigation, manipulation et état de sécurité pour les apps** : les

@@ -10,7 +10,7 @@ from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.watchdog.config import WatchdogConfig
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from app import MonAppApp
 
 
@@ -21,7 +21,7 @@ def test_app():
     wd   = WatchdogSystem(hal, WatchdogConfig.simulation())
     wd.start()
 
-    runtime = PlayStoreRuntime(norm, wd)
+    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION)
     assert runtime.install(MonAppApp())
     assert runtime.start_app("com.kenzo.mon_app")
 

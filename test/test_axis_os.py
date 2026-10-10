@@ -36,7 +36,7 @@ from axis_os.hal.core.types import (
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.watchdog.config import WatchdogConfig
 from axis_os.hal.watchdog.events import AlertKind, AlertSeverity
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from axis_os.store.sdk.manifest import (
     AppManifest, Permission, AppCategory,
     PricingModel, HardwareRequirements
@@ -219,7 +219,7 @@ robot4.initialize_all()
 norm4  = NormalizedRobotHAL(robot4, build_g1_normalizer())
 wd4    = WatchdogSystem(robot4, WatchdogConfig.simulation())
 wd4.start()
-runtime = PlayStoreRuntime(norm4, wd4)
+runtime = PlayStoreRuntime(norm4, wd4, confirmer_permissions=accepter_tout_SIMULATION)
 
 app      = PackageSortingApp()
 manifest = app.manifest()

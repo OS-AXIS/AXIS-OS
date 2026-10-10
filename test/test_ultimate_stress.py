@@ -48,7 +48,7 @@ from axis_os.hal.core.types import JointLimits
 from axis_os.hal.core.structured_log import (
     StructuredLogger, LogCategory, get_default_logger
 )
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from axis_os.store.runtime.sandbox import SandboxRunner, SandboxState
 from axis_os.store.sdk.manifest import ResourceQuota, Permission, AppManifest, AppCategory, PricingModel, HardwareRequirements
 from axis_os.store.sdk.app_base import RobotApp
@@ -80,7 +80,7 @@ def make_full_stack(robot_id: str):
     norm = NormalizedRobotHAL(robot, build_g1_normalizer())
     wd = WatchdogSystem(robot, WatchdogConfig.standard())
     wd.start()
-    runtime = PlayStoreRuntime(norm, wd)
+    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION)
     return robot, norm, wd, runtime
 
 

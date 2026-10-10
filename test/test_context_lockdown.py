@@ -29,7 +29,7 @@ from axis_os.store.sdk.app_base import (
     RobotContext, RobotApp, UnauthorizedContextError, _RuntimeSessionToken,
 )
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, Permission
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 
 FAIL = 0
 
@@ -84,7 +84,7 @@ section("2 — CRITIQUE : un jeton forgé par l'attaquant ne passe jamais contre
 robot2 = make_robot("g1_lockdown_2")
 wd2 = WatchdogSystem(robot2)
 manifest2 = make_manifest("com.attacker.forge", [Permission.ACTUATORS_WRITE_ALL])
-runtime2 = PlayStoreRuntime(robot2, wd2)
+runtime2 = PlayStoreRuntime(robot2, wd2, confirmer_permissions=accepter_tout_SIMULATION)
 
 forged_token = _RuntimeSessionToken()
 try:
@@ -114,7 +114,7 @@ class _LegitApp(RobotApp):
 
 robot3 = make_robot("g1_lockdown_3")
 wd3 = WatchdogSystem(robot3)
-runtime3 = PlayStoreRuntime(robot3, wd3)
+runtime3 = PlayStoreRuntime(robot3, wd3, confirmer_permissions=accepter_tout_SIMULATION)
 result3 = runtime3.install(_LegitApp())
 check("install() légitime toujours fonctionnel", result3 is True)
 
@@ -140,11 +140,11 @@ section("5 — Deux instances de PlayStoreRuntime ont des jetons distincts")
 
 robot5a = make_robot("g1_lockdown_5a")
 wd5a = WatchdogSystem(robot5a)
-runtime5a = PlayStoreRuntime(robot5a, wd5a)
+runtime5a = PlayStoreRuntime(robot5a, wd5a, confirmer_permissions=accepter_tout_SIMULATION)
 
 robot5b = make_robot("g1_lockdown_5b")
 wd5b = WatchdogSystem(robot5b)
-runtime5b = PlayStoreRuntime(robot5b, wd5b)
+runtime5b = PlayStoreRuntime(robot5b, wd5b, confirmer_permissions=accepter_tout_SIMULATION)
 
 manifest5 = make_manifest("com.cross.runtime")
 try:

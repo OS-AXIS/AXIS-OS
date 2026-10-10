@@ -32,7 +32,7 @@ from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, PricingModel, Permission
 from axis_os.store.sdk.app_base import RobotApp, MissionResult
 from axis_os.services.memory.service import MemoryService
@@ -88,7 +88,7 @@ def make_session(storage_dir: Path):
     wd = WatchdogSystem(robot)
     mem = MemoryService(storage_dir=storage_dir)
     mem.start()
-    runtime = PlayStoreRuntime(robot, wd, memory_service=mem)
+    runtime = PlayStoreRuntime(robot, wd, memory_service=mem, confirmer_permissions=accepter_tout_SIMULATION)
     return runtime
 
 
@@ -149,7 +149,7 @@ section("3 — Non-régression : sans memory_service, comportement EN MÉMOIRE i
 robot3 = NormalizedRobotHAL(UnitreeG1HAL("g1_bp_noreg"), build_g1_normalizer())
 robot3.initialize_all()
 wd3 = WatchdogSystem(robot3)
-runtime3 = PlayStoreRuntime(robot3, wd3)  # SANS memory_service (défaut None)
+runtime3 = PlayStoreRuntime(robot3, wd3, confirmer_permissions=accepter_tout_SIMULATION)  # SANS memory_service (défaut None)
 app3 = _MovingApp("com.test.noreg_w", PricingModel.ONE_TIME)
 runtime3.install(app3)
 runtime3.start_app("com.test.noreg_w")

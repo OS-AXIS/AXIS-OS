@@ -94,6 +94,8 @@ ou au moins documenté pour les développeurs tiers.
 - **Pas de priorité** : le verrou refuse la seconde mission, il ne met
   pas en file et ne préempte pas. Une mission urgente ne peut pas
   interrompre une mission de routine.
-- **Pas d'interface utilisateur** : l'accord des permissions DANGEROUS
-  est implicite dans ce test. Sur un vrai produit, l'utilisateur doit le
-  donner explicitement, à l'installation.
+- **Pas d'interface utilisateur** : dans ce test, l'accord des
+  permissions DANGEROUS est donné explicitement par
+  `accepter_tout_SIMULATION` (simulation seulement, refusé sur un G1 en
+  DDS). Sur un vrai robot, sans confirmation l'installation est refusée :
+  `confirmer_au_terminal`, ou un écran de confirmation.

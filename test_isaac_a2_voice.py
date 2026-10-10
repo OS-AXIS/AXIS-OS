@@ -108,7 +108,7 @@ def main():
     from axis_os.services.perception.owlvit_detector import OwlViTDetector
     from axis_os.services.perception.service import PerceptionService
     from axis_os.services.speech.service import ISpeechRecognizer, SpeechService
-    from axis_os.store.runtime.play_store import PlayStoreRuntime
+    from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 
     section("1 — Audio : synthèse puis transcription réelle ?")
 
@@ -228,7 +228,8 @@ def main():
     runtime = PlayStoreRuntime(nrobot, WatchdogSystem(nrobot),
                                perception_service=perception,
                                locomotion_service=locomotion,
-                               speech_service=speech)
+                               speech_service=speech,
+                               confirmer_permissions=accepter_tout_SIMULATION)
     app = VoiceInspectorApp()
     man = app.manifest()
     runtime.install(app)

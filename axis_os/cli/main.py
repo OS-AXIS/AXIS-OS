@@ -131,7 +131,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
     from axis_os.hal.watchdog.system import WatchdogSystem
     from axis_os.hal.watchdog.config import WatchdogConfig
-    from axis_os.store.runtime.play_store import PlayStoreRuntime
+    from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 
     backend = None
     if args.backend == "webots":
@@ -144,7 +144,10 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     wd   = WatchdogSystem(hal, WatchdogConfig.simulation())
     wd.start()
 
-    runtime = PlayStoreRuntime(norm, wd)
+    # « axis-os simulate » ne pilote que le SIMULATEUR : les permissions
+    # DANGEROUS y sont accordées explicitement, sans confirmation. Sur un vrai
+    # robot, le runtime exige une confirmation humaine (voir play_store.py).
+    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION)
     app_instance = AppClass()
 
     if not runtime.install(app_instance):

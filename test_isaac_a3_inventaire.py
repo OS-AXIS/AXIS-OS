@@ -79,7 +79,7 @@ def main():
     from axis_os.services.memory.service import MemoryService
     from axis_os.services.perception.owlvit_detector import OwlViTDetector
     from axis_os.services.perception.service import PerceptionService
-    from axis_os.store.runtime.play_store import PlayStoreRuntime
+    from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 
     cfg = G1LocomotionConfig()
     limits = {d.joint_id: (d.limits.pos_min, d.limits.pos_max)
@@ -156,7 +156,8 @@ def main():
     runtime = PlayStoreRuntime(nrobot, WatchdogSystem(nrobot),
                                perception_service=perception,
                                locomotion_service=locomotion,
-                               memory_service=memoire)
+                               memory_service=memoire,
+                               confirmer_permissions=accepter_tout_SIMULATION)
     app = WarehouseInventoryApp()
     man = app.manifest()
     installee = runtime.install(app)

@@ -23,7 +23,7 @@ from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
 from axis_os.hal.watchdog.system import WatchdogSystem
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, Permission, Capability
 from axis_os.store.sdk.app_base import RobotApp
 from axis_os.apps.package_sorting.app import PackageSortingApp
@@ -50,7 +50,7 @@ def make_runtime():
                                build_g1_normalizer())
     robot.initialize_all()
     wd = WatchdogSystem(robot)
-    return robot, PlayStoreRuntime(robot, wd)
+    return robot, PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION)
 
 
 # ══════════════════════════════════════════════════════════════════

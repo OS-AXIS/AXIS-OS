@@ -8,8 +8,9 @@ Licence : Propriétaire — AXIS-OS
 """
 
 from __future__ import annotations
+import copy
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Callable, Optional, Dict, Any, List
 import time
 import uuid
 import traceback
@@ -33,6 +34,73 @@ from axis_os.store.runtime.hal_bridge import (
 from axis_os.services.memory.service import MemoryService
 import multiprocessing as mp
 import threading
+
+
+# ── Confirmation des permissions DANGEROUS ────────────────────────
+#
+# ProtectionLevel.DANGEROUS promettait « confirmation humaine » ; jusqu'à
+# l'audit du 2026-10-10, install() ne demandait rien : une app déclarant
+# ACTUATORS_WRITE_ALL ou ACTUATORS_AI_DRIVEN s'installait sans que personne
+# n'ait accepté qu'elle bouge le robot. Désormais, REFUS PAR DÉFAUT : une
+# permission DANGEROUS n'est accordée que si le `confirmer_permissions` du
+# runtime répond exactement True. Il n'existe aucun accord implicite.
+
+ConfirmationPermissions = Callable[[AppManifest, List[Permission]], bool]
+
+
+def accepter_tout_SIMULATION(manifest: AppManifest,
+                             permissions: List[Permission]) -> bool:
+    """Accorde toutes les permissions DANGEROUS SANS RIEN DEMANDER.
+
+    RÉSERVÉ À LA SIMULATION ET AUX TESTS : le nom est fait pour qu'on ne la
+    passe pas par erreur sur un vrai robot, et PlayStoreRuntime refuse en
+    plus de la recevoir avec un robot réel connu (G1 en backend DDS). Sur un
+    vrai robot : confirmer_au_terminal, ou un écran de confirmation."""
+    print(f"  [SIMULATION] permissions DANGEROUS accordées SANS confirmation "
+          f"humaine : {[p.name for p in permissions]}")
+    return True
+
+
+def _affichable(texte: Any, n: int = 80) -> str:
+    """Texte venu de l'app, rendu inoffensif pour un terminal : caractères de
+    contrôle (séquences d'échappement, sauts de ligne) remplacés, longueur
+    bornée. validate() les refuse déjà ; ceci est la seconde barrière."""
+    t = "".join(c if c.isprintable() else "?" for c in str(texte))
+    return t if len(t) <= n else t[:n - 1] + "…"
+
+
+def confirmer_au_terminal(manifest: AppManifest,
+                          permissions: List[Permission]) -> bool:
+    """Demande à l'opérateur, au terminal, d'accepter les permissions
+    DANGEROUS. Seul « o » ou « oui » accorde ; tout le reste — Entrée seule,
+    fin de saisie, erreur — refuse. Le nom, l'auteur et l'app_id viennent de
+    l'app : affichés neutralisés (revue de l'audit : une séquence
+    d'échappement pouvait masquer la vraie liste et afficher une fausse
+    question), et la question répète l'app_id et les permissions."""
+    app_id = _affichable(manifest.app_id)
+    noms = ", ".join(p.name for p in permissions)
+    print(f"\n  L'app « {_affichable(manifest.name)} » ({app_id}, "
+          f"{_affichable(manifest.author)}) demande des permissions DANGEREUSES :")
+    for p in permissions:
+        print(f"    - {p.name}")
+    try:
+        rep = input(f"  Accorder {noms} à {app_id} ? [o/N] ")
+    except (EOFError, OSError):
+        return False
+    return rep.strip().lower() in ("o", "oui")
+
+
+def _robot_reel(robot: Any) -> bool:
+    """Vrai si le HAL (éventuellement enveloppé : NormalizedRobotHAL._hal)
+    pilote un robot RÉEL connu — aujourd'hui le G1 en backend « dds ». Filet
+    de sécurité pour accepter_tout_SIMULATION, pas une détection exhaustive :
+    c'est son nom qui doit d'abord empêcher l'erreur."""
+    vus = 0
+    while robot is not None and vus < 5:
+        if getattr(robot, "_backend", None) == "dds":
+            return True
+        robot, vus = getattr(robot, "_hal", None), vus + 1
+    return False
 
 
 def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
@@ -172,7 +240,8 @@ class PlayStoreRuntime:
     Moteur d'exécution Play Store sur un robot.
 
     Usage :
-        runtime = PlayStoreRuntime(norm_robot, watchdog)
+        runtime = PlayStoreRuntime(norm_robot, watchdog,
+                                   confirmer_permissions=confirmer_au_terminal)
         runtime.install(PackageSortingApp())
         runtime.start_app("com.acme.package_sorting")
         result = runtime.run_mission("com.acme.package_sorting", params={})
@@ -189,8 +258,16 @@ class PlayStoreRuntime:
         locomotion_service=None,
         speech_service=None,
         clock=None,
+        confirmer_permissions: Optional[ConfirmationPermissions] = None,
     ):
         """
+        `confirmer_permissions` : (manifest, permissions DANGEROUS) -> bool.
+        Appelé par install() (donc aussi par update_app()) pour toute app
+        qui déclare au moins une permission ProtectionLevel.DANGEROUS ;
+        seule la réponse True accorde. None par défaut = AUCUNE permission
+        DANGEROUS n'est accordée : l'app est refusée (fail-safe, voir
+        accepter_tout_SIMULATION et confirmer_au_terminal ci-dessus).
+
         `require_signed_apps` : si True, install() refuse toute app
         dont code_signature/developer_public_key ne sont pas renseignés
         — False par défaut, rétrocompatible avec toutes les apps
@@ -230,6 +307,12 @@ class PlayStoreRuntime:
         strictement inchangé — état en mémoire seule, comme avant ce
         paramètre.
         """
+        if confirmer_permissions is accepter_tout_SIMULATION and _robot_reel(robot):
+            raise ValueError(
+                "accepter_tout_SIMULATION refusé : ce runtime pilote un robot RÉEL. "
+                "Les permissions DANGEROUS doivent y être confirmées par un humain "
+                "(confirmer_au_terminal, ou un écran de confirmation).")
+        self._confirmer_permissions = confirmer_permissions
         self._robot   = robot
         self._watchdog = watchdog
         self._apps:    Dict[str, InstalledApp] = {}
@@ -287,7 +370,10 @@ class PlayStoreRuntime:
     # ── Installation ──────────────────────────────────────────────
 
     def install(self, app: RobotApp) -> bool:
-        manifest = app.manifest()
+        # COPIE du manifeste, validée et conservée : RobotContext consultera
+        # celle-ci, jamais l'objet fourni par l'app — qu'elle pourrait modifier
+        # après la confirmation (revue de l'audit du 2026-10-10).
+        manifest = copy.deepcopy(app.manifest())
         app_id   = manifest.app_id
 
         print(f"\n[PlayStore] Installation '{manifest.name}' v{manifest.version}")
@@ -443,6 +529,32 @@ class PlayStoreRuntime:
                 names = sorted(c.name for c in missing_optional)
                 print(f"  [ATTENTION] Capacité(s) optionnelle(s) absente(s) — "
                       f"l'app fonctionnera en mode dégradé : {names}")
+
+        # Permissions DANGEROUS : confirmation EXPLICITE, en dernier — on ne
+        # demande pas à un humain d'accepter une app qui serait refusée de
+        # toute façon (capacités, matériel). Voir accepter_tout_SIMULATION.
+        dangereuses = list(dict.fromkeys(
+            p for p in manifest.permissions
+            if get_protection_level(p) == ProtectionLevel.DANGEROUS))
+        if dangereuses:
+            noms = [p.name for p in dangereuses]
+            if self._confirmer_permissions is None:
+                print(f"  [ERREUR] Permission(s) DANGEROUS {noms} : aucune confirmation "
+                      f"configurée sur ce runtime (confirmer_permissions) — refus par "
+                      f"défaut.")
+                return False
+            try:
+                accord = self._confirmer_permissions(manifest, list(dangereuses))
+            except Exception as exc:          # noqa: BLE001 — refus, jamais accord
+                print(f"  [ERREUR] Confirmation des permissions {noms} impossible "
+                      f"({exc!r:.120}) — refus.")
+                return False
+            if accord is not True:
+                # « is True » : une réponse floue (chaîne, 1, None) n'est pas un accord.
+                print(f"  [ERREUR] Permission(s) DANGEROUS {noms} non accordée(s) — "
+                      f"installation refusée.")
+                return False
+            print(f"  Permissions DANGEROUS accordées explicitement : {noms}")
 
         # Permissions
         print(f"  Permissions : {[p.name for p in manifest.permissions]}")

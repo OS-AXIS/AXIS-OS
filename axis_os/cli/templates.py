@@ -87,7 +87,7 @@ from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.watchdog.config import WatchdogConfig
-from axis_os.store.runtime.play_store import PlayStoreRuntime
+from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from app import {class_name}
 
 
@@ -98,7 +98,9 @@ def test_app():
     wd   = WatchdogSystem(hal, WatchdogConfig.simulation())
     wd.start()
 
-    runtime = PlayStoreRuntime(norm, wd)
+    # Test en SIMULATION : permissions DANGEROUS accordées explicitement.
+    # Sur un vrai robot, elles exigent une confirmation humaine.
+    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION)
     assert runtime.install({class_name}())
     assert runtime.start_app("{app_id}")
 
