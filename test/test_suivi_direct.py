@@ -57,7 +57,7 @@ check("Image 1080p réduite pour le flux (960 px de large)",
       Image.open(BytesIO(corps)).size == (960, 540))
 import socket
 c = socket.create_connection(("127.0.0.1", 18080), timeout=5)
-c.sendall(b"GET /flux HTTP/1.1\r\nHost: x\r\n\r\n")
+c.sendall(b"GET /flux HTTP/1.1\r\nHost: 127.0.0.1:18080\r\n\r\n")
 recu = b""
 t0 = time.time()
 while recu.count(b"--image") < 1 and time.time() - t0 < 3:
@@ -74,7 +74,9 @@ s2.image(Image.new("RGB", (8, 8)))
 s2.image(Image.new("RGB", (8, 8)))
 check("Cadence limitée : 2 images coup sur coup, 1 seule écrite", s2._image_n == 1)
 check("Pas d'arrêt demandé au départ", not s.arret_demande)
-lire(base + "/arreter", data=b"")
+req = urllib.request.Request(base + "/arreter", data=b"", method="POST",
+                             headers={"X-AXIS-Arret": "oui"})
+urllib.request.urlopen(req, timeout=5).read()
 check("Bouton : l'arrêt est demandé, et journalisé",
       s.arret_demande and "ARRÊT DEMANDÉ" in s.etat()["journal"][-1])
 try:

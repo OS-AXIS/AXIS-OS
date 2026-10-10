@@ -33,6 +33,8 @@ Usage (dans le conteneur) :
   --port-direct  suivi EN DIRECT dans un navigateur (défaut 8080) :
                    ssh -L 8080:localhost:8080 <machine>, puis
                    http://localhost:8080 — image, journal, bouton d'arrêt
+  --hote-direct  nom d'hôte accepté EN PLUS de localhost par la page de suivi
+                 (relais web de tunnel SSH) ; répétable
 """
 import argparse
 import math
@@ -85,6 +87,11 @@ def main():
     ap.add_argument("--graine", type=int, default=3)
     ap.add_argument("--port-direct", type=int, default=8080,
                     help="page de suivi en direct (0 : désactivée)")
+    # La page refuse tout en-tête Host autre que localhost (protection contre
+    # les sites tiers, voir direct.py) : un relais de tunnel qui présente un
+    # autre nom s'ajoute ici, explicitement.
+    ap.add_argument("--hote-direct", action="append", default=[],
+                    help="nom d'hôte supplémentaire accepté par la page de suivi")
     args = ap.parse_args()
     DUREE = args.duree
     rng = random.Random(args.graine)
@@ -423,7 +430,8 @@ def main():
     rec = None
     suivi = None
     if args.port_direct:
-        suivi = SuiviDirect(str(VIDEOS / "direct"), port=args.port_direct)
+        suivi = SuiviDirect(str(VIDEOS / "direct"), port=args.port_direct,
+                            hotes_autorises=args.hote_direct)
         if not suivi.demarrer():
             suivi = None
 

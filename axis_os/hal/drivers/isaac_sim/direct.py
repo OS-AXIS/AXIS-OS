@@ -22,6 +22,25 @@ exposer la machine sur Internet.
 
     ssh -L 8080:localhost:8080 <connexion SSH de la machine>
     puis http://localhost:8080
+
+PROTECTIONS (audit du 2026-10-10). Écouter sur localhost ne suffit pas : le
+tunnel ouvert, N'IMPORTE QUELLE page web visitée dans le même navigateur
+peut envoyer des requêtes à http://localhost:8080. Sans protection, elle
+pouvait arrêter le test (un POST « simple » ne demande aucune permission au
+navigateur), l'afficher dans un cadre invisible pour faire cliquer le
+bouton, ou lire le journal par « rebinding » DNS (un nom de domaine qui se
+met à pointer vers 127.0.0.1). D'où :
+  - en-tête Host vérifié : seulement localhost / 127.0.0.1 / [::1] (plus
+    les noms ajoutés explicitement par hotes_autorises) — déjoue le
+    rebinding DNS, où Host porte le nom du site malveillant ;
+  - en-tête Origin, s'il est présent, vérifié de même ;
+  - POST /arreter exige l'en-tête X-AXIS-Arret : un site tiers ne peut pas
+    l'ajouter sans une requête préalable (OPTIONS) que ce serveur refuse ;
+  - page interdite dans un cadre (X-Frame-Options, frame-ancestors) ;
+  - flux d'images simultanés limités (flux_max) : chaque flux occupe un fil
+    d'exécution ; au-delà, 503, et la page passe en images successives.
+Aucune de ces protections ne touche la simulation : au pire, le suivi est
+refusé, le test continue.
 """
 from __future__ import annotations
 
@@ -32,7 +51,23 @@ import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Deque, Optional
+from typing import Deque, Optional, Sequence
+from urllib.parse import urlsplit
+
+# Noms sous lesquels un navigateur joint ce serveur par le tunnel SSH.
+_HOTES_LOCAUX = ("localhost", "127.0.0.1", "[::1]")
+# En-tête exigé sur POST /arreter : un site tiers ne peut pas l'ajouter sans
+# requête OPTIONS préalable, que ce serveur ne sait pas traiter (donc refuse).
+ENTETE_ARRET = "X-AXIS-Arret"
+
+
+def _nom_hote(valeur: str) -> str:
+    """'localhost:8080' -> 'localhost' ; '[::1]:9090' -> '[::1]' ; minuscules."""
+    v = (valeur or "").strip().lower()
+    if v.startswith("["):
+        fin = v.find("]")
+        return v[:fin + 1] if fin > 0 else v
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
 
 _PAGE = """<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
@@ -89,7 +124,7 @@ setTimeout(() => { if (!img.naturalWidth) { img.removeAttribute('src'); imagesSu
 img.onerror = () => imagesSuccessives();
 stop.onclick = async () => {
   if (!confirm('Arrêter le test ? La vidéo et le bilan seront écrits.')) return;
-  await fetch('/arreter', {method: 'POST'}); maj();
+  await fetch('/arreter', {method: 'POST', headers: {'X-AXIS-Arret': 'oui'}}); maj();
 };
 setInterval(maj, 1000); maj();
 </script></body></html>
@@ -99,8 +134,22 @@ setInterval(maj, 1000); maj();
 class SuiviDirect:
     def __init__(self, dossier: str, port: int = 8080, hote: str = "127.0.0.1",
                  lignes_max: int = 200, images_par_s: float = 15.0,
-                 largeur_flux: int = 960):
+                 largeur_flux: int = 960, hotes_autorises: Sequence[str] = (),
+                 flux_max: int = 4):
+        """
+        hotes_autorises : noms d'hôte acceptés EN PLUS de localhost /
+            127.0.0.1 / [::1] (en-têtes Host et Origin) — par exemple le nom
+            d'un relais web de tunnel SSH. Rien par défaut.
+        flux_max : flux MJPEG simultanés au plus (un fil d'exécution chacun).
+        """
         self.dossier = Path(dossier)
+        self.hotes_autorises = frozenset(_HOTES_LOCAUX) | {
+            _nom_hote(h) for h in hotes_autorises if h}
+        self.flux_max = flux_max
+        self._flux_ouverts = 0
+        self._verrou_flux = threading.Lock()
+        self.refus = {"hote": 0, "origine": 0, "entete": 0, "flux": 0}
+        self._hotes_signales: set = set()
         self.dossier.mkdir(parents=True, exist_ok=True)
         self.port, self.hote = port, hote
         self._journal: Deque[str] = deque(maxlen=lignes_max)
@@ -123,15 +172,48 @@ class SuiviDirect:
             def log_message(self, *a):          # silencieux
                 pass
 
+            def _entetes_securite(self):
+                # Jamais dans un cadre : sinon une page tierce pourrait
+                # superposer le bouton « Arrêter » à autre chose.
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+
             def _envoyer(self, code, corps: bytes, type_: str):
                 self.send_response(code)
                 self.send_header("Content-Type", type_)
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(corps)))
+                self._entetes_securite()
                 self.end_headers()
                 self.wfile.write(corps)
 
+            def _refuser(self, cle: str, detail: str) -> bool:
+                suivi.refus[cle] += 1
+                self._envoyer(403, f"refusé : {detail}".encode(), "text/plain; charset=utf-8")
+                return False
+
+            def _autorise(self) -> bool:
+                """Host (et Origin s'il est là) doivent désigner ce serveur
+                par un nom local — voir l'en-tête du module."""
+                hote = _nom_hote(self.headers.get("Host", ""))
+                if hote not in suivi.hotes_autorises:
+                    if len(suivi._hotes_signales) < 10 and hote not in suivi._hotes_signales:
+                        suivi._hotes_signales.add(hote)
+                        print(f"  [direct] requête refusée : hôte « {hote[:60]} » (seuls "
+                              f"{sorted(suivi.hotes_autorises)} sont acceptés ; un relais "
+                              f"de tunnel s'ajoute par hotes_autorises)")
+                    return self._refuser("hote", "hôte non autorisé")
+                origine = self.headers.get("Origin")
+                if origine is not None and _nom_hote(urlsplit(origine).netloc) \
+                        not in suivi.hotes_autorises:
+                    return self._refuser("origine", "origine non autorisée")
+                return True
+
             def do_GET(self):
+                if not self._autorise():
+                    return
                 if self.path in ("/", "/index.html"):
                     self._envoyer(200, _PAGE.encode(), "text/html; charset=utf-8")
                 elif self.path == "/etat":
@@ -152,7 +234,20 @@ class SuiviDirect:
                     else:
                         self._envoyer(404, b"", "text/plain")
                 elif self.path.startswith("/flux"):
-                    self._flux()
+                    with suivi._verrou_flux:
+                        plein = suivi._flux_ouverts >= suivi.flux_max
+                        if not plein:
+                            suivi._flux_ouverts += 1
+                    if plein:
+                        # 503 : la page passe d'elle-même en images successives.
+                        suivi.refus["flux"] += 1
+                        self._envoyer(503, b"trop de flux ouverts", "text/plain")
+                        return
+                    try:
+                        self._flux()
+                    finally:
+                        with suivi._verrou_flux:
+                            suivi._flux_ouverts -= 1
                 else:
                     self._envoyer(404, b"", "text/plain")
 
@@ -162,6 +257,7 @@ class SuiviDirect:
                 self.send_header("Content-Type",
                                  "multipart/x-mixed-replace; boundary=image")
                 self.send_header("Cache-Control", "no-store")
+                self._entetes_securite()
                 self.end_headers()
                 vue = -1
                 try:
@@ -181,7 +277,14 @@ class SuiviDirect:
                     pass                         # onglet fermé : rien de grave
 
             def do_POST(self):
+                if not self._autorise():
+                    return
                 if self.path == "/arreter":
+                    if not self.headers.get(ENTETE_ARRET):
+                        # Un formulaire ou un fetch « simple » d'un site tiers
+                        # n'a pas cet en-tête : l'arrêt est refusé.
+                        self._refuser("entete", f"en-tête {ENTETE_ARRET} manquant")
+                        return
                     suivi.arret_demande = True
                     suivi.journal("ARRÊT DEMANDÉ depuis la page de suivi")
                     self._envoyer(200, b"ok", "text/plain")
