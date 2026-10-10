@@ -49,9 +49,21 @@ mkdir -p "$HOME/videos"
 #   bash ~/AXIS-OS/deploy/machine_gpu/recuperer_t1.sh   récupère vidéo et journal
 sudo docker exec "$CONTENEUR" rm -f /isaac-sim/videos/t1.log /isaac-sim/videos/t1.fini
 ARGS="--duree $DUREE --acceleration $ACC $*"
-sudo docker exec -d "$CONTENEUR" bash -c \
-  "mkdir -p /isaac-sim/videos && /isaac-sim/python.sh -u /isaac-sim/axis_os/test_isaac_t1_tri_usine.py $ARGS \
+COMMANDE="mkdir -p /isaac-sim/videos && /isaac-sim/python.sh -u /isaac-sim/axis_os/test_isaac_t1_tri_usine.py $ARGS \
    > /isaac-sim/videos/t1.log 2>&1; touch /isaac-sim/videos/t1.fini"
+if [ -n "${GR00T_API_TOKEN:-}" ]; then
+  # Jeton d'API GR00T (optionnel, voir evaluer_vla.sh) : transmis au test par
+  # l'ENTRÉE STANDARD (fichier d'environnement /dev/stdin lu par docker), et
+  # par rien d'autre. POURQUOI (revue de l'audit du 2026-10-10, vérifié) :
+  # « -e NOM=valeur » met le jeton dans ps et dans le journal de sudo, et
+  # « sudo --preserve-env=NOM » l'y écrit aussi (« ENV=NOM=valeur »). printf
+  # est une commande interne de bash : rien dans ps ; sudo ne journalise que
+  # la commande, et le tube le traverse (use_pty compris).
+  printf 'GR00T_API_TOKEN=%s\n' "$GR00T_API_TOKEN" \
+    | sudo docker exec -d --env-file /dev/stdin "$CONTENEUR" bash -c "$COMMANDE"
+else
+  sudo docker exec -d "$CONTENEUR" bash -c "$COMMANDE"
+fi
 echo "Test lancé en arrière-plan (il continue même si tu te déconnectes)."
 echo "Suivi en direct : http://localhost:8080 (via le tunnel SSH)"
 sleep 3

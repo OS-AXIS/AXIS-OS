@@ -36,6 +36,7 @@ Usage (dans le conteneur) :
 """
 import argparse
 import math
+import os
 import random
 import sys
 import time
@@ -635,8 +636,12 @@ def main():
             if any(m in ("vla", "vla_prise") for m in modes):
                 # Image : la MÊME qu'à la collecte (tête 640x480 réduite de
                 # moitié) — le connecteur refuse toute autre taille.
+                # Jeton d'API : optionnel, lu dans l'environnement (passé par
+                # lancer_t1.sh quand evaluer_vla.sh en a reçu un) — jamais
+                # écrit dans un fichier ni dans le journal.
                 con = GR00TConnector(args.evaluer_vla, arm_joints=bras_j, image_shape=(240, 320),
-                                     request_timeout_ms=10000)
+                                     request_timeout_ms=10000,
+                                     api_token=os.environ.get("GR00T_API_TOKEN") or None)
                 if not con.connect():
                     print(f"\n  ERREUR : serveur GR00T injoignable sur {args.evaluer_vla} — "
                           "lancer d'abord deploy/machine_gpu/evaluer_vla.sh (il le démarre).")

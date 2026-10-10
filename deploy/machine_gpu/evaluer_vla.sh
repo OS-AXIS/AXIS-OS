@@ -18,6 +18,18 @@
 #
 # Le VLA ne fait que PROPOSER : bras à 1 rad/s au plus, butées, JointSafetyGuard,
 # gardien de proximité — comme les réflexes. Les refus sont comptés par essai.
+#
+# JETON D'API (optionnel) : GR00T_API_TOKEN=<jeton> bash evaluer_vla.sh …
+# Le serveur n'accepte alors que les requêtes qui le portent. Le serveur écoute
+# déjà sur 127.0.0.1 seulement ; le jeton protège en plus des autres processus
+# de la machine. Il ne passe QUE par l'environnement, jamais par une ligne de
+# commande (visible dans ps, et journalisée par sudo) ni par un fichier :
+#   - serveur : run_gr00t_server.py de NVIDIA n'a pas d'option --api-token ;
+#     le lanceur run_gr00t_server_avec_jeton.py (à côté de ce script) lit la
+#     variable et la passe à PolicyServer ;
+#   - client : lancer_t1.sh la transmet au conteneur par l'entrée standard
+#     (docker exec --env-file /dev/stdin) — ni ps, ni journal de sudo.
+# Sans la variable, rien ne change : run_gr00t_server.py, lancé tel quel.
 set -euo pipefail
 # Jamais d'arrêt muet : constaté, le script s'arrêtait sans un mot.
 trap 'echo "ÉCHEC (ligne $LINENO) : $BASH_COMMAND"; pkill -f run_gr00t_server || true' ERR
@@ -58,7 +70,15 @@ fi
 cd "$HOME/Isaac-GR00T"
 # -u : sans lui, Python garde ses messages en mémoire quand ils vont dans un
 # fichier — « Server is ready » n'apparaissait jamais (constaté, RTX PRO 5000).
-nohup env PYTHONUNBUFFERED=1 uv run python -u gr00t/eval/run_gr00t_server.py \
+SERVEUR="gr00t/eval/run_gr00t_server.py"
+if [ -n "${GR00T_API_TOKEN:-}" ]; then
+  # Même serveur, jeton passé par l'environnement (voir l'en-tête). Le nom du
+  # lanceur contient « run_gr00t_server » : pgrep/pkill ci-dessous le trouvent.
+  SERVEUR="$HOME/AXIS-OS/deploy/machine_gpu/run_gr00t_server_avec_jeton.py"
+  export GR00T_API_TOKEN               # lu par le lanceur, par lancer_t1.sh, puis par le client
+  echo "Jeton d'API : activé (serveur et client)."
+fi
+nohup env PYTHONUNBUFFERED=1 uv run python -u "$SERVEUR" \
   --model-path "$MODELE" --embodiment-tag NEW_EMBODIMENT \
   --host 127.0.0.1 --port "$PORT" > "$HOME/vla_serveur.log" 2>&1 &
 echo "Serveur GR00T en cours de chargement (journal : ~/vla_serveur.log)…"
