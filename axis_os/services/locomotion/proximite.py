@@ -29,6 +29,14 @@ s'arrête. C'est voulu — mieux vaut s'arrêter pour rien que heurter.
 
 FAIL-SAFE : pas de balayage, ou balayage périmé -> ARRÊT. Un capteur de
 sécurité muet n'est pas un capteur qui ne voit rien.
+
+ENTRÉE INVALIDE -> ARRÊT (audit du 2026-10-10). Avec NaN, toute comparaison
+est fausse : un point NaN n'était ni « proche » ni « expliqué », il
+disparaissait. Constaté : une POSE du robot NaN rendait « zone dégagée »
+alors qu'un obstacle se tenait à 0.58 m ; un balayage entièrement NaN, un
+horodatage NaN ou dans le futur passaient aussi. Désormais, pose ou
+horodatage non finis, horodatage dans le futur, balayage mal formé ou
+sans aucun point fini, source en erreur : ARRÊT, comme un capteur muet.
 """
 from __future__ import annotations
 
@@ -54,6 +62,10 @@ class ChampsProtection:
     port_z: tuple = (0.60, 1.30)
     marge_carte: float = 0.05
     age_max_s: float = 0.3         # au-delà : balayage périmé -> arrêt
+    # Horodatage DANS LE FUTUR toléré au plus de tant : au-delà, les horloges
+    # du lidar et du robot sont désynchronisées, et l'âge mesuré ne veut plus
+    # rien dire (un vieux balayage paraîtrait frais indéfiniment) -> arrêt.
+    avance_max_s: float = 0.05
     # Exemption de manipulation : volume MAXIMAL par côté, et durée maximale.
     exemption_cote_max: float = 0.70
     exemption_duree_max_s: float = 30.0
@@ -92,7 +104,8 @@ class GardienProximite:
         self._exemption = None           # (xmin, xmax, ymin, ymax, zmin, zmax, fin)
         self.journal_exemptions = []
         self.stats = {"arrets": 0, "ralentissements": 0, "capteur_muet": 0,
-                      "exemptions": 0, "exemptions_refusees": 0}
+                      "exemptions": 0, "exemptions_refusees": 0,
+                      "entrees_invalides": 0}
 
     def exempter(self, volume, duree_s: float, maintenant: float,
                  motif: str = "") -> tuple:
@@ -179,6 +192,10 @@ class GardienProximite:
             return None, None
         px, py, cap = pose
         P = np.asarray(points, dtype=float)
+        # Points non finis écartés EXPLICITEMENT (ils l'étaient déjà, par
+        # accident : toute comparaison avec NaN est fausse). evaluer() arrête
+        # le robot quand il ne reste AUCUN point fini.
+        P = P[np.isfinite(P[:, :3]).all(axis=1)]
         x, y, z = P[:, 0], P[:, 1], P[:, 2]
         dx, dy = x - px, y - py
         d = np.hypot(dx, dy)
@@ -198,28 +215,76 @@ class GardienProximite:
         k = np.flatnonzero(garde)[np.argmin(d[garde])]
         return float(d[k]), (float(x[k]), float(y[k]))
 
+    def _arret_capteur(self, raison: str, cle: str = "capteur_muet") -> Verdict:
+        """Arrêt faute de mesure fiable. Le délai de reprise repart de zéro :
+        pendant que le capteur ne voyait rien de fiable, rien ne prouve que
+        la zone soit restée dégagée — sans cette remise à zéro, un robot
+        arrêté pouvait repartir aussitôt le capteur revenu."""
+        self.stats[cle] += 1
+        self._arrete, self._degage_depuis = True, None
+        return Verdict(0.0, None, raison)
+
     def evaluer(self, maintenant: float) -> Verdict:
-        s = self._scan()
+        if not math.isfinite(maintenant):
+            return self._arret_capteur("horloge du robot non finie — ARRÊT",
+                                       "entrees_invalides")
+        try:
+            s = self._scan()
+        except Exception as exc:          # noqa: BLE001 — capteur en panne
+            # Une source en erreur arrête le robot au lieu de faire tomber la
+            # boucle de commande (qui, elle, ne s'arrêterait pas en équilibre).
+            return self._arret_capteur(f"lidar en erreur ({exc!r:.80}) — ARRÊT",
+                                       "entrees_invalides")
         if s is None:
-            self.stats["capteur_muet"] += 1
-            self._arrete = True
-            return Verdict(0.0, None, "lidar muet — ARRÊT par sécurité")
-        points, horodatage = s
+            return self._arret_capteur("lidar muet — ARRÊT par sécurité")
+        try:
+            points, horodatage = s
+            horodatage = float(horodatage)
+        except (TypeError, ValueError):
+            return self._arret_capteur("balayage mal formé — ARRÊT",
+                                       "entrees_invalides")
+        if not math.isfinite(horodatage):
+            # NaN : « maintenant - NaN > age_max » est FAUX — un balayage
+            # d'âge inconnu passait pour frais.
+            return self._arret_capteur("horodatage du balayage non fini — ARRÊT",
+                                       "entrees_invalides")
+        if horodatage - maintenant > self.c.avance_max_s:
+            return self._arret_capteur(
+                f"horodatage du balayage {horodatage - maintenant:.2f} s dans le "
+                f"FUTUR — horloges désynchronisées — ARRÊT", "entrees_invalides")
         if maintenant - horodatage > self.c.age_max_s:
-            self.stats["capteur_muet"] += 1
-            self._arrete = True
-            return Verdict(0.0, None, f"balayage périmé de "
-                                      f"{maintenant - horodatage:.2f} s — ARRÊT")
+            return self._arret_capteur(f"balayage périmé de "
+                                       f"{maintenant - horodatage:.2f} s — ARRÊT")
         if points is None or len(points) == 0:
             # Un lidar voit TOUJOURS quelque chose (au moins le sol). Un
             # balayage vide, c'est un capteur aveugle ou masqué — constaté
             # sur GPU : capteur placé DANS la tête du robot, chaque rayon
             # s'arrêtait sur le robot lui-même. Arrêt, avec la vraie raison
             # (la version précédente disait « zone pas encore dégagée »).
-            self.stats["capteur_muet"] += 1
-            self._arrete = True
-            return Verdict(0.0, None, "balayage VIDE — lidar aveugle ou masqué — ARRÊT")
-        d, pt = self._plus_proche(points, self._pose(), maintenant)
+            return self._arret_capteur("balayage VIDE — lidar aveugle ou masqué — ARRÊT")
+        try:
+            P = np.asarray(points, dtype=float)
+        except (TypeError, ValueError):
+            return self._arret_capteur("points du balayage illisibles — ARRÊT",
+                                       "entrees_invalides")
+        if P.ndim != 2 or P.shape[1] < 3:
+            return self._arret_capteur(f"balayage de forme {P.shape}, attendu "
+                                       f"(N, 3) — ARRÊT", "entrees_invalides")
+        if not np.isfinite(P[:, :3]).all(axis=1).any():
+            # Aucun point fini : c'est un capteur aveugle, pas une zone vide.
+            return self._arret_capteur("balayage sans AUCUN point fini — lidar "
+                                       "aveugle — ARRÊT", "entrees_invalides")
+        try:
+            px, py, cap = (float(v) for v in self._pose())
+        except Exception as exc:          # noqa: BLE001 — localisation en panne
+            return self._arret_capteur(f"pose du robot indisponible ({exc!r:.80}) "
+                                       f"— ARRÊT", "entrees_invalides")
+        if not (math.isfinite(px) and math.isfinite(py) and math.isfinite(cap)):
+            # Constaté par l'audit : pose NaN -> toutes les distances NaN ->
+            # aucun point retenu -> « zone dégagée », obstacle à 0.58 m.
+            return self._arret_capteur("pose du robot non finie — ARRÊT",
+                                       "entrees_invalides")
+        d, pt = self._plus_proche(P, (px, py, cap), maintenant)
 
         if d is not None and d < self.c.d_arret:
             if not self._arrete:
