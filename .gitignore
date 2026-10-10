@@ -2,3 +2,13 @@ Drive/
 __pycache__/
 *.pyc
 *.pyo
+
+# Journaux d'exécution (axis_os/hal/core/structured_log.py écrit dans ./logs
+# par défaut). Ils n'ont rien à faire dans le dépôt : chaque lancement de la
+# suite de tests les modifiait, et un journal de robot réel n'a pas à être
+# publié. logs/.gitkeep reste suivi : le dossier doit exister (systemd :
+# ReadWritePaths=/opt/axis-os/logs, voir deploy/systemd/axis-os.service).
+logs/*
+!logs/.gitkeep
+# Mémoire persistante des apps (axis_os/services/memory, ./memory_store).
+memory_store/

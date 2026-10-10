@@ -63,8 +63,11 @@ protobuf>=4.25.0
 transformers==5.17.0
 pillow>=10.0.0
 
-# Connecteur GR00T (axis_os/store/sdk/ai/gr00t_connector.py) — requis
-# uniquement pour parler à un serveur NVIDIA Isaac GR00T (run_gr00t_server.py).
-# pyzmq>=25
-# msgpack>=1.0
-# msgpack-numpy>=0.4.8
+# Connecteur GR00T (axis_os/store/sdk/ai/gr00t_connector.py) — OPTIONNELS
+# pour le runtime (importés seulement à connect(), une app qui n'utilise pas
+# ce connecteur n'en a pas besoin), mais REQUIS POUR LES TESTS
+# (test/test_vla_gr00t_connector.py, test/test_vla_gr00t_durcissement.py) :
+# commentés, une installation neuve faisait échouer la suite.
+# pyzmq : déjà listé plus haut (VLACppConnector).
+msgpack>=1.0
+msgpack-numpy>=0.4.8
