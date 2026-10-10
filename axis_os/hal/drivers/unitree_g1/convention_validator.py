@@ -113,7 +113,14 @@ def validate_convention_table(
                 "positive_label ou negative_label manquant"
             ))
 
+    # NON VÉRIFIÉE PAR DÉFAUT (audit du 2026-10-10) : seule une entrée qui
+    # déclare explicitement verifiee=True est tenue pour vérifiée. Avant, un
+    # objet sans ce champ (table construite à la main, autre classe) était
+    # tenu pour vérifié — et donc accepté sur un vrai robot, alors que
+    # personne n'avait jamais mesuré le sens de son articulation. « is True »
+    # et pas la simple vérité : une chaîne « non » ou un 1 ne valent pas une
+    # vérification.
     non_verifiees = [jid for jid, c in table.items()
-                     if not getattr(c, "verifiee", True)]
+                     if getattr(c, "verifiee", False) is not True]
     return ConventionValidationResult(valid=(len(errors) == 0), errors=errors,
                                       non_verifiees=non_verifiees)

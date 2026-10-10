@@ -61,47 +61,50 @@ class JointConvention:
     negative_label:  str
     anatomical_note: str
     # VÉRIFIÉE par la suite S2 (mesure en simulation, pas raisonnement).
-    # Par défaut True : toute la table du 23 DOF a été validée, 23/23.
-    # Une entrée non vérifiée porte un signe PROVISOIRE : le HAL la
-    # tolère en simulation, avec avertissement, et la REFUSE sur un vrai
-    # robot — on ne commande jamais un moteur réel dont on ignore le sens.
-    verifiee:        bool = True
+    # Par défaut FALSE (audit du 2026-10-10) : une entrée ajoutée à la main
+    # sans mesure ne doit pas pouvoir passer pour vérifiée — c'est au
+    # contraire « vérifiée » qui doit être écrit, entrée par entrée, comme
+    # pour les 23/23 du 23 DOF ci-dessous. Une entrée non vérifiée porte un
+    # signe PROVISOIRE : le HAL la tolère en simulation, avec avertissement,
+    # et la REFUSE sur un vrai robot — on ne commande jamais un moteur réel
+    # dont on ignore le sens.
+    verifiee:        bool = False
 
 
 G1_JOINT_CONVENTIONS: dict[str, JointConvention] = {
 
     # ── Jambe gauche ─────────────────────────────────────────────
-    "left_hip_roll_joint":    JointConvention("left_hip_roll_joint",    +1.0, 0.0, "abduction",          "adduction",           "Naturel"),
-    "left_hip_yaw_joint":     JointConvention("left_hip_yaw_joint",     +1.0, 0.0, "rotation_interne",    "rotation_externe",    "Naturel"),
-    "left_hip_pitch_joint":   JointConvention("left_hip_pitch_joint",   +1.0, 0.0, "flexion",             "extension",           "Naturel"),
-    "left_knee_joint":        JointConvention("left_knee_joint",        +1.0, 0.0, "flexion",             "extension",           "Naturel"),
-    "left_ankle_pitch_joint": JointConvention("left_ankle_pitch_joint", +1.0, 0.0, "dorsiflexion",        "flexion_plantaire",   "Naturel"),
-    "left_ankle_roll_joint":  JointConvention("left_ankle_roll_joint",  +1.0, 0.0, "eversion",            "inversion",           "Naturel"),
+    "left_hip_roll_joint":    JointConvention("left_hip_roll_joint",    +1.0, 0.0, "abduction",          "adduction",           "Naturel", verifiee=True),
+    "left_hip_yaw_joint":     JointConvention("left_hip_yaw_joint",     +1.0, 0.0, "rotation_interne",    "rotation_externe",    "Naturel", verifiee=True),
+    "left_hip_pitch_joint":   JointConvention("left_hip_pitch_joint",   +1.0, 0.0, "flexion",             "extension",           "Naturel", verifiee=True),
+    "left_knee_joint":        JointConvention("left_knee_joint",        +1.0, 0.0, "flexion",             "extension",           "Naturel", verifiee=True),
+    "left_ankle_pitch_joint": JointConvention("left_ankle_pitch_joint", +1.0, 0.0, "dorsiflexion",        "flexion_plantaire",   "Naturel", verifiee=True),
+    "left_ankle_roll_joint":  JointConvention("left_ankle_roll_joint",  +1.0, 0.0, "eversion",            "inversion",           "Naturel", verifiee=True),
 
     # ── Jambe droite — inversions ─────────────────────────────────
-    "right_hip_roll_joint":    JointConvention("right_hip_roll_joint",    -1.0, 0.0, "abduction",         "adduction",           "INVERSION G1"),
-    "right_hip_yaw_joint":     JointConvention("right_hip_yaw_joint",     -1.0, 0.0, "rotation_interne",  "rotation_externe",    "INVERSION G1"),
-    "right_hip_pitch_joint":   JointConvention("right_hip_pitch_joint",   -1.0, 0.0, "flexion",           "extension",           "INVERSION G1 CRITIQUE"),
-    "right_knee_joint":        JointConvention("right_knee_joint",        -1.0, 0.0, "flexion",           "extension",           "INVERSION G1 — bug historique"),
-    "right_ankle_pitch_joint": JointConvention("right_ankle_pitch_joint", -1.0, 0.0, "dorsiflexion",      "flexion_plantaire",   "INVERSION G1"),
-    "right_ankle_roll_joint":  JointConvention("right_ankle_roll_joint",  -1.0, 0.0, "eversion",          "inversion",           "INVERSION G1"),
+    "right_hip_roll_joint":    JointConvention("right_hip_roll_joint",    -1.0, 0.0, "abduction",         "adduction",           "INVERSION G1", verifiee=True),
+    "right_hip_yaw_joint":     JointConvention("right_hip_yaw_joint",     -1.0, 0.0, "rotation_interne",  "rotation_externe",    "INVERSION G1", verifiee=True),
+    "right_hip_pitch_joint":   JointConvention("right_hip_pitch_joint",   -1.0, 0.0, "flexion",           "extension",           "INVERSION G1 CRITIQUE", verifiee=True),
+    "right_knee_joint":        JointConvention("right_knee_joint",        -1.0, 0.0, "flexion",           "extension",           "INVERSION G1 — bug historique", verifiee=True),
+    "right_ankle_pitch_joint": JointConvention("right_ankle_pitch_joint", -1.0, 0.0, "dorsiflexion",      "flexion_plantaire",   "INVERSION G1", verifiee=True),
+    "right_ankle_roll_joint":  JointConvention("right_ankle_roll_joint",  -1.0, 0.0, "eversion",          "inversion",           "INVERSION G1", verifiee=True),
 
     # ── Torse — un seul joint dans la variante 23dof officielle ───
-    "waist_yaw_joint": JointConvention("waist_yaw_joint", +1.0, 0.0, "rotation_gauche", "rotation_droite", "Naturel"),
+    "waist_yaw_joint": JointConvention("waist_yaw_joint", +1.0, 0.0, "rotation_gauche", "rotation_droite", "Naturel", verifiee=True),
 
     # ── Bras gauche ───────────────────────────────────────────────
-    "left_shoulder_pitch_joint": JointConvention("left_shoulder_pitch_joint", +1.0, 0.0, "flexion_anterieure", "extension",         "Naturel"),
-    "left_shoulder_roll_joint":  JointConvention("left_shoulder_roll_joint",  +1.0, 0.0, "abduction",          "adduction",         "Naturel"),
-    "left_shoulder_yaw_joint":   JointConvention("left_shoulder_yaw_joint",   +1.0, 0.0, "rotation_externe",   "rotation_interne",  "Naturel"),
-    "left_elbow_joint":          JointConvention("left_elbow_joint",          +1.0, 0.0, "flexion",            "extension",         "Naturel"),
-    "left_wrist_roll_joint":     JointConvention("left_wrist_roll_joint",     +1.0, 0.0, "pronation",          "supination",        "Naturel"),
+    "left_shoulder_pitch_joint": JointConvention("left_shoulder_pitch_joint", +1.0, 0.0, "flexion_anterieure", "extension",         "Naturel", verifiee=True),
+    "left_shoulder_roll_joint":  JointConvention("left_shoulder_roll_joint",  +1.0, 0.0, "abduction",          "adduction",         "Naturel", verifiee=True),
+    "left_shoulder_yaw_joint":   JointConvention("left_shoulder_yaw_joint",   +1.0, 0.0, "rotation_externe",   "rotation_interne",  "Naturel", verifiee=True),
+    "left_elbow_joint":          JointConvention("left_elbow_joint",          +1.0, 0.0, "flexion",            "extension",         "Naturel", verifiee=True),
+    "left_wrist_roll_joint":     JointConvention("left_wrist_roll_joint",     +1.0, 0.0, "pronation",          "supination",        "Naturel", verifiee=True),
 
     # ── Bras droit — inversions partielles ───────────────────────
-    "right_shoulder_pitch_joint": JointConvention("right_shoulder_pitch_joint", +1.0, 0.0, "flexion_anterieure", "extension",        "Même convention gauche"),
-    "right_shoulder_roll_joint":  JointConvention("right_shoulder_roll_joint",  -1.0, 0.0, "abduction",          "adduction",        "INVERSION G1"),
-    "right_shoulder_yaw_joint":   JointConvention("right_shoulder_yaw_joint",   -1.0, 0.0, "rotation_externe",   "rotation_interne", "INVERSION G1"),
-    "right_elbow_joint":          JointConvention("right_elbow_joint",          +1.0, 0.0, "flexion",            "extension",        "Naturel"),
-    "right_wrist_roll_joint":     JointConvention("right_wrist_roll_joint",     -1.0, 0.0, "pronation",          "supination",       "INVERSION G1"),
+    "right_shoulder_pitch_joint": JointConvention("right_shoulder_pitch_joint", +1.0, 0.0, "flexion_anterieure", "extension",        "Même convention gauche", verifiee=True),
+    "right_shoulder_roll_joint":  JointConvention("right_shoulder_roll_joint",  -1.0, 0.0, "abduction",          "adduction",        "INVERSION G1", verifiee=True),
+    "right_shoulder_yaw_joint":   JointConvention("right_shoulder_yaw_joint",   -1.0, 0.0, "rotation_externe",   "rotation_interne", "INVERSION G1", verifiee=True),
+    "right_elbow_joint":          JointConvention("right_elbow_joint",          +1.0, 0.0, "flexion",            "extension",        "Naturel", verifiee=True),
+    "right_wrist_roll_joint":     JointConvention("right_wrist_roll_joint",     -1.0, 0.0, "pronation",          "supination",       "INVERSION G1", verifiee=True),
 }
 
 
