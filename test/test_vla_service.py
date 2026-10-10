@@ -169,9 +169,12 @@ s.demarrer_mission("x")
 tourner(s, h, 6)
 fige = dict(bras)
 arret["v"] = True
+halts_avant, vitesses_avant = loco.halts, len(loco.vitesses)
 tourner(s, h, 10)
 check("arrêt actif : état GEL, bras inchangés, aucune nouvelle inférence", s.etat is EtatVLA.GEL
       and bras == fige and len(c.appels) == 2 and s.stats["gels"] == 10)
+check("pendant le gel : base à l'arrêt (halt à chaque tick), aucune vitesse proposée",
+      loco.halts == halts_avant + 10 and len(loco.vitesses) == vitesses_avant)
 arret["v"] = False
 tourner(s, h, 3)
 check("fin de l'arrêt : le geste reprend", s.etat is EtatVLA.ACTIF and bras != fige)

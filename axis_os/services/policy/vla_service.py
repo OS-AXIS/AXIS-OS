@@ -29,7 +29,10 @@ TROIS GARANTIES, chacune testée (test/test_vla_service.py) :
    l'autre sans que personne ne l'ait décidé.
 3. ARRÊT DE SÉCURITÉ. Si `arret_securite()` est vrai, les bras sont FIGÉS (pas
    relâchés), comme le fait ManipulationService : un humain assez proche pour
-   arrêter la marche l'est assez pour qu'un bras en mouvement le heurte.
+   arrêter la marche l'est assez pour qu'un bras en mouvement le heurte. La
+   base reçoit halt() à chaque tick du gel (audit du 2026-10-10) : jusque-là,
+   seul le gardien la tenait à zéro ; désormais le VLA retire aussi sa propre
+   consigne, et aucune vitesse décidée avant le gel ne lui survit.
 
 UNE ERREUR D'INFÉRENCE ne plante pas la boucle de commande : la dernière action
 reste valable jusqu'à son échéance ; `defauts_max` erreurs d'affilée -> DÉFAUT
@@ -203,6 +206,10 @@ class VLAService(IService):
             self.etat = EtatVLA.GEL
             self.stats["gels"] += 1
             self._t_infer = None          # à la reprise : nouvelle décision, pas la suite d'un chunk
+            # Base à l'arrêt EN ÉQUILIBRE, par le VLA lui-même : défense en
+            # profondeur (le gardien met déjà la vitesse à zéro), et la
+            # dernière vitesse proposée ne survit pas au gel.
+            self._loco.halt()
             return ServiceResult(ok=True, value=self.etat,
                                  reason="bras figés : arrêt de sécurité en cours")
         if self._t_infer is None or t - self._t_infer >= self._intervalle - 1e-9:
