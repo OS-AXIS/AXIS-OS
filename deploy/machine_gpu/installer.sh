@@ -22,6 +22,8 @@ DEPOT="$HOME/AXIS-OS"
 CACHE="$HOME/docker/isaac-sim"
 etape() { printf '\n\033[1;34m== %s ==\033[0m\n' "$*"; }
 # sudo partout : l'ajout au groupe docker ne vaut qu'à la session suivante.
+# (Gardé à l'audit du 2026-10-10 : sur une VM Vast.ai neuve, docker sans sudo
+# échoue tant qu'on ne s'est pas reconnecté.)
 dans() { sudo docker exec "$CONTENEUR" "$@"; }
 dans_root() { sudo docker exec -u root "$CONTENEUR" "$@"; }
 
@@ -64,6 +66,11 @@ while pgrep -f unattended-upgr >/dev/null 2>&1 \
   echo "  mise à jour automatique d'Ubuntu en cours — attente (10 s)…"
   sleep 10
 done
+# get.docker.com GARDÉ, en connaissance de cause (audit du 2026-10-10) :
+# c'est le script d'installation OFFICIEL de Docker, en HTTPS, qui configure
+# le dépôt apt signé de Docker ; il ne publie ni version figée ni empreinte,
+# donc on ne peut pas le vérifier comme celui de uv. Le docker.io d'Ubuntu
+# 22.04 serait l'autre voie, mais ce n'est pas celle validée sur Vast.ai.
 if ! command -v docker >/dev/null; then
   curl -fsSL https://get.docker.com | sudo sh
 fi
@@ -107,6 +114,11 @@ mkdir -p "$CACHE"/{main,computecache,logs,data,pkg} "$HOME/videos"
 sudo chown -R 1234:1234 "$CACHE" 2>/dev/null || true
 if ! sudo docker ps --format '{{.Names}}' | grep -qx "$CONTENEUR"; then
   sudo docker rm -f "$CONTENEUR" 2>/dev/null || true
+  # --network=host GARDÉ : le test T1 joint le serveur GR00T, lancé HORS du
+  # conteneur, sur 127.0.0.1:5555, et le suivi en direct (127.0.0.1:8080) est
+  # atteint par le tunnel SSH de la machine. Contrepartie : tout port ouvert
+  # dans le conteneur l'est sur la machine — nos serveurs n'écoutent que sur
+  # 127.0.0.1 ; ne jamais en lancer un sur 0.0.0.0.
   sudo docker run -d --name "$CONTENEUR" --gpus all --network=host \
     -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
     -v "$CACHE/main:/isaac-sim/.cache:rw" \
@@ -145,6 +157,10 @@ etape "8/9 Python d'Isaac Sim : ONNX Runtime GPU, OWL-ViT"
 # PyTorch n'est PAS fourni dans le Python de l'image Isaac Sim 6.1 : sans
 # lui, OWL-ViT ne se charge pas (« OwlViTForObjectDetection requires the
 # PyTorch library »). Roues CUDA 12.8, compatibles avec les pilotes récents.
+# torch NON épinglé, volontairement : la bonne version dépend du pilote et de
+# CUDA de la carte louée (index cu128), et aucune version n'a été validée
+# nommément. La version installée est affichée juste après : c'est elle
+# qu'il faudra épingler une fois validée sur GPU.
 dans /isaac-sim/python.sh -c "import torch" 2>/dev/null \
   || dans_root /isaac-sim/python.sh -m pip install -q torch torchvision \
        --index-url https://download.pytorch.org/whl/cu128
@@ -156,8 +172,19 @@ dans /isaac-sim/python.sh -c "import torch; print('PyTorch', torch.__version__, 
 # perception en passant en 5.x — modèle chargé, inférence réussie, zéro
 # détection. Non épinglée ici, chaque nouvelle machine prenait la version du
 # jour, malgré l'épinglage de requirements.txt.
-dans_root /isaac-sim/python.sh -m pip install -q onnxruntime-gpu "transformers==5.17.0" pillow \
-  "imageio[ffmpeg]" imageio-ffmpeg
+# Versions épinglées quand c'est possible sans risque (audit du 2026-10-10) :
+#   - transformers, imageio, imageio-ffmpeg : versions exactes (Python 3.12
+#     d'Isaac Sim, paquets purement Python ou validés) ;
+#   - pillow : plancher de requirements.txt seulement — Isaac Sim fournit déjà
+#     le sien, une version exacte différente le remplacerait sous ses pieds ;
+#   - onnxruntime-gpu : NON épinglé, sa version doit suivre CUDA/cuDNN de la
+#     carte ; la version installée est affichée ci-dessous pour l'épingler
+#     une fois validée sur GPU.
+dans_root /isaac-sim/python.sh -m pip install -q onnxruntime-gpu "transformers==5.17.0" \
+  "pillow>=10.0.0" "imageio[ffmpeg]==2.37.4" "imageio-ffmpeg==0.6.0"
+dans /isaac-sim/python.sh -c "import onnxruntime, transformers, imageio; \
+print('Versions : onnxruntime', onnxruntime.__version__, '- transformers', transformers.__version__, \
+'- imageio', imageio.__version__)" || true
 # Pré-télécharge OWL-ViT (sinon au premier test)
 dans /isaac-sim/python.sh -c "from transformers import OwlViTProcessor, OwlViTForObjectDetection as M; \
 OwlViTProcessor.from_pretrained('google/owlvit-base-patch32'); M.from_pretrained('google/owlvit-base-patch32'); print('OWL-ViT prêt')"

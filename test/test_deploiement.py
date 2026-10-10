@@ -61,6 +61,48 @@ mentions = [m for i in installs for m in re.findall(r"transformers[^\s\"']*", i)
 check(f"installer.sh installe transformers=={v} ({mentions})",
       mentions == [f"transformers=={v}"])
 
+section("3 — uv : version épinglée, installeur vérifié avant exécution")
+
+ENTRAINER = (RACINE / "deploy/machine_gpu/entrainer_vla.sh").read_text(encoding="utf-8")
+tous = "\n".join(f.read_text(encoding="utf-8") for f in SCRIPTS)
+check("Plus de « astral.sh/uv/install.sh | sh » (version du jour, sans contrôle)",
+      "astral.sh/uv/install.sh" not in tous)
+v_uv = re.search(r'^UV_VERSION="(\d+\.\d+\.\d+)"', ENTRAINER, re.M)
+h_uv = re.search(r'^UV_INSTALLEUR_SHA256="([0-9a-f]{64})"', ENTRAINER, re.M)
+check(f"Version de uv épinglée ({v_uv.group(1) if v_uv else None})", v_uv is not None)
+check("Empreinte SHA-256 de l'installeur présente", h_uv is not None)
+check("L'installeur est VÉRIFIÉ (sha256sum -c) avant d'être exécuté",
+      ENTRAINER.find("sha256sum -c") != -1
+      and ENTRAINER.find("sha256sum -c") < ENTRAINER.find("sh /tmp/uv-installer.sh"))
+check("… et son URL porte la version épinglée",
+      "releases/download/$UV_VERSION/uv-installer.sh" in ENTRAINER)
+check("Aucun « curl … | sh » non commenté, hors get.docker.com (script officiel, gardé "
+      "et justifié)",
+      all("get.docker.com" in l for l in tous.splitlines()
+          if re.search(r"curl[^|#]*\|\s*(sudo\s+)?sh\b", l) and not l.lstrip().startswith("#")))
+check("get.docker.com : le pourquoi est écrit à côté",
+      "script d'installation OFFICIEL de Docker" in INSTALLER)
+
+section("4 — Paquets pip épinglés là où c'est possible sans casser")
+
+EVALUER = (RACINE / "deploy/machine_gpu/evaluer_vla.sh").read_text(encoding="utf-8")
+RECUPERER = (RACINE / "deploy/machine_gpu/recuperer_vla.sh").read_text(encoding="utf-8")
+for texte, nom, paquets in (
+        (EVALUER, "evaluer_vla.sh", ("pyzmq", "msgpack", "msgpack-numpy")),
+        (RECUPERER, "recuperer_vla.sh", ("pandas", "pyarrow", "imageio[ffmpeg]")),
+        (INSTALLER, "installer.sh", ("transformers", "imageio[ffmpeg]", "imageio-ffmpeg"))):
+    for paq in paquets:
+        check(f"{nom} : {paq} en version exacte",
+              re.search(rf'"{re.escape(paq)}==[\d.]+"', texte) is not None)
+check("recuperer_vla.sh : versions compatibles avec le Python 3.10 d'Ubuntu 22.04 "
+      "(pandas 2.x : la 3.x exige 3.11)", '"pandas==2.' in RECUPERER)
+check("installer.sh : pillow en plancher seulement (celui d'Isaac Sim n'est pas remplacé)",
+      '"pillow>=10.0.0"' in INSTALLER)
+check("installer.sh : torch et onnxruntime non épinglés, et le pourquoi est écrit",
+      "torch NON épinglé" in INSTALLER and "onnxruntime-gpu : NON épinglé" in INSTALLER)
+check("installer.sh : --network=host gardé, avec sa raison",
+      "--network=host GARDÉ" in INSTALLER and "--network=host" in INSTALLER)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

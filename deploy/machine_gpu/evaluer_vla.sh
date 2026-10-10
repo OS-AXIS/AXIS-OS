@@ -107,9 +107,11 @@ fi
 # paquets depuis l'environnement de GR00T, qui les a déjà : même Python 3.12.
 importe() { sudo docker exec "$CONTENEUR" /isaac-sim/python.sh -c \
   "import zmq, msgpack, msgpack_numpy" >/dev/null 2>&1; }
+# Versions épinglées (roues cp312 vérifiées sur PyPI, audit du 2026-10-10) ;
+# le repli par copie depuis GR00T, ci-dessous, reste tel quel.
 if ! importe; then
   sudo docker exec -u root "$CONTENEUR" /isaac-sim/python.sh -m pip install -q \
-    pyzmq msgpack msgpack-numpy >/dev/null 2>&1 || true
+    "pyzmq==27.1.0" "msgpack==1.2.1" "msgpack-numpy==0.4.8" >/dev/null 2>&1 || true
 fi
 if ! importe; then
   SP_GROOT=$(ls -d "$HOME"/Isaac-GR00T/.venv/lib/python3.12/site-packages)

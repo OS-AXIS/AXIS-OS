@@ -44,7 +44,22 @@ if [ ! -x /usr/local/cuda-12.8/bin/nvcc ]; then
 fi
 export CUDA_HOME=/usr/local/cuda-12.8
 export PATH="$CUDA_HOME/bin:$PATH"
-command -v uv >/dev/null || { curl -LsSf https://astral.sh/uv/install.sh | sh; }
+# uv : version ÉPINGLÉE et installeur VÉRIFIÉ avant exécution (audit du
+# 2026-10-10). « curl … | sh » exécutait la version du jour d'un script
+# téléchargé, sans contrôle : le contenu peut changer sans que ce dépôt bouge.
+# Ici, l'installeur de la version 0.12.19 (publiée le 2026-09-25), pris sur
+# la release GitHub d'astral-sh/uv, n'est lancé que si son empreinte SHA-256
+# est celle relevée à l'épinglage. Monter de version : changer les deux
+# lignes ensemble (sha256sum de l'installeur de la nouvelle version).
+UV_VERSION="0.12.19"
+UV_INSTALLEUR_SHA256="61b349611f1b6e1ba33645f30c36da5287df2609dd7af8605d96a031435eb35b"
+if ! command -v uv >/dev/null; then
+  curl -LsSf "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-installer.sh" \
+    -o /tmp/uv-installer.sh
+  echo "$UV_INSTALLEUR_SHA256  /tmp/uv-installer.sh" | sha256sum -c --quiet \
+    || { echo "ÉCHEC : installeur de uv $UV_VERSION altéré (empreinte différente) — non exécuté."; exit 1; }
+  sh /tmp/uv-installer.sh
+fi
 export PATH="$HOME/.local/bin:$PATH"
 if [ ! -d "$HOME/Isaac-GR00T" ]; then
   git clone --recurse-submodules https://github.com/NVIDIA/Isaac-GR00T "$HOME/Isaac-GR00T"
