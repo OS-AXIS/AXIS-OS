@@ -433,6 +433,15 @@ class G1LocomotionAdapter:
         if self._cap_ref is None:
             self._cap_ref = cap
         ecart = (self._cap_ref - cap + math.pi) % (2.0 * math.pi) - math.pi
+        if not math.isfinite(ecart):
+            # Orientation NON FINIE (centrale inertielle en défaut) : aucune
+            # correction. POURQUOI : le bornage ci-dessous transforme NaN en
+            # +rotation_max (min(m, nan) rend m) — le robot aurait pivoté à
+            # la rotation maximale sur une mesure invalide. Le cap de
+            # référence est oublié : il sera repris sur une mesure valide.
+            self._cap_ref = None
+            self.correction_cap = 0.0
+            return 0.0
         c = max(-self._rotation_max, min(self._rotation_max,
                                          self._gain_cap * ecart))
         self.correction_cap = c

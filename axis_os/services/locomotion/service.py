@@ -34,6 +34,7 @@ jamais un actionneur directement.
 """
 from __future__ import annotations
 
+import math
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -136,7 +137,7 @@ class LocomotionService(IService):
         self._twist_t: Optional[float] = None
         self.state = LocomotionState.STOPPED
         self.stats = {"ticks": 0, "stale": 0, "clamped": 0,
-                      "refused": 0, "falls": 0}
+                      "refused": 0, "falls": 0, "non_finies": 0}
 
     # ---- IService --------------------------------------------------------
 
@@ -173,6 +174,24 @@ class LocomotionService(IService):
         if self.state is not LocomotionState.RUNNING:
             return ServiceResult(ok=False,
                                  reason=f"service {self.state.name}")
+        # Consigne NON FINIE refusée, et le robot s'arrête en équilibre.
+        # POURQUOI (audit du 2026-10-10) : le bornage ci-dessous,
+        # max(-m, min(m, v)), transforme NaN en +m — min(m, nan) rend m,
+        # car toute comparaison avec NaN est fausse. Un ctx.walk(nan)
+        # d'une app, ou un connecteur VLA qui laisse passer un NaN,
+        # faisait marcher le robot à PLEINE VITESSE vers l'avant ; seul le
+        # gardien de proximité freinait, et seulement près d'un obstacle.
+        # Un infini n'a pas davantage de sens : refusé aussi, plutôt que
+        # ramené à la vitesse maximale. On remet la consigne à zéro (pas
+        # seulement « on ignore ») : la consigne précédente, peut-être
+        # rapide, ne doit pas continuer jusqu'à son échéance.
+        if not all(math.isfinite(v) for v in (vx, vy, wz)):
+            self._twist, self._twist_t = Twist(), self._clock()
+            self.stats["non_finies"] += 1
+            return ServiceResult(
+                ok=False,
+                reason=f"consigne non finie ({vx}, {vy}, {wz}) refusée — "
+                       f"arrêt en équilibre")
         m = self._adapter.max_twist
         c = Twist(max(-m.vx, min(m.vx, vx)),
                   max(-m.vy, min(m.vy, vy)),
