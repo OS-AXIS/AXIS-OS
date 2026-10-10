@@ -30,11 +30,28 @@ catalogue d'apps.
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import List, Optional
 
 from axis_os.hal.core.types import CameraFrame
 from axis_os.services.perception.service import Detection, IObjectDetector
+
+# POIDS ÉPINGLÉS (audit du 2026-10-10). Sans révision, from_pretrained
+# chargeait la dernière version publiée : le comportement de détection —
+# donc ce que le robot voit, et ce qu'il prend pour un obstacle ou un carton
+# — pouvait changer sans qu'une ligne d'AXIS-OS ne bouge, et un dépôt
+# compromis aurait été chargé tel quel. Révision : commit du 7 septembre
+# 2023 de google/owlvit-base-patch32, celui qui ajoute les poids au format
+# safetensors (relevé par le mainteneur sur huggingface.co). Même valeur
+# dans deploy/machine_gpu/installer.sh (pré-téléchargement), vérifiée par
+# test/test_deploiement.py. Changer de révision = revalider en simulation.
+MODELE_OWLVIT = "google/owlvit-base-patch32"
+OWLVIT_REVISION = "85fa9bec488a03a73b7f29206b1550551d0a7556"
+# Une révision épinglée est un hash de commit complet : un nom de branche
+# (« main ») ou d'étiquette peut être déplacé, il ne fige rien.
+_HASH_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_PAR_DEFAUT = object()
 
 # Requêtes par défaut quand l'appelant ne précise rien (describe_scene).
 # Volontairement génériques : ce sont des amorces, pas une liste fermée
@@ -55,11 +72,12 @@ class OwlViTDetector(IObjectDetector):
 
     def __init__(
         self,
-        model_name: str = "google/owlvit-base-patch32",
-        revision: Optional[str] = None,
+        model_name: str = MODELE_OWLVIT,
+        revision=_PAR_DEFAUT,
         threshold: float = 0.1,
         device: Optional[str] = None,
         max_detections: int = 20,
+        autoriser_non_epingle_SIMULATION: bool = False,
     ):
         """
         threshold : seuil de confiance. Bas par défaut (0.1) car les
@@ -68,18 +86,23 @@ class OwlViTDetector(IObjectDetector):
             détection. À régler sur des images réelles, jamais deviné.
         device : "cuda" si disponible, sinon "cpu". CPU fonctionne mais
             compte en secondes par image, pas en millisecondes.
-        revision : identifiant de commit Hugging Face des POIDS du modèle.
-            None = la dernière version publiée, donc un comportement de
-            détection qui peut changer sans qu'une ligne d'AXIS-OS ne
-            bouge — même risque que transformers non épinglé, côté
-            poids cette fois. À renseigner avec le hash de commit
-            relevé sur la page du modèle avant tout déploiement. Laissé
-            à None par défaut plutôt qu'inventé : un identifiant faux
-            ferait échouer le chargement, un identifiant absent le
-            laisse fonctionner en le signalant.
+        revision : hash de commit Hugging Face (40 caractères) des POIDS.
+            Par défaut : OWLVIT_REVISION pour le modèle par défaut ; un
+            autre modèle n'a PAS de révision par défaut (celle-ci ne lui
+            correspond pas) et doit en recevoir une. Sans révision
+            épinglée — None, nom de branche — load() REFUSE de charger.
+        autoriser_non_epingle_SIMULATION : lève ce refus, pour essayer
+            d'autres poids EN SIMULATION seulement ; un avertissement est
+            alors affiché à chaque chargement. Jamais sur un vrai robot.
+        Les poids sont toujours chargés au format safetensors
+        (use_safetensors=True) : un fichier .bin de PyTorch est un pickle,
+        qui peut exécuter du code au chargement.
         """
+        if revision is _PAR_DEFAUT:
+            revision = OWLVIT_REVISION if model_name == MODELE_OWLVIT else None
         self._model_name = model_name
         self._revision = revision
+        self._autoriser_non_epingle = autoriser_non_epingle_SIMULATION
         self._threshold = threshold
         self._device = device
         self._max_detections = max_detections
@@ -101,6 +124,16 @@ class OwlViTDetector(IObjectDetector):
         configuration sans payer le chargement."""
         if self._model is not None:
             return True
+        epingle = isinstance(self._revision, str) and bool(_HASH_COMMIT.match(self._revision))
+        if not epingle and not self._autoriser_non_epingle:
+            # Refus AVANT tout téléchargement : des poids non figés peuvent
+            # changer ce que voit le robot sans qu'AXIS-OS ne change.
+            self._load_error = (
+                f"poids NON épinglés (revision={self._revision!r}) — chargement "
+                f"refusé. Donner un hash de commit complet (40 caractères), ou "
+                f"autoriser_non_epingle_SIMULATION=True en simulation seulement.")
+            print(f"  [owlvit] {self._load_error}")
+            return False
         try:
             import torch
             from transformers import OwlViTForObjectDetection, OwlViTProcessor
@@ -118,8 +151,10 @@ class OwlViTDetector(IObjectDetector):
             kw = {"revision": self._revision} if self._revision else {}
             self._processor = OwlViTProcessor.from_pretrained(
                 self._model_name, **kw)
+            # use_safetensors=True : jamais le .bin (pickle) — si la révision
+            # n'a pas de safetensors, le chargement échoue, bruyamment.
             self._model = OwlViTForObjectDetection.from_pretrained(
-                self._model_name, **kw).to(self._device)
+                self._model_name, use_safetensors=True, **kw).to(self._device)
             self._model.eval()
         except Exception as exc:        # noqa: BLE001 — réseau, mémoire...
             self._load_error = f"chargement impossible : {exc}"
@@ -131,12 +166,13 @@ class OwlViTDetector(IObjectDetector):
             print("  [owlvit] AVERTISSEMENT : exécution sur CPU — compter "
                   "des SECONDES par image, pas des millisecondes. "
                   "Inutilisable dans une boucle de contrôle.")
-        print(f"  [owlvit] {self._model_name} chargé sur {self._device}")
-        if self._revision is None:
-            print("  [owlvit] AVERTISSEMENT : poids NON épinglés (revision=None) "
-                  "— la dernière version publiée a été chargée. Le "
-                  "comportement de détection peut changer sans modification "
-                  "d'AXIS-OS. Épingler avant tout déploiement.")
+        print(f"  [owlvit] {self._model_name} chargé sur {self._device} "
+              f"(révision {self._revision or 'NON ÉPINGLÉE'})")
+        if not epingle:
+            print("  [owlvit] AVERTISSEMENT (SIMULATION) : poids NON épinglés "
+                  f"(revision={self._revision!r}) — le comportement de détection "
+                  "peut changer sans modification d'AXIS-OS. Jamais sur un vrai "
+                  "robot.")
         return True
 
     @property

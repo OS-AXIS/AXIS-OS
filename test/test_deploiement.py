@@ -103,6 +103,19 @@ check("installer.sh : torch et onnxruntime non épinglés, et le pourquoi est é
 check("installer.sh : --network=host gardé, avec sa raison",
       "--network=host GARDÉ" in INSTALLER and "--network=host" in INSTALLER)
 
+section("5 — OWL-ViT : même révision épinglée au pré-téléchargement et au chargement")
+
+from axis_os.services.perception.owlvit_detector import OWLVIT_REVISION  # noqa: E402
+
+r_inst = re.search(r'^OWLVIT_REVISION="([0-9a-f]{40})"', INSTALLER, re.M)
+check(f"installer.sh épingle la révision ({r_inst.group(1)[:12] if r_inst else None}…)",
+      r_inst is not None)
+check("… identique à OWLVIT_REVISION du détecteur",
+      r_inst is not None and r_inst.group(1) == OWLVIT_REVISION)
+pre = INSTALLER[INSTALLER.find("Pré-télécharge OWL-ViT"):]
+check("Le pré-téléchargement passe la révision et use_safetensors=True",
+      "revision=r" in pre and "use_safetensors=True" in pre)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

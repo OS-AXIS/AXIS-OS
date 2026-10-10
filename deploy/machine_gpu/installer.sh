@@ -185,9 +185,15 @@ dans_root /isaac-sim/python.sh -m pip install -q onnxruntime-gpu "transformers==
 dans /isaac-sim/python.sh -c "import onnxruntime, transformers, imageio; \
 print('Versions : onnxruntime', onnxruntime.__version__, '- transformers', transformers.__version__, \
 '- imageio', imageio.__version__)" || true
-# Pré-télécharge OWL-ViT (sinon au premier test)
+# Pré-télécharge OWL-ViT (sinon au premier test), à la révision ÉPINGLÉE et
+# au format safetensors — exactement ce que charge OwlViTDetector
+# (OWLVIT_REVISION dans axis_os/services/perception/owlvit_detector.py ; même
+# valeur, vérifiée par test/test_deploiement.py). Sans révision, on
+# téléchargeait la version du jour, que le détecteur refuse désormais.
+OWLVIT_REVISION="85fa9bec488a03a73b7f29206b1550551d0a7556"
 dans /isaac-sim/python.sh -c "from transformers import OwlViTProcessor, OwlViTForObjectDetection as M; \
-OwlViTProcessor.from_pretrained('google/owlvit-base-patch32'); M.from_pretrained('google/owlvit-base-patch32'); print('OWL-ViT prêt')"
+r = '$OWLVIT_REVISION'; OwlViTProcessor.from_pretrained('google/owlvit-base-patch32', revision=r); \
+M.from_pretrained('google/owlvit-base-patch32', revision=r, use_safetensors=True); print('OWL-ViT prêt (révision', r, ')')"
 
 etape "9/9 Code AXIS-OS dans le conteneur"
 bash "$DEPOT/deploy/machine_gpu/copier_code.sh"

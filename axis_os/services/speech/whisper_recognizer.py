@@ -38,7 +38,9 @@ class WhisperRecognizer(ISpeechRecognizer):
         """
         revision : identifiant de commit des poids. None = dernière
             version publiée, donc un comportement qui peut changer sans
-            qu'AXIS-OS bouge. Même règle que pour OWL-ViT.
+            qu'AXIS-OS bouge. (OWL-ViT, lui, est épinglé et refuse de
+            charger sans révision depuis l'audit du 2026-10-10 — voir
+            owlvit_detector.OWLVIT_REVISION ; Whisper reste à épingler.)
         """
         self._model_name = model_name
         self._language = language

@@ -162,8 +162,11 @@ de montage, orientation de la tête —, jamais d'une valeur supposée.
 - **Rendu en 320×240** : DLSS divise la résolution demandée par deux.
   Sans effet sur la plomberie ; à régler avant de juger la qualité de
   détection.
-- **Poids OWL-ViT non épinglés** (`revision=None`) — à renseigner avant
-  tout déploiement.
+- **Poids OWL-ViT épinglés** depuis l'audit du 2026-10-10 :
+  `OWLVIT_REVISION` (commit 85fa9bec… de google/owlvit-base-patch32,
+  poids safetensors) ; le détecteur refuse de charger sans révision, sauf
+  autorisation explicite en simulation. À revalider en simulation à
+  chaque changement de révision.
 - **Simulation ≠ réel** : textures propres, éclairage parfait, aucun
   bruit de capteur. Ce test valide la chaîne, pas la reconnaissance sur
   images réelles.
