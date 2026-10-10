@@ -1,5 +1,10 @@
 # AXIS-OS — Renforcement futur du sandboxing (pistes, non implémenté)
 
+> **Constat vérifié et plan ordonné : voir `docs/isolation_apps.md`**
+> (audit du 2026-10-10). En résumé : aujourd'hui, une app hostile peut
+> commander un actionneur sans passer par la HAL (processus créé par
+> `fork`, même utilisateur, réseau non filtré).
+
 **Statut : NON CODÉ.** Ce document liste des pistes concrètes pour
 renforcer l'isolation des apps du Play Store au-delà de ce
 qu'offre `multiprocessing` aujourd'hui (`axis_os/store/runtime/sandbox.py`).
