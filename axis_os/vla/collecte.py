@@ -14,7 +14,20 @@ geste à apprendre, en boucle :
     PRENDRE   serrage, levage, confirmation           -> fin de l'ÉPISODE
     POSER     il repose le carton sur la table (posture de port : le fond
               du carton revient à hauteur du plateau) ;
-    RETOUR    recul vers le poste de prise ; l'opérateur retire le carton.
+    RETOUR    l'opérateur REPREND le carton, PUIS le robot recule vers le
+              poste de prise.
+
+POURQUOI L'OPÉRATEUR REPREND LE CARTON AVANT LE RECUL (audit du 2026-10-10,
+constaté sur GPU) : reposé sans poste de dépose, le carton dépassait parfois
+du bord de la table (obstacle vu à y = 1.95, table à y ≥ 2.00). Collé à la
+table, le robot le couvrait de son volume de port ; au recul, ce bout de
+carton sortait du volume, à moins de d_arret : le gardien arrêtait le robot
+— à raison, il ne peut pas savoir que ce n'est pas une main — et le robot,
+immobile, ne pouvait plus s'en éloigner : bloqué jusqu'au délai du retour.
+Même blocage avec un carton tombé au sol après une prise ratée. Le gardien,
+sa marge et ses délais ne changent pas : c'est le banc de collecte qui ne
+laisse plus d'obstacle derrière lui. Les épisodes enregistrés (approche et
+prise) sont inchangés : ils finissent avant.
 
 Un épisode enregistré = de l'ordre d'approche jusqu'à la prise confirmée
 (ou ratée). Les ratés sont gardés dans le journal, et écartés à la
@@ -174,11 +187,14 @@ class CollecteurPrises:
     def _etat_retour(self) -> None:
         if self._entree:
             self._entree = False
+            # Carton repris AVANT le recul — voir l'en-tête : un carton qui
+            # dépasse de la table ou gît au sol bloquait le robot jusqu'au
+            # délai du retour.
+            self._retirer()
             self.f.aller_au_poste(self.poste)
             return
         e = self.f.navigation()
         if e in ("ARRIVE", "ECHEC") or self._duree() > self.delai_s:
             if e != "ARRIVE":
                 self._log(f"retour au poste de prise : {e} — on continue")
-            self._retirer()
             self._aller("PLACER")

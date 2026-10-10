@@ -17,7 +17,19 @@
             LIBERER  reflexes : reposer le carton ; vla : bras ramenés pas à pas
                      à la posture de départ (d'abord sans ouvrir, puis en
                      ouvrant) ;
-            RETOUR   retour au poste de prise, l'opérateur retire le carton.
+            RETOUR   l'opérateur REPREND le carton, PUIS retour au poste de
+                     prise. Un carton tombé au sol pendant l'essai ou la
+                     libération est ramassé AUSSITÔT.
+
+POURQUOI REPRENDRE LE CARTON AVANT LE RECUL (audit du 2026-10-10, constaté sur
+GPU) : reposé sans poste de dépose, le carton dépassait parfois du bord de la
+table ; un carton tombé au sol restait près du robot. Dans les deux cas, le
+gardien voyait un obstacle inexpliqué à moins de d_arret et arrêtait le robot,
+qui ne pouvait plus s'en éloigner : bloqué jusqu'au délai du retour (60 s), et
+même indéfiniment en mode vla (les bras sont figés pendant l'arrêt de
+sécurité, le délai de LIBERER suspendu). Le gardien ne change pas : c'est le
+banc qui ne laisse plus d'obstacle derrière lui. Les résultats des essais sont
+inchangés : ils sont notés avant.
 
 RÉUSSITE, le même critère physique pour les deux modes : le carton a QUITTÉ la
 table, entre les mains (`carton_souleve()`), pendant `tenue_s` d'affilée. Pour
@@ -208,6 +220,10 @@ class EvaluateurPrises:
     # ---- ESSAI -------------------------------------------------------------
     def _etat_essai(self) -> None:
         if self._au_sol():
+            # Ramassé AUSSITÔT (voir l'en-tête) : laissé au sol, il tenait le
+            # robot à l'arrêt de sécurité, bras figés, sans fin.
+            self._retirer()
+            self._log("carton tombé au sol — ramassé par l'opérateur")
             self._finir(False, "carton tombé au sol")
             return
         if self._horloge() - self._t_essai > self.duree_max_s:
@@ -284,6 +300,14 @@ class EvaluateurPrises:
 
     # ---- LIBERER -------------------------------------------------------------
     def _etat_liberer(self) -> None:
+        if self._au_sol():
+            # Lâché au sol PENDANT la libération (ouverture des mains, après un
+            # essai raté) : ramassé aussitôt. Trouvé à la revue de l'audit du
+            # 2026-10-10 : sinon le gardien arrêtait le robot, les bras restaient
+            # figés et le délai de libération suspendu — évaluation sans fin.
+            # Le gel des bras lui-même ne change pas.
+            self._retirer()
+            self._log("carton tombé au sol pendant la libération — ramassé par l'opérateur")
         if self.mode in MODES_VLA:
             self._liberer_vla()
         else:
@@ -339,13 +363,14 @@ class EvaluateurPrises:
     def _etat_retour(self) -> None:
         if self._entree:
             self._entree = False
+            # Carton repris AVANT le recul — voir l'en-tête.
+            self._retirer()
             self.f.aller_au_poste(self.poste)
             return
         e = self.f.navigation()
         if e in ("ARRIVE", "ECHEC") or self._duree() > 60.0:
             if e != "ARRIVE":
                 self._log(f"retour au poste de prise : {e} — on continue")
-            self._retirer()
             self.k += 1
             self._aller("PLACER")
 
