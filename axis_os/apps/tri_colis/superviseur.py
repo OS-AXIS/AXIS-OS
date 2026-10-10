@@ -24,6 +24,12 @@ d'actions, de couleurs et de postes connus avant d'être appliqué.
 
 Le rapport est écrit par du code à partir du bilan, pas par le modèle :
 les chiffres présentés à un opérateur ne doivent pas pouvoir être inventés.
+
+TAILLES BORNÉES (audit du 2026-10-10) : une consigne de plus de
+LONGUEUR_MAX_CONSIGNE caractères est refusée sans être transmise au modèle
+(coût, et surface offerte à l'injection d'instructions), et tout texte venu
+de l'interpréteur — donc potentiellement fabriqué — est tronqué avant d'être
+recopié dans un refus ou dans le journal.
 """
 from __future__ import annotations
 
@@ -41,6 +47,18 @@ ACTIONS = ("regle", "suspendre", "reprendre", "retirer_regle", "rapport",
 MOTIF_HORS_PERIMETRE = (
     "je ne commande ni le mouvement ni la sécurité : la vitesse et les "
     "distances de sécurité sont fixées par l'OS, pas par l'app ni par moi")
+
+# Une consigne d'opérateur tient en une phrase ; 500 caractères laissent
+# largement la place à plusieurs ordres (« et », « puis »).
+LONGUEUR_MAX_CONSIGNE = 500
+# Texte de l'interpréteur recopié dans un refus ou le journal : au plus.
+LONGUEUR_MAX_ECHO = 60
+
+
+def _court(x: Any, n: int = LONGUEUR_MAX_ECHO) -> str:
+    """Texte non fiable, tronqué et sur une seule ligne, pour un message."""
+    t = " ".join(str(x).split())
+    return t if len(t) <= n else t[:n - 1] + "…"
 
 
 @dataclass(frozen=True)
@@ -187,11 +205,21 @@ class Superviseur:
                 "suspendues": list(self._tri.bilan.couleurs_suspendues)}
 
     def ordonner(self, texte: str) -> Reponse:
+        if not isinstance(texte, str) or len(texte) > LONGUEUR_MAX_CONSIGNE:
+            # Refusée AVANT l'interpréteur : rien n'est envoyé au modèle.
+            longueur = len(texte) if isinstance(texte, str) else "?"
+            rep = Reponse(refus=[f"consigne trop longue ou illisible ({longueur} "
+                                 f"caractères, maximum {LONGUEUR_MAX_CONSIGNE})"])
+            rep.message = f"Refusé : {rep.refus[0]}."
+            self.historique.append((_court(texte, 200), rep))
+            self._tri._log(f"superviseur : {rep.message}")
+            return rep
         ctx = self._contexte()
         try:
             brut = self.interpreteur.interpreter(texte, ctx)
         except Exception as e:      # modèle injoignable : on ne reste pas muet
-            self._tri._log(f"superviseur : interpréteur indisponible ({e!r}), secours")
+            self._tri._log(f"superviseur : interpréteur indisponible "
+                           f"({_court(repr(e), 120)}), secours")
             brut = self.secours.interpreter(texte, ctx)
         rep = Reponse()
         if isinstance(brut, dict):
@@ -220,8 +248,8 @@ class Superviseur:
         if not isinstance(o, dict):
             return None, "réponse de l'interpréteur mal formée"
         action = o.get("action")
-        if action not in ACTIONS:
-            return None, f"action inconnue « {action} »"
+        if not isinstance(action, str) or action not in ACTIONS:
+            return None, f"action inconnue « {_court(action)} »"
         if action == "hors_perimetre":
             return None, MOTIF_HORS_PERIMETRE
         if action == "incompris":
@@ -230,12 +258,12 @@ class Superviseur:
             return Ordre("rapport"), None
         couleur = o.get("couleur")
         if not isinstance(couleur, str) or couleur not in self.couleurs:
-            return None, f"couleur inconnue « {couleur} »"
+            return None, f"couleur inconnue « {_court(couleur)} »"
         if action == "regle":
             poste = o.get("poste")
             poste = poste.upper() if isinstance(poste, str) else None
             if poste not in self.postes:
-                return None, f"poste inconnu « {o.get('poste')} »"
+                return None, f"poste inconnu « {_court(o.get('poste'))} »"
             if poste == self._tri.cfg.poste_prise.upper():
                 return None, "le poste de prise ne peut pas être une destination"
             return Ordre("regle", couleur, poste), None
