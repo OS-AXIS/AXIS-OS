@@ -14,3 +14,47 @@ logs/*
 !logs/.gitkeep
 # Mémoire persistante des apps (axis_os/services/memory, ./memory_store).
 memory_store/
+
+# Secrets locaux (jetons Hugging Face, GitHub…). Ils ne doivent jamais
+# entrer dans le dépôt, même par erreur : un .env.exemple sans valeur réelle
+# reste autorisé pour documenter les variables attendues.
+.env
+.env.*
+!.env.exemple
+*.pem
+*.key
+
+# Vidéos des démonstrations en simulation (deploy/machine_gpu/recuperer_t1.sh
+# les rapatrie) : trop lourdes pour git, elles se publient à part.
+videos/
+*.mp4
+*.webm
+*.mkv
+*.avi
+*.mov
+
+# Poids de modèles et politiques (OWL-ViT, Whisper, GR00T, politique de
+# marche Unitree…). Ils se téléchargent depuis leur source officielle, sous
+# leur propre licence (voir THIRD_PARTY.md) : le dépôt n'en redistribue aucun.
+policies/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.gguf
+*.tar
+*.tar.part*
+
+# Environnements Python et fichiers de construction.
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Fichiers d'éditeur et de système.
+.idea/
+.vscode/
+.DS_Store
