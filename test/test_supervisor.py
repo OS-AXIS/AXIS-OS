@@ -38,6 +38,33 @@ def check(label: str, condition: bool) -> bool:
     return condition
 
 
+def geler(wd) -> threading.Event:
+    """Gèle RÉELLEMENT le Watchdog : son thread reste vivant, mais plus aucun
+    cycle ne se termine — exactement un deadlock. Rend l'événement qui le
+    libère (à poser avant wd.stop()).
+
+    POURQUOI (audit du 2026-10-10) : la version précédente reculait une fois
+    _last_cycle_monotonic pendant que le Watchdog continuait de tourner ; son
+    cycle suivant (toutes les 20 ms) remettait la valeur à jour, et le
+    Supervisor ne voyait le « gel » que s'il vérifiait dans cette fenêtre.
+    Test instable (1 échec sur 12 constaté sur le commit c4ccaae), pour une
+    raison de minutage du test, pas du Supervisor."""
+    liberer = threading.Event()
+    wd._run_cycle = lambda: liberer.wait()      # le cycle en cours ne finit plus
+    return liberer
+
+
+def attendre(condition, delai_s: float = 5.0) -> bool:
+    """Sonde la condition jusqu'au délai, au lieu d'un sommeil fixe : une
+    machine chargée (suite lancée en parallèle) peut retarder les threads."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < delai_s:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return condition()
+
+
 def make_stack(robot_id: str, check_interval_s=0.1, unresponsive_threshold_s=0.5, grace_period_s=0.3):
     robot = UnitreeG1HAL(robot_id)
     robot.initialize_all()
@@ -70,11 +97,10 @@ time.sleep(0.5)
 # (is_alive() == True) mais ne progresse plus — exactement le cas que
 # le try/except interne du Watchdog ne peut pas attraper, puisqu'un
 # deadlock ne lève jamais d'exception.
-wd2._last_cycle_monotonic = time.monotonic() - 10.0
-
 triggered_alerts = []
 sup2.subscribe(lambda a: triggered_alerts.append(a))
-time.sleep(1.0)
+liberer2 = geler(wd2)
+attendre(lambda: sup2.has_triggered and len(triggered_alerts) >= 1)
 
 check("Supervisor a détecté le Watchdog gelé et déclenché la réponse",
       sup2.has_triggered)
@@ -89,25 +115,24 @@ check("wd.estop_fired reste False — DÉCOUVERTE IMPORTANTE documentée : "
 check("Une alerte SupervisorAlert a bien été émise aux abonnés",
       len(triggered_alerts) >= 1 and triggered_alerts[0].kind == "WATCHDOG_UNRESPONSIVE")
 
-sup2.stop(); wd2.stop(); robot2.shutdown_all()
+liberer2.set(); sup2.stop(); wd2.stop(); robot2.shutdown_all()
 
 section("3 — Idempotence : un deuxième gel ne déclenche pas deux fois")
 robot3, wd3, sup3 = make_stack("g1_idempotent")
 wd3.start(); sup3.start()
 time.sleep(0.5)
-wd3._last_cycle_monotonic = time.monotonic() - 10.0
-time.sleep(0.8)
-first_trigger_state = sup3.has_triggered
+liberer3 = geler(wd3)
+first_trigger_state = attendre(lambda: sup3.has_triggered)
 
 # Un deuxième "gel" ne doit pas re-déclencher une deuxième réponse —
-# même principe que _trigger_estop dans WatchdogSystem.
-wd3._last_cycle_monotonic = time.monotonic() - 10.0
+# même principe que _trigger_estop dans WatchdogSystem. Le Watchdog reste
+# gelé : le Supervisor continue de le constater à chaque vérification.
 time.sleep(0.8)
 
 check("Premier déclenchement bien enregistré", first_trigger_state)
 check("État reste cohérent après un second gel (idempotent, pas de "
       "double-déclenchement incohérent)", sup3.has_triggered)
-sup3.stop(); wd3.stop(); robot3.shutdown_all()
+liberer3.set(); sup3.stop(); wd3.stop(); robot3.shutdown_all()
 
 section("4 — Grace period : pas de faux positif juste après le démarrage")
 robot4, wd4, sup4 = make_stack("g1_grace", grace_period_s=2.0)
@@ -130,16 +155,15 @@ def bad_subscriber(alert):
 sup5.subscribe(bad_subscriber)
 wd5.start(); sup5.start()
 time.sleep(0.5)
-wd5._last_cycle_monotonic = time.monotonic() - 10.0
+liberer5 = geler(wd5)
 
 try:
-    time.sleep(1.0)
     check("Supervisor reste stable malgré un abonné qui lève une "
-          "exception à chaque alerte", sup5.has_triggered)
+          "exception à chaque alerte", attendre(lambda: sup5.has_triggered))
 except Exception as e:
     check(f"Supervisor reste stable malgré un abonné cassé ({e})", False)
 
-sup5.stop(); wd5.stop(); robot5.shutdown_all()
+liberer5.set(); sup5.stop(); wd5.stop(); robot5.shutdown_all()
 
 # ══════════════════════════════════════════════════════════════════
 
