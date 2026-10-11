@@ -159,7 +159,7 @@ Manques identifiés, non traités :
 
 ## Scène Isaac Sim T1 — prête, PAS ENCORE EXÉCUTÉE
 
-`test_isaac_t1_tri_usine.py` branche sans les modifier les services
+`sim/validation/test_isaac_t1_tri_usine.py` branche sans les modifier les services
 répétés sur CPU, sur la même disposition (`scene_demo.py`) : tables à
 plateau fin et pied en retrait (leçon W3), stock de cartons colorés hors
 site, silhouettes cinématiques de personnes, lidar simulé par rayons

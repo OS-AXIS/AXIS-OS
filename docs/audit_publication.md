@@ -87,7 +87,7 @@ de manipulation). C'est le nom sous lequel le projet est signé : il reste.
   aucun nom d'hôte, aucun nom. **Rien de sensible** ; ils ne sont plus
   suivis depuis le 2026-10-10 (`.gitignore`).
 - **`diag_*.py`, `video_*.py`** — aucun chemin absolu, aucune IP, aucun hôte,
-  aucun identifiant. `video_v2_voix.py` télécharge à l'exécution le modèle
+  aucun identifiant. `sim/video/video_v2_voix.py` télécharge à l'exécution le modèle
   de synthèse vocale `facebook/mms-tts-fra`, dont la licence interdit
   l'usage commercial : c'est signalé dans `THIRD_PARTY.md`, le modèle n'est pas
   dans le dépôt.

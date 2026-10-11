@@ -2,7 +2,7 @@
 L'entrepôt de la démonstration de tri — UNE seule définition.
 
 La répétition générale sans GPU (test/test_tri_pile_logicielle.py) et la
-scène Isaac Sim (test_isaac_t1_tri_usine.py) lisent toutes deux ce module :
+scène Isaac Sim (sim/validation/test_isaac_t1_tri_usine.py) lisent toutes deux ce module :
 ce qui a été validé sur CPU est exactement ce qui tournera sur le GPU.
 
 Disposition (10 m × 8 m, vue de dessus, y vers le haut) :

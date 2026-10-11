@@ -142,7 +142,7 @@ Tout ce qui ne demande pas de simulateur est prêt et testé : driver
 29 DOF (`UnitreeG1HAL(variante="29dof")`), adaptateur
 (`GR00TWBCAdapter`), pont Isaac Sim paramétrable
 (`IsaacSimBridge(variante="29dof")`). Premier test :
-`test_isaac_w1_gr00t_port.py`.
+`sim/validation/test_isaac_w1_gr00t_port.py`.
 
 Dans l'ordre, une fois Isaac Sim 6.1 lancé dans Docker :
 
@@ -168,7 +168,7 @@ docker cp ~/AXIS-OS/axis_os/hal/drivers/unitree_g1/urdf/g1_29dof_rev_1_0.urdf \
 # 4. Code et test
 docker exec -u root isim-isaac-sim-1 rm -rf /isaac-sim/axis_os
 docker cp ~/AXIS-OS/axis_os isim-isaac-sim-1:/isaac-sim/
-docker cp ~/AXIS-OS/test_isaac_w1_gr00t_port.py isim-isaac-sim-1:/isaac-sim/axis_os/
+docker cp ~/AXIS-OS/sim/validation/test_isaac_w1_gr00t_port.py isim-isaac-sim-1:/isaac-sim/axis_os/
 docker exec isim-isaac-sim-1 /isaac-sim/python.sh /isaac-sim/axis_os/test_isaac_w1_gr00t_port.py
 ```
 

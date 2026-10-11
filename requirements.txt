@@ -53,9 +53,10 @@ protobuf>=4.25.0
 # fichier : installée à la main dans le conteneur, on avait la version du
 # jour.
 #
-# 5.17.0 est la version validée contre Isaac Sim (test_isaac_p1_perception
-# et test_isaac_p2_detection). Toute montée de version se valide d'abord
-# en simulation, jamais en production.
+# 5.17.0 est la version validée contre Isaac Sim
+# (sim/validation/test_isaac_p1_perception.py et test_isaac_p2_detection.py).
+# Toute montée de version se valide d'abord en simulation, jamais en
+# production.
 #
 # torch n'est pas listé : il est fourni par le conteneur Isaac Sim, et sur
 # Jetson par l'image NVIDIA — sa version dépend du matériel (CUDA), pas de

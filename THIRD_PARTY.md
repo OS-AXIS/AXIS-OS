@@ -56,7 +56,7 @@ All of these licenses allow use from an Apache 2.0 project. Note that
 | GR00T Whole-Body Control policy, from [NVlabs/GR00T-WholeBodyControl](https://github.com/NVlabs/GR00T-WholeBodyControl) | balance and walking with load (29 DOF G1) | code Apache 2.0; **weights under the NVIDIA Open Model License** |
 | [nvidia/GR00T-N1.7-3B](https://huggingface.co/nvidia/GR00T-N1.7-3B), with [NVIDIA/Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T) | vision-language-action model, fine-tuned on simulated demonstrations | code Apache 2.0; **weights under an NVIDIA license**, see the model page |
 | [nvidia/Cosmos-Reason2-2B](https://huggingface.co/nvidia/Cosmos-Reason2-2B) | required by the GR00T fine-tuning script | **NVIDIA license, to be accepted on Hugging Face before download** |
-| [facebook/mms-tts-fra](https://huggingface.co/facebook/mms-tts-fra) | voice of one demo video script only (`video_v2_voix.py`) | **CC BY-NC 4.0: non-commercial use only** |
+| [facebook/mms-tts-fra](https://huggingface.co/facebook/mms-tts-fra) | voice of one demo video script only (`sim/video/video_v2_voix.py`) | **CC BY-NC 4.0: non-commercial use only** |
 
 The models in bold are not under an open-source license. AXIS-OS does not
 need them to run, and its test suite runs without any of them. Anyone who

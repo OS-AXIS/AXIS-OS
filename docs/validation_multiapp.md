@@ -2,7 +2,7 @@
 
 Mesures réelles contre Isaac Sim 6.1.0, G1 23 DOF debout sous politique
 de marche, vrai Play Store, vrai sandbox, vrai garde-fou. Reproductible
-via `test_isaac_d1_multiapp.py`.
+via `sim/validation/test_isaac_d1_multiapp.py`.
 
 ---
 

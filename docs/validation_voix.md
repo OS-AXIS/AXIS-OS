@@ -1,7 +1,7 @@
 # Validation de la commande vocale — 2026-09-23
 
 Mesures réelles contre Isaac Sim 6.1.0, G1 23 DOF, app sandboxée via le
-Play Store. Reproductible via `test_isaac_a2_voice.py`.
+Play Store. Reproductible via `sim/validation/test_isaac_a2_voice.py`.
 
 ---
 

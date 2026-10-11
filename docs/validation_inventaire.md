@@ -1,7 +1,7 @@
 # Validation de l'inventaire et de la mémoire — 2026-09-23
 
 Mesures réelles contre Isaac Sim 6.1.0, G1 23 DOF, app sandboxée via le
-Play Store. Reproductible via `test_isaac_a3_inventaire.py`.
+Play Store. Reproductible via `sim/validation/test_isaac_a3_inventaire.py`.
 
 ---
 

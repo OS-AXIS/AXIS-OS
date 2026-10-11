@@ -1,7 +1,7 @@
 # Validation — prendre un carton, le porter, l'emporter (2026-09-25)
 
 G1 29 DOF, politique GR00T Whole-Body Control, Isaac Sim 6.1, sur une
-instance L4. Reproductible via `test_isaac_w3_gr00t_table.py`.
+instance L4. Reproductible via `sim/validation/test_isaac_w3_gr00t_table.py`.
 
 ---
 
@@ -83,7 +83,7 @@ de la même famille (A3, W2, W3).
 
 ## 5. W4 — « Va prendre le carton », sans lui dire où il est
 
-`test_isaac_w4_gr00t_autonome.py`. Le robot ne reçoit **aucune position**.
+`sim/validation/test_isaac_w4_gr00t_autonome.py`. Le robot ne reçoit **aucune position**.
 Le carton est posé sur une table à 90° sur sa gauche, hors de son champ de
 vision au départ.
 

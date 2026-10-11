@@ -1,8 +1,8 @@
 # Latence du chemin de commande — mesures du 2026-09-19
 
 Mesures réelles contre Isaac Sim 6.1.0, G1 23 DOF importé depuis l'URDF
-officiel AXIS-OS. Reproductibles via `test_isaac_follower_latency.py` et
-`test_s5_latency_probe.py`.
+officiel AXIS-OS. Reproductibles via `sim/validation/test_isaac_follower_latency.py` et
+`sim/validation/test_s5_latency_probe.py`.
 
 Ce document existe pour une raison précise : **il tranche par la mesure
 une question d'architecture qui a été posée deux fois** — faut-il un
@@ -13,7 +13,7 @@ hautes fréquences ? La réponse est non, et ces chiffres le prouvent.
 
 ## 1. Chemin direct — sans sandbox
 
-`test_isaac_follower_latency.py`, 200 pas, budget 20 ms (50 Hz).
+`sim/validation/test_isaac_follower_latency.py`, 200 pas, budget 20 ms (50 Hz).
 
 | | moyenne | max |
 |---|---|---|
@@ -27,7 +27,7 @@ Reproductible : 5.39 ms puis 5.41 ms sur deux exécutions.
 
 ## 2. Chemin sandboxé — pile complète
 
-`test_s5_latency_probe.py` : sous-process → `Queue` → `HALBridgeServer`
+`sim/validation/test_s5_latency_probe.py` : sous-process → `Queue` → `HALBridgeServer`
 (thread) → `RobotContext` → `NormalizedRobotHAL` → `JointSafetyGuard` →
 `MainThreadSimPump` → thread principal → retour.
 

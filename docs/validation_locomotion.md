@@ -2,7 +2,7 @@
 
 Mesures réelles contre Isaac Sim 6.1.0, G1 23 DOF importé depuis l'URDF
 officiel AXIS-OS, géométrie et collisions complètes. Reproductible via
-`test_isaac_l1_locomotion.py`.
+`sim/validation/test_isaac_l1_locomotion.py`.
 
 ---
 
@@ -119,7 +119,7 @@ de sécurité.
 
 La conversion du repère de la vitesse angulaire avait été faite AVANT le
 premier essai, sur la base d'un raisonnement. La ligne droite ne pouvait
-pas la tester. `test_isaac_l2_turning.py` fait tourner le robot deux
+pas la tester. `sim/validation/test_isaac_l2_turning.py` fait tourner le robot deux
 fois (0.3 m/s en avançant, 0.6 rad/s), dont une fois en fournissant
 délibérément à la politique la vitesse angulaire dans le repère du monde.
 
@@ -141,7 +141,7 @@ que l'erreur est faible et tombe précisément quand elle devient totale.
 ## 5b. Service de locomotion — une app qui plante en pleine marche
 
 `LocomotionService` rend la marche accessible à une app par une consigne
-de vitesse, sans que l'app connaisse le robot. `test_isaac_l3_service.py`
+de vitesse, sans que l'app connaisse le robot. `sim/validation/test_isaac_l3_service.py`
 simule le cas le plus dangereux : une app qui fait marcher le robot puis
 **plante** sans prévenir.
 

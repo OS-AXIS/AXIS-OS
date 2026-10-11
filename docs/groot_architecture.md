@@ -165,7 +165,7 @@ que chaque articulation part dans la direction attendue.
 
 L'outillage existe déjà et n'a pas à être réécrit : `hold_all_except()`,
 `reset_joint()`, `MainThreadSimPump`, et la structure du script
-`test_isaac_s2_normalization.py`.
+`sim/validation/test_isaac_s2_normalization.py`.
 
 ---
 

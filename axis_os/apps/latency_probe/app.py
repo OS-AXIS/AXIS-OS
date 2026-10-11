@@ -1,7 +1,8 @@
 """
 App de mesure : combien coûte UNE commande vue depuis le sandbox ?
 
-Répond à la seule question laissée ouverte par test_isaac_follower_latency :
+Répond à la seule question laissée ouverte par
+sim/validation/test_isaac_follower_latency.py :
 celui-ci mesurait 5.41 ms sur le chemin DIRECT (thread principal, sans
 sandbox). Il reste à savoir ce que coûtent, par-dessus :
 

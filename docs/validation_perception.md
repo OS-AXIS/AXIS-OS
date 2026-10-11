@@ -1,8 +1,8 @@
 # Validation de la chaîne perception — 2026-09-22
 
 Mesures réelles contre Isaac Sim 6.1.0, G1 23 DOF importé depuis l'URDF
-officiel AXIS-OS. Reproductible via `test_isaac_p1_perception.py` et
-`test_isaac_p2_detection.py`.
+officiel AXIS-OS. Reproductible via `sim/validation/test_isaac_p1_perception.py` et
+`sim/validation/test_isaac_p2_detection.py`.
 
 ---
 

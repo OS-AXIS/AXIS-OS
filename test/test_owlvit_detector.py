@@ -7,7 +7,7 @@ modèle n'est pas chargé.
 
 Ce qu'il ne prouve PAS : qu'OWL-ViT reconnaît quoi que ce soit. Cela
 demande le modèle et de vraies images — voir
-test_isaac_p2_detection.py.
+sim/validation/test_isaac_p2_detection.py.
 """
 import sys
 from pathlib import Path
