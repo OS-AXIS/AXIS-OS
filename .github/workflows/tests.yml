@@ -1,0 +1,49 @@
+# Lance toute la suite de tests à chaque push et à chaque pull request.
+#
+# La suite (pytest test/) tourne sans GPU, sans Isaac Sim et sans modèle
+# d'IA : c'est elle qui protège le code de sécurité (JointSafetyGuard,
+# gardien de proximité, permissions, sandbox). Les scripts qui demandent
+# Isaac Sim (sim/, deploy/isaac_sim_validation/) ne peuvent pas tourner
+# ici ; on vérifie au moins qu'ils se compilent.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+# Le workflow ne fait que lire le dépôt : aucun droit d'écriture, aucun
+# secret.
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    # La suite prend environ 7 minutes ; au-delà de 45, quelque chose est
+    # bloqué et il vaut mieux échouer que d'occuper la machine.
+    timeout-minutes: 45
+    steps:
+      # Actions épinglées par leur empreinte de commit, pas par un tag : un
+      # tag peut être déplacé vers un autre code, une empreinte non.
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Installer Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Versions exactes et empreintes SHA-256 de chaque paquet : pip refuse
+      # tout fichier qui ne correspond pas (voir requirements-ci.txt).
+      - name: Installer les dépendances des tests
+        run: python -m pip install --require-hashes -r requirements-ci.txt
+
+      - name: Vérifier que les scripts Isaac Sim et les outils se compilent
+        run: python -m compileall -q sim deploy mon_app outils
+
+      # -rs affiche la raison de chaque test sauté ; aujourd'hui, aucun ne
+      # l'est.
+      - name: Lancer la suite de tests
+        run: python -m pytest test/ -rs

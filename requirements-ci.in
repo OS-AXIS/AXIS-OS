@@ -1,0 +1,19 @@
+# Dépendances directes de la suite de tests. requirements-ci.txt en est
+# la version figée (avec les dépendances indirectes et les empreintes) :
+# voir son en-tête pour le régénérer.
+#
+# Ce dont les tests ont besoin, et pourquoi :
+numpy==2.5.3            # calculs des services, des politiques et des tests
+psutil==7.2.2           # quotas CPU et mémoire du sandbox des apps
+cryptography==50.0.1    # signature des apps (Ed25519)
+pyhpke==0.6.5           # chiffrement des apps (HPKE)
+pyzmq==27.2.0           # connecteurs VLA (ZeroMQ)
+protobuf==7.36.1        # connecteur VLACppConnector
+msgpack==1.2.3          # connecteur GR00T
+msgpack-numpy==0.4.8    # connecteur GR00T
+pillow==12.3.0          # images (perception, suivi en direct)
+pandas==3.0.5           # conversion des épisodes VLA au format LeRobot
+pyarrow==26.0.0         # idem (fichiers parquet)
+imageio==2.38.1         # vidéos des épisodes VLA
+imageio-ffmpeg==0.6.0   # idem
+pytest==8.3.4           # lance la suite (test/conftest.py)
