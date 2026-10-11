@@ -2,6 +2,8 @@ Drive/
 __pycache__/
 *.pyc
 *.pyo
+# Cache de pytest (test/conftest.py lance la suite).
+.pytest_cache/
 
 # Journaux d'exécution (axis_os/hal/core/structured_log.py écrit dans ./logs
 # par défaut). Ils n'ont rien à faire dans le dépôt : chaque lancement de la
