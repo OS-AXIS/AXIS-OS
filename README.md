@@ -1,214 +1,173 @@
-# AXIS-OS — Universal Humanoid Robot Operating System
+# AXIS-OS
 
-> Un système d'exploitation open-source pour robots humanoïdes, conçu sur le
-> modèle Android : un noyau universel indépendant du matériel, une couche de
-> sécurité industrielle, et un système de distribution d'applications tierces.
+[![Tests](https://github.com/OS-AXIS/AXIS-OS/actions/workflows/tests.yml/badge.svg)](https://github.com/OS-AXIS/AXIS-OS/actions/workflows/tests.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
----
+*Version française : [README.fr.md](README.fr.md).*
 
-## En une phrase
+AXIS-OS is an open-source operating system for humanoid robots. Like
+Android for phones, it separates what every robot needs (safety, system
+services, an app store with permissions) from what is specific to one
+robot (a hardware driver), so that the same apps can one day run on robots
+from different makers. Today it runs a Unitree G1 **in simulation only**
+(NVIDIA Isaac Sim): it has never driven a physical robot.
 
-AXIS-OS sépare strictement **ce qui doit être universel** (sécurité, surveillance,
-distribution d'applications) de **ce qui est spécifique à un robot donné**
-(conventions articulaires, modèle d'équilibre), pour qu'un même OS puisse à
-terme piloter des humanoïdes de fabricants différents sans réécrire son cœur.
+Demo video: [lien vidéo]
 
----
+## The principle: AI proposes, code decides, the OS protects
 
-## État réel du projet (honnête, pas un pitch)
+AI models are good at perceiving and suggesting, and they can be wrong in
+ways nobody predicted. AXIS-OS never lets a model's output reach a motor
+directly.
 
-Ce projet est au stade de **logiciel validé en simulation** (NVIDIA Isaac
-Sim 6.1), **pas encore sur un robot physique**. Concrètement :
+1. **AI proposes.** Models produce suggestions: where a box is (OWL-ViT and
+   depth), what an operator said (Whisper), how to keep balance while
+   walking (GR00T Whole-Body Control), which rule to change
+   (a language model).
+2. **Code decides.** Plain, reviewed code of the app or service accepts or
+   refuses each suggestion against explicit rules. Example: when an operator
+   says "blue parcels now go to station C", the sorting supervisor treats the
+   language model's answer as untrusted data and only applies it if the
+   action, colour and station are in a closed list. It has no access to the
+   arms, the legs or the safety layer, so even a hallucinated movement order
+   has no way to run.
+3. **The OS protects.** Every motor command goes through checks that the
+   apps and the models do not control: `JointSafetyGuard` rejects invalid
+   values (NaN, infinity) and anything beyond the position, velocity, torque
+   or acceleration limits of each joint, and never silently "corrects" a
+   command; the proximity guard slows the robot down, then stops it, as soon
+   as its lidar sees an unexplained obstacle nearby, whether or not anything
+   recognised it as a person; the watchdog triggers an emergency stop when a
+   joint crosses a fatal threshold, and a separate supervisor stops the
+   robot if the watchdog itself stops running; permissions limit what each
+   app may do.
 
-| Ce qui fonctionne en simulation | Ce qui n'existe pas encore |
-|---|---|
-| HAL, garde-fou articulaire, watchdog, sandbox, permissions, Play Store | Un robot physique branché |
-| Unitree G1 **23 et 29 DOF**, même OS, mêmes apps | Navigation et cartographie (SLAM) |
-| Marche, virage, arrêt sûr quand une app plante | Localisation par capteurs |
-| Perception en vocabulaire ouvert, positions 3D à quelques cm | Un modèle vision-langage-action qui décide des gestes |
-| Commande vocale — les phrases hors sujet ne déclenchent rien | Chaîne de démonstration et d'entraînement |
-| **Saisie autonome** : trouver un carton, le prendre, l'emporter, le déposer | Mains à doigts |
-| Plusieurs apps tierces sur un même robot, arbitrées par l'OS | Fleet Manager multi-robots |
-
-**56 suites de tests automatisés** protègent chaque composant, et **16 suites
-de validation** tournent dans Isaac Sim. Chaque résultat, **échecs compris**,
-est documenté dans `docs/`.
-
-### Documents clés
-
-- **[Créer une app pour AXIS-OS, de A à Z](docs/CREER_UNE_APP.md)** — sans robot ni GPU
-- [Ce qu'un robot doit avoir pour faire tourner AXIS-OS](docs/PREREQUIS_ROBOT.md)
-- [Saisie et port autonomes d'un carton](docs/validation_port_carton.md)
-- [Intégration de la politique GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
-- [Plusieurs apps sur un même robot](docs/validation_multiapp.md)
-- [Commande vocale](docs/validation_voix.md)
-- [Prochaine démonstration : tri autonome en usine](docs/demo_tri_usine.md)
-
----
-
-## Pourquoi ce projet existe
-
-Aujourd'hui, chaque fabricant de robot humanoïde (Unitree, Agility Robotics,
-Figure AI, Tesla) construit sa propre pile logicielle depuis zéro : sécurité,
-gestion des applications, orchestration — tout est réinventé à chaque fois,
-verrouillé dans l'écosystème du fabricant.
-
-Android a résolu ce problème pour les téléphones il y a 15 ans : un noyau
-commun, une interface matérielle standardisée (HAL), et un store
-d'applications. AXIS-OS applique la même approche à la robotique humanoïde.
-
----
+The last point holds for apps that play by the rules. Isolation against a
+deliberately malicious app is not finished: see
+[Status and limits](#status-and-limits).
 
 ## Architecture
 
 ```
-                    Applications (Play Store)
-                            │
-              SDK développeurs (RobotApp, RobotContext)
-                            │
-                    Sandbox (isolation processus)
-                            │
-              ┌─────────────┴─────────────┐
-              │                           │
-      JointSafetyGuard              WatchdogSystem
-      (barrière avant HAL)          (surveillance continue)
-              │                           │
-              └─────────────┬─────────────┘
-                            │
-                  MotionStateTracker
-              (historique commande/feedback)
-                            │
-                    IRobotHAL (interface universelle)
-                            │
-              ┌─────────────┴─────────────┐
-              │                           │
-      UnitreeG1HAL                 IsaacSimHAL / WebotsHAL
-      (driver spécifique)          (backends de simulation)
+┌──────────────────────────────────────────────────────────────┐
+│  Apps (Play Store)   third-party, each in its own process,   │
+│                      with declared permissions               │
+├──────────────────────────────────────────────────────────────┤
+│  SDK                 RobotApp, RobotContext                  │
+├──────────────────────────────────────────────────────────────┤
+│  System services     locomotion · navigation · perception ·  │
+│                      manipulation · speech · memory · VLA    │
+├──────────────────────────────────────────────────────────────┤
+│  Safety              JointSafetyGuard · proximity guard ·    │
+│                      watchdog and e-stop · supervisor ·      │
+│                      independent monitor                     │
+├──────────────────────────────────────────────────────────────┤
+│  HAL                 IRobotHAL: one driver per robot model   │
+├───────────────────────────────┬──────────────────────────────┤
+│  Unitree G1 driver (DDS)      │  Simulated G1 (Isaac Sim)    │
+└───────────────────────────────┴──────────────────────────────┘
 ```
 
-Le principe directeur : **aucune commande n'atteint jamais le matériel sans
-passer par les couches de sécurité**, quelle que soit son origine (application,
-IA, ou modèle d'équilibre).
+A service is something two apps from different trades would both need
+(walking, seeing, grasping); anything specific to one trade is an app. The
+design is explained in [docs/architecture_services.md](docs/architecture_services.md).
 
----
+| Folder | Contents |
+|--------|----------|
+| `axis_os/hal/` | hardware abstraction, safety guard, watchdog, supervisor, drivers (Unitree G1, simulation) |
+| `axis_os/services/` | system services shared by all apps |
+| `axis_os/store/` | Play Store: manifest and permissions, signing, sandbox, SDK for app developers |
+| `axis_os/apps/` | reference apps (parcel sorting, security patrol, inventory…) |
+| `axis_os/vla/` | recording demonstrations and evaluating a vision-language-action model |
+| `test/` | the test suite, runs anywhere without a GPU |
+| `sim/` | validation scripts that run inside Isaac Sim, on a GPU machine |
+| `deploy/` | GPU machine setup, systemd service, hardware freshness monitor |
+| `docs/` | design notes and validation reports, in French |
 
-## Composants principaux
+## What works
 
-### Couche matérielle (HAL) — universelle
-Interface commune (`IRobotHAL`) que chaque fabricant implémente pour son
-robot. Le reste du système ne connaît jamais les particularités d'un modèle
-donné (inversions d'articulations, offsets de calibration).
+All of the following was measured **in simulation**, in NVIDIA Isaac Sim 6.1
+with a Unitree G1. Each result, failures included, is written up in `docs/`
+(in French).
 
-### Sécurité (`JointSafetyGuard`)
-Dernière barrière avant toute commande moteur. Rejette explicitement les
-valeurs invalides (NaN, infini), les dépassements de position/vitesse/couple,
-et — avec un `MotionStateTracker` branché — les accélérations excessives.
-Ne modifie jamais une commande : elle est acceptée ou rejetée, jamais
-« corrigée » automatiquement.
+| Capability | Evidence |
+|------------|----------|
+| The same OS and apps on the 23 and 29 degree-of-freedom versions of the G1 | test suite |
+| Walking, turning, and a safe stop when an app crashes in the middle of a walk | [validation_locomotion.md](docs/validation_locomotion.md) |
+| Open-vocabulary object detection (OWL-ViT); distance to the visible face of a box measured to the centimetre | [validation_perception.md](docs/validation_perception.md) |
+| Voice commands; off-topic sentences trigger nothing | [validation_voix.md](docs/validation_voix.md) |
+| Several third-party apps on one robot, arbitrated by the OS | [validation_multiapp.md](docs/validation_multiapp.md) |
+| Picking up a 1 kg box from a table and carrying it, with zero command refused by the safety guard; then finding the box without being told where it is | [validation_port_carton.md](docs/validation_port_carton.md) |
+| A 30-minute parcel-sorting shift with people walking around, rehearsed on a CPU-only kinematic simulation: the robot never came closer than 0.75 m to a person | [demo_tri_usine.md](docs/demo_tri_usine.md), `test/test_tri_pile_logicielle.py` |
 
-### Surveillance (`WatchdogSystem`)
-Thread indépendant qui surveille en continu température, communication, et
-état des articulations. Déclenche un arrêt d'urgence global (e-stop)
-idempotent en cas de condition critique, avec journal structuré de chaque
-déclenchement (cause, valeurs, timestamp).
+In these demos, AI does the perception and the balance; the arm movements
+are still programmed.
 
-### Isolation applicative (`SandboxRunner`)
-Chaque application tourne dans un processus séparé avec quotas CPU/RAM/temps.
-Une application qui plante, boucle à l'infini, ou dépasse ses quotas est
-arrêtée sans affecter le reste du système.
+## Status and limits
 
-### Distribution d'applications (Play Store)
-Système de manifeste déclaratif (permissions, matériel requis, quotas,
-modèle de prix) et moteur d'exécution avec facturation automatique (30% de
-commission plateforme, modèle inspiré des stores mobiles existants).
+AXIS-OS is research software. Please read this before using it.
 
-### Interfaces pour l'intelligence artificielle
-- `IVLAConnector` : contrat pour brancher un modèle Vision-Language-Action
-  (décision de haut niveau) dans une application.
-- `IBalanceModel` : contrat pour brancher un modèle d'équilibre entraîné par
-  simulation (spécifique à chaque robot, jamais dans le cœur de l'OS).
+- **Simulation only. Not ready for a real robot.** The Unitree G1 driver
+  speaks the robot's real protocol (DDS), but it has never been connected
+  to a physical robot. Behaviour that is safe in simulation is not
+  automatically safe on hardware.
+- **App isolation is not finished.** The sandbox protects the robot from a
+  buggy app, not from a malicious one: a hostile app can today act outside
+  the HAL. **Only install trusted apps whose code you have reviewed.** The
+  plan to fix this is in [docs/isolation_apps.md](docs/isolation_apps.md);
+  the details are in [SECURITY.md](SECURITY.md).
+- **Grasping driven by a vision-language-action model is work in progress.**
+  A GR00T N1.7 model fine-tuned on simulated demonstrations is being
+  evaluated against the programmed reflexes; it is not reliable yet.
+- **No localisation from sensors yet**: in simulation, the robot's position
+  is read from the simulator. No mapping (SLAM), no hands with fingers, no
+  fleet management (only a design note).
+- The 30-minute sorting demo has been rehearsed on CPU; its full run in
+  Isaac Sim is still to be done.
 
-Les deux interfaces sont accompagnées d'implémentations de référence
-(stubs déterministes) permettant de développer et tester sans dépendre d'un
-modèle IA réel.
+## Run the tests (no GPU needed)
 
----
+The test suite checks the safety layer, the Play Store, the services and
+the reference apps without a GPU, a simulator or any AI model. It takes
+about 7 minutes on a 4-core machine.
 
-## Applications de démonstration
-
-Deux applications complètes, écrites avec le SDK public, prouvent que le
-système généralise au-delà d'un cas d'usage unique :
-
-- **PackageSorting** — tri de colis, cas d'usage logistique classique.
-- **SecurityPatrol** — ronde de sécurité nocturne autonome : génération de
-  chemin aléatoire, détection de présence, vérification de badge, escalade
-  d'alerte vers un serveur (jamais d'action d'urgence automatique — décision
-  de sécurité volontaire).
-
----
-
-## Suite de tests
-
-```
-221 tests automatisés répartis en 9 suites :
-
-  test_axis_os.py             47 tests  — intégration HAL/Safety/Watchdog/Store
-  test_sandbox.py              27 tests  — isolation, quotas, crash, timeout
-  test_conventions.py          19 tests  — 24 articulations G1, round-trip
-  test_watchdog_v2.py          17 tests  — e-stop, health state, faux positifs
-  test_safety_v2.py            21 tests  — validation limites, fault injection
-  test_motion_state.py         25 tests  — historique de mouvement, rate limiting
-  test_security_patrol.py      23 tests  — application de sécurité complète
-  test_balance_model.py        19 tests  — interface d'équilibre
-  test_heavy_integration.py    23 vérifications — charge soutenue + pannes injectées
+```sh
+git clone https://github.com/OS-AXIS/AXIS-OS.git
+cd AXIS-OS
+python3 -m venv .venv
+. .venv/bin/activate
+pip install --require-hashes -r requirements-ci.txt
+pytest test/
 ```
 
-Le test d'intégration lourde fait tourner deux applications en alternance
-sur 40+ missions, puis injecte des pannes réalistes (température critique,
-perte de communication, donnée corrompue) en plein milieu de l'exécution
-pour vérifier que le système reste cohérent sous stress, pas seulement dans
-des conditions de test isolées et propres.
+Python 3.12 or newer (tested with 3.12 and 3.13). Each file in `test/` is
+also a standalone script: `python3 test/test_safety_v2.py` runs one of
+them and prints each check. The same suite runs on every push
+(`.github/workflows/tests.yml`).
 
-Exécution :
-```bash
-for f in test_*.py; do python3 "$f"; done
-```
+Running the simulation scripts needs an NVIDIA GPU and the Isaac Sim
+container: see [sim/README.md](sim/README.md) and `deploy/machine_gpu/`.
 
----
+## Learn more
 
-## Ce qui manque, honnêtement
+- [Write an app for AXIS-OS, from scratch](docs/CREER_UNE_APP.md), no robot or GPU needed
+- [What a robot needs to run AXIS-OS](docs/PREREQUIS_ROBOT.md)
+- [Integration of GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
+- [App isolation: findings and plan](docs/isolation_apps.md)
 
-Le principal obstacle technique n'est pas logiciel : **aucun robot
-humanoïde ne tient debout sans un modèle d'équilibre entraîné par
-apprentissage par renforcement en simulation physique** (approche utilisée
-par Boston Dynamics, Figure AI, Unitree). Cette étape nécessite NVIDIA
-Isaac Sim / Isaac Lab et une infrastructure GPU, actuellement en cours
-d'acquisition.
+## License
 
-Sans cette étape, AXIS-OS dispose d'une architecture de sécurité et de
-distribution validée, mais d'aucune preuve qu'un robot physique peut
-l'utiliser pour se déplacer de manière autonome.
+Apache License 2.0 (see [LICENSE](LICENSE)). Third-party files included in
+the repository are listed in [NOTICE](NOTICE). No model weights are
+included; the models AXIS-OS can use, and their licenses, some of which are
+not open source, are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 
----
+## Contributing and security
 
-## Pile technique
-
-- Python 3.11+
-- Aucune dépendance externe pour le cœur (HAL, Safety, Watchdog, Sandbox)
-- `psutil` (optionnel) pour la surveillance CPU/RAM du sandbox
-- Cible future : NVIDIA Isaac Sim / Isaac Lab pour la simulation physique et
-  l'entraînement de modèles d'équilibre
-
----
-
-## Licence
-
-Cœur de l'OS (HAL, Safety, Watchdog) : Apache 2.0.
-SDK applicatif : Apache 2.0.
-Runtime Play Store (facturation) : propriétaire.
-
----
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[code of conduct](CODE_OF_CONDUCT.md). To report a vulnerability, please do
+not open a public issue: follow [SECURITY.md](SECURITY.md).
 
 ## Contact
 
-Projet développé et maintenu de façon indépendante.
+axis.project.dev@gmail.com
