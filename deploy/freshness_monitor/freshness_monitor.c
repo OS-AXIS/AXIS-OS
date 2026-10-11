@@ -171,6 +171,9 @@ static void dds_poll_lowcmd(monitor_state_t *state) {
  * un CRC divergent, même correct algorithmiquement en soi, serait
  * silencieusement rejeté par le firmware du vrai robot (voir la
  * docstring de dds_publish_damping ci-dessous).
+ *
+ * Copyright (c) 2016-2023 HangZhou YuShu TECHNOLOGY CO.,LTD. ("Unitree Robotics")
+ * Licence BSD 3-Clause : voir LICENSE_UNITREE_SDK2.txt dans ce dossier.
  */
 static uint32_t crc32_core(const uint32_t *ptr, uint32_t len) {
     uint32_t xbit = 0, data = 0, CRC32 = 0xFFFFFFFF;
