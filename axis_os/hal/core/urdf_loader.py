@@ -36,7 +36,7 @@ URDF officiel n'a pas été obtenu et vérifié contre un vrai G1 en
 Isaac Sim — la correction faite dans backend.py cette session reste
 la seule source vérifiée pour l'instant).
 
-Licence : Propriétaire — AXIS-OS
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations

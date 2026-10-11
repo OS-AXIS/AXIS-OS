@@ -13,7 +13,7 @@ Corrections v2 suite à revue externe :
   - Alertes FATAL jamais perdues (queue dédiée illimitée)
   - Journal structuré de chaque E-STOP (raison, joint, valeurs, seuil)
 
-Licence : Propriétaire — AXIS-OS
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations

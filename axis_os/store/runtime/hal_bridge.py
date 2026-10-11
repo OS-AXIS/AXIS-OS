@@ -26,7 +26,7 @@ Aucun objet HAL ne traverse jamais la frontière process — seulement
 des dicts JSON-compatibles. C'est le même principe que les messages
 ROS2 (.msg) : données pures, jamais d'objets vivants.
 
-Licence : Propriétaire — AXIS-OS
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations

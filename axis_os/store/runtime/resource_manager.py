@@ -42,7 +42,7 @@ politique de priorité ou de préemption plus sophistiquée est un
 travail futur distinct, non fait ici pour éviter d'ajouter de la
 complexité non validée par l'usage réel.
 
-Licence : Propriétaire — AXIS-OS
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations

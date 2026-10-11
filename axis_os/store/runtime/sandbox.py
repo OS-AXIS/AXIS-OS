@@ -21,7 +21,7 @@ Portée actuelle (documentée honnêtement) :
     Command/Response Queue déjà prêt — l'intégration automatique dans
     SandboxRunner viendra avec le Fleet Manager.
 
-Licence : Propriétaire — AXIS-OS
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations

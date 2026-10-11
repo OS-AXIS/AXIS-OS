@@ -45,7 +45,7 @@ Ce que ce Supervisor ne fait PAS (portée volontairement limitée) :
     infini de surveillants n'apporte plus de valeur pratique passé un
     certain point ; ce choix est documenté, pas caché).
 
-Licence : Propriétaire — AXIS-OS
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations

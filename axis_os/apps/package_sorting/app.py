@@ -7,7 +7,9 @@ Première application tierce du Play Store AXIS-OS.
 
 Auteur  : ACME Robotics Solutions
 Prix    : 2.00€/mission client (1.40€ net dev, 0.60€ commission)
-Licence : Propriétaire — distribué via AXIS-OS Play Store
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE). L'auteur ci-dessus
+est fictif : cette app montre ce qu'un développeur tiers publierait sur le
+Play Store, où une app peut avoir sa propre licence.
 """
 
 from __future__ import annotations
