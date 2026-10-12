@@ -1,39 +1,46 @@
 """
 AXIS-OS — Robot Capabilities
 ================================
-Système déclaratif permettant à un IRobotHAL d'annoncer CE QU'IL A
-RÉELLEMENT (joints articulés, roues, bras, caméra, etc.), pour que le
-reste d'AXIS-OS (apps, JointSafetyGuard, PlayStoreRuntime) puisse
-vérifier qu'un robot possède une capacité AVANT de tenter de
-l'utiliser, plutôt que de supposer implicitement "c'est un G1 avec
-des bras et des jambes" partout dans le code.
+Système déclaratif par lequel un IRobotHAL (le point d'entrée d'AXIS-OS
+vers le matériel d'un robot, défini dans interfaces.py ; HAL signifie
+Hardware Abstraction Layer, la couche d'abstraction matérielle) annonce
+ce qu'il possède réellement : membres articulés (jambes, bras), roues,
+caméra, etc.
 
-Origine : revue externe du 2026-09-06, priorité 3. Point soulevé :
-normalized_robot.py (et plus largement toute la stack HAL) est une
-bonne abstraction, mais reste implicitement centrée sur la morphologie
-du G1 — rien ne permettrait aujourd'hui de représenter proprement un
-robot à roues (pas de jambes), un drone (pas de jambes ni de bras,
-mais un contrôle de vol), ou un bras robotique fixe (pas de jambes du
-tout, jamais de locomotion).
+Pourquoi : le reste d'AXIS-OS (les apps, JointSafetyGuard qui est le
+garde-fou de chaque articulation, PlayStoreRuntime qui installe et lance
+les apps du Play Store, la boutique d'apps d'AXIS-OS) doit pouvoir
+vérifier qu'un robot possède une capacité avant de tenter de l'utiliser,
+plutôt que de supposer implicitement « c'est un G1 avec des bras et des
+jambes » partout dans le code.
 
-Principe :
-  - Une capacité est un FAIT déclaré par le driver HAL du robot, pas
-    une déduction — cohérent avec le reste d'AXIS-OS où chaque
-    fabricant fournit son propre driver (voir conventions.py,
-    robot.py pour le G1) : c'est ce driver qui sait ce que SON robot
-    possède réellement, AXIS-OS ne devine jamais.
-  - L'absence d'une capacité n'est jamais une erreur en soi — un
-    robot à roues qui n'a pas ARMS n'est pas "cassé", il est
-    simplement d'une autre morphologie. C'est à l'app ou au manifest
-    de vérifier ce dont elle a besoin, pas à AXIS-OS de forcer une
-    capacité universelle.
-  - Ce système est purement DÉCLARATIF et INFORMATIF dans cette
-    version — il ne bloque rien automatiquement (voir note
-    d'intégration en fin de fichier). Il donne aux couches
-    supérieures (PlayStoreRuntime, HardwareRequirements du manifest
-    d'une app) un moyen fiable de VÉRIFIER une compatibilité avant de
-    démarrer une mission, plutôt que de découvrir en cours de route
-    qu'un robot n'a pas ce qu'une app suppose.
+Origine : une revue extérieure du code, le 2026-09-06, a classé ce point
+en troisième priorité. Elle relevait que normalized_robot.py (et plus
+largement toute la couche HAL) est une bonne abstraction, mais reste
+implicitement centrée sur la morphologie du G1, l'humanoïde de référence
+d'AXIS-OS. Rien ne permettait alors de représenter proprement un robot à
+roues (pas de jambes), un drone (ni jambes ni bras, mais un contrôle de
+vol) ou un bras robotique fixe (aucune jambe, jamais de locomotion).
+
+Principes :
+  - Une capacité est un fait déclaré par le driver du robot (le code qui
+    pilote ce modèle précis), pas une déduction. C'est cohérent avec le
+    reste d'AXIS-OS, où chaque fabricant fournit son propre driver (voir
+    conventions.py et robot.py pour le G1) : c'est ce driver qui sait ce
+    que son robot possède réellement, AXIS-OS ne devine jamais.
+  - L'absence d'une capacité n'est jamais une erreur en soi. Un robot à
+    roues qui n'a pas ARMS n'est pas « cassé », il a simplement une autre
+    morphologie. C'est à l'app, ou à son manifeste (le fichier qui décrit
+    l'app : identité, permissions, matériel requis ; voir
+    axis_os/store/sdk/manifest.py), de vérifier ce dont elle a besoin,
+    pas à AXIS-OS d'imposer une capacité universelle.
+  - Ce module est purement déclaratif et informatif : il ne bloque rien
+    lui-même. Il donne aux couches supérieures (PlayStoreRuntime, la
+    section HardwareRequirements du manifeste d'une app) un moyen fiable
+    de vérifier une compatibilité avant de démarrer une mission, plutôt
+    que de découvrir en cours de route qu'un robot n'a pas ce qu'une app
+    suppose. Ce qui est branché aujourd'hui est décrit dans la note
+    d'intégration en fin de fichier.
 
 Licence : Apache 2.0 (open-source)
 """
@@ -45,35 +52,46 @@ from typing import Dict, FrozenSet, Iterable, Mapping
 
 class CapabilityStatus(Enum):
     """
-    État runtime d'une capacité déclarée — distinct de sa simple
-    PRÉSENCE. Un robot peut posséder physiquement une caméra
-    (déclarée dans son CapabilitySet) tout en ayant, à un instant
-    donné, cette caméra débranchée : ce ne sont pas la même
-    information, et les confondre empêcherait de distinguer "ce
-    robot n'a pas de caméra" de "ce robot a une caméra mais elle est
-    hors service maintenant".
+    État d'une capacité déclarée pendant le fonctionnement du robot,
+    distinct de sa simple présence.
 
-    Origine : proposition de revue externe du 2026-09-06 sur la
-    connexion Capabilities ↔ Play Store — voir discussion Required/
-    Optional/Capability Resolution.
+    Pourquoi deux informations : un robot peut posséder physiquement une
+    caméra (déclarée dans son CapabilitySet) et avoir, à un instant donné,
+    cette caméra débranchée. Les confondre empêcherait de distinguer « ce
+    robot n'a pas de caméra » de « ce robot a une caméra, mais elle est
+    hors service en ce moment ».
+
+    Origine : proposition de la même revue extérieure du code
+    (2026-09-06), dans sa discussion sur le lien entre capacités et Play
+    Store : capacités obligatoires (required) ou facultatives (optional)
+    d'une app, et manière de les confronter à celles du robot.
     """
-    AVAILABLE    = auto()  # présente et fonctionnelle
-    UNAVAILABLE  = auto()  # non fonctionnelle actuellement (raison non précisée)
-    DEGRADED     = auto()  # fonctionne, mais pas pleinement (ex: caméra basse résolution en secours)
-    DISCONNECTED = auto()  # matériel absent/débranché alors qu'il est normalement présent
-    DISABLED     = auto()  # désactivée volontairement (config, sécurité, permission refusée)
-    UNKNOWN      = auto()  # état non déterminé — traité comme indisponible par prudence
+    # Présente et fonctionnelle.
+    AVAILABLE    = auto()
+    # Non fonctionnelle actuellement, sans raison précisée.
+    UNAVAILABLE  = auto()
+    # Fonctionne, mais pas pleinement (par exemple une caméra de secours
+    # en basse résolution).
+    DEGRADED     = auto()
+    # Matériel absent ou débranché alors qu'il est normalement présent.
+    DISCONNECTED = auto()
+    # Désactivée volontairement (configuration, sécurité, permission
+    # refusée).
+    DISABLED     = auto()
+    # État non déterminé : traité comme indisponible, par prudence.
+    UNKNOWN      = auto()
 
 
 class RobotCapability(Enum):
     """
-    Granularité volontairement large — une capacité représente une
-    CATÉGORIE de fonctionnalité physique, pas un joint ou capteur
-    individuel (ça, c'est le rôle de get_joint_definitions() et des
-    méthodes get_imu()/get_force_torque() déjà existantes sur
-    IRobotHAL). Le but ici est de répondre à la question "ce robot
-    peut-il, en principe, faire ce type de chose", pas "quel est
-    l'état exact de tel joint précis".
+    Une catégorie de fonctionnalité physique : ce robot peut-il, en
+    principe, faire ce type de chose ?
+
+    La granularité est volontairement large. Une capacité ne décrit pas
+    une articulation ou un capteur individuel : c'est le rôle de
+    get_joint_definitions() et des méthodes get_imu() et
+    get_force_torque() d'IRobotHAL. On ne répond pas ici à « quel est
+    l'état exact de telle articulation ».
     """
     # Locomotion
     LEGS           = auto()  # membres articulés pour marcher (humanoïde, bipède)
@@ -87,9 +105,9 @@ class RobotCapability(Enum):
 
     # Perception
     CAMERA         = auto()
-    LIDAR          = auto()
-    IMU            = auto()
-    FORCE_TORQUE   = auto()
+    LIDAR          = auto()  # laser qui mesure les distances autour du robot
+    IMU            = auto()  # centrale inertielle : accélérations, rotation
+    FORCE_TORQUE   = auto()  # capteur de force et de couple
     MICROPHONE     = auto()
 
     # Autre
@@ -98,13 +116,15 @@ class RobotCapability(Enum):
 
 class CapabilitySet:
     """
-    Ensemble immuable des capacités d'un robot donné. Immuable
-    volontairement — les capacités PHYSIQUES d'un robot ne changent
-    pas en cours d'exécution (contrairement à son état, sa position,
-    sa santé), donc rien dans AXIS-OS ne devrait jamais avoir besoin
-    de modifier un CapabilitySet après sa création par le driver HAL.
+    Ensemble immuable des capacités d'un robot donné.
 
-    Usage typique dans un driver HAL (ex: robot.py pour le G1) :
+    Pourquoi immuable : les capacités physiques d'un robot ne changent pas
+    en cours d'exécution, contrairement à son état, sa position ou sa
+    santé. Rien dans AXIS-OS ne devrait donc avoir besoin de modifier un
+    CapabilitySet après sa création par le driver. Même un changement
+    d'état (set_status()) produit un nouvel ensemble.
+
+    Usage typique dans un driver (par exemple robot.py pour le G1) :
 
         class UnitreeG1HAL(IRobotHAL):
             def get_capabilities(self) -> CapabilitySet:
@@ -113,9 +133,9 @@ class CapabilitySet:
                     RobotCapability.GRIPPER, RobotCapability.IMU,
                 ])
 
-    Usage typique côté vérification (app ou PlayStoreRuntime, non
-    branché automatiquement dans cette version — voir note en fin de
-    fichier) :
+    Usage typique côté vérification, dans une app ou dans
+    PlayStoreRuntime (voir la note d'intégration en fin de fichier pour
+    ce qui est branché automatiquement) :
 
         if not robot.get_capabilities().has(RobotCapability.ARMS):
             raise ValueError("Cette app nécessite un robot avec des bras.")
@@ -127,13 +147,15 @@ class CapabilitySet:
         statuses: Mapping[RobotCapability, CapabilityStatus] | None = None,
     ):
         """
-        `capabilities` : ce que le robot POSSÈDE physiquement (fixe,
-        déclaré une fois par le driver HAL — voir docstring de classe).
-        `statuses` : état runtime actuel de chaque capacité déclarée.
-        Toute capacité de `capabilities` absente de `statuses` est
-        considérée AVAILABLE par défaut — un driver qui ne gère pas
-        encore les pannes runtime n'a rien à changer, has() continue
-        de se comporter exactement comme avant (présent = utilisable).
+        `capabilities` : ce que le robot possède physiquement. Cette liste
+        est fixe, déclarée une fois par le driver (voir la docstring de la
+        classe).
+
+        `statuses` : état actuel de chaque capacité déclarée. Toute
+        capacité de `capabilities` absente de `statuses` est considérée
+        AVAILABLE par défaut. Ainsi, un driver qui ne gère pas encore les
+        pannes en cours de fonctionnement n'a rien à changer : has() se
+        comporte exactement comme avant (présente = utilisable).
         """
         self._capabilities: FrozenSet[RobotCapability] = frozenset(capabilities)
         given = dict(statuses) if statuses else {}
@@ -149,33 +171,35 @@ class CapabilitySet:
     @classmethod
     def empty(cls) -> "CapabilitySet":
         """
-        Ensemble vide — valeur de retour par défaut pour un driver HAL
-        qui n'implémente pas encore get_capabilities() (voir
-        l'implémentation par défaut ajoutée à IRobotHAL). Un
-        CapabilitySet vide signifie "capacités inconnues/non
-        déclarées", PAS "ce robot n'a physiquement aucune capacité" —
-        une app qui vérifie has() sur un ensemble vide obtient
-        toujours False, ce qui est le comportement prudent par défaut
-        (refuser plutôt que supposer).
+        Ensemble vide : valeur renvoyée par défaut pour un driver qui
+        n'implémente pas encore get_capabilities() (voir l'implémentation
+        par défaut d'IRobotHAL, dans interfaces.py).
+
+        Un ensemble vide signifie « capacités inconnues ou non
+        déclarées », pas « ce robot n'a physiquement aucune capacité ».
+        Une app qui interroge has() sur un ensemble vide obtient toujours
+        False : c'est le comportement prudent par défaut (refuser plutôt
+        que supposer).
         """
         return cls()
 
     def status_of(self, capability: RobotCapability) -> CapabilityStatus:
-        """État runtime actuel. Une capacité jamais déclarée renvoie
-        UNKNOWN (jamais AVAILABLE) — on ne suppose jamais qu'un
+        """État actuel d'une capacité. Une capacité jamais déclarée
+        renvoie UNKNOWN, jamais AVAILABLE : on ne suppose jamais qu'un
         composant non déclaré fonctionne."""
         if capability not in self._capabilities:
             return CapabilityStatus.UNKNOWN
         return self._statuses[capability]
 
     def set_status(self, capability: RobotCapability, status: CapabilityStatus) -> "CapabilitySet":
-        """Retourne un NOUVEAU CapabilitySet avec le statut runtime
-        mis à jour pour une capacité déjà déclarée — ne modifie
-        jamais l'instance existante (CapabilitySet reste immuable,
-        voir docstring de classe). Lever une erreur plutôt que
-        d'ajouter silencieusement une capacité que le driver HAL n'a
-        jamais déclarée physiquement : le statut runtime ne peut
-        changer que pour du matériel qui existe."""
+        """Renvoie un nouveau CapabilitySet où l'état d'une capacité déjà
+        déclarée est mis à jour. L'instance existante n'est jamais
+        modifiée (CapabilitySet reste immuable, voir la docstring de la
+        classe).
+
+        Une capacité que le driver n'a jamais déclarée lève une erreur,
+        plutôt que d'être ajoutée en silence : l'état ne peut changer que
+        pour du matériel qui existe."""
         if capability not in self._capabilities:
             raise ValueError(
                 f"{capability.name} n'a jamais été déclarée pour ce robot — "
@@ -186,16 +210,17 @@ class CapabilitySet:
         return CapabilitySet(self._capabilities, new_statuses)
 
     def has(self, capability: RobotCapability) -> bool:
-        """Présent ET actuellement AVAILABLE. C'est la vérification
-        stricte à utiliser avant d'agir maintenant (ex: juste avant
-        d'utiliser la caméra) — pour savoir seulement si le robot
-        possède physiquement la capacité (indépendamment de son état
-        runtime), voir is_declared()."""
+        """Vrai si la capacité est déclarée ET actuellement AVAILABLE.
+
+        C'est la vérification stricte à faire avant d'agir maintenant
+        (par exemple juste avant d'utiliser la caméra). Pour savoir
+        seulement si le robot possède physiquement la capacité, quel que
+        soit son état actuel, voir is_declared()."""
         return self.status_of(capability) == CapabilityStatus.AVAILABLE
 
     def is_declared(self, capability: RobotCapability) -> bool:
-        """Le robot possède physiquement cette capacité, quel que
-        soit son état runtime actuel."""
+        """Vrai si le robot possède physiquement cette capacité, quel que
+        soit son état actuel."""
         return capability in self._capabilities
 
     def has_all(self, capabilities: Iterable[RobotCapability]) -> bool:
@@ -205,11 +230,11 @@ class CapabilitySet:
         return any(self.has(c) for c in capabilities)
 
     def missing_from(self, capabilities: Iterable[RobotCapability]) -> FrozenSet[RobotCapability]:
-        """Retourne les capacités demandées qui ne sont pas
-        actuellement AVAILABLE (non déclarées OU déclarées mais en
-        panne) — utile pour un message d'erreur précis plutôt qu'un
-        simple booléen ("il manque CAMERA et LIDAR", pas juste
-        "incompatible")."""
+        """Renvoie les capacités demandées qui ne sont pas actuellement
+        AVAILABLE, qu'elles soient non déclarées ou déclarées mais en
+        panne. Sert à produire un message d'erreur précis plutôt qu'un
+        simple booléen : « il manque CAMERA et LIDAR », pas seulement
+        « incompatible »."""
         return frozenset(c for c in capabilities if not self.has(c))
 
     def __iter__(self):
@@ -226,26 +251,37 @@ class CapabilitySet:
         return f"CapabilitySet({{{', '.join(parts)}}})"
 
 
-# NOTE D'INTÉGRATION — ce fichier définit RobotCapability et
-# CapabilitySet de façon autonome et testée, ainsi qu'une
-# implémentation par défaut de get_capabilities() ajoutée à IRobotHAL
-# (retourne CapabilitySet.empty()). Deux choses restent volontairement
-# NON faites dans cette session :
+# Note d'intégration : où ce module est branché.
 #
-#   1. UnitreeG1HAL (robot.py) n'implémente PAS encore
-#      get_capabilities() avec ses vraies capacités (LEGS, ARMS,
-#      GRIPPER, IMU, etc.) — il hérite donc de l'implémentation par
-#      défaut vide. Ajouter ça correctement demande de lister
-#      précisément ce que le G1 possède, cohérent avec le travail déjà
-#      fait sur conventions.py/robot.py, mais non fait ici pour
-#      limiter la portée de cette session à la construction du
-#      composant lui-même.
+# À sa création, ce fichier définissait RobotCapability et CapabilitySet
+# de façon autonome et testée, ainsi que l'implémentation par défaut de
+# get_capabilities() dans IRobotHAL (qui renvoie CapabilitySet.empty()).
+# Deux choses avaient alors été volontairement laissées de côté, pour
+# limiter le travail à la construction du composant lui-même :
 #
-#   2. Aucune vérification automatique n'est branchée dans
-#      PlayStoreRuntime ou HardwareRequirements du manifest d'une app
-#      — le système est prêt à être utilisé pour ce genre de
-#      vérification, mais l'intégration réelle (qu'est-ce qui se passe
-#      exactement si une app démarre sur un robot qui n'a pas les
-#      capacités qu'elle requiert : refus au démarrage ? avertissement
-#      seulement ?) est une décision de produit qui mérite d'être
-#      prise consciemment, pas ajoutée à la volée en fin de session.
+#   1. UnitreeG1HAL (robot.py) n'implémentait pas encore
+#      get_capabilities() avec ses vraies capacités et héritait donc de
+#      l'ensemble vide. Il fallait d'abord lister précisément ce que le
+#      G1 possède, en cohérence avec conventions.py et robot.py.
+#      C'est fait depuis : le G1 déclare LEGS, ARMS, GRIPPER, IMU,
+#      FORCE_TORQUE, CAMERA, MICROPHONE et SPEAKER (voir
+#      UnitreeG1HAL.get_capabilities() pour les justifications).
+#
+#   2. Aucune vérification automatique n'était branchée dans
+#      PlayStoreRuntime ni dans la section HardwareRequirements du
+#      manifeste, alors que le système était prêt pour ce genre de
+#      vérification. Le comportement à adopter quand une app démarre sur
+#      un robot qui n'a pas les capacités qu'elle exige (refus au
+#      démarrage ? simple avertissement ?) relevait d'une décision de
+#      produit à prendre consciemment ; l'intégration ne devait pas être
+#      ajoutée à la hâte.
+#      Cette décision a été prise depuis, et la vérification se fait à
+#      l'installation : PlayStoreRuntime.install() refuse d'installer une
+#      app dont une capacité de HardwareRequirements.required manque (au
+#      sens de has()), et affiche seulement un avertissement pour une
+#      capacité de HardwareRequirements.optional absente (voir
+#      axis_os/store/runtime/play_store.py et manifest.py).
+#
+# Limite connue : aucun driver ne met encore à jour l'état des capacités
+# en cours de fonctionnement (set_status() n'est appelé nulle part dans
+# axis_os/). Toute capacité déclarée reste donc AVAILABLE.
