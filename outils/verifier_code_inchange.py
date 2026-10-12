@@ -18,7 +18,11 @@ Ce qui est comparé, selon le type de fichier :
             sans effet. Les commentaires « # »
             n'existent pas dans l'AST : ils sont ignorés d'office. Tout le
             reste (noms, valeurs, ordre des instructions) doit être
-            identique.
+            identique. Comme l'AST ne voit pas les espaces, le texte des
+            lignes de code est comparé en plus, une fois retirés les
+            commentaires, les docstrings, les chaînes seules et les
+            lignes vides : un alignement modifié dans une ligne de code
+            compte comme une différence.
   .sh       les lignes, sans les lignes de commentaire ni les lignes vides.
             La première ligne « #! » compte comme du code. Le contenu d'un
             heredoc (« <<FIN ... FIN ») est gardé tel quel, commentaires
@@ -45,10 +49,12 @@ Code de sortie : 0 si aucune différence de code, 1 sinon, 2 si la
 vérification n'a pas pu se faire.
 """
 import ast
+import io
 import re
 import shutil
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 RACINE = Path(__file__).resolve().parents[1]
@@ -93,8 +99,39 @@ def _sans_docstrings(arbre):
     return arbre
 
 
+def _texte_du_code(texte, arbre):
+    """Les lignes de code telles qu'écrites, sans les commentaires, les
+    docstrings, les chaînes seules ni les lignes vides. L'AST ne voit pas
+    les espaces : cette seconde comparaison attrape un alignement ou une
+    indentation modifiés à l'intérieur d'une ligne de code."""
+    exclues = set()
+    for noeud in ast.walk(arbre):
+        for champ in ("body", "orelse", "finalbody"):
+            corps = getattr(noeud, champ, None)
+            if isinstance(corps, list):
+                for i in corps:
+                    if _est_chaine_seule(i):
+                        exclues.update(range(i.lineno, i.end_lineno + 1))
+    debut_commentaire = {}
+    for jeton in tokenize.generate_tokens(io.StringIO(texte).readline):
+        if jeton.type == tokenize.COMMENT:
+            debut_commentaire[jeton.start[0]] = jeton.start[1]
+    garde = []
+    for numero, ligne in enumerate(texte.splitlines(), 1):
+        if numero in exclues:
+            continue
+        if numero in debut_commentaire:
+            ligne = ligne[:debut_commentaire[numero]]
+        ligne = ligne.rstrip()
+        if ligne:
+            garde.append(ligne)
+    return "\n".join(garde)
+
+
 def code_python(texte):
-    return ast.dump(_sans_docstrings(ast.parse(texte)), include_attributes=False)
+    arbre = ast.parse(texte)
+    return (ast.dump(_sans_docstrings(ast.parse(texte)), include_attributes=False),
+            _texte_du_code(texte, arbre))
 
 
 # --- Shell ------------------------------------------------------------------
