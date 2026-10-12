@@ -1,8 +1,29 @@
 """
 AXIS-OS — Robotics Play Store Runtime
 =======================================
-Moteur d'exécution du Play Store côté robot.
-Gère : installation, cycle de vie, sandbox, facturation 30%.
+Moteur d'exécution du Play Store côté robot. Le Play Store est la
+boutique d'apps du robot : des développeurs tiers y publient des apps
+(tri de colis, inventaire d'entrepôt…) que le robot installe puis
+exécute.
+
+Ce module gère, sur le robot :
+  - l'installation, précédée de toutes les vérifications : manifeste
+    (la fiche que chaque app déclare : identité, version, permissions,
+    matériel requis, prix, quotas), compatibilité avec le SDK (le kit de
+    développement des apps), signature du code, niveau de protection des
+    permissions, capacités du robot ;
+  - le cycle de vie : démarrage, missions, arrêt, mise à jour ;
+  - l'exécution de chaque appel à l'app dans une sandbox (un « bac à
+    sable » : un processus séparé, avec des quotas de CPU, de mémoire
+    et de durée ; voir sandbox.py) ;
+  - la facturation : la plateforme prélève une commission de 30 % sur
+    le prix payé par le client, le développeur reçoit les 70 % restants.
+
+Limite connue : la sandbox protège contre une app buggée, pas encore
+contre une app délibérément hostile. Le constat et le plan de correction
+sont dans docs/isolation_apps.md et SECURITY.md (« Limites connues ») ;
+en attendant, ne faire tourner sur un vrai robot que des apps dont on
+connaît et relit le code.
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
@@ -38,33 +59,52 @@ import threading
 
 # ── Confirmation des permissions DANGEROUS ────────────────────────
 #
-# ProtectionLevel.DANGEROUS promettait « confirmation humaine » ; jusqu'à
-# l'audit du 2026-10-10, install() ne demandait rien : une app déclarant
-# ACTUATORS_WRITE_ALL ou ACTUATORS_AI_DRIVEN s'installait sans que personne
-# n'ait accepté qu'elle bouge le robot. Désormais, REFUS PAR DÉFAUT : une
-# permission DANGEROUS n'est accordée que si le `confirmer_permissions` du
-# runtime répond exactement True. Il n'existe aucun accord implicite.
+# Chaque permission a un niveau de protection (ProtectionLevel, voir
+# axis_os/store/sdk/manifest.py). Le niveau DANGEROUS regroupe les
+# permissions qui donnent à l'app un pouvoir physique sur le robot (bouger
+# ses bras ou ses jambes, le faire marcher…) ; il promet une confirmation
+# humaine avant l'installation.
+#
+# Pourquoi ce code : un audit de sécurité (2026-10-10) a montré que cette
+# promesse n'était pas tenue. install() ne demandait rien, et une app
+# déclarant ACTUATORS_WRITE_ALL (commander tout le corps) ou
+# ACTUATORS_AI_DRIVEN (mouvements dont les consignes viennent d'un modèle
+# d'IA) s'installait sans que personne n'ait accepté qu'elle bouge le
+# robot.
+#
+# Règle désormais : refus par défaut. Une permission DANGEROUS n'est
+# accordée que si la fonction `confirmer_permissions` fournie au runtime
+# répond exactement True ; il n'existe aucun accord implicite. Essais :
+# test/test_permissions_dangereuses.py.
 
 ConfirmationPermissions = Callable[[AppManifest, List[Permission]], bool]
 
 
 def accepter_tout_SIMULATION(manifest: AppManifest,
                              permissions: List[Permission]) -> bool:
-    """Accorde toutes les permissions DANGEROUS SANS RIEN DEMANDER.
+    """Accorde toutes les permissions DANGEROUS sans rien demander.
 
-    RÉSERVÉ À LA SIMULATION ET AUX TESTS : le nom est fait pour qu'on ne la
-    passe pas par erreur sur un vrai robot, et PlayStoreRuntime refuse en
-    plus de la recevoir avec un robot réel connu (G1 en backend DDS). Sur un
-    vrai robot : confirmer_au_terminal, ou un écran de confirmation."""
+    Réservée à la simulation et aux tests. Son nom est choisi pour qu'on ne
+    la passe pas par erreur sur un vrai robot ; en plus, PlayStoreRuntime
+    refuse de la recevoir quand il pilote un robot réel connu : l'humanoïde
+    Unitree G1 en backend DDS (Data Distribution Service, le bus de
+    communication par lequel le vrai G1 reçoit ses commandes ; voir
+    _robot_reel). Sur un vrai robot, utiliser confirmer_au_terminal ou un
+    écran de confirmation."""
     print(f"  [SIMULATION] permissions DANGEROUS accordées SANS confirmation "
           f"humaine : {[p.name for p in permissions]}")
     return True
 
 
 def _affichable(texte: Any, n: int = 80) -> str:
-    """Texte venu de l'app, rendu inoffensif pour un terminal : caractères de
-    contrôle (séquences d'échappement, sauts de ligne) remplacés, longueur
-    bornée. validate() les refuse déjà ; ceci est la seconde barrière."""
+    """Rend inoffensif pour un terminal un texte venu de l'app.
+
+    Pourquoi : un nom ou un auteur d'app peut contenir des caractères de
+    contrôle (séquences d'échappement du terminal, sauts de ligne) qui
+    fausseraient l'affichage de la question posée à l'opérateur. Ils sont
+    remplacés par « ? », et la longueur est bornée à `n` caractères.
+    validate() refuse déjà ces caractères ; ceci est une seconde
+    barrière."""
     t = "".join(c if c.isprintable() else "?" for c in str(texte))
     return t if len(t) <= n else t[:n - 1] + "…"
 
@@ -72,11 +112,16 @@ def _affichable(texte: Any, n: int = 80) -> str:
 def confirmer_au_terminal(manifest: AppManifest,
                           permissions: List[Permission]) -> bool:
     """Demande à l'opérateur, au terminal, d'accepter les permissions
-    DANGEROUS. Seul « o » ou « oui » accorde ; tout le reste — Entrée seule,
-    fin de saisie, erreur — refuse. Le nom, l'auteur et l'app_id viennent de
-    l'app : affichés neutralisés (revue de l'audit : une séquence
-    d'échappement pouvait masquer la vraie liste et afficher une fausse
-    question), et la question répète l'app_id et les permissions."""
+    DANGEROUS.
+
+    Seul « o » ou « oui » accorde ; tout le reste (Entrée seule, fin de
+    saisie, erreur de lecture) refuse. Le nom, l'auteur et l'app_id viennent
+    de l'app : ils sont affichés neutralisés par _affichable(), car la
+    relecture de l'audit de sécurité du 2026-10-10 a montré qu'une
+    séquence d'échappement placée dans ces champs pouvait masquer la vraie
+    liste des permissions et afficher une fausse question. Pour la même
+    raison, la question elle-même répète l'app_id et les permissions
+    demandées."""
     app_id = _affichable(manifest.app_id)
     noms = ", ".join(p.name for p in permissions)
     print(f"\n  L'app « {_affichable(manifest.name)} » ({app_id}, "
@@ -91,10 +136,17 @@ def confirmer_au_terminal(manifest: AppManifest,
 
 
 def _robot_reel(robot: Any) -> bool:
-    """Vrai si le HAL (éventuellement enveloppé : NormalizedRobotHAL._hal)
-    pilote un robot RÉEL connu — aujourd'hui le G1 en backend « dds ». Filet
-    de sécurité pour accepter_tout_SIMULATION, pas une détection exhaustive :
-    c'est son nom qui doit d'abord empêcher l'erreur."""
+    """Vrai si le HAL pilote un robot réel connu.
+
+    Le HAL (couche d'abstraction matérielle : l'interface commune par
+    laquelle l'OS commande les moteurs et lit les capteurs) peut être
+    enveloppé, par exemple par NormalizedRobotHAL, qui garde le HAL
+    d'origine dans `_hal` ; on remonte au plus cinq niveaux. Aujourd'hui,
+    seul le G1 en backend « dds » est reconnu comme robot réel.
+
+    C'est un filet de sécurité pour accepter_tout_SIMULATION, pas une
+    détection exhaustive : c'est d'abord le nom de cette fonction qui doit
+    empêcher l'erreur."""
     vus = 0
     while robot is not None and vus < 5:
         if getattr(robot, "_backend", None) == "dds":
@@ -106,16 +158,34 @@ def _robot_reel(robot: Any) -> bool:
 def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
                         command_queue: mp.Queue, response_queue: mp.Queue) -> MissionResult:
     """
-    Exécutée DANS le process enfant sandboxé (via SandboxRunner). Reçoit
-    l'app elle-même (picklée par multiprocessing) et un HALBridgeClient
-    construit sur les deux Queues déjà ouvertes — jamais le vrai HAL,
-    jamais le vrai WatchdogSystem, qui contiennent tous deux des threads
-    non picklables.
+    Exécutée dans le processus enfant de la sandbox (lancé par
+    SandboxRunner) pour un appel à run_mission().
+
+    Pourquoi un pont : le vrai HAL et le vrai WatchdogSystem (le chien de
+    garde qui déclenche l'e-stop, l'arrêt d'urgence, quand une condition
+    dangereuse est détectée) contiennent des threads et ne passent pas
+    par pickle (le format de Python qui transforme un objet en octets
+    pour le faire passer d'un processus à l'autre). La fonction ne reçoit
+    donc jamais ces objets : elle reçoit l'app elle-même (SandboxRunner
+    exige qu'elle passe par pickle) et construit un HALBridgeClient sur
+    les deux files mp.Queue déjà ouvertes. C'est le pont IPC
+    (communication entre processus) de hal_bridge.py : les commandes de
+    l'app partent par une file, le processus parent les exécute sur le
+    vrai HAL et répond par l'autre.
 
     L'app appelle ctx.move_arms/move_legs/log/get_imu/get_mission_log
-    exactement comme avec un RobotContext normal — HALBridgeClient
-    a la même surface d'API, donc aucune app existante n'a besoin
-    d'être modifiée pour bénéficier de l'isolation.
+    exactement comme avec un RobotContext normal (l'objet que le runtime
+    remet à une app pour commander le robot) : HALBridgeClient offre
+    la même interface, donc aucune app existante n'a besoin d'être
+    modifiée pour bénéficier de l'isolation.
+
+    PermissionError et EstopActiveError sont converties ici en
+    MissionResult d'échec plutôt que de remonter jusqu'à SandboxRunner,
+    qui les classerait en APPLICATION_ERROR générique : on garde ainsi la
+    distinction entre un refus de sécurité et un bug de l'app.
+
+    Limite connue : cette isolation protège d'une app buggée, pas encore
+    d'une app hostile (voir docs/isolation_apps.md).
     """
     bridge_ctx = HALBridgeClient(command_queue, response_queue)
     try:
@@ -140,20 +210,24 @@ def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
 def _run_start_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
                                response_queue: mp.Queue):
     """
-    Équivalent de _run_app_in_sandbox() pour on_start() — trouvé
-    nécessaire par un audit de sécurité (C4) : start_app()/stop_app()
-    appelaient jusqu'ici entry.app.on_start()/on_stop() DIRECTEMENT
-    dans le process parent, avec un vrai RobotContext donnant un accès
-    HAL complet, sans quota, sans timeout, sans isolation mémoire —
-    exactement le trou que SandboxRunner/HALBridgeServer existent pour
-    combler côté run_mission(), mais jamais câblé ici. Concret et pas
-    théorique : axis_os/apps/package_sorting/app.py appelle
-    ctx.move_arms(...) directement dans son on_start() — le robot
-    bougeait physiquement pendant ce hook non sandboxé.
+    Équivalent de _run_app_in_sandbox() pour le hook on_start() (la
+    méthode que l'app exécute à son démarrage).
 
-    Retourne (bool, list[str]) plutôt qu'un simple bool : le journal
-    de mission du HALBridgeClient est perdu si on ne le renvoie pas
-    explicitement à travers la frontière de process.
+    Pourquoi : un audit de sécurité externe (2026-09-14, voir
+    docs/audit_externe_2026-09-14.md et CHANGELOG.md) a montré que
+    start_app() et stop_app() appelaient jusque-là entry.app.on_start()
+    et on_stop() directement dans le processus parent, avec un vrai
+    RobotContext : accès complet au HAL, sans quota, sans délai maximal,
+    sans isolation de la mémoire. C'était exactement le trou que
+    SandboxRunner et HALBridgeServer comblent pour run_mission(), mais ils
+    n'avaient jamais été branchés ici. Le risque
+    n'était pas théorique : axis_os/apps/package_sorting/app.py appelle
+    ctx.move_arms(...) dans son on_start(), donc le robot bougeait
+    physiquement pendant ce hook non isolé.
+
+    Renvoie un couple (bool, list[str]) plutôt qu'un simple bool : le
+    journal de mission tenu par le HALBridgeClient serait perdu s'il
+    n'était pas renvoyé explicitement d'un processus à l'autre.
     """
     bridge_ctx = HALBridgeClient(command_queue, response_queue)
     try:
@@ -165,8 +239,8 @@ def _run_start_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
 
 def _run_stop_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
                               response_queue: mp.Queue):
-    """Équivalent de _run_start_hook_in_sandbox() pour on_stop() —
-    voir sa docstring pour le contexte complet (C4)."""
+    """Équivalent de _run_start_hook_in_sandbox() pour le hook on_stop()
+    (exécuté à l'arrêt de l'app) : voir sa docstring pour le contexte."""
     bridge_ctx = HALBridgeClient(command_queue, response_queue)
     try:
         app.on_stop(bridge_ctx)
@@ -177,6 +251,8 @@ def _run_stop_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
 
 @dataclass
 class InstalledApp:
+    """Une app installée sur ce robot, avec son manifeste validé, ses
+    compteurs (missions, revenus) et son état de facturation."""
     app:           RobotApp
     manifest:      AppManifest
     install_time:  float = field(default_factory=time.monotonic)
@@ -184,32 +260,37 @@ class InstalledApp:
     mission_count: int   = 0
     total_revenue: float = 0.0
     is_started:    bool  = False
-    # Trouvé par un audit de sécurité (M2) : _bill() facturait le prix
-    # complet à CHAQUE mission, quel que soit pricing_model — une app
-    # ONE_TIME facturait son prix à chaque mission (pas une seule fois),
-    # une app SUBSCRIPTION facturait l'abonnement mensuel entier à
-    # chaque mission (pas une fois par période). Ces deux champs
-    # trackent l'état de facturation par app installée, nécessaire pour
-    # que _bill() applique enfin la bonne règle par modèle — voir sa
-    # docstring pour le détail par pricing_model.
+    # État de facturation de l'app sur ce robot.
     #
-    # ⚠️ État tenu EN MÉMOIRE uniquement, perdu à tout redémarrage du
-    # process — trouvé par un second audit externe : un redémarrage
-    # refacture une app ONE_TIME comme neuve, et relance la fenêtre
-    # SUBSCRIPTION de 30 jours à zéro. Une vraie persistance disque
-    # (ou base de données) reste un chantier distinct, hors de portée
-    # de ce correctif — documenté honnêtement ici plutôt que laissé
-    # implicite. À traiter avant tout déploiement où un redémarrage
-    # de PlayStoreRuntime est un événement réaliste en production.
+    # Pourquoi ces deux champs : un audit de sécurité externe a montré que
+    # _bill() facturait le prix complet à chaque mission, quel que soit le
+    # modèle de prix (pricing_model). Une app ONE_TIME (achat unique)
+    # était facturée à chaque mission au lieu d'une seule fois, et une app
+    # SUBSCRIPTION (abonnement) facturait l'abonnement mensuel entier à
+    # chaque mission au lieu d'une fois par période. Ces champs mémorisent
+    # ce qui a déjà été facturé, pour que _bill() applique la bonne règle
+    # à chaque modèle (détail dans sa docstring).
     #
-    # last_subscription_bill_time_s utilise time.time() (horloge
-    # murale, wall-clock) — corrigé après un audit externe qui a
-    # relevé que time.monotonic() ne représente PAS une date
-    # calendaire : monotonic() n'a de sens que comme différence entre
-    # deux appels dans le MÊME process, jamais comme "il y a 30 jours"
-    # au sens propre, et son epoch de référence est arbitraire et
-    # change à chaque redémarrage — la aggravant, pas seulement
-    # symbolique, dans le cas de la persistance déjà absente ci-dessus.
+    # Attention : sans memory_service, cet état n'existe qu'en mémoire et
+    # se perd à chaque redémarrage du processus. Un second audit externe
+    # l'a relevé : un redémarrage refacture alors une app ONE_TIME comme
+    # neuve et remet à zéro la fenêtre SUBSCRIPTION de 30 jours. La
+    # persistance sur disque a été ajoutée depuis, en option, par le
+    # paramètre memory_service de PlayStoreRuntime (voir __init__). Sans
+    # lui, la limite demeure : à traiter avant tout déploiement où un
+    # redémarrage de PlayStoreRuntime est un événement réaliste en
+    # production.
+    #
+    # last_subscription_bill_time_s utilise time.time(), l'horloge murale
+    # (la date et l'heure réelles), et non time.monotonic(). Correction
+    # faite après le second audit externe, qui a relevé que monotonic() ne
+    # représente pas une date : sa valeur n'a de sens que comme différence
+    # entre deux appels dans le même processus, jamais pour dire « il y a
+    # 30 jours », et son point de départ est arbitraire et change à chaque
+    # redémarrage. Ce défaut aggravait concrètement, et pas seulement en
+    # théorie, le problème de persistance décrit ci-dessus : une valeur
+    # monotonic() enregistrée puis relue après un redémarrage ne veut plus
+    # rien dire.
     one_time_billed:              bool            = False
     last_subscription_bill_time_s: Optional[float] = None
 
@@ -220,6 +301,8 @@ class InstalledApp:
 
 @dataclass
 class BillingReport:
+    """Reçu d'une facturation : montant payé par le client, commission de
+    la plateforme (30 %) et part du développeur (70 %)."""
     mission_id:       str
     app_id:           str
     pricing_model:    PricingModel
@@ -237,7 +320,9 @@ class BillingReport:
 
 class PlayStoreRuntime:
     """
-    Moteur d'exécution Play Store sur un robot.
+    Moteur d'exécution du Play Store sur un robot : installe les apps, les
+    démarre, exécute leurs missions dans la sandbox, les arrête, les met à
+    jour et tient la facturation.
 
     Usage :
         runtime = PlayStoreRuntime(norm_robot, watchdog,
@@ -261,51 +346,67 @@ class PlayStoreRuntime:
         confirmer_permissions: Optional[ConfirmationPermissions] = None,
     ):
         """
-        `confirmer_permissions` : (manifest, permissions DANGEROUS) -> bool.
-        Appelé par install() (donc aussi par update_app()) pour toute app
-        qui déclare au moins une permission ProtectionLevel.DANGEROUS ;
-        seule la réponse True accorde. None par défaut = AUCUNE permission
-        DANGEROUS n'est accordée : l'app est refusée (fail-safe, voir
-        accepter_tout_SIMULATION et confirmer_au_terminal ci-dessus).
+        `robot` : le HAL du robot, vu à travers NormalizedRobotHAL, la
+        façade qui présente aux apps les positions et vitesses dans une
+        convention commune plutôt que celle du driver brut.
+        `watchdog` : le chien de garde du robot, consulté avant chaque
+        mission pour savoir si un e-stop a été déclenché, et transmis au
+        RobotContext de chaque app.
 
-        `require_signed_apps` : si True, install() refuse toute app
-        dont code_signature/developer_public_key ne sont pas renseignés
-        — False par défaut, rétrocompatible avec toutes les apps
-        existantes non signées. Trou identifié par un audit de
-        sécurité : la signature était jusqu'ici purement opt-in (les
-        deux champs valent None par défaut, une app malveillante omet
-        simplement le champ et s'installe sans aucune vérification).
-        Le CHANGELOG présentait la signature comme comblant "rien
-        n'empêchait un fichier .py quelconque de se faire passer pour
-        une app légitime" — ce n'était vrai qu'une fois ce flag mis à
-        True. À activer explicitement avant toute ouverture d'un vrai
+        `confirmer_permissions` : fonction (manifeste, permissions
+        DANGEROUS) -> bool. install() l'appelle (donc aussi update_app(),
+        qui passe par install()) pour toute app qui déclare au moins une
+        permission de niveau ProtectionLevel.DANGEROUS ; seule la réponse
+        True accorde. None par défaut : aucune permission DANGEROUS n'est
+        accordée et l'app est refusée. En cas de doute, le système refuse
+        (comportement dit fail-safe) ; voir accepter_tout_SIMULATION et
+        confirmer_au_terminal plus haut. Passer accepter_tout_SIMULATION
+        avec un robot réel lève ValueError.
+
+        `require_signed_apps` : si True, install() refuse toute app dont
+        code_signature et developer_public_key ne sont pas renseignés.
+        False par défaut, pour rester compatible avec les apps existantes
+        non signées. Pourquoi ce paramètre : un audit de sécurité a montré
+        que la signature était jusque-là facultative, au choix de l'app
+        (les deux champs valent None par défaut) ; une app malveillante
+        n'avait qu'à omettre le champ pour s'installer sans aucune
+        vérification. Le CHANGELOG présentait la signature comme réglant
+        le fait que « rien n'empêchait un fichier .py quelconque de se
+        faire passer pour une app légitime » : ce n'est vrai qu'avec ce
+        paramètre à True. À activer explicitement avant d'ouvrir un vrai
         Play Store à des développeurs externes non vérifiés.
 
-        `platform_public_key` : clé publique Ed25519 (même format que
-        AppManifest.developer_public_key) qui distingue une app
-        SYSTÈME d'une app tierce — voir ProtectionLevel.SIGNATURE
-        (axis_os/store/sdk/manifest.py). Une app dont
-        developer_public_key correspond exactement à cette clé, ET
-        dont la signature vérifie, est traitée comme signée par la
-        plateforme : autorisée à déclarer des permissions
-        ProtectionLevel.SIGNATURE (ex: ACTUATORS_RAW). None par
-        défaut (rétrocompatible) : sans clé plateforme configurée,
-        AUCUNE app — même correctement signée par un vrai
-        développeur — n'est traitée comme système, et toute
-        permission SIGNATURE est refusée à l'installation (fail-safe,
-        pas fail-open).
+        `platform_public_key` : clé publique Ed25519 (un algorithme de
+        signature numérique ; même format que
+        AppManifest.developer_public_key) qui distingue une app système
+        d'une app tierce, voir ProtectionLevel.SIGNATURE dans
+        axis_os/store/sdk/manifest.py. Une app dont developer_public_key
+        est exactement cette clé, et dont la signature est valide, est
+        traitée comme signée par la plateforme : elle peut déclarer des
+        permissions de niveau SIGNATURE (par exemple ACTUATORS_RAW, les
+        commandes articulaires brutes). None par défaut (compatible avec
+        l'existant) : sans clé plateforme configurée, aucune app, même
+        correctement signée par un vrai développeur, n'est traitée comme
+        système, et toute permission SIGNATURE est refusée à
+        l'installation. Là encore, le défaut est le refus (fail-safe),
+        jamais l'accord (fail-open).
 
-        `memory_service` : si fourni (démarré — voir MemoryService.
-        start(), axis_os/services/memory/service.py), l'état de
-        facturation (one_time_billed, last_subscription_bill_time_s)
-        est lu depuis lui à l'installation et réécrit dedans à chaque
-        mise à jour — comble le trou documenté depuis deux audits
-        externes : cet état était tenu EN MÉMOIRE uniquement, perdu à
-        tout redémarrage (une app ONE_TIME refacturée comme neuve, une
-        fenêtre SUBSCRIPTION de 30 jours relancée à zéro). None par
-        défaut (rétrocompatible) : sans service fourni, comportement
-        strictement inchangé — état en mémoire seule, comme avant ce
-        paramètre.
+        `memory_service` : service de mémoire persistante (voir
+        axis_os/services/memory/service.py), qui doit être déjà démarré
+        par MemoryService.start(). S'il est fourni, l'état de facturation
+        (one_time_billed, last_subscription_bill_time_s) y est lu à
+        l'installation et réécrit à chaque changement. Cela comble le trou
+        relevé par deux audits externes successifs : cet état n'existait
+        qu'en mémoire et se perdait à chaque redémarrage (une app ONE_TIME
+        refacturée comme neuve, une fenêtre SUBSCRIPTION de 30 jours
+        remise à zéro). None par défaut (compatible avec l'existant) :
+        comportement strictement inchangé, état en mémoire seulement,
+        comme avant ce paramètre. Essais : test/test_billing_persistence.py.
+
+        `perception_service`, `locomotion_service`, `speech_service` :
+        services système (vision, marche, parole) transmis à chaque app
+        par son RobotContext ; voir _make_ctx(). `clock` : horloge du
+        robot, voir le commentaire dans le corps de cette méthode.
         """
         if confirmer_permissions is accepter_tout_SIMULATION and _robot_reel(robot):
             raise ValueError(
@@ -320,16 +421,14 @@ class PlayStoreRuntime:
         self._id = str(uuid.uuid4())[:8]
         self._require_signed_apps = require_signed_apps
         if not require_signed_apps:
-            # Avertissement d'exécution, pas seulement documenté —
-            # trouvé nécessaire pour rendre visible à chaque démarrage
-            # un choix qui, silencieux, se retrouve facilement oublié
-            # en configuration de production : sans require_signed_apps
-            # =True, n'importe quel fichier .py qui hérite de RobotApp
-            # s'installe sans aucune vérification d'identité. Un
-            # simple appel install() ne fait alors QUE vérifier les
-            # permissions/capacités déclarées, jamais qui a écrit le
-            # code — voir la docstring de ce paramètre pour le
-            # contexte complet.
+            # Avertissement affiché à chaque démarrage, et pas seulement
+            # documenté : un choix silencieux s'oublie facilement dans une
+            # configuration de production. Sans require_signed_apps=True,
+            # n'importe quel fichier .py dont une classe hérite de
+            # RobotApp s'installe sans vérification d'identité : install()
+            # ne contrôle alors que les permissions et les capacités
+            # déclarées, jamais qui a écrit le code. Contexte complet dans
+            # la docstring de __init__.
             print(
                 "  [SECURITY] PlayStoreRuntime démarré avec "
                 "require_signed_apps=False — toute app non signée "
@@ -342,37 +441,51 @@ class PlayStoreRuntime:
         self._perception_service = perception_service
         self._locomotion_service = locomotion_service
         self._speech_service = speech_service
-        # Horloge du robot : simulée en simulation, réelle sur le
-        # robot. Transmise au sandbox (quotas) et aux apps
-        # (ctx.now / ctx.sleep) — l'équivalent de use_sim_time
-        # dans ROS.
+        # Horloge du robot : simulée en simulation, réelle sur le robot.
+        # Elle est transmise à la sandbox (pour mesurer les quotas) et aux
+        # apps (ctx.now / ctx.sleep). C'est l'équivalent de use_sim_time
+        # dans ROS (Robot Operating System, l'intergiciel robotique de
+        # référence), qui fait suivre aux programmes l'horloge du
+        # simulateur.
         self._clock = clock or time.monotonic
-        # Jeton de session — voir _RuntimeSessionToken (axis_os/store/
-        # sdk/app_base.py) et UnauthorizedContextError pour le contexte
-        # complet : seule cette instance de PlayStoreRuntime peut
-        # construire un RobotContext utilisable, empêchant qu'une app
-        # (ou tout code tiers) contourne install() en construisant son
-        # propre RobotContext avec un AppManifest arbitraire.
+        # Jeton de session. Pourquoi : sans lui, une app (ou tout code
+        # tiers) pourrait contourner install() en construisant son propre
+        # RobotContext avec un manifeste arbitraire. Avec lui, seule cette
+        # instance de PlayStoreRuntime peut construire un RobotContext
+        # utilisable. Voir _RuntimeSessionToken et UnauthorizedContextError
+        # dans axis_os/store/sdk/app_base.py, et
+        # test/test_context_lockdown.py.
         self._session_token = _RuntimeSessionToken()
-        # Verrou global de mission — trou identifié lors d'un audit :
-        # rien n'empêchait deux appels concurrents à run_mission()
-        # (deux apps différentes, ou la même app deux fois) d'envoyer
-        # des commandes contradictoires aux MÊMES actionneurs physiques
-        # en même temps. Un seul robot = une seule mission active à la
-        # fois, quelle que soit l'app — pas une file d'attente : un
-        # appel concurrent est REFUSÉ immédiatement (pas mis en attente
-        # silencieusement), pour rester prévisible et éviter qu'un
-        # appelant croie sa mission en cours d'exécution alors qu'elle
-        # patiente indéfiniment derrière une autre.
+        # Verrou global de mission. Pourquoi : un audit a montré que rien
+        # n'empêchait deux appels concurrents à run_mission() (deux apps
+        # différentes, ou la même app deux fois) d'envoyer en même temps
+        # des commandes contradictoires aux mêmes actionneurs physiques.
+        # Règle : un seul robot, une seule mission active à la fois,
+        # quelle que soit l'app. Ce n'est pas une file d'attente : un appel
+        # concurrent est refusé immédiatement, et non mis en attente en
+        # silence, pour rester prévisible et éviter qu'un appelant croie
+        # sa mission en cours alors qu'elle attend indéfiniment derrière
+        # une autre.
         self._mission_lock = threading.Lock()
         print(f"\n[PlayStore] Runtime démarré | id={self._id} | robot={robot.robot_id}")
 
     # ── Installation ──────────────────────────────────────────────
 
     def install(self, app: RobotApp) -> bool:
-        # COPIE du manifeste, validée et conservée : RobotContext consultera
-        # celle-ci, jamais l'objet fourni par l'app — qu'elle pourrait modifier
-        # après la confirmation (revue de l'audit du 2026-10-10).
+        """
+        Installe une app sur ce robot. Renvoie True si elle est installée,
+        False (raison affichée) dès qu'un contrôle échoue.
+
+        Ordre des contrôles : validité du manifeste, compatibilité du SDK,
+        signature du code, permissions réservées au système (SIGNATURE),
+        capacités fonctionnelles, matériel, puis, en dernier, confirmation
+        humaine des permissions DANGEROUS.
+        """
+        # On travaille sur une copie du manifeste, validée puis conservée :
+        # RobotContext consultera celle-ci, jamais l'objet fourni par
+        # l'app, que l'app pourrait modifier après la confirmation des
+        # permissions (relevé à la relecture de l'audit de sécurité du
+        # 2026-10-10).
         manifest = copy.deepcopy(app.manifest())
         app_id   = manifest.app_id
 
@@ -385,12 +498,13 @@ class PlayStoreRuntime:
             for e in errors: print(f"  [ERREUR] {e}")
             return False
 
-        # Vérification compatibilité SDK (voir axis_os/__init__.py) —
-        # avant toute autre vérification : une app codée pour une
-        # version incompatible d'AXIS-OS peut avoir des attentes sur
-        # le FORMAT même de HardwareRequirements/Capabilities qui
-        # suivent, donc autant échouer ici avec un message clair
-        # plutôt qu'une erreur confuse plus loin.
+        # Compatibilité du SDK, dont la version est celle d'AXIS-OS (voir
+        # axis_os/__init__.py ; versions au format SemVer, le
+        # versionnement sémantique majeur.mineur.correctif). Vérifiée
+        # avant le reste : une app écrite pour une version incompatible
+        # peut attendre un autre format pour HardwareRequirements ou
+        # Capabilities, contrôlés plus loin ; mieux vaut échouer ici avec
+        # un message clair qu'avec une erreur confuse ensuite.
         if manifest.sdk_version_min is not None:
             from axis_os import __version__ as axis_os_version, SemVer
             required = SemVer.parse(manifest.sdk_version_min)
@@ -404,16 +518,16 @@ class PlayStoreRuntime:
                 )
                 return False
 
-        # Vérification signature du code (voir axis_os/store/sdk/signing.py)
-        # — après le check de version SDK (une app dont le SDK est déjà
-        # incompatible n'a pas besoin d'aller plus loin), avant le check
-        # hardware (une signature invalide est une raison de refus plus
-        # fondamentale que des capacités manquantes).
+        # Signature du code (voir axis_os/store/sdk/signing.py). Contrôlée
+        # après le SDK (inutile d'aller plus loin si le SDK est déjà
+        # incompatible) et avant le matériel (une signature invalide est
+        # une raison de refus plus fondamentale qu'une capacité
+        # manquante).
         #
-        # Trouvé par un audit de sécurité : cette vérification était
-        # purement opt-in (uniquement si l'app a choisi de renseigner
-        # les deux champs) — self._require_signed_apps permet de la
-        # rendre obligatoire (voir __init__ pour le contexte complet).
+        # Un audit de sécurité a montré que cette vérification était
+        # facultative : elle n'avait lieu que si l'app avait choisi de
+        # renseigner les deux champs. self._require_signed_apps permet de
+        # la rendre obligatoire (contexte complet dans __init__).
         if self._require_signed_apps and manifest.code_signature is None:
             print(
                 "  [ERREUR] Ce Play Store exige des apps signées "
@@ -426,15 +540,15 @@ class PlayStoreRuntime:
             from axis_os.store.sdk.signing import verify_app_signature, SignatureError
             import inspect
             try:
-                # Signe le FICHIER SOURCE ENTIER (module), pas
-                # seulement le texte de la classe — trouvé insuffisant
-                # par un audit de sécurité : inspect.getsource(type(app))
-                # ne couvre ni le module, ni ses imports, ni ses classes
-                # de base. Du code utile placé au niveau module (une
-                # fonction, une variable globale exécutée à l'import)
-                # pouvait être modifié après signature sans invalider
-                # cette dernière, puisqu'il ne faisait jamais partie du
-                # texte réellement signé/vérifié.
+                # La signature porte sur le fichier source entier (le
+                # module), pas seulement sur le texte de la classe. Un
+                # audit de sécurité a jugé insuffisant
+                # inspect.getsource(type(app)), qui ne couvre ni le reste
+                # du module, ni ses imports, ni ses classes de base : du
+                # code placé au niveau du module (une fonction, une
+                # variable globale exécutée à l'import) pouvait être
+                # modifié après signature sans l'invalider, puisqu'il ne
+                # faisait pas partie du texte signé et vérifié.
                 source_file = inspect.getsourcefile(type(app))
                 if source_file is None:
                     raise OSError("aucun fichier source associé à cette classe")
@@ -461,15 +575,18 @@ class PlayStoreRuntime:
                 )
                 return False
 
-        # Vérification ProtectionLevel.SIGNATURE — trouvé nécessaire
-        # (§6.3 de la conception services) : une permission SIGNATURE
-        # (ex: ACTUATORS_RAW, EMERGENCY_STOP, FLEET_BROADCAST) ne doit
-        # être accordée qu'à une app dont la signature vérifiée
-        # correspond EXACTEMENT à self._platform_public_key — jamais à
-        # n'importe quelle app correctement signée par un développeur
-        # tiers quelconque. Fail-safe : si aucune clé plateforme n'est
-        # configurée (self._platform_public_key is None), TOUTE
-        # permission SIGNATURE est refusée, jamais accordée par défaut.
+        # Permissions de niveau ProtectionLevel.SIGNATURE, réservées aux
+        # apps système (par exemple ACTUATORS_RAW, les commandes
+        # articulaires brutes, ou FLEET_BROADCAST, l'envoi d'un message à
+        # toute une flotte de robots ; EMERGENCY_STOP, elle, est
+        # délibérément DANGEROUS, voir manifest.py). Pourquoi (voir
+        # docs/architecture_services.md, §6.3) : elles ne doivent être
+        # accordées qu'à une app dont la signature vérifiée correspond
+        # exactement à self._platform_public_key, jamais à n'importe
+        # quelle app correctement signée par un développeur tiers. Si
+        # aucune clé plateforme n'est configurée
+        # (self._platform_public_key is None), toute permission SIGNATURE
+        # est refusée : le défaut est le refus, jamais l'accord.
         is_platform_app = (
             self._platform_public_key is not None
             and manifest.code_signature is not None
@@ -484,13 +601,14 @@ class PlayStoreRuntime:
                 )
                 return False
 
-        # Vérification des capacités fonctionnelles (Capability, pas
-        # RobotCapability — voir docstring de Capability dans
-        # manifest.py pour la distinction). Bloquant, contrairement à
-        # hw.optional ci-dessous : une app qui déclare avoir besoin
-        # d'une Capability en a besoin, il n'existe pas ici de notion
-        # "optionnelle" comme pour HardwareRequirements — si une app
-        # veut un usage dégradé sans une capacité, elle ne la déclare
+        # Capacités fonctionnelles (Capability : ce que le robot sait faire,
+        # comme marcher ou parler), à ne pas confondre avec RobotCapability
+        # (le matériel présent) : voir la docstring de Capability dans
+        # manifest.py. Ce contrôle est bloquant, contrairement à
+        # hw.optional plus bas : une app qui déclare avoir besoin d'une
+        # Capability en a besoin, il n'existe pas ici de notion
+        # « optionnelle » comme dans HardwareRequirements. Une app qui veut
+        # fonctionner en mode dégradé sans une capacité ne la déclare
         # simplement pas dans capabilities_required.
         if manifest.capabilities_required:
             available = self._available_capabilities()
@@ -501,7 +619,9 @@ class PlayStoreRuntime:
                       f"absente(s) sur ce robot : {names}")
                 return False
 
-        # Vérification hardware
+        # Matériel : nombre minimal de degrés de liberté (DoF, en pratique
+        # le nombre d'articulations motorisées) et modèles de robot
+        # compatibles.
         hw = manifest.hardware
         robot_info = self._robot.get_robot_info()
         robot_dof  = int(robot_info.get("dof", 0))
@@ -514,8 +634,10 @@ class PlayStoreRuntime:
                 print(f"  [ERREUR] Modèle '{model}' non supporté. Requis: {hw.compatible_models}")
                 return False
 
-        # Vérification capacités (required = bloquant, optional = avertissement)
-        # Voir HardwareRequirements.required/.optional dans manifest.py.
+        # Capacités matérielles : une capacité de hw.required qui manque
+        # bloque l'installation ; une capacité de hw.optional qui manque
+        # donne seulement un avertissement. Voir
+        # HardwareRequirements.required et .optional dans manifest.py.
         caps = self._robot.get_capabilities()
         if hw.required:
             missing = caps.missing_from(hw.required)
@@ -530,9 +652,10 @@ class PlayStoreRuntime:
                 print(f"  [ATTENTION] Capacité(s) optionnelle(s) absente(s) — "
                       f"l'app fonctionnera en mode dégradé : {names}")
 
-        # Permissions DANGEROUS : confirmation EXPLICITE, en dernier — on ne
-        # demande pas à un humain d'accepter une app qui serait refusée de
-        # toute façon (capacités, matériel). Voir accepter_tout_SIMULATION.
+        # Permissions DANGEROUS : confirmation humaine explicite, demandée en
+        # dernier pour ne pas faire accepter à un humain une app qui serait
+        # refusée de toute façon (capacités, matériel). Voir l'en-tête de
+        # section au-dessus de accepter_tout_SIMULATION.
         dangereuses = list(dict.fromkeys(
             p for p in manifest.permissions
             if get_protection_level(p) == ProtectionLevel.DANGEROUS))
@@ -550,30 +673,31 @@ class PlayStoreRuntime:
                       f"({exc!r:.120}) — refus.")
                 return False
             if accord is not True:
-                # « is True » : une réponse floue (chaîne, 1, None) n'est pas un accord.
+                # « is True » plutôt qu'un simple test de vérité : une
+                # réponse floue (chaîne, 1, None) n'est pas un accord.
                 print(f"  [ERREUR] Permission(s) DANGEROUS {noms} non accordée(s) — "
                       f"installation refusée.")
                 return False
             print(f"  Permissions DANGEROUS accordées explicitement : {noms}")
 
-        # Permissions
+        # Récapitulatif des permissions déclarées.
         print(f"  Permissions : {[p.name for p in manifest.permissions]}")
 
-        # Prix
+        # Prix payé par le client et partage : part du développeur,
+        # commission de 30 % pour la plateforme.
         if manifest.pricing_model != PricingModel.FREE:
             print(f"  Prix client : {manifest.store_price_eur:.2f}€ "
                   f"| Dev : {manifest.developer_revenue_eur:.2f}€ "
                   f"| Commission : {manifest.platform_commission_eur:.2f}€ (30%)")
 
-        # État de facturation repris depuis MemoryService s'il est
-        # fourni — voir le paramètre memory_service dans __init__()
-        # pour le contexte complet. Sans lui (None), comportement
-        # strictement inchangé : one_time_billed=False,
-        # last_subscription_bill_time_s=None, comme avant ce
-        # paramètre — une app ONE_TIME/SUBSCRIPTION redémarrée sans
-        # memory_service configuré reste facturée comme neuve,
-        # exactement le comportement documenté et assumé quand la
-        # persistance n'est pas branchée.
+        # État de facturation repris depuis MemoryService s'il est fourni
+        # (contexte complet : paramètre memory_service de __init__). Sans
+        # lui, comportement strictement inchangé par rapport à l'époque
+        # où ce paramètre n'existait pas : one_time_billed=False et
+        # last_subscription_bill_time_s=None. Une app ONE_TIME ou
+        # SUBSCRIPTION redémarrée sans memory_service est donc facturée
+        # comme neuve : c'est le comportement documenté et assumé quand
+        # la persistance n'est pas branchée.
         one_time_billed = False
         last_subscription_bill_time_s = None
         if self._memory_service is not None:
@@ -592,16 +716,23 @@ class PlayStoreRuntime:
     # ── Cycle de vie ──────────────────────────────────────────────
 
     def start_app(self, app_id: str) -> bool:
+        """Démarre une app installée en exécutant son hook on_start() dans
+        la sandbox. Renvoie True si l'app s'est déclarée prête."""
         entry = self._get(app_id)
         if entry is None: return False
 
-        # Sandboxé — voir _run_start_hook_in_sandbox() pour le contexte
-        # complet (correctif C4, audit de sécurité). Même pont
-        # HALBridgeServer/Client que run_mission(), même isolation par
-        # process séparé avec les quotas du manifest de l'app.
+        # Exécuté dans la sandbox : la raison (correctif demandé par un
+        # audit de sécurité externe) est dans la docstring de
+        # _run_start_hook_in_sandbox(). Même pont
+        # HALBridgeServer/HALBridgeClient que run_mission(), même
+        # isolation par processus séparé, avec les quotas déclarés dans le
+        # manifeste de l'app.
         command_queue: mp.Queue  = mp.Queue()
         response_queue: mp.Queue = mp.Queue()
-        ctx = self._make_ctx(entry.manifest)  # utilisé uniquement pour le log parent, pas passé à l'app
+        # Ce RobotContext reste dans le processus parent : il sert au
+        # journal et au HALBridgeServer, qui exécute pour l'app les
+        # commandes reçues par le pont. L'app ne le reçoit jamais.
+        ctx = self._make_ctx(entry.manifest)
         ctx.log(f"Démarrage '{entry.manifest.name}'")
         bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
         bridge_server.start()
@@ -633,22 +764,29 @@ class PlayStoreRuntime:
     def run_mission(
         self, app_id: str, params: Optional[Dict[str, Any]] = None
     ) -> Optional[MissionResult]:
+        """Exécute une mission de l'app dans la sandbox et la facture si
+        elle a réellement abouti. Renvoie None si l'app n'est pas installée
+        ou pas démarrée, et un MissionResult d'échec si la mission est
+        refusée (e-stop actif, autre mission déjà en cours)."""
         entry = self._get(app_id)
         if entry is None: return None
         if not entry.is_started:
             print(f"  [ERREUR] App '{app_id}' non démarrée.")
             return None
 
-        # Barrière critique trouvée par un test de charge/intégration
-        # (aucune mission ne doit pouvoir s'exécuter, même "avec succès",
-        # une fois qu'un e-stop global a été déclenché — sans ce check,
-        # une app qui ne consulte jamais elle-même le Watchdog pouvait
-        # continuer indéfiniment après une condition de sécurité FATAL).
+        # Barrière critique, ajoutée après un test de charge et
+        # d'intégration : aucune mission ne doit pouvoir s'exécuter, même
+        # « avec succès », une fois qu'un e-stop global a été déclenché.
+        # Sans ce contrôle, une app qui ne consulte jamais elle-même le
+        # Watchdog pouvait continuer indéfiniment après une condition de
+        # sécurité FATAL (le niveau d'alerte le plus grave du Watchdog).
         #
-        # Consulte aussi self._robot.estop_active — correctif E10, audit
-        # de sécurité : un e-stop déclenché par le Supervisor (le cas
-        # précis où le Watchdog est mort ou bloqué) ne positionnait pas
-        # watchdog.estop_fired, donc restait invisible ici.
+        # On consulte aussi self._robot.estop_active. Un audit de sécurité
+        # externe a montré qu'un e-stop déclenché par le Supervisor (le
+        # thread qui arrête le robot quand le Watchdog lui-même cesse de
+        # fonctionner, donc précisément quand le Watchdog est mort ou
+        # bloqué) ne positionnait pas watchdog.estop_fired, et restait
+        # donc invisible ici.
         if self._watchdog.estop_fired or self._robot.estop_active:
             mission_id = str(uuid.uuid4())[:8].upper()
             print(f"  [SECURITY] Mission {mission_id} refusée : "
@@ -659,10 +797,10 @@ class PlayStoreRuntime:
                 error_message="Robot en état E-STOP — aucune mission autorisée.",
             )
 
-        # Verrou global de mission — voir __init__ pour la justification.
-        # acquire(blocking=False) : un appel concurrent est refusé tout
-        # de suite avec un résultat explicite, jamais mis en attente
-        # silencieuse derrière une mission déjà en cours.
+        # Verrou global de mission (raison expliquée dans __init__).
+        # acquire(blocking=False) : un appel concurrent est refusé tout de
+        # suite avec un résultat explicite, jamais mis en attente en
+        # silence derrière une mission déjà en cours.
         if not self._mission_lock.acquire(blocking=False):
             mission_id = str(uuid.uuid4())[:8].upper()
             print(f"  [SECURITY] Mission {mission_id} refusée : "
@@ -685,10 +823,10 @@ class PlayStoreRuntime:
     def _run_mission_locked(
         self, entry: "InstalledApp", app_id: str, params: Optional[Dict[str, Any]]
     ) -> Optional[MissionResult]:
-        """Corps réel de run_mission(), exécuté sous _mission_lock — voir
-        run_mission() pour le contexte. Extrait dans sa propre méthode
-        pour que le verrou couvre tout le corps existant via un simple
-        try/finally, sans dupliquer sa logique."""
+        """Corps de run_mission(), exécuté sous _mission_lock (contexte dans
+        run_mission()). Il est extrait dans sa propre méthode pour que le
+        verrou couvre tout le corps par un simple try/finally, sans
+        dupliquer sa logique."""
 
         mission_id = str(uuid.uuid4())[:8].upper()
         params     = params or {}
@@ -697,15 +835,15 @@ class PlayStoreRuntime:
 
         t_start = time.monotonic()
 
-        # Isolation réelle par processus séparé — trou identifié
-        # explicitement : jusqu'ici, entry.app.run_mission(ctx, params)
-        # était appelé directement dans CE process, sans aucune des
-        # protections déjà construites (SandboxRunner, quotas CPU/RAM/
-        # temps) que le reste du projet suppose actives pour toute app.
-        # Le pont HALBridgeServer/Client (déjà écrit, jamais branché)
-        # permet à l'app sandboxée d'appeler move_arms/move_legs/log/
-        # get_imu exactement comme avant, sans qu'aucune app existante
-        # n'ait besoin d'être modifiée.
+        # Isolation par processus séparé. Pourquoi : jusqu'à ce correctif,
+        # entry.app.run_mission(ctx, params) était appelé directement dans
+        # ce processus, sans aucune des protections déjà construites
+        # (SandboxRunner, quotas de CPU, de mémoire et de durée) que le
+        # reste du projet suppose actives pour toute app. Le pont
+        # HALBridgeServer/HALBridgeClient, déjà écrit mais jamais branché,
+        # permet à l'app isolée d'appeler move_arms/move_legs/log/get_imu
+        # exactement comme avant, sans qu'aucune app existante ait besoin
+        # d'être modifiée.
         command_queue: mp.Queue  = mp.Queue()
         response_queue: mp.Queue = mp.Queue()
         bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
@@ -721,22 +859,24 @@ class PlayStoreRuntime:
             if sandbox_result.success and sandbox_result.result is not None:
                 result = sandbox_result.result
             elif sandbox_result.success and sandbox_result.result is None:
-                # L'app a levé PermissionError/EstopActiveError dans
-                # _run_app_in_sandbox — celle-ci retourne alors un
-                # MissionResult d'échec directement plutôt que de
-                # laisser l'exception remonter jusqu'au SandboxRunner
-                # (qui l'aurait classée en APPLICATION_ERROR générique,
-                # perdant la distinction sécurité vs bug applicatif).
+                # L'app a renvoyé None au lieu d'un MissionResult. Les
+                # PermissionError et EstopActiveError n'arrivent pas
+                # ici : _run_app_in_sandbox les convertit déjà en
+                # MissionResult d'échec, plutôt que de les laisser
+                # remonter jusqu'à SandboxRunner, qui les aurait classées
+                # en APPLICATION_ERROR générique en perdant la distinction
+                # entre refus de sécurité et bug de l'app.
                 result = MissionResult(
                     success=False, mission_id=mission_id, app_id=app_id,
                     duration_s=time.monotonic() - t_start,
                     error_message="Mission sandboxée n'a retourné aucun résultat.",
                 )
             else:
-                # Le sandbox lui-même a détecté un problème : timeout,
-                # dépassement de quota, crash du process, fonction non
-                # picklable. Le SandboxErrorKind distingue clairement
-                # la CAUSE pour le diagnostic après coup.
+                # La sandbox a signalé un échec : délai dépassé, quota
+                # dépassé, plantage du processus, fonction qui ne passe
+                # pas par pickle, ou exception levée par l'app
+                # (APPLICATION_ERROR). Le SandboxErrorKind indique
+                # précisément la cause, pour le diagnostic après coup.
                 kind = sandbox_result.error_kind
                 reason = kind.name if kind else "INCONNU"
                 print(f"  [SANDBOX] Mission arrêtée par l'isolation : "
@@ -755,17 +895,19 @@ class PlayStoreRuntime:
             result.app_id     = app_id
             result.duration_s = time.monotonic() - t_start
 
-        # Facturation — correctif M3, audit de sécurité : exige
-        # désormais qu'au moins une commande motrice ait RÉELLEMENT
-        # abouti (bridge_server.had_any_motor_success, tenu côté
-        # process PARENT, hors de portée de l'app) EN PLUS de
-        # result.success (auto-déclaré par l'app dans le process
-        # enfant). Élimine le cas le plus grave : une app qui ne bouge
-        # jamais le robot mais retourne toujours success=True pour
-        # forcer la facturation client. Ne couvre pas tous les cas de
-        # mensonge possibles (une app pourrait bouger un joint sans
-        # rapport avec sa mission déclarée) mais élimine la fraude la
-        # plus simple et la plus rentable à automatiser.
+        # Facturation. Pourquoi cette double condition : un audit de
+        # sécurité externe a montré que la facturation reposait
+        # uniquement sur result.success, une valeur que l'app déclare
+        # elle-même depuis le processus enfant. Il faut désormais en plus
+        # qu'au moins une commande motrice ait réellement abouti
+        # (bridge_server.had_any_motor_success, tenu dans le processus
+        # parent, hors de portée de l'app). Cela élimine le cas le plus
+        # grave : une app qui ne bouge jamais le robot mais renvoie
+        # toujours success=True pour déclencher la facturation du client.
+        # Limite connue : le contrôle ne vérifie pas que le mouvement
+        # correspond à la mission déclarée, donc il ne couvre pas tous les
+        # mensonges possibles ; il supprime la fraude la plus simple et la
+        # plus rentable à automatiser.
         if result and result.success and bridge_server.had_any_motor_success:
             entry.mission_count += 1
             billing = self._bill(entry, mission_id)
@@ -778,11 +920,14 @@ class PlayStoreRuntime:
         return result
 
     def stop_app(self, app_id: str) -> None:
+        """Arrête une app démarrée en exécutant son hook on_stop() dans la
+        sandbox. Sans effet si l'app n'est pas installée ou pas démarrée.
+        L'app est marquée arrêtée même si on_stop() échoue."""
         entry = self._get(app_id)
         if entry is None or not entry.is_started: return
 
-        # Sandboxé — voir _run_stop_hook_in_sandbox() (correctif C4,
-        # même contexte que start_app() ci-dessus).
+        # Exécuté dans la sandbox, pour la même raison que start_app()
+        # ci-dessus : voir _run_stop_hook_in_sandbox().
         command_queue: mp.Queue  = mp.Queue()
         response_queue: mp.Queue = mp.Queue()
         ctx = self._make_ctx(entry.manifest)
@@ -811,58 +956,65 @@ class PlayStoreRuntime:
         self, new_app: RobotApp, *, allow_downgrade: bool = False,
     ) -> bool:
         """
-        Met à jour une app déjà installée — même app_id, nouvelle
-        instance/version. Trouvé nécessaire : avant cette méthode,
-        rien n'empêchait install() d'écraser SILENCIEUSEMENT une app
-        déjà installée (même app_id) — sans arrêter proprement une
-        version en cours d'exécution, sans vérifier le sens de la
-        mise à jour (une version PLUS ANCIENNE pouvait remplacer une
-        plus récente sans avertissement), et l'état de facturation
-        (one_time_billed, last_subscription_bill_time_s) se serait
-        remis à zéro comme pour une toute nouvelle installation —
-        une app ONE_TIME déjà payée aurait été refacturée à sa
-        prochaine mission après une simple mise à jour.
+        Met à jour une app déjà installée : même app_id, nouvelle instance
+        ou nouvelle version.
 
-        Comportement, inspiré du cycle de vie réel d'une mise à jour
-        Android (PackageManager) :
-          1. Refuse tout downgrade par défaut (nouvelle version <
-             version installée) — exactement INSTALL_FAILED_
-             VERSION_DOWNGRADE d'Android, une protection de sécurité
-             connue : sans elle, un attaquant pourrait faire
-             "mettre à jour" une app vers une ancienne version
-             contenant une faille corrigée depuis. `allow_downgrade=
-             True` lève ce refus explicitement (équivalent du flag
-             `-d` d'`adb install`), jamais le comportement par défaut.
-          2. Refuse la mise à jour si une mission est actuellement en
-             cours sur CE ROBOT (self._mission_lock déjà pris) — quelle
-             que soit l'app concernée, cohérent avec le principe déjà
-             appliqué à run_mission() : un seul robot, une seule
-             activité à la fois. Remplacer le code d'une app PENDANT
-             qu'une mission (même d'une AUTRE app) contrôle
-             physiquement le robot serait dangereux.
-          3. Arrête proprement l'ancienne version si elle est démarrée
-             (réutilise stop_app() tel quel — mêmes garanties de
-             sandboxing que l'arrêt normal, jamais un raccourci qui
-             sauterait on_stop()).
-          4. Réinstalle via install() — réutilise TOUTES les
-             vérifications déjà en place (signature, permissions,
-             capacités, compatibilité SDK, ProtectionLevel.SIGNATURE)
-             pour la NOUVELLE version, exactement comme une première
-             installation. Une mise à jour n'est jamais un chemin
-             plus permissif qu'une installation neuve.
-          5. Restaure l'état de facturation de l'ANCIENNE entrée sur
-             la NOUVELLE (one_time_billed, last_subscription_bill_
-             time_s) — une mise à jour n'est PAS une réinstallation
-             au sens commercial, l'app reste "la même" pour un
-             utilisateur qui a déjà payé.
+        Pourquoi cette méthode : avant elle, rien n'empêchait install()
+        d'écraser en silence une app déjà installée sous le même app_id.
+        Une version en cours d'exécution n'était pas arrêtée proprement,
+        le sens de la mise à jour n'était pas vérifié (une version plus
+        ancienne pouvait remplacer une plus récente sans avertissement),
+        et l'état de facturation (one_time_billed,
+        last_subscription_bill_time_s) repartait de zéro comme pour une
+        installation neuve : une app ONE_TIME déjà payée aurait été
+        refacturée à sa prochaine mission après une simple mise à jour.
 
-        Ne redémarre PAS automatiquement l'app après la mise à jour,
-        même si l'ancienne version était démarrée — décision
-        délibérée, cohérente avec le comportement Android réel
-        (ACTION_MY_PACKAGE_REPLACED notifie l'app remplacée, mais
-        c'est à elle, ou à l'appelant ici, de décider explicitement
-        de redémarrer) : appeler start_app(app_id) reste la
-        responsabilité de l'appelant après update_app().
+        Le comportement s'inspire du cycle réel d'une mise à jour sous
+        Android (son gestionnaire de paquets, PackageManager) :
+          1. Tout retour à une version antérieure (downgrade : nouvelle
+             version < version installée) est refusé par défaut, comme
+             le fait Android avec l'erreur INSTALL_FAILED_VERSION_DOWNGRADE.
+             C'est une protection de sécurité connue : sans elle, un
+             attaquant pourrait faire « mettre à jour » une app vers une
+             ancienne version contenant une faille corrigée depuis.
+             `allow_downgrade=True` lève ce refus explicitement (comme
+             l'option `-d` de `adb install`, l'outil Android
+             d'installation en ligne de commande) ; ce n'est jamais le
+             comportement par défaut.
+          2. La mise à jour est refusée si une mission est en cours sur
+             ce robot (self._mission_lock déjà pris), quelle que soit
+             l'app concernée. C'est le principe déjà appliqué à
+             run_mission() : un seul robot, une seule activité à la fois.
+             Remplacer le code d'une app pendant qu'une mission, même
+             d'une autre app, contrôle physiquement le robot serait
+             dangereux.
+          3. L'ancienne version est arrêtée proprement si elle est
+             démarrée, par stop_app() tel quel : mêmes garanties
+             d'isolation que l'arrêt normal, jamais un raccourci qui
+             sauterait on_stop().
+          4. La nouvelle version est installée par install(), qui
+             applique toutes les vérifications existantes (signature,
+             permissions, dont la confirmation des permissions DANGEROUS,
+             capacités, compatibilité du SDK, ProtectionLevel.SIGNATURE)
+             exactement comme pour une première installation. Une mise à
+             jour n'est jamais un chemin plus permissif qu'une
+             installation neuve.
+          5. L'état de facturation de l'ancienne entrée est recopié sur
+             la nouvelle (one_time_billed, last_subscription_bill_time_s) :
+             une mise à jour n'est pas une réinstallation au sens
+             commercial, l'app reste « la même » pour un utilisateur qui
+             a déjà payé.
+
+        L'app n'est pas redémarrée automatiquement après la mise à jour,
+        même si l'ancienne version l'était. C'est délibéré et conforme au
+        comportement réel d'Android (ACTION_MY_PACKAGE_REPLACED prévient
+        l'app remplacée, mais c'est à elle, ou ici à l'appelant, de
+        décider explicitement de redémarrer) : appeler start_app(app_id)
+        après update_app() reste la responsabilité de l'appelant.
+
+        Si la nouvelle version échoue aux vérifications d'install(),
+        l'ancienne reste installée, mais arrêtée si elle tournait.
+        Essais : test/test_app_update.py.
         """
         new_manifest = new_app.manifest()
         app_id = new_manifest.app_id
@@ -907,9 +1059,9 @@ class PlayStoreRuntime:
                   f"'{app_id}' (v{old_version}) avant mise à jour...")
             self.stop_app(app_id)
 
-        # Préserve l'état de facturation AVANT que install() ne
-        # construise une nouvelle InstalledApp par défaut (voir sa
-        # docstring de section 5 ci-dessus pour la justification).
+        # On garde l'état de facturation avant qu'install() ne crée une
+        # nouvelle InstalledApp aux valeurs par défaut (raison : étape 5
+        # de la docstring de update_app()).
         preserved_one_time_billed = existing_entry.one_time_billed
         preserved_last_subscription_bill_time_s = existing_entry.last_subscription_bill_time_s
 
@@ -934,6 +1086,10 @@ class PlayStoreRuntime:
     # ── Rapport financier ─────────────────────────────────────────
 
     def billing_summary(self) -> Dict[str, Any]:
+        """Résumé financier de ce runtime : totaux (montant brut,
+        commission, part développeur) sur toutes les facturations émises,
+        puis détail par app installée. « total_missions » compte les
+        facturations émises, pas toutes les missions exécutées."""
         total_gross = sum(b.gross_amount_eur for b in self._billing)
         total_comm  = sum(b.commission_eur   for b in self._billing)
         total_dev   = sum(b.developer_eur    for b in self._billing)
@@ -957,31 +1113,31 @@ class PlayStoreRuntime:
 
     def _available_capabilities(self) -> set:
         """
-        Dérive les Capability fonctionnelles disponibles à partir des
-        RobotCapability matérielles déjà exposées par le HAL
-        (get_capabilities()) — pas une nouvelle source de vérité
-        indépendante, pour ne jamais désynchroniser deux déclarations
-        du même robot.
+        Déduit les capacités fonctionnelles (Capability) disponibles sur ce
+        robot à partir des capacités matérielles (RobotCapability) déjà
+        exposées par le HAL (get_capabilities()). Ce n'est pas une
+        nouvelle source de vérité indépendante : deux déclarations du même
+        robot ne peuvent ainsi jamais diverger.
 
-        Mapping délibérément CONSERVATEUR pour la perception :
-        RobotCapability.CAMERA (générique, ne distingue pas RGB de
-        profondeur) ne donne QUE Capability.CAMERA_RGB, jamais
-        CAMERA_DEPTH — affirmer la profondeur disponible sans
-        information plus précise serait un mensonge à l'installation.
+        Correspondance volontairement prudente pour la perception :
+        RobotCapability.CAMERA (générique, ne distingue pas une caméra
+        couleur RGB d'une caméra de profondeur) ne donne que
+        Capability.CAMERA_RGB, jamais CAMERA_DEPTH. Annoncer la profondeur
+        sans information plus précise serait mentir à l'installation.
 
-        WALK/GRASP_SINGLE dérivées de LEGS/ARMS — corrigé après un
-        test réel sur les 3 apps de référence (elles bougent déjà
-        bras/jambes directement via move_arms()/move_legs(), un
-        mouvement PHYSIQUE réel via le HAL, pas hypothétique) : une
-        version précédente de ce mapping les excluait au nom d'un
-        « aucun service système ne les fournit encore », confondant
-        la capacité de MOUVEMENT DE BASE (déjà réelle, exercée par
-        les apps existantes) et un futur SERVICE intelligent de haut
-        niveau (planification de marche, préhension guidée par
-        vision — celui-là effectivement inexistant). GRASP_DUAL
-        nécessite les deux bras coordonnés — non dérivée d'un simple
-        ARMS générique, aucune app de référence actuelle ne
-        l'exerce ni n'en a besoin.
+        WALK et GRASP_SINGLE sont déduites de LEGS et ARMS. Correction
+        faite après un essai réel sur les trois apps de référence, qui
+        bougent déjà bras et jambes directement par move_arms() et
+        move_legs(), donc par un mouvement physique réel via le HAL, pas
+        hypothétique. Une version précédente de cette correspondance les
+        excluait au motif qu'« aucun service système ne les fournit
+        encore » : elle confondait la capacité de mouvement de base, déjà
+        réelle et exercée par les apps existantes, avec un futur service
+        intelligent de haut niveau (planification de la marche, préhension
+        guidée par la vision), qui, lui, n'existe effectivement pas encore.
+        GRASP_DUAL demande les deux bras coordonnés : elle n'est pas
+        déduite d'un simple ARMS générique, et aucune app de référence
+        actuelle ne l'utilise ni n'en a besoin.
         """
         robot_caps = self._robot.get_capabilities()
         available = set()
@@ -996,30 +1152,33 @@ class PlayStoreRuntime:
         if robot_caps.has(RobotCapability.ARMS):
             available.add(Capability.GRASP_SINGLE)
 
-        # CAPACITÉS LOGICIELLES : elles ne viennent pas du matériel mais
-        # des SERVICES effectivement présents sur ce robot. Une mémoire
-        # persistante n'est pas un capteur — elle existe si le noyau
+        # Capacités logicielles : elles ne viennent pas du matériel mais
+        # des services effectivement présents sur ce robot. Une mémoire
+        # persistante n'est pas un capteur : elle existe si le noyau
         # fournit le service, et pas autrement.
         #
         # Oubli constaté : la table ne traduisait que des capacités
-        # matérielles, donc MEMORY_PERSISTENT n'était JAMAIS disponible
-        # et toute app l'exigeant était refusée à l'installation — sans
+        # matérielles, donc MEMORY_PERSISTENT n'était jamais disponible et
+        # toute app qui l'exigeait était refusée à l'installation, sans
         # que rien n'indique pourquoi la mission suivante échouait.
         if self._memory_service is not None:
             available.add(Capability.MEMORY_PERSISTENT)
         return available
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
+        """Construit le RobotContext d'une app (l'objet par lequel elle
+        commande le robot), avec le jeton de session de ce runtime,
+        l'horloge du robot et les services système."""
         ctx = RobotContext(
             self._robot, self._watchdog, manifest,
             _session_token=self._session_token,
             _runtime_token_holder=self._session_token,
         )
-        # Les services sont injectés à TOUTE app : c'est la PERMISSION
-        # déclarée dans son manifeste qui décide de son droit d'usage,
-        # pas la présence ou l'absence du service. Un service absent
-        # (robot sans caméra, sans jambes) donne une réponse vide et
-        # explicite, jamais une erreur obscure.
+        # Les services sont transmis à toutes les apps : c'est la
+        # permission déclarée dans le manifeste qui décide du droit de
+        # s'en servir, pas la présence ou l'absence du service. Un service
+        # absent (robot sans caméra, sans jambes) donne une réponse vide
+        # et explicite, jamais une erreur obscure.
         ctx._set_clock(self._clock)
         ctx._attach_services(perception=self._perception_service,
                              locomotion=self._locomotion_service,
@@ -1033,57 +1192,61 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] App '{app_id}' non installée.")
         return entry
 
-    SUBSCRIPTION_PERIOD_S = 30 * 24 * 3600  # 30 jours — voir _bill()
+    SUBSCRIPTION_PERIOD_S = 30 * 24 * 3600  # 30 jours en secondes ; voir _bill()
 
     def _read_billing_flag(self, app_id: str, key: str, default):
         """
-        Lit un flag de facturation depuis MemoryService — jamais
-        appelée si self._memory_service is None (voir install()).
-        Retourne `default` sur tout échec de lecture (clé absente,
-        service en erreur) plutôt que de lever — un problème de
-        lecture de l'état persisté ne doit jamais empêcher une app de
-        s'installer, au pire elle est traitée comme neuve pour cette
-        app_id précise, jamais pire que le comportement sans
-        memory_service configuré du tout.
+        Lit un indicateur de facturation dans MemoryService. N'est appelée
+        que si self._memory_service n'est pas None (voir install()).
+
+        Renvoie `default` quand la lecture échoue (clé absente, service
+        non démarré ou qui signale une erreur) plutôt que de lever une
+        exception : un problème de lecture de l'état persisté ne doit
+        jamais empêcher une app de s'installer. Au pire, l'app est traitée
+        comme neuve pour cet app_id précis, ce qui n'est jamais pire que
+        le comportement sans memory_service.
         """
         result = self._memory_service.app_load(f"billing::{app_id}", key)
         return result.value if result.ok else default
 
     def _write_billing_flag(self, app_id: str, key: str, value) -> None:
-        """Écrit un flag de facturation dans MemoryService — no-op si
-        self._memory_service is None. Erreur d'écriture jamais
-        propagée : la facturation en mémoire (InstalledApp, déjà mise
-        à jour par l'appelant AVANT ce helper) reste correcte pour la
-        session en cours même si la persistance échoue — seule la
-        survie au PROCHAIN redémarrage serait perdue, pas la session
-        actuelle."""
+        """Écrit un indicateur de facturation dans MemoryService ; ne fait
+        rien si self._memory_service est None. Un échec d'écriture n'est
+        jamais propagé : la facturation en mémoire (InstalledApp, déjà mise
+        à jour par l'appelant avant cet appel) reste correcte pour la
+        session en cours même si la persistance échoue. Seule la survie au
+        prochain redémarrage serait perdue, pas la session actuelle."""
         if self._memory_service is None:
             return
         self._memory_service.app_store(f"billing::{app_id}", key, value)
 
     def _bill(self, entry: InstalledApp, mission_id: str) -> Optional[BillingReport]:
         """
-        Facture selon pricing_model — correctif M2, audit de sécurité :
-        avant ce correctif, TOUS les modèles étaient facturés comme
-        PAY_PER_MISSION (le prix complet à chaque mission), un bug
-        financier direct côté client :
-          - FREE : jamais facturé (inchangé).
-          - PAY_PER_MISSION : facturé à chaque mission (comportement
-            historique, correct pour ce modèle précis).
-          - ONE_TIME : facturé une SEULE fois, à la première mission
-            réussie après installation — jamais à nouveau ensuite,
-            quel que soit le nombre de missions suivantes.
-          - SUBSCRIPTION : facturé une fois par période de 30 jours
-            glissants depuis la dernière facturation, jamais à chaque
-            mission individuelle. Une mission qui tombe dans la même
-            période qu'une facturation déjà émise ne génère aucun
-            BillingReport supplémentaire.
+        Facture une mission selon le modèle de prix (pricing_model) de
+        l'app. Renvoie None quand il n'y a rien à facturer.
 
-        Persiste désormais one_time_billed/last_subscription_bill_time_s
-        via MemoryService quand il est fourni (voir _write_billing_flag)
-        — comble le trou documenté depuis deux audits externes : sans
-        ce branchement, l'état ne survivait jamais à un redémarrage du
-        process (voir InstalledApp pour l'historique complet du bug).
+        Pourquoi : un audit de sécurité externe a montré qu'avant ce
+        correctif tous les modèles étaient facturés comme PAY_PER_MISSION
+        (le prix complet à chaque mission), une erreur financière directe
+        au détriment du client. Règles appliquées désormais :
+          - FREE (gratuit) : jamais facturé (inchangé).
+          - PAY_PER_MISSION (paiement à la mission) : facturé à chaque
+            mission (comportement historique, correct pour ce modèle).
+          - ONE_TIME (achat unique) : facturé une seule fois, à la
+            première mission réussie après l'installation, et plus jamais
+            ensuite, quel que soit le nombre de missions suivantes.
+          - SUBSCRIPTION (abonnement) : facturé une fois par période de
+            30 jours glissants depuis la dernière facturation, jamais à
+            chaque mission. Une mission qui tombe dans la même période
+            qu'une facturation déjà émise ne produit aucun BillingReport
+            supplémentaire.
+
+        one_time_billed et last_subscription_bill_time_s sont désormais
+        enregistrés dans MemoryService quand il est fourni (voir
+        _write_billing_flag). Cela comble le trou relevé par deux audits
+        externes successifs : sans ce branchement, cet état ne survivait
+        jamais à un redémarrage du processus (historique complet dans le
+        commentaire des champs de facturation d'InstalledApp).
         """
         m = entry.manifest
         if m.pricing_model == PricingModel.FREE:
@@ -1096,10 +1259,9 @@ class PlayStoreRuntime:
             self._write_billing_flag(m.app_id, "one_time_billed", True)
 
         elif m.pricing_model == PricingModel.SUBSCRIPTION:
-            # time.time() (horloge murale), pas time.monotonic() — voir
-            # la docstring de InstalledApp.last_subscription_bill_time_s
-            # pour le contexte complet (correctif suite à un second
-            # audit externe).
+            # time.time() (horloge murale), pas time.monotonic() : voir le
+            # commentaire des champs de facturation d'InstalledApp
+            # (correction demandée par le second audit externe).
             now = time.time()
             last = entry.last_subscription_bill_time_s
             if last is not None and (now - last) < self.SUBSCRIPTION_PERIOD_S:
