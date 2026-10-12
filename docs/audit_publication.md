@@ -100,7 +100,7 @@ de manipulation). C'est le nom sous lequel le projet est signé : il reste.
 | # | Donnée | Où | Traitement |
 |---|--------|----|------------|
 | 1 | Adresse e-mail personnelle (Gmail) de l'auteur | identité auteur et committeur de 25 commits, nom affiché « Kenzo », du 2026-09-26 au 2026-09-29 | réécriture de l'historique avec un `mailmap` : remplacée par l'adresse publique du projet, `axis.project.dev@gmail.com` |
-| 2 | Deuxième adresse e-mail personnelle (Gmail) | `mon_app/app.py` (champ `author_email`), `mon_app/manifest.json`, et l'ancien `mon_app/__pycache__/app.cpython-314.pyc` | remplacée par l'adresse publique dans les fichiers actuels (commit normal), puis dans tout l'historique à la réécriture |
+| 2 | Deuxième adresse e-mail personnelle (Gmail) | `mon_app/app.py` (champ `author_email`), `mon_app/manifest.json`, et l'ancien `mon_app/__pycache__/app.cpython-314.pyc` | remplacée par l'adresse publique dans les fichiers actuels (commit normal), puis dans tout l'historique à la réécriture ; le commit de remplacement disparaît alors, devenu sans objet |
 | 3 | Nom d'hôte interne d'une machine de cloud (format `ip-…compute.internal`), qui révèle une adresse IP privée et une région | identité auteur et committeur d'un commit du 2026-09-04 (nom affiché « Ubuntu ») | réécriture : identité remplacée par « Kenzo » et l'adresse publique |
 | 4 | Chemins absolus de l'appareil personnel du développeur | 38 fichiers `__pycache__/*.pyc` ajoutés le 2026-09-03 et le 2026-09-04, retirés du suivi depuis | réécriture : tous les `.pyc` et dossiers `__pycache__` supprimés de l'historique |
 
