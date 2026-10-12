@@ -1,7 +1,7 @@
 """
 AXIS-OS — Exécuteur de sandbox (SandboxRunner), version 2
 ==========================================================
-Chaque app du Play Store (la boutique d'apps du robot) tourne dans une
+Chaque app du Play Store (la boutique d'apps du robot) tourne dans un
 sandbox (un « bac à sable ») : un processus séparé, surveillé, avec des
 quotas de CPU, de mémoire et de durée. Ce module crée ce processus, le
 surveille et rapporte comment il s'est terminé.
@@ -58,8 +58,8 @@ import multiprocessing as mp
 # sous-module au passage. Dans tout autre contexte, chaque exécution
 # sandboxée échouait avec « Fonction ou arguments non picklables :
 # module 'multiprocessing' has no attribute 'queues' ». Le défaut a été
-# trouvé par le test de l'horloge du robot, qui appelait le sandbox
-# directement.
+# trouvé par le test de l'horloge du robot (test/test_robot_clock.py),
+# qui appelait le sandbox directement.
 import multiprocessing.queues  # noqa: F401
 import pickle
 import threading
@@ -74,14 +74,15 @@ from axis_os.store.sdk.manifest import ResourceQuota
 class SandboxState(Enum):
     """Étape du cycle de vie d'une exécution sandboxée.
 
-    CREATED, puis STARTING, RUNNING et STOPPING pendant run(), puis un
-    état final : STOPPED (fin normale), CRASHED (erreur de l'app,
-    plantage ou échec du lancement), TIMEOUT (processus encore vivant
-    après l'attente bornée de run(), donc tué) ou VIOLATED (quota de
-    CPU, de mémoire ou de durée constaté par _monitor_loop()). Un
-    dépassement de durée peut donc finir en TIMEOUT ou en VIOLATED,
-    selon qui le voit en premier ; error_kind vaut TIMEOUT dans les deux
-    cas. KILLED est défini mais n'est attribué nulle part aujourd'hui.
+    CREATED à la construction, puis STARTING, RUNNING et STOPPING
+    pendant run(), puis un état final : STOPPED (fin normale), CRASHED
+    (erreur de l'app, plantage ou échec du lancement), TIMEOUT
+    (processus encore vivant après l'attente bornée de run(), donc tué)
+    ou VIOLATED (quota de CPU, de mémoire ou de durée constaté par
+    _monitor_loop()). Un dépassement de durée peut donc finir en TIMEOUT
+    ou en VIOLATED, selon qui le voit en premier ; error_kind vaut
+    TIMEOUT dans les deux cas. KILLED est défini mais n'est attribué
+    nulle part aujourd'hui.
     """
     CREATED  = auto()
     STARTING = auto()
@@ -260,16 +261,18 @@ class SandboxRunner:
         # version 1.
         try:
             pickle.dumps(target_fn)
-            # Les files mp.Queue sont volontairement exclues de ce
-            # contrôle : une file ne peut être transmise qu'au moment
-            # précis où elle est passée à Process(args=...), lors de la
-            # création du processus qui en hérite ; un pickle.dumps()
-            # isolé comme celui-ci la refuse (RuntimeError « Queue objects
-            # should only be shared through inheritance »). Bug réel,
-            # trouvé en branchant le pont HAL (HALBridgeServer/Client)
-            # dans PlayStoreRuntime : les files du pont faisaient échouer
-            # ce contrôle préventif, alors qu'elles fonctionnent
-            # normalement une fois transmises au vrai Process ci-dessous.
+            # Les files mp.Queue passées en arguments positionnels sont
+            # volontairement exclues de ce contrôle (celles passées dans
+            # kwargs ne le sont pas) : une file ne peut être transmise
+            # qu'au moment précis où elle est passée à Process(args=...),
+            # lors de la création du processus qui en hérite ; un
+            # pickle.dumps() isolé comme celui-ci la refuse (RuntimeError
+            # « Queue objects should only be shared through
+            # inheritance »). Bug réel, trouvé en branchant le pont HAL
+            # (HALBridgeServer/Client) dans PlayStoreRuntime : les files
+            # du pont faisaient échouer ce contrôle préventif, alors
+            # qu'elles fonctionnent normalement une fois transmises au
+            # vrai Process ci-dessous.
             picklable_args = tuple(a for a in args if not isinstance(a, mp.queues.Queue))
             pickle.dumps(picklable_args)
             pickle.dumps(kwargs)
@@ -285,13 +288,15 @@ class SandboxRunner:
         # Méthode de démarrage « fork » (le nouveau processus est une copie
         # de celui-ci) imposée, quel que soit le défaut du système.
         # Constaté sur un vrai serveur Ubuntu avec Python 3.14 : le défaut
-        # y est « forkserver », qui exige que la fonction cible soit
-        # importable depuis un vrai module. Une fonction définie dans un
-        # script exécuté directement (ou par `python3 -c`) échoue alors en
-        # silence avec « AttributeError: module '__main__' has no
-        # attribute ... ». « fork » duplique le processus tel quel, la
-        # fonction est déjà en mémoire : cela marche dans tous les cas
-        # sous Linux (pas sous Windows, qu'AXIS-OS ne vise pas).
+        # y est « forkserver » (un processus serveur, lancé à part, crée
+        # les nouveaux processus à la demande), qui exige que la fonction
+        # cible soit importable depuis un vrai module. Une fonction
+        # définie dans un script exécuté directement (ou par `python3 -c`)
+        # échoue alors en silence avec « AttributeError: module
+        # '__main__' has no attribute ... ». « fork » duplique le
+        # processus tel quel, la fonction est déjà en mémoire : cela
+        # marche dans tous les cas sous Linux (pas sous Windows,
+        # qu'AXIS-OS ne vise pas).
         #
         # Contrepartie connue : le processus de l'app hérite ainsi d'une
         # copie de toute la mémoire de l'OS. C'est l'une des faiblesses
