@@ -1,30 +1,52 @@
 """
-AXIS-OS — HAL Command Bridge
-==============================
-Pattern Command/Response Queue — inspiré de ROS2 (publisher/subscriber, RPC services).
+AXIS-OS — Pont de commandes vers le HAL (HAL Command Bridge)
+=============================================================
+Modèle commande/réponse par files de messages, inspiré de ROS2 (le
+logiciel de communication de référence en robotique) : ses services
+RPC (appels de procédure à distance) et son modèle
+publication/abonnement.
 
-Résout la limite du SandboxRunner : un process enfant isolé ne peut pas
-avoir d'accès direct au HAL (RobotContext non picklable, contient des threads).
+Le problème : une app du Play Store (le magasin d'apps d'AXIS-OS) tourne
+dans un processus enfant isolé, le sandbox lancé par SandboxRunner, pour
+qu'un plantage, une boucle infinie ou un dépassement de quota ne touche
+pas l'OS. On ne peut pas transmettre à ce processus le HAL (la couche
+d'abstraction matérielle, le seul chemin prévu vers les moteurs) :
+RobotContext, l'objet par lequel une app commande le robot et qui
+vérifie ses permissions, ne se sérialise pas avec pickle (le format
+Python qui sérialise des objets), car il contient des threads.
 
-Solution : le process enfant envoie des COMMANDES SÉRIALISABLES (dicts)
-via une Queue. Le process PARENT (qui a le vrai accès HAL) les exécute
-réellement et renvoie le résultat par une autre Queue.
+La solution : le processus enfant envoie des commandes sérialisables
+(des dicts) dans une file. Le processus parent, seul à détenir le vrai
+HAL, les exécute et renvoie le résultat par une seconde file. Cet
+échange forme l'IPC (la communication entre deux processus) de l'app.
 
-                Process ENFANT (app isolée)
+                Processus ENFANT (app isolée)
                         │
                 command_queue.put({"action": "move_arms", ...})
                         │
-                Process PARENT (vrai HAL)
+                Processus PARENT (vrai HAL)
                         │
-                exécute réellement sur RobotContext
+                exécute la commande sur RobotContext
                         │
                 response_queue.put({"status": "ok", ...})
                         │
-                Process ENFANT reçoit le résultat
+                Processus ENFANT reçoit le résultat
 
-Aucun objet HAL ne traverse jamais la frontière process — seulement
-des dicts JSON-compatibles. C'est le même principe que les messages
-ROS2 (.msg) : données pures, jamais d'objets vivants.
+Les messages ne doivent contenir que des données simples, compatibles
+JSON (le format texte standard d'échange de données : dicts, listes,
+nombres, chaînes), jamais un objet HAL vivant : c'est le même principe
+que les messages ROS2 (.msg).
+
+Limite connue : le transport, lui, ne garantit pas que les messages
+s'en tiennent à des données simples. multiprocessing.Queue sérialise
+chaque message avec pickle, et désérialiser un pickle peut exécuter du
+code dans le processus qui le lit, ici celui de l'OS. Ce pont protège
+donc contre une app boguée, pas contre une app malveillante. La
+correction prévue remplace pickle par des octets JSON validés par un
+schéma strict pour chaque action : c'est l'étape 0 de
+docs/isolation_apps.md, qui décrit aussi les autres limites de
+l'isolation et leur plan de correction (voir aussi SECURITY.md,
+« Limites connues »).
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
@@ -49,20 +71,24 @@ from axis_os.store.sdk.manifest import Permission
 
 
 # ─────────────────────────────────────────────────────────────────
-#  MESSAGES — dicts purs, toujours picklables
+#  MESSAGES — des données simples (dicts), toujours sérialisables
 # ─────────────────────────────────────────────────────────────────
 
 @dataclass
 class HALCommand:
-    """Commande envoyée par le process enfant. 100% sérialisable."""
-    action: str                      # "move_arms" | "move_legs" | "get_state" | "log"
+    """Commande envoyée par le processus enfant. Entièrement
+    sérialisable : elle ne contient que des données simples."""
+    # Nom de l'action demandée, par exemple "move_arms" ; la liste
+    # complète des actions est dans HALBridgeServer._handle().
+    action: str
     payload: Dict[str, Any]
     request_id: int
 
 
 @dataclass
 class HALResponse:
-    """Réponse renvoyée par le process parent."""
+    """Réponse renvoyée par le processus parent, rattachée à sa commande
+    par request_id."""
     request_id: int
     success:    bool
     data:       Any = None
@@ -70,11 +96,13 @@ class HALResponse:
 
 
 # ─────────────────────────────────────────────────────────────────
-#  CÔTÉ PARENT — exécute réellement sur le HAL
+#  CÔTÉ PARENT — exécute les commandes sur le vrai HAL
 # ─────────────────────────────────────────────────────────────────
 
 def _serialize_detection(d) -> Dict[str, Any]:
-    """Detection -> dict transportable."""
+    """Detection (un objet repéré par la perception : étiquette,
+    confiance, boîte englobante, direction, position 3D) -> dict
+    transportable par le pont."""
     def _v(v):
         return None if v is None else [v.x, v.y, v.z]
     return {"label": d.label, "confidence": d.confidence,
@@ -83,12 +111,13 @@ def _serialize_detection(d) -> Dict[str, Any]:
 
 
 def _deserialize_detection(d: Dict[str, Any]):
-    """dict -> Detection RÉELLE.
+    """dict -> vraie Detection.
 
-    Même exigence que pour ActuatorFeedback : une app sandboxée doit
-    recevoir le MÊME TYPE qu'en direct. Sinon une app écrite contre la
-    documentation (`det.position_3d.x`) fonctionne en test et plante en
-    sandbox — donc uniquement sur le vrai robot.
+    Pourquoi : comme pour ActuatorFeedback (voir _deserialize_feedback),
+    une app sandboxée doit recevoir le même type qu'une app lancée en
+    direct. Sinon, une app écrite d'après la documentation
+    (`det.position_3d.x`) fonctionne en test et plante en sandbox,
+    c'est-à-dire uniquement sur le vrai robot.
     """
     from axis_os.hal.core.types import Vector3
     from axis_os.services.perception.service import Detection
@@ -105,7 +134,9 @@ def _deserialize_detection(d: Dict[str, Any]):
 
 
 def _serialize_feedback(fb: ActuatorFeedback) -> Dict[str, Any]:
-    """ActuatorFeedback -> dict transportable par multiprocessing.Queue."""
+    """ActuatorFeedback (l'état mesuré d'un moteur : position, vitesse,
+    couple, courant, température, tension, code d'erreur) -> dict
+    transportable par multiprocessing.Queue."""
     return {
         "joint_id": fb.joint_id, "state": fb.state.name,
         "position": fb.position, "velocity": fb.velocity,
@@ -116,21 +147,25 @@ def _serialize_feedback(fb: ActuatorFeedback) -> Dict[str, Any]:
 
 
 def _deserialize_feedback(jid: str, d: Dict[str, Any]) -> ActuatorFeedback:
-    """dict -> ActuatorFeedback réel.
+    """dict -> vrai ActuatorFeedback.
 
-    Ferme une divergence de TYPE DE RETOUR entre les deux chemins :
-    RobotContext.get_full_state() rendait des ActuatorFeedback
-    (fb.position) tandis que HALBridgeClient rendait des dicts
-    (fb["position"]). Une app écrite contre la documentation de
-    RobotContext fonctionnait en test direct et plantait UNIQUEMENT en
-    sandbox — donc uniquement sur le vrai robot, au pire moment pour
-    s'en apercevoir. Constaté réellement (AttributeError: 'dict' object
-    has no attribute 'position').
+    Pourquoi : les deux chemins (app lancée en direct, app en sandbox)
+    ne rendaient pas le même type. RobotContext.get_full_state() rendait
+    des ActuatorFeedback (fb.position), tandis que HALBridgeClient
+    rendait des dicts (fb["position"]). Une app écrite d'après la
+    documentation de RobotContext fonctionnait en test direct et
+    plantait uniquement en sandbox, donc uniquement sur le vrai robot, au
+    pire moment pour s'en apercevoir. Le cas a été constaté réellement
+    (AttributeError: 'dict' object has no attribute 'position').
 
-    Tolère les dicts partiels d'une version antérieure du protocole
-    (champs absents -> valeurs neutres) plutôt que de lever : une app
-    qui tourne ne doit pas mourir sur une incompatibilité de version du
-    pont.
+    Un dict partiel, venu d'une version antérieure du protocole, est
+    accepté : les champs absents prennent des valeurs neutres plutôt que
+    de lever une exception, car une app en cours d'exécution ne doit pas
+    mourir d'une incompatibilité de version du pont.
+
+    timestamp_ns n'est pas repris : l'objet reconstruit porte l'heure de
+    sa reconstruction (valeur par défaut d'ActuatorFeedback), pas celle
+    de la mesure.
     """
     return ActuatorFeedback(
         joint_id=d.get("joint_id", jid),
@@ -147,13 +182,18 @@ def _deserialize_feedback(jid: str, d: Dict[str, Any]) -> ActuatorFeedback:
 
 class HALBridgeServer:
     """
-    Tourne dans le process PARENT. Écoute les commandes du process
-    enfant sandboxé et les exécute sur le vrai RobotContext.
+    Tourne dans le processus PARENT. Écoute les commandes du processus
+    enfant (l'app sandboxée) et les exécute sur le vrai RobotContext.
+
+    Les permissions sont donc vérifiées ici, dans le parent, par le vrai
+    RobotContext, et jamais dans le processus de l'app, qui n'est pas
+    fiable. Cela arrête une app boguée ; face à une app malveillante,
+    voir la limite connue décrite en tête de ce fichier.
 
     Usage :
         server = HALBridgeServer(ctx, command_queue, response_queue)
         server.start()          # lance un thread d'écoute
-        # ... le process enfant tourne ...
+        # ... le processus enfant tourne ...
         server.stop()
     """
 
@@ -164,17 +204,18 @@ class HALBridgeServer:
         self._resp_q  = response_queue
         self._running = False
         self._thread: Optional[Any] = None
-        # Trouvé nécessaire par un audit de sécurité (M3) : la
-        # facturation reposait uniquement sur result.success, construit
-        # par l'app elle-même dans le process ENFANT — une app
-        # malveillante retourne toujours success=True sans jamais
-        # bouger le robot, et déclenche quand même la facturation
-        # client. Ce compteur, tenu côté PARENT (donc hors de portée de
-        # l'app), enregistre chaque commande move_arms/move_legs qui a
-        # RÉELLEMENT abouti (au moins un HALStatus.OK dans le résultat)
-        # — une preuve indépendante que PlayStoreRuntime peut exiger en
-        # plus de result.success avant de facturer (voir
-        # _run_mission_locked()).
+        # Pourquoi ce compteur : un audit de sécurité a montré que la
+        # facturation reposait uniquement sur result.success, une valeur
+        # construite par l'app elle-même dans le processus enfant. Une
+        # app malveillante pouvait renvoyer success=True sans jamais
+        # bouger le robot, et déclencher quand même la facturation du
+        # client. Ce compteur est tenu côté parent, hors de portée de
+        # l'app : il enregistre chaque commande move_arms, move_legs ou
+        # move_all qui a réellement abouti (au moins un HALStatus.OK dans
+        # le résultat). C'est une preuve indépendante que PlayStoreRuntime
+        # (la partie de l'OS qui installe, lance et facture les apps)
+        # exige en plus de result.success avant de facturer (voir
+        # _run_mission_locked() dans play_store.py).
         self.successful_motor_commands = 0
 
     @property
@@ -199,18 +240,20 @@ class HALBridgeServer:
                 raw = self._cmd_q.get(timeout=0.1)
             except queue.Empty:
                 continue
-            if raw is None:  # poison pill
+            if raw is None:  # signal d'arrêt (« poison pill »)
                 break
 
-            # Trouvé par un audit de sécurité (E8) : HALCommand(**raw)
-            # vivait hors de tout try/except — raw vient du process
-            # ENFANT (côté non fiable de la frontière de sécurité, une
-            # app potentiellement bogguée ou malveillante). Un message
-            # malformé (clé manquante, clé en trop) levait un TypeError
-            # non rattrapé qui tuait ce thread daemon SILENCIEUSEMENT :
-            # plus aucune commande n'était servie ensuite, l'app ne
-            # voyait que des TimeoutError sans jamais savoir pourquoi,
-            # et aucune alerte ne remontait nulle part.
+            # Pourquoi ce try : raw vient du processus enfant, le côté
+            # non fiable de la frontière de sécurité (une app peut-être
+            # boguée ou malveillante). Un audit de sécurité a montré
+            # qu'un message malformé (clé manquante ou en trop) levait
+            # ici un TypeError non rattrapé, qui tuait ce thread sans
+            # bruit : plus aucune commande n'était servie, l'app ne
+            # voyait que des TimeoutError sans en connaître la cause, et
+            # aucune alerte ne remontait. Désormais, le message est
+            # signalé sur la console (étiquette [SECURITY]) puis ignoré,
+            # le thread reste vivant, et l'app reçoit une erreur
+            # MALFORMED_COMMAND si son message portait un request_id.
             try:
                 cmd = HALCommand(**raw)
             except TypeError as exc:
@@ -281,11 +324,16 @@ class HALBridgeServer:
                                    data=self._ctx.stop_walking())
 
             if cmd.action == "get_joint_groups":
-                # Groupes DÉCLARÉS par le driver, transmis en noms d'enum
-                # (str) : le routage bras/jambes ne doit pas dépendre de
-                # mots-clés anglais devinés côté client, et JointGroup
-                # n'est pas sérialisable tel quel sans imposer l'import
-                # côté process enfant.
+                # Groupes d'articulations (bras, jambes…) tels que
+                # DÉCLARÉS par le driver (le pilote propre à chaque
+                # robot) ; à défaut de déclaration, le groupe est déduit
+                # du nom (infer_joint_group). JointGroup est une enum (un
+                # type Python à valeurs nommées) ; chaque groupe est
+                # transmis sous forme de chaîne, le nom de sa valeur, pour
+                # deux raisons : le routage bras/jambes ne doit pas
+                # dépendre de mots-clés anglais devinés côté client, et
+                # JointGroup ne traverse pas le pont tel quel sans obliger
+                # le processus enfant à l'importer.
                 out = {}
                 try:
                     for jdef in self._ctx._robot.get_joint_definitions():
@@ -299,7 +347,8 @@ class HALBridgeServer:
             if cmd.action == "move_arms":
                 commands = self._deserialize_commands(cmd.payload["commands"])
                 result = self._ctx.move_arms(commands)
-                # Compteur indépendant — voir __init__ (M3).
+                # Preuve de mouvement réel pour la facturation : voir
+                # __init__.
                 if any(status == HALStatus.OK for status in result.values()):
                     self.successful_motor_commands += 1
                 return HALResponse(cmd.request_id, True,
@@ -314,19 +363,19 @@ class HALBridgeServer:
                                    data={k: v.name for k, v in result.items()})
 
             elif cmd.action == "move_all":
-                # Trouvé manquant côté pont par un audit externe : sans
-                # cette action, waist_yaw_joint restait inatteignable
-                # par toute app sandboxée — ni un bras ni une jambe,
-                # ce joint n'est routable que par move_all(). L'appel
-                # self._ctx.move_all() ci-dessous EST la vérification
-                # de sécurité : self._ctx est le vrai RobotContext
-                # (voir __init__ de cette classe), donc
-                # _require(Permission.ACTUATORS_WRITE_ALL) s'exécute
-                # réellement ici, côté PROCESS PARENT — jamais dans le
-                # process enfant non fiable où tourne l'app sandboxée.
-                # Voir test_context_parity.py section 2 pour la
-                # vérification explicite que ce garde ne peut pas être
-                # contourné depuis le client.
+                # Un audit externe a relevé que cette action manquait au
+                # pont : sans elle, aucune app sandboxée ne pouvait
+                # atteindre waist_yaw_joint (la rotation de la taille),
+                # qui n'est ni un bras ni une jambe et n'est routable que
+                # par move_all().
+                # L'appel self._ctx.move_all() ci-dessous EST la
+                # vérification de sécurité : self._ctx est le vrai
+                # RobotContext (voir __init__), donc
+                # _require(Permission.ACTUATORS_WRITE_ALL) s'exécute ici,
+                # dans le processus parent, et jamais dans le processus
+                # enfant non fiable où tourne l'app. La section 1 de
+                # test/test_hal_bridge_extended.py vérifie que ce garde ne
+                # peut pas être contourné depuis le client.
                 commands = self._deserialize_commands(cmd.payload["commands"])
                 result = self._ctx.move_all(commands)
                 if any(status == HALStatus.OK for status in result.values()):
@@ -336,20 +385,22 @@ class HALBridgeServer:
 
             elif cmd.action == "get_full_state":
                 state = self._ctx.get_full_state()
-                # Sérialise TOUS les champs d'ActuatorFeedback, pas un
-                # sous-ensemble : le client reconstruit désormais de vrais
+                # Tous les champs d'ActuatorFeedback sont sérialisés, pas
+                # un sous-ensemble : le client reconstruit de vrais
                 # ActuatorFeedback (voir _deserialize_feedback), et une
-                # reconstruction partielle mentirait silencieusement sur
-                # current/voltage/error_code en les remplaçant par des
+                # reconstruction partielle mentirait sans bruit sur
+                # current, voltage et error_code en les remplaçant par des
                 # valeurs par défaut plausibles.
                 data = {jid: _serialize_feedback(fb) for jid, fb in state.items()}
                 return HALResponse(cmd.request_id, True, data=data)
 
             elif cmd.action == "get_joint_state":
-                # Même remarque que move_all ci-dessus : self._ctx.
-                # get_joint_state() applique _require(Permission.
-                # ACTUATORS_READ) côté serveur, avant même de lire le
-                # feedback réel.
+                # Comme pour move_all ci-dessus :
+                # self._ctx.get_joint_state() applique
+                # _require(Permission.ACTUATORS_READ) côté serveur, avant
+                # même de lire l'état mesuré du moteur (le « feedback »).
+                # Seul un sous-ensemble des champs est renvoyé (voir
+                # HALBridgeClient.get_joint_state).
                 joint_id = cmd.payload.get("joint_id", "")
                 fb = self._ctx.get_joint_state(joint_id)
                 if fb is None:
@@ -383,22 +434,28 @@ class HALBridgeServer:
                 return HALResponse(cmd.request_id, True)
 
             elif cmd.action == "emergency_stop":
-                # Voir RobotContext.emergency_stop() (correctif M11,
-                # audit de sécurité) pour le contexte complet.
+                # Arrêt d'urgence (e-stop) demandé par l'app elle-même. La
+                # permission EMERGENCY_STOP est vérifiée par le vrai
+                # RobotContext ; le contexte complet (un audit de sécurité
+                # externe avait relevé qu'aucune app ne pouvait déclencher
+                # un e-stop) est dans la docstring de
+                # RobotContext.emergency_stop().
                 status = self._ctx.emergency_stop()
                 return HALResponse(cmd.request_id, True, data={"status": status.name})
 
             elif cmd.action == "get_recent_alerts":
-                # Voir WatchdogSystem.get_recent_alerts() pour le
-                # contexte complet — self._ctx (le vrai RobotContext)
-                # n'expose pas cette méthode directement (elle vit sur
-                # WatchdogSystem, pas RobotContext) ; _require(
-                # Permission.WATCHDOG_READ) est donc appliqué ICI,
-                # explicitement, plutôt que délégué à self._ctx comme
-                # les autres actions — seule exception à ce pattern
-                # dans ce fichier, documentée pour qu'un futur ajout
-                # d'action n'oublie pas ce garde en copiant le
-                # mauvais exemple.
+                # Seule exception, dans ce fichier, à la règle « déléguer
+                # la vérification de permission à self._ctx » :
+                # get_recent_alerts() appartient à WatchdogSystem (le
+                # chien de garde qui surveille les moteurs et émet des
+                # alertes), pas à RobotContext. Le contrôle de
+                # Permission.WATCHDOG_READ est donc fait ICI,
+                # explicitement : la permission doit figurer dans le
+                # manifeste de l'app (la fiche où l'app déclare les droits
+                # qu'elle demande). C'est signalé pour qu'une future action
+                # du même genre, écrite en copiant les autres, n'oublie
+                # pas ce contrôle. Contexte complet : docstring de
+                # WatchdogSystem.get_recent_alerts().
                 if Permission.WATCHDOG_READ not in self._ctx._manifest.permissions:
                     return HALResponse(cmd.request_id, False,
                                        error="Permission refusée : WATCHDOG_READ "
@@ -419,20 +476,21 @@ class HALBridgeServer:
                                    error=f"Action inconnue : {cmd.action}")
 
         except SandboxPermissionError as exc:
-            # Préfixé, comme ESTOP_ACTIVE ci-dessous : le TYPE de l'erreur
-            # doit traverser le pont, pas seulement son message. Sans ça,
-            # une permission manquante devenait un RuntimeError générique,
-            # que les méthodes du client avalaient en rendant False — une
-            # app sandboxée ne pouvait plus distinguer « je n'ai pas le
-            # droit » de « ce robot n'a pas de jambes », alors qu'en
-            # direct elle recevait une PermissionError.
+            # Le TYPE de l'erreur doit traverser le pont, pas seulement
+            # son message : d'où ce préfixe, comme ESTOP_ACTIVE
+            # ci-dessous. Sans lui, une permission manquante devenait un
+            # RuntimeError générique, que les méthodes du client
+            # avalaient en renvoyant False. Une app sandboxée ne
+            # distinguait plus « je n'ai pas le droit » de « ce robot n'a
+            # pas de jambes », alors qu'en direct elle recevait une
+            # PermissionError.
             return HALResponse(cmd.request_id, False,
                                error=f"PERMISSION_DENIED:{exc}")
         except EstopActiveError as exc:
-            # Propagé distinctement — un e-stop survenu pendant qu'une
-            # app sandboxée exécute sa mission doit être identifiable
-            # côté enfant comme une interruption de sécurité, pas une
-            # erreur applicative générique (voir HALBridgeClient._call).
+            # Propagé à part : un e-stop survenu pendant la mission d'une
+            # app sandboxée doit être reconnu côté enfant comme une
+            # interruption de sécurité, et non comme une erreur
+            # applicative ordinaire (voir HALBridgeClient._call).
             return HALResponse(cmd.request_id, False, error=f"ESTOP_ACTIVE:{exc}")
         except Exception as exc:
             return HALResponse(cmd.request_id, False, error=f"{type(exc).__name__}: {exc}")
@@ -444,12 +502,16 @@ class HALBridgeServer:
                 mode=ControlMode[c["mode"]],
                 position=c.get("position"), velocity=c.get("velocity"),
                 torque=c.get("torque"), current=c.get("current"),
-                # stiffness/damping — trouvés perdus à la traversée du
-                # pont par un audit de sécurité (M7) : ni sérialisés ni
-                # désérialisés, rendant le mode IMPEDANCE annoncé mais
-                # non fonctionnel une fois une app sandboxée (ce qui
-                # est TOUJOURS le cas pour run_mission()/on_start()/
-                # on_stop() depuis le correctif C4).
+                # stiffness (raideur) et damping (amortissement) : un
+                # audit de sécurité a montré qu'ils se perdaient à la
+                # traversée du pont, ni sérialisés ni désérialisés. Le
+                # mode IMPEDANCE (le moteur se comporte comme un ressort
+                # amorti) était donc annoncé mais inopérant dès qu'une
+                # app tournait en sandbox, c'est-à-dire toujours pour
+                # run_mission(), on_start() et on_stop() : un correctif
+                # antérieur, lui aussi issu d'un audit de sécurité
+                # externe, fait passer ces trois méthodes par le sandbox
+                # (voir CHANGELOG.md).
                 stiffness=c.get("stiffness"), damping=c.get("damping"),
             )
             for jid, c in raw.items()
@@ -457,15 +519,18 @@ class HALBridgeServer:
 
 
 # ─────────────────────────────────────────────────────────────────
-#  CÔTÉ ENFANT — proxy que l'app sandboxée utilise
+#  CÔTÉ ENFANT — le substitut de RobotContext utilisé par l'app
 # ─────────────────────────────────────────────────────────────────
 
 class _IMUProxy:
     """
-    Proxy local retourné par HALBridgeClient.get_imu(), compatible
-    avec le contrat IIMU (interfaces.py) — expose .read() -> Optional
-    [IMUData], au lieu de retourner directement un dict brut. Voir
-    HALBridgeClient.get_imu() pour le contexte complet du correctif.
+    Objet local renvoyé par HALBridgeClient.get_imu(). Il respecte le
+    contrat IIMU (l'interface d'une IMU, la centrale inertielle qui
+    mesure accélérations, vitesses de rotation et orientation ; voir
+    axis_os/hal/core/interfaces.py) : il expose .read() ->
+    Optional[IMUData] au lieu de rendre directement un dict brut. Le
+    contexte de ce correctif est dans la docstring de
+    HALBridgeClient.get_imu().
     """
 
     def __init__(self, client: "HALBridgeClient"):
@@ -491,12 +556,15 @@ class _IMUProxy:
 
 class HALBridgeClient:
     """
-    Tourne dans le process ENFANT (sandboxé). Remplace RobotContext
-    pour les apps isolées — même API de surface, mais chaque appel
-    part en IPC vers le vrai HAL côté parent.
+    Tourne dans le processus ENFANT (l'app sandboxée). Remplace
+    RobotContext pour les apps isolées : même API publique, mais chaque
+    appel part par IPC vers le vrai HAL, côté parent.
 
-    L'app ne voit AUCUNE différence avec un RobotContext normal
-    pour les opérations supportées.
+    Pour les opérations prises en charge, l'app ne voit AUCUNE
+    différence avec un RobotContext normal ; les rares écarts restants
+    sont documentés méthode par méthode (par exemple subscribe_alerts()).
+    test/test_context_parity.py vérifie que les deux API publiques ne
+    divergent pas.
     """
 
     def __init__(self, command_queue: mp.Queue, response_queue: mp.Queue,
@@ -506,9 +574,10 @@ class HALBridgeClient:
         self._timeout  = timeout_s
         self._req_id   = 0
         self._local_log: list = []
-        # Voir subscribe_alerts() pour le contexte complet — polling
-        # en arrière-plan, seule adaptation possible d'un vrai
-        # callback à travers la frontière de process.
+        # Abonnement aux alertes par interrogation périodique (polling)
+        # en arrière-plan : seule façon de reproduire un vrai callback
+        # (une fonction de l'app appelée à chaque alerte) à travers la
+        # frontière entre processus. Voir subscribe_alerts().
         self._alert_poll_thread: Optional[threading.Thread] = None
         self._alert_poll_stop = threading.Event()
         self._alert_poll_interval_s = alert_poll_interval_s
@@ -516,15 +585,18 @@ class HALBridgeClient:
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         """
-        Retourne de vrais HALStatus, pas les chaînes brutes — bug
-        trouvé en corrigeant C4 (sandboxing de on_start/on_stop) :
-        le serveur sérialise déjà HALStatus.name en chaîne pour le
-        transport IPC (nécessaire, les enums ne sont pas garantis
-        picklables tels quels selon le contexte), mais rien côté
-        client ne les reconstruisait. Une app qui teste
-        `status.value` ou `status == HALStatus.OK` sur le résultat
-        (comme package_sorting.py) échouait avec une AttributeError,
-        jamais exercé avant que on_start() soit réellement sandboxé.
+        Renvoie de vrais HALStatus, pas les chaînes brutes du transport.
+
+        Le serveur convertit chaque HALStatus en son nom (une chaîne) pour
+        le transport IPC, ce qui est nécessaire : selon le contexte, une
+        enum n'est pas garantie sérialisable par pickle telle quelle. Mais
+        le client ne reconstruisait pas les HALStatus. Une app qui
+        testait `status.value` ou `status == HALStatus.OK` sur le
+        résultat (comme package_sorting.py) échouait : AttributeError
+        dans le premier cas, comparaison toujours fausse dans le second.
+        Le bug est apparu quand un audit de sécurité a fait passer
+        on_start() et on_stop() par le sandbox : ce chemin n'avait
+        jamais été exercé auparavant.
         """
         raw = self._call("move_arms", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
@@ -535,25 +607,30 @@ class HALBridgeClient:
 
     def move_all(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
         """
-        Équivalent de RobotContext.move_all() — trouvé manquant côté
-        pont par un audit externe. Sans cette méthode, waist_yaw_joint
-        restait inatteignable par toute app sandboxée : ce n'est ni un
-        bras ni une jambe (voir le routage par mots-clés dans
-        move_arms/move_legs), donc seul move_all() peut l'atteindre.
-        La vérification de permission (ACTUATORS_WRITE_ALL) a lieu
-        côté SERVEUR (voir HALBridgeServer._handle(), action
-        "move_all") — jamais ici, dans ce process client non fiable.
+        Équivalent de RobotContext.move_all(), ajouté au pont après qu'un
+        audit externe a relevé son absence. Sans cette méthode, aucune app
+        sandboxée ne pouvait atteindre waist_yaw_joint : ce n'est ni un
+        bras ni une jambe (move_arms et move_legs routent selon le groupe
+        déclaré de chaque articulation), donc seul move_all() peut le
+        commander.
+
+        La permission ACTUATORS_WRITE_ALL est vérifiée côté serveur (voir
+        HALBridgeServer._handle(), action "move_all"), et jamais ici, dans
+        ce processus client non fiable.
         """
         raw = self._call("move_all", {"commands": self._serialize(commands)})
         return {jid: HALStatus[name] for jid, name in raw.items()}
 
     def now(self) -> float:
-        """Heure du ROBOT, demandée au noyau : en simulation, l'app
-        sandboxée n'a aucun autre moyen de connaître l'heure simulée."""
+        """Heure du robot (et non l'heure réelle), demandée au noyau
+        d'AXIS-OS (le processus parent) : en simulation, l'app sandboxée
+        n'a pas d'autre moyen de connaître l'heure simulée."""
         return float(self._call("now", {}))
 
     def sleep(self, secondes: float) -> None:
-        """Attente en temps du ROBOT, par consultations successives."""
+        """Attend une durée exprimée en temps du robot (et non en temps
+        réel), en redemandant l'heure du robot au noyau, avec une pause
+        de 5 ms entre deux demandes."""
         fin = self.now() + max(0.0, secondes)
         while self.now() < fin:
             time.sleep(0.005)
@@ -572,8 +649,10 @@ class HALBridgeClient:
             return default
 
     def listen(self, duration_s: float = 3.0):
-        """Identique à RobotContext.listen(), Y COMPRIS LE TYPE : un
-        vrai Intent, pas un dict sérialisé."""
+        """Identique à RobotContext.listen(), y compris le type renvoyé :
+        un vrai Intent (l'intention reconnue dans ce que l'utilisateur a
+        dit), pas un dict sérialisé. La durée d'écoute allonge le délai
+        d'attente de la réponse (voir _delai())."""
         try:
             raw = self._call("listen", {"duration_s": duration_s},
                              duree_nominale_s=duration_s)
@@ -598,8 +677,8 @@ class HALBridgeClient:
 
     def look_for(self, query: Optional[str] = None,
                  frame: str = "base") -> list:
-        """Identique à RobotContext.look_for(), Y COMPRIS LE TYPE : de
-        vraies Detection, pas des dicts sérialisés."""
+        """Identique à RobotContext.look_for(), y compris le type renvoyé :
+        de vraies Detection, pas des dicts sérialisés."""
         try:
             raw = self._call("look_for", {"query": query, "frame": frame})
         except RuntimeError as exc:
@@ -627,11 +706,12 @@ class HALBridgeClient:
             return False
 
     def _joint_groups(self) -> Dict[str, str]:
-        """Groupes déclarés par le HAL, récupérés une fois via le pont.
+        """Groupes d'articulations déclarés par le HAL, demandés une seule
+        fois au serveur puis gardés en cache.
 
-        Les noms d'enum transitent en str : JointGroup n'est pas
-        sérialisable tel quel à travers multiprocessing.Queue sans
-        imposer l'import côté enfant.
+        Ils arrivent sous forme de noms (des chaînes) : JointGroup ne
+        traverse pas multiprocessing.Queue tel quel sans imposer son
+        import côté enfant.
         """
         if self.__groups_cache is None:
             try:
@@ -641,24 +721,28 @@ class HALBridgeClient:
         return self.__groups_cache
 
     def get_full_state(self) -> Dict[str, ActuatorFeedback]:
-        """Identique à RobotContext.get_full_state(), Y COMPRIS LE TYPE
-        DE RETOUR : de vrais ActuatorFeedback, pas des dicts sérialisés.
-        Le transport par dict reste interne au pont."""
+        """Identique à RobotContext.get_full_state(), y compris le type
+        renvoyé : de vrais ActuatorFeedback, pas des dicts sérialisés. Le
+        transport par dict reste interne au pont."""
         raw = self._call("get_full_state", {})
         return {jid: _deserialize_feedback(jid, d) for jid, d in raw.items()}
 
     def get_joint_state(self, joint_id: str) -> Optional[Dict[str, Any]]:
         """
-        Équivalent de RobotContext.get_joint_state() — retourne un dict
-        brut (position/velocity/torque/temperature/state), pas un
-        ActuatorFeedback réel, cohérent avec get_full_state() côté
-        sandbox (voir sa docstring de classe : même API de surface,
-        pas nécessairement les mêmes types internes). None si le
-        joint n'existe pas — le serveur signale ce cas précis par un
-        RuntimeError générique (voir _call(), aucune exception dédiée
-        pour ce cas), donc capturé ici spécifiquement plutôt que
-        toute exception, pour ne jamais masquer un vrai TimeoutError
-        ou EstopActiveError qui doivent, eux, remonter normalement.
+        Équivalent de RobotContext.get_joint_state(). Renvoie un vrai
+        ActuatorFeedback, reconstruit par _deserialize_feedback() comme
+        dans get_full_state() ; l'annotation de type (un dict) date d'une
+        version antérieure qui renvoyait le dict brut. Pour cette action,
+        le serveur n'envoie que position, velocity, torque, temperature
+        et state : current, voltage et error_code valent donc 0 dans
+        l'objet renvoyé.
+
+        Renvoie None si l'articulation n'existe pas. Le serveur signale ce
+        cas par une simple erreur, que _call() transforme en RuntimeError
+        générique (il n'existe pas d'exception dédiée). Seul RuntimeError
+        est donc rattrapé ici, et non toute exception, pour ne jamais
+        masquer un vrai TimeoutError ou EstopActiveError, qui doivent
+        remonter normalement.
         """
         try:
             d = self._call("get_joint_state", {"joint_id": joint_id})
@@ -673,17 +757,24 @@ class HALBridgeClient:
         step_s: float = 0.05,
     ) -> bool:
         """
-        Équivalent de RobotContext.move_to_pose() (voir sa docstring
-        pour le contexte complet — correctif suivant C5, audit de
-        sécurité) — DIFFÈRE uniquement dans la lecture du feedback :
-        get_full_state() retourne désormais de vrais ActuatorFeedback
-        des deux côtés du pont (fb.position)
-        comme côté RobotContext non sandboxé. Toute app doit pouvoir
-        appeler move_to_pose() identiquement, sandboxée ou non — c'est
-        exactement le rôle de HALBridgeClient (même API de surface que
-        RobotContext, voir sa docstring de classe) ; réimplémenté ici
-        plutôt que factorisé pour ne pas introduire de dépendance
-        croisée entre process parent et enfant sur ce détail interne.
+        Équivalent de RobotContext.move_to_pose(), dont la docstring donne
+        le contexte complet. En bref : un audit de sécurité externe a fait
+        borner l'écart de position accepté en une seule commande
+        (position_delta_max) ; une cible lointaine ne peut donc plus être
+        atteinte d'un coup, et move_to_pose() y va par petits pas
+        interpolés depuis la position mesurée (voir CHANGELOG.md).
+
+        Toute app doit pouvoir appeler move_to_pose() de la même façon,
+        sandboxée ou non : c'est le rôle même de HALBridgeClient (même
+        API publique que RobotContext). La lecture du feedback est
+        désormais identique des deux côtés du pont, car get_full_state()
+        renvoie de vrais ActuatorFeedback (fb.position). Seule différence
+        restante : le routage bras/jambes demande les groupes
+        d'articulations au serveur (voir _joint_groups()).
+
+        Le code est réécrit ici plutôt que partagé avec RobotContext, pour
+        ne pas créer de dépendance croisée entre processus parent et
+        processus enfant sur ce détail interne.
         """
         import time as _time
 
@@ -706,10 +797,10 @@ class HALBridgeClient:
                     mode=ControlMode.POSITION, position=interpolated,
                 )
 
-            # Même routage par groupe DÉCLARÉ que RobotContext, pas de
-            # devinement par mots-clés anglais. Côté client du pont, on
-            # n'a pas get_joint_definitions() sous la main : on demande
-            # les groupes au serveur, qui les tient du HAL.
+            # Même routage par groupe DÉCLARÉ que RobotContext, sans
+            # deviner à partir de mots-clés anglais. Côté client du pont,
+            # get_joint_definitions() n'est pas disponible : on demande
+            # donc les groupes au serveur, qui les tient du HAL.
             groups = self._joint_groups()
             arm_cmds = {jid: c for jid, c in step_commands.items()
                         if groups.get(jid) == JointGroup.MANIPULATION.name}
@@ -740,22 +831,24 @@ class HALBridgeClient:
 
     def get_imu(self) -> "Optional[_IMUProxy]":
         """
-        Retourne un proxy exposant `.read() -> Optional[IMUData]`,
-        cohérent avec le contrat `IIMU` réel (voir interfaces.py) —
-        bug trouvé par un audit de sécurité, révélé en corrigeant C4
-        (sandboxing de on_start/on_stop) : cette méthode retournait
-        directement un dict brut, alors que les apps existantes
-        (package_sorting.py notamment) appellent `ctx.get_imu().read()`
-        exactement comme avec le vrai RobotContext non sandboxé. Avant
-        ce correctif, ce chemin n'avait jamais été exercé en usage réel
-        (on_start n'était jamais sandboxé), donc l'incohérence était
+        Renvoie un proxy (un objet local qui relaie chaque lecture vers le
+        serveur) exposant `.read() -> Optional[IMUData]`, comme le contrat
+        `IIMU` réel (voir axis_os/hal/core/interfaces.py).
+
+        Pourquoi : un audit de sécurité a révélé que cette méthode
+        renvoyait directement un dict brut, alors que les apps existantes
+        (package_sorting.py notamment) appellent `ctx.get_imu().read()`,
+        exactement comme avec le vrai RobotContext hors sandbox. Le défaut
+        est apparu quand on_start() et on_stop() sont passés par le
+        sandbox : auparavant, ce chemin n'avait jamais été exercé en usage
+        réel (on_start ne tournait pas en sandbox), et l'incohérence était
         restée invisible.
 
-        L'appel réseau réel (`_call("get_imu", {})`) n'a lieu qu'au
-        moment où `.read()` est appelé sur le proxy, pas à la
-        construction du proxy — cohérent avec IIMU.read(), qui peut
-        retourner None si le capteur ne répond pas au moment précis
-        de l'appel plutôt qu'une seule fois au début de la mission.
+        L'appel au serveur (`_call("get_imu", {})`) n'a lieu qu'au moment
+        où `.read()` est appelé sur le proxy, et non à sa construction.
+        C'est cohérent avec IIMU.read(), qui peut renvoyer None si le
+        capteur ne répond pas au moment précis de l'appel : la mesure est
+        prise à chaque lecture, pas une seule fois en début de mission.
         """
         return _IMUProxy(self)
 
@@ -765,30 +858,40 @@ class HALBridgeClient:
 
     def subscribe_alerts(self, callback) -> None:
         """
-        Équivalent de RobotContext.subscribe_alerts() — trouvé
-        manquant côté pont par un audit externe. Adaptation nécessaire
-        et non triviale : un vrai Callable Python ne peut PAS
-        traverser une multiprocessing.Queue (non sérialisable), donc
-        le process enfant sandboxé ne peut structurellement pas
-        recevoir un vrai callback synchrone du Watchdog comme le fait
-        RobotContext.subscribe_alerts() (délégation directe à
-        WatchdogSystem.subscribe(), même process). Implémenté ici par
-        POLLING en arrière-plan (WatchdogSystem.get_recent_alerts(),
-        voir sa docstring pour le contexte complet) — même signature
-        publique (callback appelé à chaque nouvelle alerte) que
-        RobotContext, mais latence de polling (self._alert_poll_interval_s)
-        au lieu d'un vrai temps réel synchrone. Documenté explicitement
-        plutôt que silencieusement approximé : une app qui a besoin
-        d'une latence d'alerte garantie ne doit pas tourner sandboxée.
+        Équivalent de RobotContext.subscribe_alerts(), ajouté au pont
+        après qu'un audit externe a relevé son absence.
 
-        Un seul callback actif à la fois côté sandbox (contrairement
-        à RobotContext, qui accumule les abonnés sur
-        WatchdogSystem._subscribers) — suffisant pour l'usage prévu
-        (une app sandboxée, un seul point d'écoute), et évite de
-        multiplier les threads de polling par abonnement.
+        L'adaptation n'est pas triviale. Une fonction Python (le callback)
+        ne peut pas traverser une multiprocessing.Queue, car elle n'est
+        pas sérialisable. Le processus enfant ne peut donc pas recevoir un
+        vrai callback synchrone du Watchdog, comme le fait RobotContext
+        en déléguant à WatchdogSystem.subscribe() dans le même processus.
+        Ici, un thread d'arrière-plan interroge périodiquement le serveur
+        (polling, par WatchdogSystem.get_recent_alerts() ; voir sa
+        docstring). La signature publique est la même (le callback est
+        appelé à chaque nouvelle alerte), mais avec la latence de
+        l'interrogation (self._alert_poll_interval_s, 0,5 s par défaut)
+        au lieu d'un appel immédiat. C'est documenté plutôt qu'approché
+        en silence : une app qui a besoin d'une latence d'alerte garantie
+        ne doit pas tourner en sandbox.
+
+        Autre différence : le callback reçoit un dict (kind, severity,
+        message, joint_id ; kind et severity sous forme de noms), et non
+        l'objet alerte du Watchdog.
+
+        Un seul callback est actif à la fois côté sandbox (RobotContext,
+        lui, accumule les abonnés dans WatchdogSystem._subscribers). Cela
+        suffit pour l'usage prévu (une app sandboxée, un seul point
+        d'écoute) et évite un thread d'interrogation par abonnement. Un
+        second appel est sans effet.
+
+        Sans la permission WATCHDOG_READ, RobotContext lève PermissionError
+        dès l'abonnement. Ici, l'abonnement est accepté, mais le serveur
+        refuse la première interrogation : le thread s'arrête alors sans
+        prévenir l'app, et le callback n'est jamais appelé.
         """
         if self._alert_poll_thread is not None:
-            return  # déjà abonné — no-op, cohérent avec un seul callback actif
+            return  # déjà abonné : sans effet, un seul callback actif
         self._alert_poll_thread = threading.Thread(
             target=self._alert_poll_loop, args=(callback,), daemon=True,
             name="hal-bridge-alert-poll",
@@ -801,62 +904,73 @@ class HALBridgeClient:
             try:
                 raw = self._call("get_recent_alerts", {"since_index": since_index})
             except (TimeoutError, RuntimeError):
-                break  # pont fermé (voir HALBridgeServer.stop()) — arrêt propre
+                # Pont fermé (voir HALBridgeServer.stop()), ou erreur
+                # renvoyée par le serveur, par exemple un refus de la
+                # permission WATCHDOG_READ : arrêt propre du thread.
+                break
             except (OSError, EOFError, BrokenPipeError):
-                # Le process parent (ou le process courant en fin de
-                # script) a détruit les Queue sous ce thread daemon —
-                # trouvé en testant ce mécanisme : un script qui se
-                # termine pendant qu'un abonnement est actif ferme les
-                # multiprocessing.Queue avant que ce thread daemon ne
-                # s'arrête proprement. Arrêt silencieux ici plutôt
-                # qu'un traceback bruyant en fin de process — ce n'est
-                # pas une erreur applicative, juste l'ordre normal de
-                # destruction des ressources en fin de vie du process.
+                # Les files ont été détruites sous ce thread, par le
+                # processus parent ou par le processus courant en fin de
+                # script. Constaté en testant ce mécanisme : un script qui
+                # se termine pendant qu'un abonnement est actif ferme ses
+                # multiprocessing.Queue avant que ce thread « daemon »
+                # (arrêté d'office avec le processus) ne s'arrête
+                # proprement. On s'arrête alors sans bruit plutôt que
+                # d'afficher une trace d'erreur en fin de processus : ce
+                # n'est pas une erreur applicative, seulement l'ordre
+                # normal de libération des ressources.
                 break
             for alert_dict in raw["alerts"]:
                 try:
                     callback(alert_dict)
                 except Exception:
-                    pass  # un callback défaillant ne doit jamais tuer ce thread
+                    pass  # un callback qui plante ne doit pas tuer ce thread
             since_index = raw["next_index"]
             self._alert_poll_stop.wait(self._alert_poll_interval_s)
 
     def emergency_stop(self) -> HALStatus:
-        """Voir RobotContext.emergency_stop() (correctif M11, audit de
-        sécurité) — même surface d'API, transmise via le pont IPC."""
+        """Équivalent de RobotContext.emergency_stop(), transmis par le
+        pont IPC. Ajouté après qu'un audit de sécurité externe
+        (docs/audit_externe_2026-09-14.md) a relevé qu'aucune app ne
+        pouvait déclencher elle-même un arrêt d'urgence ; contexte complet
+        dans la docstring de RobotContext.emergency_stop()."""
         raw = self._call("emergency_stop", {})
         return HALStatus[raw["status"]]
 
     def get_mission_log(self) -> list:
         """
-        Contrairement aux autres méthodes, le journal de mission est
-        tenu localement dans le process ENFANT plutôt que redemandé au
-        parent à chaque fois : chaque log() envoyé est aussi accumulé
-        ici, pour rendre HALBridgeClient utilisable en remplacement
-        direct de RobotContext sans changer une ligne dans les apps
-        existantes (PackageSorting, SecurityPatrol, WarehouseOps
-        appellent toutes ctx.get_mission_log() en fin de mission).
+        Contrairement aux autres méthodes, le journal de mission est tenu
+        localement, dans le processus enfant, au lieu d'être redemandé au
+        parent : chaque message envoyé par log() est aussi gardé ici. Le
+        but est que HALBridgeClient remplace RobotContext sans changer
+        une ligne des apps existantes (PackageSorting, SecurityPatrol et
+        WarehouseOps appellent toutes ctx.get_mission_log() en fin de
+        mission).
         """
         return list(self._local_log)
 
-    # Un appel qui BLOQUE PAR NATURE (écouter 2 s) peut durer bien plus
-    # longtemps en temps mural qu'en temps du robot quand la simulation
-    # est ralentie. Tolérance par défaut : une simulation jusqu'à 60 fois
-    # plus lente que le temps réel. Réglable pour des cas extrêmes.
+    # Un appel qui bloque par nature (écouter 2 s, par exemple) peut
+    # durer bien plus longtemps en temps réel (le « temps mural », celui
+    # d'une horloge au mur) qu'en temps du robot, quand la simulation
+    # tourne au ralenti. Tolérance par défaut : une simulation jusqu'à
+    # 60 fois plus lente que le temps réel. Réglable par la variable
+    # d'environnement AXIS_OS_BRIDGE_TOLERANCE pour les cas extrêmes.
     TOLERANCE_LENTEUR = float(os.environ.get("AXIS_OS_BRIDGE_TOLERANCE", "60"))
 
     def _delai(self, duree_nominale_s: float = 0.0) -> float:
-        """Délai d'attente MURAL d'un appel.
+        """Délai d'attente maximal d'un appel, en temps mural (réel).
 
-        Les 5 s de base servent à détecter un noyau MORT, pour des appels
-        censés répondre aussitôt. Un appel qui bloque par conception —
-        listen() écoute pendant sa durée — reçoit en plus sa durée
-        annoncée multipliée par la tolérance de lenteur.
+        Les 5 s de base (timeout_s) servent à détecter un noyau d'AXIS-OS
+        mort, pour les appels censés répondre aussitôt. Un appel qui
+        bloque par conception, comme listen() qui écoute pendant toute sa
+        durée, reçoit en plus sa durée annoncée multipliée par la
+        tolérance de lenteur.
 
-        Constaté sans cela : listen(2.0) en simulation ralentie par le
-        rendu 1080p dépassait 5 s murales, le pont concluait à un noyau
-        mort, et l'app PLANTAIT — troisième horloge murale trouvée sur ce
-        chemin, après la logique des apps et le quota du sandbox.
+        Piège constaté sans cela : listen(2.0), dans une simulation
+        ralentie par le rendu 1080p, dépassait 5 s réelles ; le pont
+        concluait à un noyau mort et l'app plantait. C'était la troisième
+        dépendance à l'horloge murale trouvée sur ce chemin, après la
+        logique des apps et le quota de temps du sandbox.
         """
         return self._timeout + max(0.0, duree_nominale_s) * self.TOLERANCE_LENTEUR
 
@@ -875,14 +989,16 @@ class HALBridgeClient:
                 continue
             resp = HALResponse(**raw)
             if resp.request_id != req_id:
-                continue  # réponse d'un autre appel — ignorer (best-effort)
+                # Réponse destinée à un autre appel : elle est écartée,
+                # au mieux et sans garantie (« best-effort »).
+                continue
             if not resp.success:
                 if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
                     raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
                 if resp.error and resp.error.startswith("PERMISSION_DENIED:"):
-                    # Même exception qu'en direct : une app écrite contre
-                    # RobotContext se comporte identiquement, sandboxée ou
-                    # non.
+                    # Même exception qu'en direct : une app écrite pour
+                    # RobotContext se comporte de la même façon, sandboxée
+                    # ou non.
                     raise SandboxPermissionError(
                         resp.error[len("PERMISSION_DENIED:"):])
                 raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
