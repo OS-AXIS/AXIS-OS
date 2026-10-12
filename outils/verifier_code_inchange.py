@@ -12,7 +12,10 @@ Ce qui est comparé, selon le type de fichier :
 
   .py       l'arbre syntaxique (AST) des deux versions, après retrait des
             docstrings (la chaîne placée en première instruction d'un
-            module, d'une classe ou d'une fonction). Les commentaires « # »
+            module, d'une classe ou d'une fonction) et de toute autre
+            instruction qui n'est qu'une chaîne littérale, comme les
+            « docstrings d'attribut » : Python les évalue puis les jette,
+            sans effet. Les commentaires « # »
             n'existent pas dans l'AST : ils sont ignorés d'office. Tout le
             reste (noms, valeurs, ordre des instructions) doit être
             identique.
@@ -70,14 +73,23 @@ def contenu(revision, chemin):
 
 # --- Python -----------------------------------------------------------------
 
+def _est_chaine_seule(instruction):
+    """Vrai pour une instruction qui n'est qu'une chaîne littérale : une
+    docstring, ou une « docstring d'attribut » placée sous un attribut de
+    classe. Python l'évalue puis la jette, sans aucun effet : la retirer ne
+    change rien à ce que fait le programme. Une f-string, elle, peut appeler
+    du code : elle n'est pas concernée."""
+    return (isinstance(instruction, ast.Expr)
+            and isinstance(instruction.value, ast.Constant)
+            and isinstance(instruction.value.value, str))
+
+
 def _sans_docstrings(arbre):
     for noeud in ast.walk(arbre):
-        if isinstance(noeud, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            corps = noeud.body
-            if (corps and isinstance(corps[0], ast.Expr)
-                    and isinstance(corps[0].value, ast.Constant)
-                    and isinstance(corps[0].value.value, str)):
-                noeud.body = corps[1:]
+        for champ in ("body", "orelse", "finalbody"):
+            corps = getattr(noeud, champ, None)
+            if isinstance(corps, list):
+                setattr(noeud, champ, [i for i in corps if not _est_chaine_seule(i)])
     return arbre
 
 
