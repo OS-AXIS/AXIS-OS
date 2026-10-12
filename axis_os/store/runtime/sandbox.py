@@ -1,39 +1,65 @@
 """
-AXIS-OS — Sandbox Runner v2
-=============================
-Isolation par processus (multiprocessing) pour chaque app Play Store.
+AXIS-OS — Exécuteur de sandbox (SandboxRunner), version 2
+==========================================================
+Chaque app du Play Store (la boutique d'apps du robot) tourne dans une
+sandbox (un « bac à sable ») : un processus séparé, surveillé, avec des
+quotas de CPU, de mémoire et de durée. Ce module crée ce processus, le
+surveille et rapporte comment il s'est terminé.
 
-Historique : v1 avait un bug de synchronisation entre le thread moniteur
-et le thread principal (accès concurrent à une liste sans verrou), pas
-de cycle de vie explicite, pas de taxonomie d'erreur, et un crash
-silencieux si la fonction cible n'était pas picklable. Corrigé en v2
-suite à une revue externe.
+Pourquoi un processus séparé (multiprocessing) plutôt qu'un thread :
+  - un thread partage la mémoire de l'OS : un plantage de l'app peut
+    emporter l'OS avec elle ;
+  - un processus séparé a sa propre mémoire : un plantage de l'app
+    n'affecte que l'app.
 
-Pourquoi multiprocessing et pas threading :
-  threading      → mémoire partagée → un crash app peut tuer l'OS
-  multiprocessing → processus séparé → un crash app n'affecte QUE l'app
+Historique : la version 1 avait quatre défauts, corrigés dans la
+version 2 à la suite d'une revue extérieure du code :
+  - le thread de surveillance et le thread principal accédaient à la
+    même liste sans verrou ;
+  - pas de cycle de vie explicite (voir SandboxState) ;
+  - pas de classement des erreurs (voir SandboxErrorKind) ;
+  - un plantage silencieux quand la fonction à exécuter ne pouvait pas
+    passer par pickle (le format de Python qui transforme un objet en
+    octets et inversement). Le sandbox exige que la fonction et ses
+    arguments passent par pickle, et le résultat revient au processus
+    de l'OS sous cette forme.
 
-Portée actuelle (documentée honnêtement) :
-  - Isole des fonctions dont les arguments/retour sont picklables
-    (calculs, logique métier, appels à un modèle IA tiers).
-  - N'isole PAS encore l'accès direct au HAL (RobotContext contient
-    des threads, non picklable). Voir hal_bridge.py pour le pattern
-    Command/Response Queue déjà prêt — l'intégration automatique dans
-    SandboxRunner viendra avec le Fleet Manager.
+Portée actuelle :
+  - Isole des fonctions dont les arguments et le résultat passent par
+    pickle : calculs, logique métier, appels à un modèle d'IA tiers.
+  - N'isole pas encore, à lui seul, l'accès direct à la HAL (la couche
+    d'abstraction matérielle, qui donne accès aux moteurs et aux
+    capteurs) : RobotContext, l'objet par lequel une app commande le
+    robot, contient des threads et ne passe pas par pickle. Le pont IPC
+    (la communication entre deux processus) de hal_bridge.py comble ce
+    manque par un schéma commande/réponse : l'app envoie ses commandes
+    par une file, le processus de l'OS les exécute et répond par une
+    autre. PlayStoreRuntime (play_store.py) branche déjà ce pont autour
+    de chaque appel à une app ; son intégration automatique dans
+    SandboxRunner lui-même est prévue avec le Fleet Manager (le futur
+    gestionnaire de flotte, voir docs/fleet_manager_design.md).
+
+Limite connue : cette isolation protège contre une app buggée
+(plantage, boucle infinie, dépassement de quota), pas contre une app
+délibérément hostile. Le processus de l'app démarre comme une copie de
+celui de l'OS (fork), et le canal entre les deux transporte des objets
+pickle, pas de simples données. Le constat et le plan de correction sont
+dans docs/isolation_apps.md et dans SECURITY.md (« Limites connues »).
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations
 import multiprocessing as mp
-# Sous-module IMPORTÉ EXPLICITEMENT : run() teste isinstance(a,
-# mp.queues.Queue), et `multiprocessing.queues` n'est pas chargé par
-# `import multiprocessing`. En production cela fonctionnait PAR HASARD —
-# le pont du sandbox crée des files avant et charge le sous-module au
-# passage. Dans tout autre contexte, CHAQUE exécution sandboxée
-# échouait en « Fonction ou arguments non picklables : module
-# 'multiprocessing' has no attribute 'queues' ». Trouvé par le test de
-# l'horloge du robot, qui appelait le sandbox directement.
+# Ce sous-module est importé explicitement parce que run() teste
+# isinstance(a, mp.queues.Queue) et que `import multiprocessing` ne le
+# charge pas. En production, cela fonctionnait par hasard : les files du
+# pont HAL sont créées avant l'appel au sandbox, ce qui charge le
+# sous-module au passage. Dans tout autre contexte, chaque exécution
+# sandboxée échouait avec « Fonction ou arguments non picklables :
+# module 'multiprocessing' has no attribute 'queues' ». Le défaut a été
+# trouvé par le test de l'horloge du robot, qui appelait le sandbox
+# directement.
 import multiprocessing.queues  # noqa: F401
 import pickle
 import threading
@@ -46,6 +72,17 @@ from axis_os.store.sdk.manifest import ResourceQuota
 
 
 class SandboxState(Enum):
+    """Étape du cycle de vie d'une exécution sandboxée.
+
+    CREATED, puis STARTING, RUNNING et STOPPING pendant run(), puis un
+    état final : STOPPED (fin normale), CRASHED (erreur de l'app,
+    plantage ou échec du lancement), TIMEOUT (processus encore vivant
+    après l'attente bornée de run(), donc tué) ou VIOLATED (quota de
+    CPU, de mémoire ou de durée constaté par _monitor_loop()). Un
+    dépassement de durée peut donc finir en TIMEOUT ou en VIOLATED,
+    selon qui le voit en premier ; error_kind vaut TIMEOUT dans les deux
+    cas. KILLED est défini mais n'est attribué nulle part aujourd'hui.
+    """
     CREATED  = auto()
     STARTING = auto()
     RUNNING  = auto()
@@ -58,6 +95,14 @@ class SandboxState(Enum):
 
 
 class SandboxErrorKind(Enum):
+    """Cause d'un échec, pour le diagnostic après coup.
+
+    APPLICATION_ERROR : l'app a levé une exception. CPU_QUOTA,
+    MEMORY_QUOTA, TIMEOUT : un quota a été dépassé. SANDBOX_ERROR : le
+    sandbox n'a pas pu lancer l'app (fonction ou arguments qui ne passent
+    pas par pickle, échec de création du processus). PROCESS_CRASH : le
+    processus s'est terminé sans renvoyer de résultat.
+    """
     APPLICATION_ERROR = auto()
     CPU_QUOTA          = auto()
     MEMORY_QUOTA        = auto()
@@ -68,6 +113,8 @@ class SandboxErrorKind(Enum):
 
 @dataclass
 class SandboxViolation:
+    """Quota dépassé : la règle enfreinte (« TIMEOUT », « CPU_QUOTA »,
+    « MEMORY_QUOTA »), la valeur mesurée et la limite."""
     app_id: str
     rule:   str
     value:  float
@@ -79,6 +126,8 @@ class SandboxViolation:
 
 
 class SandboxResult:
+    """Bilan d'une exécution : succès, état final, résultat renvoyé par
+    la fonction, quota enfreint, message et cause de l'erreur, durée."""
     def __init__(self, success: bool, state: SandboxState,
                  result: Optional[Any] = None,
                  violation: Optional[SandboxViolation] = None,
@@ -100,6 +149,8 @@ class SandboxResult:
 
 
 def _try_import_psutil():
+    """Renvoie le module psutil, ou None s'il n'est pas installé (voir
+    `strict` dans SandboxRunner.__init__ pour les conséquences)."""
     try:
         import psutil
         return psutil
@@ -109,7 +160,8 @@ def _try_import_psutil():
 
 class SandboxRunner:
     """
-    Exécute une fonction dans un processus isolé avec quotas et cycle de vie.
+    Exécute une fonction dans un processus séparé, avec des quotas et un
+    cycle de vie suivi (voir SandboxState).
 
     Usage :
         runner = SandboxRunner(app_id="com.acme.app", quota=manifest.quota)
@@ -121,25 +173,38 @@ class SandboxRunner:
                 strict: bool = False,
                 clock: Optional[Callable[[], float]] = None):
         """
-        `strict` : si True, refuse de démarrer (lève RuntimeError) si
-        `psutil` n'est pas disponible — False par défaut, rétrocompatible
-        avec tout appelant existant. Trouvé nécessaire par un audit de
-        sécurité (E9) : sans psutil, `_monitor_loop()` retourne
-        immédiatement et silencieusement (voir son code) — les quotas
-        CPU/RAM ne sont alors plus du tout appliqués, mais `run()`
-        continue de rapporter des exécutions "réussies" sans qu'aucune
-        de ces protections ne soit en vigueur. Le timeout dur (via
-        `proc.join(timeout=...)`) reste couvert même sans psutil — seuls
-        les quotas CPU/RAM en cours d'exécution dépendent de lui.
-        À activer explicitement dès qu'une app non vérifiée (développeur
-        externe) est exécutée.
+        `quota` : limites de CPU, de mémoire et de durée (ResourceQuota),
+        déclarées dans le manifeste de l'app (la fiche que toute app
+        fournit pour dire ce qu'elle a le droit de faire et ce qu'elle
+        consomme) ; les valeurs par défaut de ResourceQuota si None.
+
+        `strict` : si True, refuse de démarrer (lève RuntimeError) quand
+        `psutil` (la bibliothèque qui mesure le CPU et la mémoire d'un
+        processus) n'est pas installé. Un audit de sécurité externe
+        (2026-09-14, voir CHANGELOG.md et docs/audit_externe_2026-09-14.md)
+        a montré pourquoi : sans psutil, `_monitor_loop()` s'arrête
+        aussitôt, sans rien signaler (voir son code). Les quotas de CPU
+        et de mémoire ne sont alors plus appliqués du tout, mais `run()`
+        continue de rapporter des exécutions « réussies » sans qu'aucune
+        de ces protections soit en vigueur. Le délai maximal (timeout
+        dur, appliqué par l'attente bornée de `run()`) reste en vigueur
+        même sans psutil ; seuls les quotas de CPU et de mémoire en cours
+        d'exécution dépendent de lui. False par défaut, pour rester
+        compatible avec les appelants existants. À activer explicitement
+        dès qu'on exécute une app non vérifiée (écrite par un développeur
+        externe).
+
+        `clock` : l'horloge du robot (voir le commentaire ci-dessous) ;
+        time.monotonic si None.
         """
         self._app_id = app_id
-        # HORLOGE DU ROBOT, pas du mur. En simulation, l'horloge simulée ;
-        # sur le vrai robot, l'horloge réelle — donc aucun changement de
-        # comportement. Constaté : une simulation ralentie par le rendu vidéo
-        # faisait tuer une mission par son quota de 300 s MURALES alors
-        # qu'elle n'avait vécu qu'une trentaine de secondes simulées.
+        # Horloge du robot, pas l'horloge murale (le temps réellement
+        # écoulé, celui d'une montre). Constaté : une simulation ralentie
+        # par le rendu vidéo faisait tuer une mission par son quota de
+        # 300 s de temps mural, alors qu'elle n'avait vécu qu'une
+        # trentaine de secondes simulées. On prend donc l'horloge simulée
+        # en simulation et l'horloge réelle sur le vrai robot, où le
+        # comportement ne change pas.
         self._clock = clock or time.monotonic
         self._quota  = quota or ResourceQuota()
         self._psutil = _try_import_psutil()
@@ -179,21 +244,32 @@ class SandboxRunner:
 
     def run(self, target_fn: Callable, args: tuple = (),
             kwargs: Optional[dict] = None) -> SandboxResult:
+        """Exécute target_fn(*args, **kwargs) dans un processus séparé et
+        attend sa fin, dans la limite de la durée maximale du quota.
+
+        Les échecs prévus (lancement impossible, exception de l'app, quota
+        dépassé, plantage) sont rapportés dans le SandboxResult renvoyé,
+        pas levés en exception."""
         kwargs = kwargs or {}
         t_start = self._clock()
         self._set_state(SandboxState.STARTING)
 
+        # Contrôle préventif : vérifier dès maintenant que la fonction et
+        # ses arguments passent par pickle, pour renvoyer une erreur
+        # claire (SANDBOX_ERROR) au lieu du plantage silencieux de la
+        # version 1.
         try:
             pickle.dumps(target_fn)
-            # mp.Queue est délibérément EXCLUE de ce check : elle n'est
-            # picklable que dans le contexte précis du passage à
-            # Process(args=...) au moment du vrai fork, jamais via un
-            # pickle.dumps() isolé comme celui-ci (RuntimeError
-            # "Queue objects should only be shared through inheritance").
-            # Bug réel trouvé en branchant HALBridgeServer/Client dans
-            # PlayStoreRuntime — les Queues du bridge faisaient échouer
-            # ce check préventif alors qu'elles fonctionnent normalement
-            # une fois transmises au vrai Process ci-dessous.
+            # Les files mp.Queue sont volontairement exclues de ce
+            # contrôle : une file ne peut être transmise qu'au moment
+            # précis où elle est passée à Process(args=...), lors de la
+            # création du processus qui en hérite ; un pickle.dumps()
+            # isolé comme celui-ci la refuse (RuntimeError « Queue objects
+            # should only be shared through inheritance »). Bug réel,
+            # trouvé en branchant le pont HAL (HALBridgeServer/Client)
+            # dans PlayStoreRuntime : les files du pont faisaient échouer
+            # ce contrôle préventif, alors qu'elles fonctionnent
+            # normalement une fois transmises au vrai Process ci-dessous.
             picklable_args = tuple(a for a in args if not isinstance(a, mp.queues.Queue))
             pickle.dumps(picklable_args)
             pickle.dumps(kwargs)
@@ -206,16 +282,21 @@ class SandboxRunner:
                 duration_s=self._clock() - t_start,
             )
 
-        # Contexte "fork" forcé explicitement — indépendant de la méthode
-        # de démarrage par défaut du système. Trouvé en testant sur un
-        # vrai serveur Ubuntu/Python 3.14 : le défaut y est "forkserver",
-        # qui exige que la fonction cible soit importable depuis un vrai
-        # module. Une fonction définie dans un script exécuté directement
-        # (ou en `python3 -c`) échoue alors silencieusement avec
-        # "AttributeError: module '__main__' has no attribute ...".
-        # "fork" duplique le process tel quel, la fonction est déjà en
-        # mémoire — fonctionne dans tous les cas sur Linux (pas Windows,
-        # non concerné par AXIS-OS).
+        # Méthode de démarrage « fork » (le nouveau processus est une copie
+        # de celui-ci) imposée, quel que soit le défaut du système.
+        # Constaté sur un vrai serveur Ubuntu avec Python 3.14 : le défaut
+        # y est « forkserver », qui exige que la fonction cible soit
+        # importable depuis un vrai module. Une fonction définie dans un
+        # script exécuté directement (ou par `python3 -c`) échoue alors en
+        # silence avec « AttributeError: module '__main__' has no
+        # attribute ... ». « fork » duplique le processus tel quel, la
+        # fonction est déjà en mémoire : cela marche dans tous les cas
+        # sous Linux (pas sous Windows, qu'AXIS-OS ne vise pas).
+        #
+        # Contrepartie connue : le processus de l'app hérite ainsi d'une
+        # copie de toute la mémoire de l'OS. C'est l'une des faiblesses
+        # d'isolation décrites dans docs/isolation_apps.md, dont le plan
+        # prévoit de passer à « spawn » (un interpréteur Python neuf).
         ctx = mp.get_context("fork")
         result_queue: mp.Queue = ctx.Queue()
         proc = ctx.Process(
@@ -242,14 +323,18 @@ class SandboxRunner:
         )
         monitor.start()
 
-        # Attente bornée en temps du ROBOT : join() ne connaît que le temps
-        # mural, on attend donc par petits pas en consultant l'horloge.
+        # Attente bornée en temps du robot : join() ne connaît que le temps
+        # mural, on attend donc par petits pas (50 ms) en consultant
+        # l'horloge du robot.
         while (proc.is_alive()
                and self._clock() - t_start < self._quota.max_runtime_s + 1.0):
             proc.join(timeout=0.05)
         self._set_state(SandboxState.STOPPING)
 
         try:
+            # Encore vivant après l'attente : la durée maximale (plus une
+            # marge d'une seconde) est dépassée. On demande l'arrêt
+            # (terminate), puis on force (kill) si le processus résiste.
             if proc.is_alive():
                 proc.terminate()
                 proc.join(timeout=2.0)
@@ -272,6 +357,8 @@ class SandboxRunner:
                     duration_s=self._clock() - t_start,
                 )
 
+            # Processus terminé, de lui-même ou tué par _monitor_loop() :
+            # un quota enfreint l'emporte sur tout résultat renvoyé.
             violation = self._get_violation()
             if violation is not None:
                 kind = (SandboxErrorKind.CPU_QUOTA if violation.rule == "CPU_QUOTA"
@@ -314,6 +401,10 @@ class SandboxRunner:
             self._cleanup(proc, result_queue)
 
     def _cleanup(self, proc: mp.Process, result_queue: mp.Queue) -> None:
+        """Nettoyage final, toujours appelé à la fin de run() : tue le
+        processus s'il vit encore, puis ferme la file de résultat. Les
+        erreurs y sont ignorées : le résultat de run() est déjà établi à
+        ce stade."""
         try:
             if proc.is_alive():
                 proc.kill()
@@ -328,10 +419,17 @@ class SandboxRunner:
 
     def _monitor_loop(self, proc: mp.Process, t_start: float) -> None:
         """
-        Surveille CPU/RAM du process enfant. Tue si dépassement persistant.
+        Surveille le CPU et la mémoire du processus de l'app, dans un
+        thread à part, et le tue en cas de dépassement persistant ou de
+        durée dépassée.
 
-        Correction v2 : exige 3 échantillons CPU consécutifs au-dessus du
-        seuil avant de déclencher — évite les faux positifs d'un seul pic.
+        Ne fait rien sans psutil (voir `strict` dans __init__).
+
+        Correction de la version 2 : il faut 3 mesures CPU consécutives
+        au-dessus du seuil (deux fois quota.max_cpu_percent) pour
+        déclencher, afin d'éviter une fausse alerte sur un pic isolé. Pour
+        la mémoire, en revanche, le processus est arrêté dès la première
+        mesure au-dessus de quota.max_memory_mb.
         """
         if self._psutil is None:
             return
@@ -380,20 +478,23 @@ class SandboxRunner:
 
 
 def _reensemencer_alea() -> None:
-    """Donne au processus fils son PROPRE aléa.
+    """Donne au processus fils (celui de l'app) son propre aléa.
 
-    Le fils est créé par DUPLICATION du parent : il hérite de l'état de
-    tous les générateurs aléatoires tel qu'il était à ce moment-là, et ce
-    qu'il consomme n'est jamais renvoyé au parent. Sans réensemencement,
-    CHAQUE mission tire exactement les mêmes nombres.
+    Le fils est créé par duplication du parent : il hérite de l'état de
+    tous les générateurs aléatoires tel qu'il était à cet instant, et ce
+    qu'il en consomme n'est jamais renvoyé au parent. Sans
+    réensemencement, chaque mission tirerait exactement les mêmes
+    nombres.
 
     Constaté : une app qui simulait 30 % d'échecs de saisie échouait
-    soit 20 missions sur 20, soit 0 sur 20 — selon un seul tirage fait à
+    soit 20 missions sur 20, soit 0 sur 20, selon un seul tirage fait à
     sa création. Le test qui la couvrait passait ou échouait au hasard.
 
-    Ne couvre que les générateurs GLOBAUX (random, numpy). Un générateur
-    PROPRE à l'app (random.Random() créé dans __init__) reste figé : c'est
-    à l'app de le recréer par mission — voir WarehouseOpsApp.
+    Ne couvre que les générateurs globaux (module random, et numpy s'il
+    est déjà chargé). Un générateur propre à l'app (un random.Random()
+    créé dans son __init__) reste figé : c'est à l'app de le recréer à
+    chaque mission, comme le fait WarehouseOpsApp
+    (axis_os/apps/warehouse_ops/app.py).
     """
     import os
     import random
@@ -408,6 +509,9 @@ def _reensemencer_alea() -> None:
 
 
 def _sandbox_entrypoint(target_fn, args, kwargs, result_queue: mp.Queue) -> None:
+    """Point d'entrée du processus de l'app : réensemence l'aléa, appelle
+    la fonction, puis renvoie au parent par result_queue soit son
+    résultat, soit le type et le message de l'exception levée."""
     try:
         _reensemencer_alea()
         result = target_fn(*args, **kwargs)
