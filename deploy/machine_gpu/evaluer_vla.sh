@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# Évaluation du VLA entraîné (entrainer_vla.sh) contre les réflexes codés :
-# les MÊMES cartons, essayés par chaque mode, dans Isaac Sim.
+# Évaluation du VLA entraîné par entrainer_vla.sh, comparé aux réflexes
+# codés.
+#
+# Un VLA (modèle « vision-langage-action ») est un réseau de neurones qui
+# regarde par les caméras du robot et propose des mouvements ; ici, le modèle
+# GR00T N1.7 de NVIDIA, affiné sur nos démonstrations de prise de cartons.
+# Les « réflexes » sont les comportements programmés à la main (approche du
+# carton et prise).
+# Pour que la comparaison soit juste, chaque mode essaie les MÊMES cartons,
+# dans Isaac Sim, le simulateur de robotique de NVIDIA.
 #
 #   bash evaluer_vla.sh [cartons] [accélération_vidéo] [options du test]
 #       cartons      20 par défaut (chacun essayé 2 fois : réflexes puis VLA)
@@ -10,32 +18,51 @@
 #       bash evaluer_vla.sh 5 1                essai rapide, vidéo en temps réel
 #       bash evaluer_vla.sh 20 2 --modes vla   le VLA seul
 #
-# 1. Démarre le serveur GR00T (environnement de NVIDIA, HORS du conteneur) sur
-#    le dernier point de sauvegarde de ~/vla_gr00t_g1, en arrière-plan.
-# 2. Lance le test T1 en mode --evaluer-vla dans le conteneur : il se connecte
-#    au serveur par le réseau de la machine (127.0.0.1:5555).
-# 3. Bilan dans le terminal ; détail essai par essai dans ~/videos/eval_vla.json.
+# Déroulement :
+# 1. Démarre en arrière-plan le serveur GR00T (le programme de NVIDIA qui
+#    charge le modèle et répond aux demandes d'action) sur le dernier point
+#    de sauvegarde (checkpoint) de ~/vla_gr00t_g1. Il tourne dans
+#    l'environnement Python de NVIDIA, HORS du conteneur Docker d'Isaac Sim.
+# 2. Lance dans le conteneur, en mode --evaluer-vla, le test de la
+#    démonstration de tri de colis (dite « T1 », d'où le nom lancer_t1.sh) :
+#    le test se connecte au serveur par le réseau interne de la machine
+#    (127.0.0.1:5555).
+# 3. Affiche le bilan dans le terminal ; le détail essai par essai est copié
+#    dans ~/videos/eval_vla.json.
 #
-# Le VLA ne fait que PROPOSER : bras à 1 rad/s au plus, butées, JointSafetyGuard,
-# gardien de proximité — comme les réflexes. Les refus sont comptés par essai.
+# Sécurité : le VLA ne fait que PROPOSER des mouvements. Ils passent par les
+# mêmes protections que ceux des réflexes : vitesse du bras plafonnée à
+# 1 rad/s, butées articulaires, JointSafetyGuard (le garde-fou de chaque
+# articulation, qui refuse toute commande hors limites) et gardien de
+# proximité (qui ralentit puis arrête le robot devant un obstacle). Les
+# refus sont comptés pour chaque essai.
 #
-# JETON D'API (optionnel) : GR00T_API_TOKEN=<jeton> bash evaluer_vla.sh …
-# Le serveur n'accepte alors que les requêtes qui le portent. Le serveur écoute
-# déjà sur 127.0.0.1 seulement ; le jeton protège en plus des autres processus
-# de la machine. Il ne passe QUE par l'environnement, jamais par une ligne de
-# commande (visible dans ps, et journalisée par sudo) ni par un fichier :
-#   - serveur : run_gr00t_server.py de NVIDIA n'a pas d'option --api-token ;
-#     le lanceur run_gr00t_server_avec_jeton.py (à côté de ce script) lit la
-#     variable et la passe à PolicyServer ;
-#   - client : lancer_t1.sh la transmet au conteneur par l'entrée standard
-#     (docker exec --env-file /dev/stdin) — ni ps, ni journal de sudo.
-# Sans la variable, rien ne change : run_gr00t_server.py, lancé tel quel.
+# Jeton d'API (facultatif) : un secret que chaque requête au serveur doit
+# présenter. Usage :   GR00T_API_TOKEN=<jeton> bash evaluer_vla.sh …
+# Le serveur n'accepte alors que les requêtes qui portent ce jeton. Il
+# n'écoute déjà que sur 127.0.0.1, l'adresse interne de la machine ; le
+# jeton le protège en plus des autres processus de la même machine.
+# Le jeton ne passe QUE par une variable d'environnement : jamais par une
+# ligne de commande (elle est visible dans « ps », la liste des processus,
+# et sudo l'écrit dans son journal), ni par un fichier.
+#   - Côté serveur : run_gr00t_server.py de NVIDIA n'a pas d'option
+#     --api-token ; le lanceur run_gr00t_server_avec_jeton.py (à côté de ce
+#     script) lit la variable et passe le jeton à PolicyServer, la classe
+#     serveur de NVIDIA.
+#   - Côté client : lancer_t1.sh le transmet au conteneur par l'entrée
+#     standard (docker exec --env-file /dev/stdin), sans trace ni dans ps,
+#     ni dans le journal de sudo.
+# Sans la variable, rien ne change : run_gr00t_server.py est lancé tel quel.
 set -euo pipefail
-# Jamais d'arrêt muet : constaté, le script s'arrêtait sans un mot.
+# Avec « set -e », le script s'arrête à la première commande en échec, et on
+# a constaté qu'il le faisait sans un mot. Ce piège (trap) affiche la ligne
+# et la commande fautives, puis arrête le serveur GR00T s'il tourne.
 trap 'echo "ÉCHEC (ligne $LINENO) : $BASH_COMMAND"; pkill -f run_gr00t_server || true' ERR
 CARTONS="${1:-20}"; ACC="${2:-2}"; shift $(( $# > 2 ? 2 : $# )) || true
-# « --prise » : modèle de prise seule (entrainer_vla.sh … prise) ; les réflexes
-# s'approchent, le VLA ne fait que la prise. Comparé aux réflexes complets.
+# Option « --prise » : évalue le modèle de prise seule, entraîné par
+# « entrainer_vla.sh … prise ». Les réflexes amènent le robot jusqu'au
+# carton, puis le VLA ne fait que la prise. Ce mode est comparé aux réflexes
+# complets (approche comprise).
 MODELES="$HOME/vla_gr00t_g1"
 EXTRA=()
 for a in "$@"; do
@@ -48,6 +75,10 @@ PORT=5555
 export PATH="$HOME/.local/bin:$PATH"
 
 # ---- le modèle : dernier point de sauvegarde ------------------------------
+# sort -V trie les numéros comme des nombres (checkpoint-900 avant
+# checkpoint-1000). Sans point de sauvegarde, on essaie le dossier lui-même.
+# On refuse aussi d'évaluer tant que l'entraînement (launch_finetune) tourne
+# encore : il faut attendre sa fin.
 MODELE=$(ls -d "$MODELES"/checkpoint-* 2>/dev/null | sort -V | tail -1 || true)
 [ -n "$MODELE" ] || MODELE="$MODELES"
 if [ ! -f "$MODELE/config.json" ]; then
@@ -68,12 +99,16 @@ if pgrep -f run_gr00t_server >/dev/null 2>&1; then
   sleep 3
 fi
 cd "$HOME/Isaac-GR00T"
-# -u : sans lui, Python garde ses messages en mémoire quand ils vont dans un
-# fichier — « Server is ready » n'apparaissait jamais (constaté, RTX PRO 5000).
+# Option -u de Python (et PYTHONUNBUFFERED=1), plus bas : sans elle, quand
+# la sortie va dans un fichier, Python garde ses messages en mémoire au lieu
+# de les écrire, et « Server is ready » n'apparaissait jamais dans le journal
+# (constaté sur une carte RTX PRO 5000).
 SERVEUR="gr00t/eval/run_gr00t_server.py"
 if [ -n "${GR00T_API_TOKEN:-}" ]; then
-  # Même serveur, jeton passé par l'environnement (voir l'en-tête). Le nom du
-  # lanceur contient « run_gr00t_server » : pgrep/pkill ci-dessous le trouvent.
+  # Même serveur de NVIDIA, démarré par le lanceur qui lui passe le jeton lu
+  # dans l'environnement (voir l'en-tête). Le nom du lanceur contient
+  # « run_gr00t_server » exprès : les pgrep et pkill de ce script, qui
+  # cherchent et arrêtent le serveur par son nom, le trouvent aussi.
   SERVEUR="$HOME/AXIS-OS/deploy/machine_gpu/run_gr00t_server_avec_jeton.py"
   export GR00T_API_TOKEN               # lu par le lanceur, par lancer_t1.sh, puis par le client
   echo "Jeton d'API : activé (serveur et client)."
@@ -82,7 +117,11 @@ nohup env PYTHONUNBUFFERED=1 uv run python -u "$SERVEUR" \
   --model-path "$MODELE" --embodiment-tag NEW_EMBODIMENT \
   --host 127.0.0.1 --port "$PORT" > "$HOME/vla_serveur.log" 2>&1 &
 echo "Serveur GR00T en cours de chargement (journal : ~/vla_serveur.log)…"
-# Prêt = le port écoute (plus sûr que de chercher un message dans le journal).
+# Le serveur est prêt quand son port écoute (ss -ltn liste les ports en
+# écoute) : plus sûr que de chercher un message dans le journal, qui peut
+# manquer. Le message « Server is ready » reste accepté en second recours.
+# Attente de 5 minutes au plus (60 fois 5 s) ; si le serveur s'arrête
+# entre-temps, la fin de son journal est affichée.
 pret() { ss -ltn 2>/dev/null | grep -q ":$PORT " || grep -q "Server is ready" "$HOME/vla_serveur.log" 2>/dev/null; }
 for i in $(seq 1 60); do
   if pret; then break; fi
@@ -102,13 +141,19 @@ if [ "$(sudo docker inspect -f '{{.State.Running}}' "$CONTENEUR" 2>/dev/null)" !
   sudo docker start "$CONTENEUR" >/dev/null
   sleep 10
 fi
-# pyzmq, msgpack, msgpack-numpy. Constaté (RTX PRO 5000) : le pip d'Isaac Sim
-# est cassé (« No module named pip._vendor.idna.core »). On copie alors les
-# paquets depuis l'environnement de GR00T, qui les a déjà : même Python 3.12.
+# Le client GR00T, dans le conteneur, a besoin de pyzmq, msgpack et
+# msgpack-numpy (communication réseau avec le serveur et encodage des
+# messages, tableaux numpy compris). Constaté sur RTX PRO 5000 : le pip
+# d'Isaac Sim est cassé (« No module named pip._vendor.idna.core »). Dans ce
+# cas, on copie les paquets depuis l'environnement de GR00T, qui les a déjà
+# et utilise la même version de Python (3.12).
 importe() { sudo docker exec "$CONTENEUR" /isaac-sim/python.sh -c \
   "import zmq, msgpack, msgpack_numpy" >/dev/null 2>&1; }
-# Versions épinglées (roues cp312 vérifiées sur PyPI, audit du 2026-10-10) ;
-# le repli par copie depuis GR00T, ci-dessous, reste tel quel.
+# Versions épinglées (version exacte imposée, pour une installation
+# reproductible) à la suite d'un audit de sécurité du dépôt (2026-10-10). On
+# a vérifié sur PyPI (l'index public des paquets Python) qu'elles existent
+# en paquets précompilés (« roues ») pour Python 3.12. Le repli par copie
+# depuis GR00T, ci-dessous, reste tel quel.
 if ! importe; then
   sudo docker exec -u root "$CONTENEUR" /isaac-sim/python.sh -m pip install -q \
     "pyzmq==27.1.0" "msgpack==1.2.1" "msgpack-numpy==0.4.8" >/dev/null 2>&1 || true
@@ -128,7 +173,9 @@ importe || { echo "ÉCHEC : pyzmq/msgpack introuvables dans le conteneur."; \
 echo "Client GR00T prêt dans le conteneur."
 
 # ---- 3. évaluation ---------------------------------------------------------
-# Durée « 60 » ignorée : l'évaluation s'arrête d'elle-même après le dernier carton.
+# Le premier argument de lancer_t1.sh (la durée simulée, ici « 60 ») est
+# ignoré : l'évaluation s'arrête d'elle-même après le dernier carton.
+# Le détail est ensuite copié hors du conteneur et le serveur GR00T arrêté.
 bash "$HOME/AXIS-OS/deploy/machine_gpu/lancer_t1.sh" 60 "$ACC" \
   --evaluer-vla "tcp://127.0.0.1:$PORT" --episodes "$CARTONS" "$@" || true
 sudo docker cp "$CONTENEUR:/isaac-sim/videos/eval_vla.json" "$HOME/videos/eval_vla.json" 2>/dev/null \
