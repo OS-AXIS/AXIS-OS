@@ -1,47 +1,53 @@
 /*
- * AXIS-OS — Moniteur de fraîcheur (point 1, recommandation externe)
+ * AXIS-OS — Moniteur de fraîcheur
  * ======================================================================
- * Démon SÉPARÉ du process principal AXIS-OS, écrit en C plutôt qu'en
- * Python — recommandation explicite : ce moniteur doit survivre à la
- * mort de l'interpréteur Python lui-même (deadlock, crash, OOM killer
- * qui cible le plus gros process...), donc il ne doit PARTAGER AUCUN
- * mode de défaillance avec lui. Un moniteur écrit en Python, même dans
- * un process séparé, resterait vulnérable à un bug de l'interpréteur
- * Python lui-même (fuite mémoire du GC, deadlock GIL dans une lib
- * tierce partagée) — improbable, mais c'est précisément la classe de
- * risque que ce composant existe pour éliminer.
+ * Pourquoi ce démon existe : si le processus principal d'AXIS-OS meurt
+ * en plein mouvement, les moteurs du robot gardent la dernière consigne
+ * reçue, qui peut être dangereuse. Ce moniteur s'en aperçoit et relâche
+ * le robot en douceur. C'est la première des cinq recommandations de
+ * renforcement formulées après le second audit externe du code
+ * (2026-09-15, voir CHANGELOG.md).
  *
- * Rôle : écoute le canal DDS "rt/lowcmd" (le même que G1DDSHub publie,
- * voir axis_os/hal/drivers/unitree_g1/g1_dds_actuator.py). Si aucun
- * message n'est vu pendant FRESHNESS_TIMEOUT_MS alors que le robot est
- * censé être actif, publie lui-même UNE commande d'amortissement
- * (kp=0, kd=DAMPING_KD faible, tau=0, mode=1 Enable) sur les 35
- * moteurs — le robot se relâche doucement au lieu de rester bloqué sur
- * la dernière consigne reçue, qui pourrait être dangereuse si le
- * process principal est mort en plein mouvement.
+ * Pourquoi en C, dans un démon séparé : il doit survivre à la mort de
+ * l'interpréteur Python lui-même (blocage, plantage, ou « OOM killer »,
+ * le mécanisme du noyau Linux qui tue le plus gros processus quand la
+ * mémoire manque), donc ne partager aucun mode de défaillance avec lui.
+ * Un moniteur écrit en Python, même dans un processus séparé, resterait
+ * exposé à un bug de l'interpréteur (fuite mémoire du ramasse-miettes,
+ * blocage du GIL, le verrou global de Python, dans une bibliothèque
+ * tierce partagée). C'est improbable, mais c'est précisément la classe
+ * de risque que ce composant existe pour éliminer.
  *
- * Complémentaire au chien de garde systemd (voir
- * deploy/systemd/axis-os.service) : celui-ci REDÉMARRE le process
- * mort, mais laisse s'écouler jusqu'à WatchdogSec=2s avant de le
- * détecter, PUIS le temps du redémarrage lui-même — pendant tout cet
- * intervalle, le robot reste sur la dernière consigne DDS reçue si
- * rien d'autre n'intervient. Ce moniteur agit BEAUCOUP plus vite
- * (FRESHNESS_TIMEOUT_MS, quelques dizaines de ms) et directement au
- * niveau du bus DDS, sans dépendre d'aucune détection système.
+ * Ce qu'il fait : il écoute le canal DDS « rt/lowcmd » (DDS, Data
+ * Distribution Service, est le système de messages du Unitree G1 ; ce
+ * canal est celui où G1DDSHub publie les commandes des moteurs, voir
+ * axis_os/hal/drivers/unitree_g1/g1_dds_actuator.py). Si aucun message
+ * n'est vu pendant FRESHNESS_TIMEOUT_MS alors que le robot est censé
+ * être actif, il publie lui-même une commande d'amortissement sur les
+ * 35 moteurs : kp = 0 (aucun rappel vers une position), kd = DAMPING_KD
+ * (un amortissement faible, qui freine le mouvement), tau = 0 (aucun
+ * couple), mode = 1 (moteur activé).
+ * Le robot se relâche doucement au lieu de rester bloqué sur la
+ * dernière consigne reçue.
  *
- * ⚠️ SQUELETTE FONCTIONNEL, PAS ENCORE BRANCHÉ SUR UN VRAI BUS DDS —
- * les fonctions dds_subscribe_lowcmd()/dds_publish_damping() sont
- * volontairement isolées et marquées TODO ci-dessous : les brancher
- * sur la vraie CycloneDDS C library + l'IDL officiel unitree_hg
- * (structures LowCmd_/MotorCmd_, identiques à ce que G1DDSHub utilise
- * côté Python — voir sa docstring pour la référence complète) est un
- * vrai travail d'intégration matérielle, non testable dans cet
- * environnement de développement (pas de CycloneDDS C installé ici,
- * pas de vrai bus DDS qui tourne). La LOGIQUE de timeout et
- * d'amortissement ci-dessous est en revanche complète et testée
- * (voir test_freshness_monitor.c) — c'est elle qui compte le plus
- * pour la revue, l'intégration DDS réelle étant plus mécanique une
- * fois la vraie lib disponible sur la cible.
+ * Complémentaire du chien de garde systemd (voir
+ * deploy/systemd/axis-os.service) : celui-ci redémarre le processus
+ * mort, mais laisse passer jusqu'à WatchdogSec = 2 s avant de le
+ * détecter, puis le temps du redémarrage lui-même. Pendant tout cet
+ * intervalle, le robot reste sur la dernière consigne DDS reçue si rien
+ * d'autre n'intervient. Ce moniteur agit beaucoup plus vite
+ * (FRESHNESS_TIMEOUT_MS, 200 ms par défaut), directement sur le bus
+ * DDS, sans dépendre d'aucune détection système.
+ *
+ * État (2026-09-15) : l'abonnement et la publication DDS sont écrits
+ * pour CycloneDDS en C (voir dds_subscribe_lowcmd() et
+ * dds_publish_damping()), avec le schéma des messages reconstruit dans
+ * idl/. Le code compile, mais il n'a jamais été essayé sur un vrai bus
+ * DDS ni sur un vrai G1 (voir la limite décrite dans README.md). La
+ * logique de délai, elle, est testée (should_publish_damping(), voir
+ * test_freshness_monitor.c). Deux points restent à régler avant tout
+ * usage réel, détaillés plus bas : mode_machine laissé à 0, et un arrêt
+ * volontaire du processus principal pas encore distingué d'une panne.
  *
  * Licence : Apache 2.0
  */
@@ -56,9 +62,8 @@
 #include "dds/dds.h"
 #include "idl/LowCmd_.h"
 
-/* Configuration — voir docstring de module pour la justification des
- * valeurs par défaut. Ajustables sans recompiler via variables
- * d'environnement (voir main()). */
+/* Valeurs par défaut, réglables sans recompiler par des variables
+ * d'environnement (voir main() et README.md). */
 #define DEFAULT_FRESHNESS_TIMEOUT_MS 200
 #define DEFAULT_DAMPING_KD 2.0
 #define DEFAULT_POLL_INTERVAL_MS 20
@@ -72,9 +77,9 @@ typedef struct {
     long last_message_ms;    /* horodatage monotone du dernier message vu */
 } monitor_state_t;
 
-/* Horodatage monotone en millisecondes — jamais l'horloge murale
- * (CLOCK_REALTIME), qui peut sauter en arrière (NTP, changement
- * d'heure) et fausserait le calcul de fraîcheur. */
+/* Horodatage monotone en millisecondes. Jamais l'horloge murale
+ * (CLOCK_REALTIME) : elle peut sauter en arrière (mise à l'heure par
+ * NTP, changement d'heure) et fausserait le calcul de fraîcheur. */
 static long monotonic_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -82,29 +87,29 @@ static long monotonic_ms(void) {
 }
 
 /*
- * TODO (intégration matérielle) : brancher sur la vraie CycloneDDS C
- * library — créer un DDS_Subscriber sur le topic "rt/lowcmd" (type
- * unitree_hg::msg::dds_::LowCmd_, même IDL que G1DDSHub côté Python),
- * et à chaque message reçu :
- *   - state->last_message_ms = monotonic_ms();
- *   - state->robot_active = true;
- * `robot_active` devrait passer à false si le process principal se
- * ferme proprement (message explicite, ou canal fermé côté éditeur) —
- * à définir précisément une fois la vraie intégration commencée, pour
- * ne jamais déclencher l'amortissement sur un arrêt VOLONTAIRE.
+ * Abonnement au canal « rt/lowcmd » (type
+ * unitree_hg::msg::dds_::LowCmd_, le même schéma que G1DDSHub côté
+ * Python). À chaque message reçu, dds_poll_lowcmd() note l'heure
+ * (state->last_message_ms) et marque le robot actif
+ * (state->robot_active = true).
  *
- * IMPLÉMENTÉ le 2026-09-15 : le fichier IDL officiel unitree_hg
- * n'étant distribué qu'en C++ par Unitree (unitree_sdk2, pas de
- * version C ni fichier .idl source publié tel quel), le schéma
- * LowCmd_/MotorCmd_ a été reconstruit ici en .idl à partir de la
- * structure confirmée identique dans DEUX sources officielles lues
- * ce soir (unitree_sdk2_python généré par idlc pour Python, et
- * unitree_sdk2 généré par idlc pour C++ — mêmes champs, mêmes types,
- * même ordre) - voir le dossier idl/ (fichiers .idl), compilés
- * avec le VRAI idlc de CycloneDDS 0.10.x (voir README.md pour
- * reproduire). ⚠️ Jamais testé contre un vrai bus DDS ni un vrai G1
- * — seule la COMPILATION est vérifiée ici, pas le comportement réseau
- * réel (voir la limite documentée dans README.md).
+ * Limite à lever avant tout usage réel : robot_active ne repasse
+ * jamais à false. Il le devrait quand le processus principal se ferme
+ * proprement (message explicite, ou canal fermé côté émetteur), pour ne
+ * jamais déclencher l'amortissement sur un arrêt volontaire. Le moyen
+ * reste à définir avec l'intégration sur le vrai robot.
+ *
+ * Origine du schéma (2026-09-15) : Unitree ne publie pas de fichier
+ * .idl source pour unitree_hg (IDL, Interface Definition Language,
+ * décrit la structure des messages DDS) ; son SDK C++ (unitree_sdk2)
+ * ne distribue que le code déjà généré. Le schéma LowCmd_/MotorCmd_ a
+ * donc été reconstruit dans idl/ à partir de deux générations
+ * officielles indépendantes, celle du SDK Python (unitree_sdk2_python)
+ * et celle du SDK C++, vérifiées identiques (mêmes champs, mêmes types,
+ * même ordre). Il a été compilé avec l'outil idlc de CycloneDDS 0.10.x
+ * (voir README.md pour le reproduire). Seule la compilation est
+ * vérifiée : ce code n'a jamais été essayé sur un vrai bus DDS ni sur
+ * un vrai G1 (voir la limite décrite dans README.md).
  */
 static dds_entity_t g_participant = 0;
 static dds_entity_t g_reader = 0;
@@ -143,12 +148,13 @@ static int dds_subscribe_lowcmd(monitor_state_t *state) {
     return 0;
 }
 
-/* Appelée à chaque cycle de la boucle principale (voir main()) —
- * poll non bloquant, cohérent avec poll_interval_ms plutôt qu'un
- * callback DDS asynchrone : garde la logique de timeout simple et
- * entièrement dans le fil d'exécution principal, plus facile à
- * raisonner et à tester que de la concurrence supplémentaire pour
- * un composant dont la fiabilité est précisément l'enjeu. */
+/* Appelée à chaque cycle de la boucle principale (voir main()). Elle
+ * interroge le canal sans attendre (lecture non bloquante, au rythme
+ * de poll_interval_ms) plutôt que de recevoir un rappel DDS
+ * asynchrone : toute la logique de délai reste dans le seul fil
+ * d'exécution principal. C'est plus simple à raisonner et à tester que
+ * d'ajouter de la concurrence, pour un composant dont la fiabilité est
+ * précisément l'enjeu. */
 static void dds_poll_lowcmd(monitor_state_t *state) {
     void *samples[1] = { g_sample };
     dds_sample_info_t infos[1];
@@ -165,12 +171,13 @@ static void dds_poll_lowcmd(monitor_state_t *state) {
 }
 
 /*
- * CRC32 — algorithme EXACT copié depuis le SDK officiel Unitree
+ * CRC32 (somme de contrôle de chaque message moteur) : l'algorithme
+ * exact du SDK officiel d'Unitree
  * (unitree_sdk2/include/unitree/dds_wrapper/common/crc.h,
- * crc32_core()) — reproduit à l'identique ici plutôt que réinventé :
- * un CRC divergent, même correct algorithmiquement en soi, serait
- * silencieusement rejeté par le firmware du vrai robot (voir la
- * docstring de dds_publish_damping ci-dessous).
+ * crc32_core()), recopié à l'identique plutôt que réinventé. Un CRC
+ * différent, même juste en soi, serait rejeté sans bruit par le
+ * firmware du vrai robot (voir le commentaire de dds_publish_damping()
+ * ci-dessous).
  *
  * Copyright (c) 2016-2023 HangZhou YuShu TECHNOLOGY CO.,LTD. ("Unitree Robotics")
  * Licence BSD 3-Clause : voir LICENSE_UNITREE_SDK2.txt dans ce dossier.
@@ -198,29 +205,27 @@ static uint32_t crc32_core(const uint32_t *ptr, uint32_t len) {
 }
 
 /*
- * TODO (intégration matérielle) : brancher sur la vraie CycloneDDS C
- * library — publier UN message LowCmd_ avec, pour chacun des 35
- * MotorCmd_ :
- *   mode = 1 (Enable, jamais 0 — voir la justification identique dans
- *             G1DDSActuator.emergency_stop() côté Python : éviter une
- *             roue libre incontrôlée sur un membre en charge)
- *   q = 0.0, dq = 0.0, tau = 0.0
- *   kp = 0.0
- *   kd = damping_kd (voir DEFAULT_DAMPING_KD — non nul, contrairement
- *        à un e-stop classique : un amortissement doux plutôt qu'un
- *        blocage brutal, cohérent avec l'intention "se relâche
- *        doucement" de ce composant précis, différent d'un e-stop)
- * CRC calculé exactement comme G1DDSHub.publish() le fait côté Python
- * (unitree_sdk2py.utils.crc.CRC) — indispensable, un message sans CRC
- * valide est silencieusement ignoré par le firmware du robot.
+ * Publie un message LowCmd_ sur « rt/lowcmd » qui met les 35 moteurs
+ * en amortissement. Pour chaque MotorCmd_ :
+ *   mode = 1 (moteur activé, jamais 0 : un moteur désactivé laisse le
+ *             membre en roue libre, incontrôlé s'il porte une charge ;
+ *             même raison que dans G1DDSActuator.emergency_stop() côté
+ *             Python)
+ *   q = 0.0, dq = 0.0, tau = 0.0 (consignes de position, de vitesse et
+ *             de couple)
+ *   kp = 0.0 (aucun rappel vers une position)
+ *   kd = damping_kd (voir DEFAULT_DAMPING_KD). Non nul, contrairement
+ *        à un arrêt d'urgence classique : on veut un amortissement doux
+ *        plutôt qu'un blocage brutal, puisque ce composant doit laisser
+ *        le robot « se relâcher doucement ».
+ * Le CRC est calculé comme G1DDSHub.publish() le fait côté Python
+ * (unitree_sdk2py.utils.crc.CRC), avec crc32_core() ci-dessus. C'est
+ * indispensable : un message sans CRC valide est ignoré sans bruit par
+ * le firmware du robot.
  *
- * IMPLÉMENTÉ le 2026-09-15 — voir dds_subscribe_lowcmd() pour le
- * contexte complet sur la reconstruction du schéma IDL. Écrit un
- * publisher DDS sur "rt/lowcmd" avec les 35 moteurs en mode
- * amortissement, CRC calculé avec l'algorithme officiel exact
- * (crc32_core ci-dessus, copié depuis unitree_sdk2/include/unitree/
- * dds_wrapper/common/crc.h). ⚠️ Jamais testé contre un vrai bus DDS
- * ni un vrai G1 — voir la limite documentée dans README.md.
+ * Écrit le 2026-09-15 ; l'origine du schéma est expliquée au-dessus de
+ * dds_subscribe_lowcmd(). Jamais essayé sur un vrai bus DDS ni sur un
+ * vrai G1 : voir la limite décrite dans README.md.
  */
 static dds_entity_t g_writer = 0;
 
@@ -245,16 +250,17 @@ static int dds_publish_damping(double kd) {
     unitree_hg_msg_dds__LowCmd_ cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.mode_pr = 0;
-    /* mode_machine : lu depuis le premier LowState_ reçu dans une
-     * vraie intégration (voir G1DDSHub._on_low_state() côté Python,
-     * même principe — ne jamais le deviner). Laissé à 0 ici tant que
-     * ce démon ne lit pas encore rt/lowstate (portée volontairement
-     * limitée à rt/lowcmd pour ce composant, voir docstring de
-     * module) — à corriger avant tout usage réel. */
+    /* mode_machine (champ de l'état du robot, recopié dans chaque
+     * commande) : sur le vrai robot, il doit être lu dans le premier
+     * message LowState_ reçu, jamais deviné (même principe que
+     * G1DDSHub._on_low_state() côté Python). Il est laissé à 0 tant que
+     * ce démon ne lit pas « rt/lowstate » : sa portée se limite
+     * volontairement à « rt/lowcmd ». À corriger avant tout usage
+     * réel. */
     cmd.mode_machine = 0;
 
     for (int i = 0; i < NUM_MOTORS; i++) {
-        cmd.motor_cmd[i].mode = 1;  /* Enable, jamais 0 — voir docstring ci-dessus */
+        cmd.motor_cmd[i].mode = 1;  /* activé, jamais 0 : voir plus haut */
         cmd.motor_cmd[i].q = 0.0f;
         cmd.motor_cmd[i].dq = 0.0f;
         cmd.motor_cmd[i].tau = 0.0f;
@@ -275,16 +281,15 @@ static int dds_publish_damping(double kd) {
 }
 
 /*
- * Logique de détection de fraîcheur — testée indépendamment de toute
- * vraie communication DDS (voir test_freshness_monitor.c), car c'est
- * elle qui contient le vrai risque de bug (erreur de comparaison de
- * seuil, oubli de réarmement après une publication d'amortissement,
- * etc.) — pas l'appel réseau lui-même.
+ * Logique de détection de fraîcheur. Elle est testée sans aucune
+ * communication DDS (voir test_freshness_monitor.c), parce que c'est
+ * elle qui porte le vrai risque de bug (erreur de comparaison au seuil,
+ * oubli de réarmement après un amortissement…), pas l'appel réseau.
  *
- * Retourne true si un amortissement doit être publié MAINTENANT (le
- * dernier message vu date de plus de timeout_ms, ET le robot est
- * censé être actif) — jamais true si robot_active est false (arrêt
- * volontaire du process principal, rien à amortir).
+ * Retourne true si un amortissement doit être publié maintenant : le
+ * dernier message vu date de plus de timeout_ms et le robot est censé
+ * être actif. Jamais true si robot_active vaut false (arrêt volontaire
+ * du processus principal : rien à amortir).
  */
 static bool should_publish_damping(const monitor_state_t *state, long now_ms) {
     if (!state->robot_active) {

@@ -4,45 +4,47 @@ After=network.target
 
 [Service]
 Type=notify
-# WatchdogSec=2s — chien de garde systemd (point 2, recommandation
-# externe) : AXIS-OS doit envoyer WATCHDOG=1 (via sd_notify, voir
-# axis_os/hal/watchdog/system.py::_sd_notify_watchdog(), appelée
-# après chaque cycle de WatchdogSystem._monitor_loop() qui se
-# termine SANS exception) au moins une fois toutes les 2 secondes.
-# Si le heartbeat s'arrête (deadlock, boucle infinie, tout bug qui
-# échappe au try/except Python), c'est systemd (l'init système,
-# donc le noyau) qui détecte l'absence de notification et applique
-# WatchdogSignal= ci-dessous — pas AXIS-OS lui-même, qui ne peut
-# structurellement pas s'auto-diagnostiquer s'il est figé.
+# WatchdogSec=2s : chien de garde de systemd, deuxième des cinq
+# recommandations de renforcement du second audit externe (voir
+# CHANGELOG.md). AXIS-OS doit envoyer WATCHDOG=1 au moins une fois
+# toutes les 2 secondes, par sd_notify (voir _sd_notify_watchdog() dans
+# axis_os/hal/watchdog/system.py, appelée après chaque cycle de
+# WatchdogSystem._monitor_loop() qui se termine sans exception).
+# Si ce signal de vie s'arrête (blocage, boucle infinie, tout bug qui
+# échappe au try/except de Python), c'est systemd, le gestionnaire de
+# services du système (processus n° 1), qui le remarque et applique
+# WatchdogSignal= ci-dessous. AXIS-OS ne le pourrait pas lui-même : un
+# programme figé ne peut pas diagnostiquer son propre gel.
 WatchdogSec=2s
 
-# Sur timeout du chien de garde : SIGABRT (dump mémoire exploitable
-# pour diagnostiquer la cause du gel) plutôt que le SIGTERM par
-# défaut de systemd — un service figé ne réagit de toute façon pas
-# à un arrêt "poli".
+# Quand le chien de garde expire : SIGABRT, qui produit une image de
+# la mémoire (core dump) utile pour trouver la cause du gel, plutôt que
+# le SIGTERM par défaut de systemd. Un service figé ne répondrait de
+# toute façon pas à une demande d'arrêt « polie ».
 WatchdogSignal=SIGABRT
 
-# Redémarrage automatique après tout arrêt inattendu (crash, timeout
-# du chien de garde) — jamais après un arrêt volontaire (voir
-# systemctl stop). RestartSec laisse un court délai pour éviter une
-# boucle de redémarrage immédiate si la cause du crash persiste
-# (ex: matériel déconnecté).
+# Redémarrage automatique après tout arrêt inattendu (plantage,
+# expiration du chien de garde), jamais après un arrêt volontaire
+# (systemctl stop). RestartSec laisse un court délai, pour éviter une
+# boucle de redémarrages immédiats si la cause du plantage persiste
+# (par exemple, un matériel déconnecté).
 Restart=on-failure
 RestartSec=5s
 
-# Remplacer par le chemin réel d'installation et l'utilisateur
-# système dédié — ne JAMAIS lancer AXIS-OS en root sur du matériel
-# réel, un bug applicatif n'a alors aucune barrière supplémentaire
-# du système d'exploitation lui-même.
+# À remplacer par le chemin réel d'installation et par l'utilisateur
+# système dédié. Ne jamais lancer AXIS-OS en root sur du matériel
+# réel : un bug n'aurait alors plus aucune barrière du système
+# d'exploitation devant lui.
 User=axis-os
 WorkingDirectory=/opt/axis-os
 ExecStart=/opt/axis-os/venv/bin/python -m axis_os.main
 
-# Isolation système complémentaire (défense en profondeur, au-delà
-# du sandboxing applicatif déjà géré par SandboxRunner côté AXIS-OS
-# lui-même) — restreint ce que le PROCESS PRINCIPAL peut faire au
-# système, pas ce que les apps individuelles peuvent faire entre
-# elles (rôle différent, déjà couvert par store/runtime/sandbox.py).
+# Isolation complémentaire, par le système (défense en profondeur) :
+# ces options restreignent ce que le processus principal d'AXIS-OS
+# peut faire sur la machine. Elles ne règlent pas ce que les apps
+# peuvent faire entre elles ou envers l'OS : c'est le rôle du sandbox
+# des apps (SandboxRunner, axis_os/store/runtime/sandbox.py), dont les
+# limites sont décrites dans docs/isolation_apps.md.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

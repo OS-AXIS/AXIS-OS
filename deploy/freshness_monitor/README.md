@@ -1,8 +1,11 @@
 # Moniteur de fraîcheur AXIS-OS
 
-Démon C, séparé du process principal AXIS-OS (point 1, recommandation
-externe) — voir la docstring de module dans `freshness_monitor.c` pour
-la justification complète.
+Démon en C, séparé du processus principal d'AXIS-OS : si ce processus
+meurt en plein mouvement, le moniteur relâche les moteurs du robot en
+douceur au lieu de les laisser sur la dernière consigne reçue. C'est la
+première des cinq recommandations de renforcement du second audit
+externe (voir `CHANGELOG.md`). Le commentaire en tête de
+`freshness_monitor.c` donne la justification complète.
 
 ## Statut (mis à jour 2026-09-15)
 
@@ -94,6 +97,9 @@ relancer `idlc` sauf pour modifier le schéma lui-même — voir
 gcc -Wall -Wextra -o test_freshness_monitor test_freshness_monitor.c
 ./test_freshness_monitor
 ```
+
+Ce test se lance à la main : la suite `pytest test/` et la CI ne le
+compilent pas.
 
 ## Configuration (variables d'environnement)
 

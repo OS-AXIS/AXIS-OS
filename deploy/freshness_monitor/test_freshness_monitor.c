@@ -1,12 +1,12 @@
 /*
  * AXIS-OS — Tests moniteur de fraîcheur
  * =========================================
- * Teste UNIQUEMENT la logique de détection (should_publish_damping),
- * jamais la communication DDS elle-même (non implémentée dans ce
- * squelette — voir les TODO dans freshness_monitor.c). C'est cette
- * logique qui porte le vrai risque de bug (erreur de comparaison de
- * seuil, oubli de réarmement) — l'appel réseau, une fois la vraie lib
- * CycloneDDS branchée, est plus mécanique.
+ * Teste seulement la logique de détection (should_publish_damping()),
+ * jamais la communication DDS elle-même, qui demande la bibliothèque
+ * CycloneDDS et un vrai bus (voir freshness_monitor.c et README.md).
+ * C'est cette logique qui porte le vrai risque de bug (erreur de
+ * comparaison au seuil, oubli de réarmement) ; l'appel réseau est plus
+ * mécanique.
  *
  * Compilation et exécution :
  *   gcc -DAXIS_OS_TEST_BUILD -o test_freshness_monitor \
@@ -18,10 +18,13 @@
 #include <stdbool.h>
 #include <assert.h>
 
-/* Redéfinit les structures/fonctions testées directement ici plutôt
- * que d'inclure freshness_monitor.c tel quel (qui a un main() et des
- * fonctions DDS stub qui écrivent sur stderr) — garde ces tests
- * silencieux et focalisés uniquement sur la logique pure. */
+/* La structure et la fonction testées sont recopiées ici plutôt que
+ * d'inclure freshness_monitor.c, qui a son propre main() et dépend des
+ * en-têtes de CycloneDDS : le test se compile ainsi sans rien
+ * installer, et reste centré sur la logique pure. Contrepartie : la
+ * copie doit rester identique à l'original ; toute modification de
+ * should_publish_damping() ou de monitor_state_t dans
+ * freshness_monitor.c doit être reportée ici. */
 
 typedef struct {
     long timeout_ms;
@@ -97,8 +100,9 @@ int main(void) {
               && should_publish_damping(&state, 5049) == false);
     }
 
-    /* 6 — now_ms avant last_message_ms (horloge qui recule, ne devrait
-     * jamais arriver avec CLOCK_MONOTONIC, mais defensive) */
+    /* 6 — now_ms avant last_message_ms : une horloge qui recule. Cela
+     * ne devrait jamais arriver avec CLOCK_MONOTONIC ; vérifié par
+     * précaution. */
     {
         monitor_state_t state = {200, 2.0, 20, true, 5000};
         check("now_ms < last_message_ms (age négatif) -> jamais d'amortissement "
