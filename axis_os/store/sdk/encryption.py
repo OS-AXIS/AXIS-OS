@@ -1,88 +1,115 @@
 """
 AXIS-OS — Chiffrement des apps (Play Store)
 ================================================
-Comble une demande explicite, distincte de la signature (voir
-signing.py) : une app, une fois livrée au Play Store, ne doit être
-LISIBLE que par AXIS-OS lui-même — pas par n'importe qui qui
-obtiendrait le fichier publié (copie du dépôt d'apps, interception
-réseau, accès disque non autorisé sur l'infrastructure de
-distribution). Le développeur garde évidemment son code source en
-clair sur SA propre machine ; c'est le fichier LIVRÉ qui devient
-illisible sans la clé privée plateforme.
+Répond à un besoin exprimé explicitement, distinct de la signature (voir
+signing.py) : une fois livrée au Play Store (la boutique d'apps
+d'AXIS-OS), une app ne doit être LISIBLE que par AXIS-OS lui-même, et
+non par quiconque obtiendrait le fichier publié (copie du dépôt d'apps,
+interception réseau, accès disque non autorisé sur l'infrastructure de
+distribution). Le développeur garde bien sûr son code source en clair
+sur sa propre machine ; c'est le fichier LIVRÉ qui devient illisible
+sans la clé privée de la plateforme.
 
-Distinction avec signing.py, à ne jamais confondre :
-  - signing.py (Ed25519) prouve l'ORIGINE et l'INTÉGRITÉ d'une app —
-    "ce code vient bien de ce développeur, n'a pas été modifié" —
-    le code reste LISIBLE par tous, seule son authenticité est
-    vérifiable.
-  - encryption.py (ce module) rend le code ILLISIBLE sans la clé
-    privée plateforme — l'origine/l'intégrité du contenu déchiffré
-    restent séparément garanties par sa propre signature (le flux
-    normal est CHIFFRER PUIS SIGNER, ou l'inverse selon le besoin —
-    ce module ne prend pas position sur l'ordre, orthogonal à
-    signing.py).
+Signature et chiffrement sont deux choses différentes, à ne jamais
+confondre :
+  - signing.py (Ed25519, un algorithme de signature numérique) prouve
+    l'ORIGINE et l'INTÉGRITÉ d'une app : « ce code vient bien de ce
+    développeur et n'a pas été modifié ». Le code reste lisible par
+    tous ; seule son authenticité est vérifiable.
+  - encryption.py (ce module) rend le code ILLISIBLE sans la clé privée
+    de la plateforme. L'origine et l'intégrité du contenu déchiffré
+    restent garanties à part, par sa propre signature. Ce module est
+    indépendant de signing.py et ne prend pas position sur l'ordre des
+    deux opérations : chiffrer puis signer, ou l'inverse, selon le
+    besoin.
 
-Implémentation : HPKE (Hybrid Public Key Encryption, RFC 9180),
-cipher suite DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / AES-256-GCM —
-exactement la configuration recommandée par Google Tink pour la
-plupart des usages (DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM).
+Implémentation : HPKE (Hybrid Public Key Encryption, « chiffrement
+hybride à clé publique »), normalisé par le RFC 9180 (un RFC est une
+norme publiée par l'IETF, l'organisme qui standardise les protocoles
+d'Internet). La suite cryptographique est DHKEM(X25519, HKDF-SHA256) /
+HKDF-SHA256 / AES-256-GCM :
+  - X25519 : échange de clés sur courbe elliptique, qui établit un
+    secret partagé avec la clé publique de la plateforme ;
+  - HKDF-SHA256 : dérivation de clés à partir de ce secret, fondée sur
+    la fonction de hachage SHA-256 ;
+  - AES-256-GCM : chiffrement symétrique authentifié du code lui-même.
+C'est exactement la configuration que Google Tink (la bibliothèque
+cryptographique de Google) recommande pour la plupart des usages
+(DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM).
 
-Via la bibliothèque tierce `pyhpke` (github.com/dajiaji/pyhpke,
-licence MIT), pas une composition manuelle des primitives — décision
-prise après une première version qui composait X25519+HKDF+AES-GCM à
-la main : les primitives individuelles étaient déjà correctes, mais
-composer soi-même de la cryptographie comporte un vrai risque
-d'erreur d'assemblage qu'aucune primitive individuellement solide ne
-neutralise. `pyhpke` est testée contre les vecteurs de test OFFICIELS
-du RFC 9180 (github.com/cfrg/draft-irtf-cfrg-hpke/test-vectors.json),
-une garantie qu'une composition maison ne peut pas offrir. Le module
-HPKE natif de `cryptography` (ajouté en version 50.0.1) a été
-envisagé en premier mais écarté : il exige un backend AWS-LC ou
-BoringSSL, indisponible avec l'installation OpenSSL standard utilisée
-ici — recompiler `cryptography` contre un backend alternatif est un
-chantier d'infrastructure disproportionné pour ce besoin précis.
+Le module passe par la bibliothèque tierce `pyhpke`
+(github.com/dajiaji/pyhpke, licence MIT) au lieu d'assembler lui-même
+les primitives (les briques cryptographiques de base). Une première
+version composait X25519, HKDF et AES-GCM
+à la main : chaque primitive était déjà correcte, mais assembler
+soi-même de la cryptographie expose à de vraies erreurs d'assemblage,
+qu'aucune primitive, aussi solide soit-elle, ne neutralise. `pyhpke`
+est testée contre les vecteurs de test OFFICIELS du RFC 9180 (des
+couples entrée/sortie de référence publiés avec la norme,
+github.com/cfrg/draft-irtf-cfrg-hpke/test-vectors.json), une garantie
+qu'une composition maison ne peut pas offrir.
 
-Principe (chiffrement enveloppe / hybrid encryption) :
-  - AXIS-OS génère UNE SEULE paire de clés X25519 "plateforme"
-    (generate_platform_keypair(), exécuté une fois, hors ligne).
-    La clé PRIVÉE ne quitte jamais l'infrastructure AXIS-OS. La clé
-    PUBLIQUE est distribuée aux développeurs (n'importe qui peut
-    chiffrer avec elle, personne ne peut déchiffrer avec elle).
-  - Un développeur chiffre son app avec encrypt_app_code() — HPKE
-    génère en coulisse une paire de clés éphémère, unique à CETTE
-    app précise, encapsule un secret pour la clé publique plateforme,
-    et chiffre le code avec AES-256-GCM (authentifié — toute
-    altération du fichier chiffré est détectée au déchiffrement, pas
-    seulement empêchée en lecture).
-  - PlayStoreRuntime.install() déchiffre EN MÉMOIRE avec
-    decrypt_app_code() et la clé privée plateforme — jamais
-    réécrit en clair sur disque.
+Le module HPKE intégré à `cryptography` (la bibliothèque Python de
+cryptographie déjà utilisée par le projet), ajouté dans sa version
+50.0.1, a été envisagé en premier, puis écarté : il exige un backend
+AWS-LC ou BoringSSL (des bibliothèques cryptographiques alternatives à
+OpenSSL), indisponible avec l'installation OpenSSL standard utilisée ici.
+Recompiler `cryptography` contre un autre backend serait un chantier
+d'infrastructure disproportionné pour ce besoin précis.
 
-Pourquoi X25519 plutôt que réutiliser Ed25519 (déjà présent dans
-signing.py) : Ed25519 est une clé de SIGNATURE, pas de chiffrement —
-les deux usages ne doivent structurellement pas partager la même
-paire de clés (principe de séparation des clés par usage). X25519
-est la courbe du KEM (Key Encapsulation Mechanism) recommandé par
-RFC 9180 pour HPKE — le standard de facto de tout schéma de
-chiffrement enveloppe moderne.
+Principe (chiffrement « enveloppe », ou hybride : une paire de clés
+asymétrique protège un secret à usage unique, et c'est ce secret qui
+chiffre le contenu) :
+  - AXIS-OS génère UNE SEULE paire de clés X25519 « plateforme »
+    (generate_platform_keypair(), exécutée une fois, hors ligne). La
+    clé privée ne quitte jamais l'infrastructure AXIS-OS. La clé
+    publique est distribuée aux développeurs : n'importe qui peut
+    chiffrer avec elle, personne ne peut déchiffrer avec elle.
+  - Le développeur chiffre son app avec encrypt_app_code(). En
+    coulisse, HPKE génère une paire de clés éphémère (à usage unique),
+    propre à cette app et même à chaque chiffrement, encapsule un
+    secret pour la clé publique de la plateforme, puis chiffre le code
+    avec AES-256-GCM. Ce chiffrement est authentifié : toute altération
+    du fichier chiffré est détectée au déchiffrement, le fichier n'est
+    donc pas seulement protégé en lecture.
+  - À l'installation, le chargeur d'apps chiffrées
+    (axis_os/store/runtime/packaging.py) déchiffre le fichier EN
+    MÉMOIRE avec decrypt_app_code() et la clé privée de la plateforme,
+    sans jamais le réécrire en clair sur disque, et en tire une
+    instance de l'app, que l'appelant confie ensuite à
+    PlayStoreRuntime.install().
 
-Ce que ce module NE fait PAS (limites volontaires, documentées, même
-esprit que signing.py) :
-  - Pas de rotation de clé plateforme automatisée — un changement de
-    clé privée plateforme rend illisibles toutes les apps déjà
-    chiffrées avec l'ancienne clé publique. Chantier de gestion de
-    clés distinct (KMS, versionnement de clé), hors de portée ici.
-  - Pas de protection contre une clé privée plateforme compromise —
-    si cette clé fuit, n'importe qui peut déchiffrer n'importe quelle
-    app déjà publiée. Chaque app individuelle reste néanmoins
-    protégée d'un secret éphémère compromis pris isolément (propriété
-    de "forward secrecy" par message, inhérente à HPKE) — deux
-    menaces différentes, la seconde seule est couverte ici.
-  - Ne remplace ni le sandboxing ni les permissions — une app
-    déchiffrée avec succès reste soumise à Permissions/Capabilities/
-    SandboxRunner, exactement comme documenté dans signing.py :
-    déchiffrer prouve seulement que le fichier a été chiffré pour
-    AXIS-OS, pas que le CODE lui-même est bienveillant.
+Pourquoi X25519 plutôt que de réutiliser Ed25519 (déjà présent dans
+signing.py) : Ed25519 est une clé de SIGNATURE, pas de chiffrement. Par
+principe, les deux usages ne doivent pas partager la même paire de clés
+(séparation des clés par usage). X25519 est la courbe du KEM (Key
+Encapsulation Mechanism, le mécanisme qui transmet un secret, chiffré
+pour une clé publique, au seul détenteur de la clé privée
+correspondante) recommandé par le RFC 9180 pour HPKE, le standard de
+fait de tout schéma moderne de chiffrement enveloppe.
+
+Ce que ce module ne fait PAS (limites volontaires et documentées, dans
+le même esprit que signing.py) :
+  - Pas de rotation automatisée de la clé plateforme. Changer de clé
+    privée plateforme rend illisibles toutes les apps déjà chiffrées
+    avec l'ancienne clé publique. C'est un chantier distinct de gestion
+    de clés (KMS, un service de gestion de clés ; versionnement des
+    clés), hors de portée ici.
+  - Pas de protection contre une clé privée plateforme compromise : si
+    elle fuit, n'importe qui peut déchiffrer n'importe quelle app déjà
+    publiée. En revanche, la fuite isolée du secret éphémère d'une app
+    n'expose que cette app (propriété de « forward secrecy », ou
+    confidentialité persistante, par message, inhérente à HPKE : chaque
+    chiffrement a son propre secret). Ce sont deux menaces
+    différentes ; seule la seconde est couverte ici.
+  - Ne remplace ni la sandbox (le processus séparé dans lequel tourne
+    une app) ni les permissions : une app déchiffrée avec succès reste
+    soumise aux contrôles Permissions et Capabilities (les droits et
+    les capacités déclarés dans son manifest, sa fiche descriptive) et
+    à SandboxRunner (qui lance la sandbox), exactement comme le
+    documente signing.py. Réussir à déchiffrer prouve seulement que le
+    fichier a été chiffré pour AXIS-OS, pas que le code lui-même est
+    bienveillant.
 
 Licence : Apache 2.0
 """
@@ -102,14 +129,16 @@ from pyhpke.exceptions import PyHPKEError, OpenError as _PyHPKEOpenError
 
 class EncryptionError(Exception):
     """
-    Levée sur toute clé ou enveloppe chiffrée malformée — jamais sur
-    un échec de DÉCHIFFREMENT dû à une mauvaise clé ou un fichier
-    altéré (voir DecryptionError ci-dessous), même distinction que
-    SignatureError/résultat booléen dans signing.py : ici la
-    distinction se fait par exception dédiée plutôt que par valeur de
-    retour, car un déchiffrement échoué n'a PAS de résultat partiel
-    exploitable (contrairement à une vérification de signature, qui
-    retourne sobrement False) — il n'y a rien d'autre à faire que de
+    Levée quand une clé ou une enveloppe chiffrée est malformée.
+
+    Elle n'est jamais levée quand le DÉCHIFFREMENT échoue à cause d'une
+    mauvaise clé ou d'un fichier altéré : c'est le rôle de
+    DecryptionError, ci-dessous. On retrouve la même distinction que
+    dans signing.py (SignatureError d'un côté, résultat booléen de
+    l'autre), exprimée ici par une exception dédiée plutôt que par une
+    valeur de retour : un déchiffrement échoué ne laisse aucun résultat
+    partiel exploitable (alors qu'une vérification de signature
+    retourne simplement False), et il n'y a rien d'autre à faire que
     refuser l'installation.
     """
     pass
@@ -117,12 +146,16 @@ class EncryptionError(Exception):
 
 class DecryptionError(Exception):
     """
-    Levée quand une enveloppe chiffrée ne peut pas être déchiffrée
-    avec la clé privée plateforme fournie — mauvaise clé, fichier
-    corrompu, ou fichier altéré après chiffrement (le composant AEAD
-    d'HPKE, AES-256-GCM, est authentifié : toute modification, même
-    d'un seul octet, du texte chiffré fait échouer le déchiffrement
-    plutôt que de produire un texte clair corrompu silencieusement).
+    Levée quand une enveloppe chiffrée ne peut pas être déchiffrée avec
+    la clé privée plateforme fournie : mauvaise clé, fichier corrompu,
+    ou fichier altéré après chiffrement.
+
+    C'est le composant AEAD de HPKE (Authenticated Encryption with
+    Associated Data, un chiffrement qui authentifie aussi ce qu'il
+    chiffre), ici AES-256-GCM, qui permet de le détecter : toute
+    modification du texte chiffré, même d'un seul octet, fait échouer
+    le déchiffrement au lieu de produire en silence un texte clair
+    corrompu.
     """
     pass
 
@@ -130,15 +163,18 @@ class DecryptionError(Exception):
 @dataclass(frozen=True)
 class PlatformKeypair:
     """
-    Paire de clés X25519 "plateforme" — generate_platform_keypair()
-    ne doit être exécutée QU'UNE SEULE FOIS, hors ligne, par
-    l'exploitant d'AXIS-OS (jamais par un développeur d'app, jamais
-    côté client). `private_key_b64` ne doit JAMAIS être distribuée,
-    committée dans un dépôt, ni transmise à qui que ce soit — c'est
-    littéralement la seule clé au monde qui permette de déchiffrer
+    Paire de clés X25519 « plateforme », encodées en base64 (un encodage
+    qui représente des octets sous forme de texte).
+
+    generate_platform_keypair() ne doit être exécutée QU'UNE SEULE FOIS,
+    hors ligne, par l'exploitant d'AXIS-OS : jamais par un développeur
+    d'app, jamais côté client. `private_key_b64` ne doit jamais être
+    distribuée, committée dans un dépôt ni transmise à qui que ce soit :
+    c'est littéralement la seule clé au monde qui permette de déchiffrer
     une app publiée. Seule `public_key_b64` est distribuée aux
-    développeurs (documentation publique du SDK, ou embarquée dans
-    l'outil de packaging officiel).
+    développeurs, dans la documentation publique du SDK (le kit de
+    développement d'apps) ou intégrée à l'outil officiel de packaging
+    (la mise en paquet d'une app avant sa livraison).
     """
     private_key_b64: str
     public_key_b64:  str
@@ -147,29 +183,31 @@ class PlatformKeypair:
 @dataclass(frozen=True)
 class EncryptedApp:
     """
-    Enveloppe chiffrée complète d'une app — tout ce qui est
-    nécessaire pour déchiffrer (sauf la clé privée plateforme,
-    jamais incluse ici) est contenu dans cette structure. Sérialisée
-    par to_bytes()/from_bytes() pour être écrite/lue comme un seul
-    fichier (l'extension .axisapp, voir packaging.py).
+    Enveloppe chiffrée complète d'une app : elle contient tout ce qu'il
+    faut pour déchiffrer, sauf la clé privée plateforme, qui n'y figure
+    jamais. to_bytes() et from_bytes() la sérialisent pour l'écrire ou
+    la lire comme un seul fichier (extension .axisapp, voir
+    axis_os/store/runtime/packaging.py).
 
-    `encapsulated_key_b64` correspond au `enc` du standard HPKE
-    (RFC 9180 §5.1) — la clé publique éphémère encapsulée par HPKE,
-    nécessaire au destinataire pour reconstruire le secret partagé.
+    `encapsulated_key_b64` correspond au champ `enc` de la norme HPKE
+    (RFC 9180, §5.1) : la clé publique éphémère encapsulée par HPKE,
+    dont le destinataire a besoin pour reconstruire le secret partagé.
     """
     encapsulated_key_b64: str
     ciphertext_b64:       str
 
     def to_bytes(self) -> bytes:
         """
-        Sérialisation binaire simple — un format texte structuré
-        (une ligne par champ, base64 déjà "safe" pour du texte),
-        volontairement pas JSON : évite toute dépendance à un
-        analyseur JSON pour ce format de fichier critique en
-        sécurité, et rend le format trivialement inspectable/
-        diffable en cas de besoin de diagnostic (même si le contenu
-        reste illisible sans la clé, la STRUCTURE du fichier reste
-        lisible — ça n'affaiblit en rien le chiffrement lui-même).
+        Sérialisation binaire simple : un format texte structuré, une
+        ligne par champ (le base64 passe déjà sans risque dans du
+        texte).
+
+        Volontairement pas du JSON : pour ce format de fichier critique
+        en sécurité, on évite toute dépendance à un analyseur JSON, et
+        le format reste facile à inspecter ou à comparer (diff) lors
+        d'un diagnostic. Le contenu reste illisible sans la clé ; seule
+        la STRUCTURE du fichier est lisible, ce qui n'affaiblit en rien
+        le chiffrement lui-même.
         """
         lines = [
             "AXISAPP-ENCRYPTED-V1",
@@ -180,6 +218,15 @@ class EncryptedApp:
 
     @staticmethod
     def from_bytes(data: bytes) -> "EncryptedApp":
+        """
+        Relit une enveloppe écrite par to_bytes().
+
+        Lève EncryptionError si les données ne sont pas de l'ASCII, si
+        l'en-tête AXISAPP-ENCRYPTED-V1 manque, si le nombre de lignes
+        est incorrect, si une ligne n'a pas la forme « nom:valeur », ou
+        si le champ `enc` ou `ct` manque. La validité du base64 des
+        champs n'est vérifiée qu'au déchiffrement (decrypt_app_code()).
+        """
         try:
             text = data.decode("ascii")
         except UnicodeDecodeError as e:
@@ -207,25 +254,29 @@ class EncryptedApp:
         )
 
 
-# Cipher suite unique pour tout le module — DHKEM(X25519, HKDF-SHA256)
-# / HKDF-SHA256 / AES-256-GCM, voir la docstring de module pour la
-# justification de ce choix précis.
+# Une seule suite cryptographique pour tout le module :
+# DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / AES-256-GCM. La
+# justification de ce choix précis est dans la docstring du module.
 _SUITE = CipherSuite.new(
     KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM,
 )
 
-# Chaîne "info" HPKE — liant contextuel qui distingue ce schéma
-# d'un autre usage d'HPKE avec la même paire de clés (voir RFC 9180
-# §5.1) — pas un secret, juste un identifiant de contexte fixe.
+# Chaîne « info » de HPKE : un identifiant de contexte fixe, mêlé à la
+# dérivation des clés, qui distingue ce schéma de tout autre usage de
+# HPKE avec la même paire de clés (voir RFC 9180, §5.1). Ce n'est pas un
+# secret.
 _HPKE_INFO = b"AXIS-OS app encryption v1"
 
 
 def _decode_x25519_key_b64(key_b64: str, *, is_private: bool, label: str):
-    """Décode une clé X25519 depuis base64 et retourne un objet
-    X25519PrivateKey/X25519PublicKey natif de `cryptography` — jamais
-    un objet interne à pyhpke exposé directement à l'appelant de ce
-    module, pour garder encryption.py cohérent avec le reste du
-    projet (signing.py utilise les mêmes types de clé natifs)."""
+    """Décode une clé X25519 depuis le base64 et retourne un objet
+    X25519PrivateKey ou X25519PublicKey natif de `cryptography`.
+
+    Aucun objet interne à pyhpke n'est exposé directement à l'appelant
+    de ce module : encryption.py reste ainsi cohérent avec le reste du
+    projet (signing.py utilise les mêmes types de clés natifs). Lève
+    EncryptionError si le base64 est invalide ou si la clé ne fait pas
+    32 octets."""
     try:
         key_bytes = base64.b64decode(key_b64, validate=True)
     except Exception as e:
@@ -241,13 +292,14 @@ def _decode_x25519_key_b64(key_b64: str, *, is_private: bool, label: str):
 
 def generate_platform_keypair() -> PlatformKeypair:
     """
-    Génère une nouvelle paire de clés X25519 "plateforme" — voir
-    PlatformKeypair pour le contexte complet. À exécuter UNE SEULE
-    FOIS pour toute la durée de vie d'AXIS-OS (voir la limite
-    documentée en tête de module sur l'absence de rotation
-    automatisée) — un appel répété générerait une NOUVELLE clé,
-    rendant illisibles toutes les apps déjà chiffrées avec l'ancienne
-    clé publique.
+    Génère une nouvelle paire de clés X25519 « plateforme » (contexte
+    complet dans PlatformKeypair).
+
+    À exécuter UNE SEULE FOIS pour toute la durée de vie d'AXIS-OS : un
+    nouvel appel produirait une nouvelle clé, et toutes les apps déjà
+    chiffrées avec l'ancienne clé publique deviendraient illisibles
+    (voir, en tête de module, la limite sur l'absence de rotation
+    automatisée).
     """
     private_key = X25519PrivateKey.generate()
     public_key = private_key.public_key()
@@ -266,19 +318,25 @@ def encrypt_app_code(
 ) -> EncryptedApp:
     """
     Chiffre le code source d'une app pour la clé publique plateforme
-    fournie — exécuté par le développeur (ou l'outil de packaging
-    officiel, voir packaging.py) AVANT publication, jamais côté
-    AXIS-OS. Seule la clé PRIVÉE plateforme (jamais distribuée)
-    permet de déchiffrer le résultat — le développeur lui-même ne
-    peut PAS relire le fichier chiffré une fois produit (il garde
-    évidemment son code source original en clair de son côté, c'est
-    le FICHIER LIVRÉ qui devient illisible).
+    fournie.
 
-    HPKE génère en interne une nouvelle paire de clés éphémère à
-    CHAQUE appel — deux chiffrements de la même app, même avec un
-    contenu identique, produisent des enveloppes DIFFÉRENTES et non
-    corrélables (propriété IND-CPA standard, garantie par le RFC,
-    jamais un simple hachage déterministe du contenu).
+    Exécuté AVANT publication par le développeur ou par l'outil de
+    packaging officiel, jamais côté AXIS-OS (le chargement côté
+    AXIS-OS, lui, se trouve dans axis_os/store/runtime/packaging.py).
+    Seule la clé privée plateforme, jamais distribuée, permet de
+    déchiffrer le résultat : le développeur lui-même ne peut pas relire
+    le fichier chiffré une fois produit. Il garde bien sûr son
+    code source original en clair de son côté ; c'est le fichier livré
+    qui devient illisible.
+
+    HPKE génère en interne une nouvelle paire de clés éphémère à CHAQUE
+    appel : deux chiffrements de la même app, même à contenu identique,
+    produisent des enveloppes différentes, qu'on ne peut pas rapprocher
+    l'une de l'autre. C'est la propriété standard IND-CPA
+    (indistinguabilité face à une attaque à clair choisi : rien ne
+    permet de dire si deux enveloppes contiennent le même code),
+    garantie par le RFC ; ce n'est jamais un simple hachage
+    déterministe du contenu.
     """
     if isinstance(source_code, str):
         source_code = source_code.encode("utf-8")
@@ -306,16 +364,22 @@ def decrypt_app_code(
     encrypted_app: EncryptedApp, platform_private_key_b64: str,
 ) -> bytes:
     """
-    Déchiffre une app avec la clé privée plateforme — exécuté
-    UNIQUEMENT par PlayStoreRuntime.install() (voir packaging.py pour
-    le branchement complet), et TOUJOURS en mémoire, jamais réécrit
-    en clair sur disque.
+    Déchiffre une app avec la clé privée plateforme.
 
-    Lève DecryptionError sur toute mauvaise clé ou altération du
-    fichier — le composant AEAD d'HPKE (AES-256-GCM) est authentifié :
-    un fichier corrompu, tronqué, ou modifié après chiffrement échoue
-    ici plutôt que de produire un texte clair corrompu qui serait
-    ensuite exécuté silencieusement comme du vrai code Python.
+    Appelé uniquement sur le chemin d'installation : le chargeur
+    d'axis_os/store/runtime/packaging.py déchiffre l'app et en prépare
+    une instance, que l'appelant confie ensuite à
+    PlayStoreRuntime.install() (voir ce fichier pour le branchement
+    complet). Le déchiffrement se fait TOUJOURS en mémoire, sans jamais
+    réécrire le code en clair sur disque.
+
+    Lève DecryptionError sur une mauvaise clé ou une altération du
+    fichier : le composant AEAD de HPKE (le chiffrement authentifié,
+    ici AES-256-GCM) fait échouer ici un fichier corrompu, tronqué ou
+    modifié après chiffrement, au lieu de produire un texte clair
+    corrompu qui serait ensuite exécuté silencieusement comme du vrai
+    code Python. Lève EncryptionError si la clé ou l'enveloppe est
+    elle-même malformée.
     """
     platform_private_key = _decode_x25519_key_b64(
         platform_private_key_b64, is_private=True, label="Clé privée plateforme"
@@ -350,7 +414,8 @@ def decrypt_app_code(
 
 
 def encrypt_app_file(file_path: Union[str, Path], platform_public_key_b64: str) -> EncryptedApp:
-    """Raccourci : lit un fichier .py et le chiffre. Voir encrypt_app_code()."""
+    """Raccourci : lit un fichier .py (en octets, tel quel) et le
+    chiffre. Voir encrypt_app_code()."""
     content = Path(file_path).read_bytes()
     return encrypt_app_code(content, platform_public_key_b64)
 
@@ -359,9 +424,9 @@ def decrypt_app_file_to_bytes(
     encrypted_file_path: Union[str, Path], platform_private_key_b64: str,
 ) -> bytes:
     """Raccourci : lit un fichier .axisapp chiffré et le déchiffre en
-    mémoire. Voir decrypt_app_code() — le résultat n'est JAMAIS
-    réécrit en clair sur disque par cette fonction elle-même ; c'est
-    la responsabilité de l'appelant de ne pas le faire non plus."""
+    mémoire (voir decrypt_app_code()). Cette fonction ne réécrit JAMAIS
+    elle-même le résultat en clair sur disque ; c'est à l'appelant de
+    ne pas le faire non plus."""
     data = Path(encrypted_file_path).read_bytes()
     encrypted_app = EncryptedApp.from_bytes(data)
     return decrypt_app_code(encrypted_app, platform_private_key_b64)
