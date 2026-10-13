@@ -1,18 +1,21 @@
 """
-Tri de colis — la logique métier, séparée du robot.
+Tri de colis : la logique métier, séparée du robot.
 
-Cette machine à états décide QUOI faire : quel colis prendre, où le porter,
-que faire quand ça rate. Elle ne commande jamais un moteur : elle parle à une
-façade `Robot` (navigation, manipulation, perception, sécurité), branchée en
-simulation, sur le vrai robot, ou sur un monde factice pour les tests.
+Cette machine à états (un programme qui passe d'un état nommé à un autre,
+CHERCHER, ACCOSTER, PRENDRE, LIVRER…, selon ce qui arrive) décide quoi
+faire : quel colis prendre, où le porter, que faire quand ça rate. Elle ne
+commande jamais un moteur : elle parle à une façade `Robot` (navigation,
+manipulation, perception, sécurité), branchée en simulation, sur le vrai
+robot (facade.py), ou sur un monde factice pour les tests
+(test/monde_tri_factice.py, test/test_tri_colis.py).
 
 Principes :
-  - la règle de tri (couleur -> poste) est de la connaissance métier, dans la
-    config, jamais dans l'IA ;
-  - un arrêt de sécurité (humain trop près) n'est PAS une panne : la logique
-    se fige, son temps est compté à part, aucun délai ne court ;
-  - tout échec a une issue : nouvel essai, abandon signalé, couleur suspendue,
-    arrêt propre — jamais d'état sans sortie ;
+  - la règle de tri (couleur -> poste) est de la connaissance métier : elle
+    vit dans la configuration, jamais dans l'IA ;
+  - un arrêt de sécurité (humain trop près) n'est pas une panne : la
+    logique se fige, ce temps est compté à part, et aucun délai ne court ;
+  - tout échec a une issue (nouvel essai, abandon signalé, couleur
+    suspendue, arrêt propre) : aucun état n'est sans sortie ;
   - la mission ne se termine jamais les bras chargés.
 """
 from __future__ import annotations
@@ -24,12 +27,22 @@ from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 @dataclass(frozen=True)
 class Colis:
+    """Un colis repéré : sa couleur, la position (x, y, z) de son centre
+    dans le repère monde (le repère fixe de la carte), en mètres, et la
+    confiance de sa détection."""
     couleur: str
     position: Tuple[float, float, float]
     confiance: float
 
 
 class Robot(Protocol):
+    """Ce que la logique attend du robot ; facade.FacadeServices le réalise
+    avec les services d'AXIS-OS.
+
+    Les méthodes qui lancent une action (aller_au_poste, accoster, prendre,
+    poser) rendent (acceptée, raison d'un refus) sans attendre la fin du
+    geste : la logique en suit ensuite l'avancement par navigation() et
+    manipulation()."""
     def maintenant(self) -> float: ...
     def bloque_par_securite(self) -> bool: ...
     def chercher(self, couleur: str) -> List[Colis]: ...
@@ -45,15 +58,24 @@ class Robot(Protocol):
 
 @dataclass
 class ConfigTri:
+    """Réglages de la mission. Durées en secondes, distances en mètres.
+    Les règles de tri peuvent être changées en cours de mission par le
+    superviseur (superviseur.py)."""
     regles: Dict[str, str]                  # couleur -> poste de dépose
     poste_prise: str = "prise"
+    # Nombre d'essais avant d'abandonner : prise d'un même colis ; trajet
+    # vers un poste, ou accostage d'un colis au même endroit ; dépose.
     essais_prise_max: int = 3
     essais_nav_max: int = 3
     essais_pose_max: int = 2
+    # Durées maximales d'un trajet ou d'un accostage, puis d'une prise ou
+    # d'une dépose ; pause entre deux recherches qui n'ont rien trouvé.
     delai_nav_s: float = 90.0
     delai_manip_s: float = 20.0
     attente_recherche_s: float = 5.0
     duree_mission_s: float = 1800.0
+    # Deux positions plus proches que ce rayon désignent le même colis, ou
+    # le même emplacement.
     rayon_ignore_m: float = 0.15
     # Un emplacement abandonné est ignoré un temps, pas pour toujours :
     # l'opérateur peut l'avoir dégagé et un colis neuf y être posé.
@@ -65,8 +87,11 @@ class ConfigTri:
 
 @dataclass
 class Bilan:
+    """Compteurs de la mission. Le rapport du superviseur est écrit à
+    partir d'eux, par du code."""
     colis_tries: int = 0
     par_couleur: Dict[str, int] = field(default_factory=dict)
+    # Chaque livraison réussie : (couleur, poste).
     livraisons: List[Tuple[str, str]] = field(default_factory=list)
     prises_ratees: int = 0
     reussies_apres_nouvel_essai: int = 0
@@ -77,6 +102,8 @@ class Bilan:
     alertes: List[str] = field(default_factory=list)
 
     def taux_reussite(self) -> float:
+        """Colis triés sur colis tentés (triés ou abandonnés) ; 1.0 tant
+        que rien n'a été tenté."""
         tentes = self.colis_tries + self.colis_abandonnes
         return self.colis_tries / tentes if tentes else 1.0
 
@@ -86,6 +113,15 @@ _ETATS_TERMINABLES = ("CHERCHER", "ATTENDRE", "PAUSE")
 
 
 class TriColis:
+    """La mission de tri. pas() est appelé à chaque cycle de la boucle de
+    commande ; chaque état a sa méthode _etat_<nom>().
+
+    Cycle normal : REVENIR (au poste de prise) -> CHERCHER -> ACCOSTER ->
+    PRENDRE -> LIVRER -> POSER -> REVENIR. Autres états : ATTENDRE (rien à
+    trier), PAUSE (poste de prise inaccessible), RAMENER (poste de dépose
+    inaccessible, le colis revient au poste de prise), puis les états
+    finaux FIN (mission terminée) et ARRET (intervention requise)."""
+
     def __init__(self, robot: Robot, cfg: ConfigTri):
         self.robot, self.cfg = robot, cfg
         self.bilan = Bilan()
@@ -93,10 +129,14 @@ class TriColis:
         self.termine = False
         self.colis: Optional[Colis] = None
         self.destination: Optional[str] = None
+        # Emplacements abandonnés (position, instant de l'abandon) : on n'y
+        # prend plus rien pendant oubli_ignore_s.
         self.ignores: List[Tuple[Tuple[float, float, float], float]] = []
-        self._debut: Optional[float] = None
-        self._prec: Optional[float] = None
-        self._temps_etat = 0.0          # temps ACTIF passé dans l'état
+        self._debut: Optional[float] = None   # instant du premier pas
+        self._prec: Optional[float] = None    # instant du pas précédent
+        # Temps actif passé dans l'état courant : les arrêts de sécurité
+        # n'y comptent pas.
+        self._temps_etat = 0.0
         self._entree = True             # premier pas dans l'état courant
         self._essais_prise = 0
         # Prises ratées par colis (position, couleur, essais) : un colis
@@ -104,19 +144,23 @@ class TriColis:
         self._prises_ratees: List[Tuple[Tuple[float, float, float], str, int]] = []
         self._essais_nav = 0
         self._essais_pose = 0
+        # Positions des accostages ratés, pour compter les échecs au même
+        # endroit.
         self._echecs_accostage: List[Tuple[float, float, float]] = []
-        self._inactif_depuis: Optional[float] = None
-        self._bloque_s = 0.0
+        self._inactif_depuis: Optional[float] = None   # rien à trier depuis
+        self._bloque_s = 0.0            # durée de l'arrêt de sécurité en cours
         self._blocage_signale = False
         self._inactivite_signalee = False
 
     # ------------------------------------------------------------------
     def duree_ecoulee(self) -> float:
+        """Temps écoulé depuis le premier pas, arrêts de sécurité compris."""
         if self._debut is None:
             return 0.0
         return self.robot.maintenant() - self._debut
 
     def pas(self) -> None:
+        """Un pas de la mission, à appeler à chaque cycle de commande."""
         if self.termine:
             return
         t = self.robot.maintenant()
@@ -125,8 +169,8 @@ class TriColis:
         dt, self._prec = max(0.0, t - self._prec), t
         if self.robot.bloque_par_securite():
             # L'OS a arrêté le robot : on attend, sans rien commander, et
-            # sans que ce temps ne compte dans les délais de l'état. Si ça
-            # dure, quelqu'un est planté devant le robot : on le signale.
+            # sans que ce temps compte dans les délais de l'état. Si l'arrêt
+            # dure, quelqu'un se tient devant le robot : on le signale.
             self.bilan.temps_arret_securite_s += dt
             self._bloque_s += dt
             if self._bloque_s >= self.cfg.alerte_arret_prolonge_s \
@@ -138,9 +182,11 @@ class TriColis:
             return
         self._bloque_s, self._blocage_signale = 0.0, False
         self._temps_etat += dt
+        # Chaque état a sa méthode : CHERCHER -> _etat_chercher(), etc.
         getattr(self, "_etat_" + self.etat.lower())()
 
     def _aller(self, etat: str) -> None:
+        """Passe dans `etat`, avec un compteur de temps remis à zéro."""
         self.etat, self._temps_etat, self._entree = etat, 0.0, True
 
     def _log(self, msg: str) -> None:
@@ -165,6 +211,9 @@ class TriColis:
     # Navigation générique : aller quelque part, avec nouvel essai.
     def _naviguer_vers(self, poste: str, suivant: str,
                        en_echec: Callable[[], None]) -> None:
+        """Au premier pas de l'état, demande le départ vers `poste` ;
+        ensuite, attend l'arrivée (on passe alors à `suivant`) ou l'échec.
+        Après essais_nav_max échecs, appelle `en_echec`."""
         if self._entree:
             self._entree = False
             ok, raison = self.robot.aller_au_poste(poste)
@@ -209,6 +258,9 @@ class TriColis:
             self._aller("REVENIR")
 
     def _ignore(self, c: Colis) -> bool:
+        """Vrai si le colis se trouve à un emplacement abandonné il y a
+        moins de oubli_ignore_s. Oublie au passage les abandons plus
+        anciens."""
         t = self.duree_ecoulee()
         self.ignores = [(p, d) for p, d in self.ignores
                         if t - d < self.cfg.oubli_ignore_s]
@@ -238,6 +290,7 @@ class TriColis:
             self._aller("ATTENDRE")
             return
         self._inactif_depuis, self._inactivite_signalee = None, False
+        # Le candidat le plus sûr, toutes couleurs confondues.
         self.colis = max(candidats, key=lambda c: c.confiance)
         # Colis déjà raté (même couleur, même place) : ses essais continuent
         # de compter, même si un autre a été pris entre-temps.
@@ -274,7 +327,7 @@ class TriColis:
     def _accostage_rate(self, raison: str) -> None:
         # Le robot n'est peut-être plus au poste de prise : il y retourne
         # avant de chercher à nouveau. Le colis n'est abandonné qu'après
-        # plusieurs accostages ratés AU MÊME endroit.
+        # essais_nav_max accostages ratés au même endroit.
         self.bilan.echecs_navigation += 1
         pos = self.colis.position
         self._echecs_accostage.append(pos)
@@ -314,10 +367,12 @@ class TriColis:
         self._log(f"prise ratée ({raison}), essai {self._essais_prise}"
                   f"/{self.cfg.essais_prise_max}")
         if self._essais_prise < self.cfg.essais_prise_max:
-            # On RE-REGARDE la table avant de réessayer. Constaté sur GPU :
-            # le carton, bousculé par la prise ratée, était tombé au sol ; le
-            # robot a refermé deux fois les mains sur le vide, à l'ancienne
-            # position. Une prise ratée peut avoir déplacé le colis.
+            # On regarde de nouveau la table avant de réessayer, car une
+            # prise ratée peut avoir déplacé le colis. Constaté en
+            # simulation physique sur carte graphique (GPU), sous Isaac
+            # Sim : le carton, bousculé par la prise ratée, était tombé au
+            # sol, et le robot a refermé deux fois les mains sur le vide, à
+            # l'ancienne position.
             self._prises_ratees.append((self.colis.position, self.colis.couleur,
                                         self._essais_prise))
             self.colis = None
@@ -326,6 +381,8 @@ class TriColis:
             self._abandonner_colis(f"{self._essais_prise} prises ratées")
 
     def _abandonner_colis(self, raison: str) -> None:
+        """Laisse le colis en place, le signale dans le journal, et ignore
+        son emplacement pendant oubli_ignore_s."""
         self.ignores.append((self.colis.position, self.duree_ecoulee()))
         self.bilan.colis_abandonnes += 1
         self._log(f"colis {self.colis.couleur} SIGNALÉ et laissé en place : {raison}")
@@ -337,6 +394,9 @@ class TriColis:
                             en_echec=self._destination_inaccessible)
 
     def _destination_inaccessible(self) -> None:
+        """Le poste de dépose est inaccessible : le tri de cette couleur est
+        suspendu (le superviseur pourra le reprendre ou changer la règle),
+        et le colis en main est ramené au poste de prise."""
         couleur = self.colis.couleur
         if couleur not in self.bilan.couleurs_suspendues:
             self.bilan.couleurs_suspendues.append(couleur)
@@ -350,6 +410,8 @@ class TriColis:
                             en_echec=self._poser_sur_place)
 
     def _poser_sur_place(self) -> None:
+        """Même le retour au poste de prise échoue : plutôt que de garder
+        le colis en main, le robot le pose là où il est."""
         self._alerte("retour impossible — colis déposé sur place")
         self.destination = None
         self._aller("POSER")
@@ -372,7 +434,9 @@ class TriColis:
                 self._log(f"colis {c.couleur} LIVRÉ au poste {dest} "
                           f"(total {b.colis_tries})")
             else:
-                # ramené ou posé en route : il ne doit pas être repris.
+                # Colis ramené au poste de prise ou posé en route : compté
+                # comme abandonné, et son emplacement ignoré pour qu'il ne
+                # soit pas repris.
                 self.ignores.append((c.position, self.duree_ecoulee()))
                 self.bilan.colis_abandonnes += 1
             self.colis, self.destination, self._essais_pose = None, None, 0
@@ -386,13 +450,15 @@ class TriColis:
             self._log(f"dépose ratée ({raison}), nouvel essai")
             self._temps_etat, self._entree = 0.0, True
         else:
-            # Situation inconnue avec un objet en main : on ne devine pas.
+            # Situation inconnue avec un objet en main : on ne devine pas,
+            # on s'arrête et on appelle un humain.
             self._alerte(f"dépose impossible ({raison}) — arrêt propre, "
                          "intervention requise")
             self.termine = True
             self._aller("ARRET")
 
-    # États finaux : plus rien à faire.
+    # États finaux : plus rien à faire. FIN : mission terminée bras vides ;
+    # ARRET : arrêt propre, intervention requise.
     def _etat_fin(self) -> None:
         pass
 

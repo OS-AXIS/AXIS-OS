@@ -1,15 +1,25 @@
 """
 Couleur des colis : l'IA trouve les boîtes, les pixels disent leur couleur.
 
-OWL-ViT reconnaît « une boîte » ; qu'il distingue de façon fiable « une
-boîte rouge » d'« une boîte bleue » n'a jamais été vérifié. On ne parie
-pas dessus : chaque détection est gardée ou écartée selon la teinte
-MESURÉE au centre de sa boîte englobante. C'est simple, déterministe,
-testable sans GPU — et honnête sur qui fait quoi.
+Pourquoi ce partage des rôles : OWL-ViT (un modèle de détection d'objets
+« à vocabulaire ouvert », qui trouve dans une image les objets décrits par
+une courte phrase) reconnaît bien « une boîte ». En revanche, personne n'a
+jamais vérifié qu'il distingue de façon fiable « une boîte rouge » d'« une
+boîte bleue ». Plutôt que de parier là-dessus, chaque détection est gardée
+ou écartée selon la teinte mesurée dans les pixels, au centre de sa boîte
+englobante (le rectangle qui entoure l'objet dans l'image). C'est simple,
+déterministe, testable sans GPU (carte graphique), et l'on sait qui fait
+quoi : l'IA localise les boîtes, le code lit leur couleur.
 
-`PerceptionCouleur` a la même méthode find() que le PerceptionService : la
-façade du tri l'utilise sans rien savoir de ce découpage. La requête reçue
-est le NOM de la couleur (ConfigFacade(requete="{couleur}")).
+`PerceptionCouleur` expose la même méthode find() que le PerceptionService
+(le service de perception d'AXIS-OS) : la façade de l'app de tri
+(facade.py) l'utilise sans rien savoir de ce découpage. La requête qu'elle
+reçoit est le nom de la couleur, d'où ConfigFacade(requete="{couleur}").
+
+Les valeurs dites « mesurées » ou « constatées sur GPU » viennent des essais
+de la scène de démonstration en simulation physique (Isaac Sim, sur carte
+graphique) ; la scène est décrite dans docs/demo_tri_usine.md. Tests :
+test/test_couleur_colis.py.
 """
 from __future__ import annotations
 
@@ -19,25 +29,36 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from axis_os.hal.core.frames import FRAME_WORLD
 from axis_os.services.base import ServiceResult
 
-# Plages de teinte (degrés), saturation et luminosité minimales.
+# Couleurs de tri reconnues, chacune décrite par une ou plusieurs plages de
+# teinte, en degrés sur le cercle des couleurs du modèle HSV (teinte,
+# saturation, valeur ; 0° = rouge, 120° = vert, 240° = bleu). Le rouge est
+# à cheval sur 0°, d'où ses deux plages. Les seuils de saturation et de
+# luminosité, communs à toutes les couleurs, suivent.
 TEINTES: Dict[str, Tuple[Tuple[float, float], ...]] = {
     "rouge": ((0.0, 18.0), (340.0, 360.0)),
     "vert": ((85.0, 160.0),),
     "bleu": ((195.0, 255.0),),
     "jaune": ((45.0, 70.0),),
 }
-# 0.25 : mesuré sur GPU, un carton rouge sous éclairage fort devient rose
-# (saturation 0.38), un bleu devient bleu ciel (0.40). Gris et blanc de la
-# scène restent sous 0.10.
+# Saturation minimale (0 = gris, 1 = couleur pure) pour qu'un pixel compte
+# comme coloré. Pourquoi 0.25 : mesuré sur GPU, sous un éclairage fort, un
+# carton rouge devient rose (saturation 0.38) et un carton bleu devient bleu
+# ciel (0.40), alors que le gris et le blanc de la scène restent sous 0.10.
 SATURATION_MIN = 0.25        # en dessous : gris, blanc
-# 0.08 : un carton dans l'OMBRE du robot garde sa teinte, mais devient sombre
-# (constaté sur GPU) ; le noir pur reste exclu par la saturation.
+# Luminosité minimale (0 = noir). Volontairement basse : un carton dans
+# l'ombre du robot garde sa teinte mais devient sombre (constaté sur GPU).
+# Le noir pur reste exclu, cette fois par le seuil de saturation.
 LUMINOSITE_MIN = 0.08
 
 
 def couleur_de(rgb: Tuple[float, float, float],
                couleurs: Iterable[str] = TEINTES) -> Optional[str]:
-    """rgb dans [0, 1]. None si la couleur n'est pas franche."""
+    """Couleur de tri d'un pixel, ou None si sa couleur n'est pas franche.
+
+    rgb : composantes rouge, vert, bleu, chacune dans [0, 1]. Seules les
+    couleurs de `couleurs` sont envisagées. Un pixel trop gris, trop sombre
+    ou hors de toutes les plages de teinte rend None.
+    """
     h, s, v = colorsys.rgb_to_hsv(*rgb)
     if s < SATURATION_MIN or v < LUMINOSITE_MIN:
         return None
@@ -52,22 +73,27 @@ def couleur_boite(data: bytes, largeur: int, hauteur: int,
                   bbox: Sequence[int], couleurs: Iterable[str] = TEINTES,
                   part_centrale: float = 0.85, part_coloree_min: float = 0.08,
                   majorite: float = 0.7) -> Optional[str]:
-    """Couleur d'un objet dans sa boîte englobante, image rgb8.
+    """Couleur d'un objet, lue dans sa boîte englobante, ou None.
 
-    On VOTE PARMI LES PIXELS FRANCHEMENT COLORÉS SEULEMENT. Première
-    version : couleur majoritaire au centre de la boîte, tous pixels
-    confondus — sur GPU, la face tournée vers le robot était dans l'OMBRE,
-    noire ; seul le rebord éclairé portait la couleur, et chaque carton
-    était rejeté. Les pixels sombres, gris ou beiges (ombre, table, fond)
-    ne votent donc pas.
+    data : image au format rgb8 (trois octets par pixel, rouge, vert, bleu,
+    ligne après ligne) de `largeur` × `hauteur` pixels. bbox : boîte
+    (x, y, largeur, hauteur), en pixels.
 
-    Garde-fous, pour ne jamais trier au mauvais poste :
-      - au moins `part_coloree_min` des pixels examinés sont colorés,
-        sinon None (un objet gris n'a pas de couleur de tri) ;
-      - la couleur gagnante fait au moins `majorite` des pixels colorés,
-        sinon None (une boîte à cheval sur deux cartons est ambiguë).
-    Les bords extrêmes (`part_centrale`) sont exclus : une détection déborde
-    souvent sur le voisin.
+    Seuls les pixels franchement colorés votent. Pourquoi : la première
+    version prenait la couleur majoritaire au centre de la boîte, tous
+    pixels confondus. Sur GPU, la face du carton tournée vers le robot était
+    dans l'ombre, donc noire ; seul le rebord éclairé portait la couleur, et
+    chaque carton était rejeté. Les pixels sombres, gris ou beiges (ombre,
+    table, fond) ne votent donc pas.
+
+    Garde-fous, pour ne jamais envoyer un colis au mauvais poste :
+      - au moins `part_coloree_min` des pixels examinés doivent être
+        colorés, sinon None (un objet gris n'a pas de couleur de tri) ;
+      - la couleur gagnante doit réunir au moins `majorite` des pixels
+        colorés, sinon None (une boîte à cheval sur deux cartons est
+        ambiguë).
+    Les bords de la boîte sont exclus, seule sa `part_centrale` est
+    examinée : une détection déborde souvent sur l'objet voisin.
     """
     x, y, w, h = (int(v) for v in bbox)
     mx, my = int(w * (1 - part_centrale) / 2), int(h * (1 - part_centrale) / 2)
@@ -76,6 +102,9 @@ def couleur_boite(data: bytes, largeur: int, hauteur: int,
     if x1 <= x0 or y1 <= y0:
         return None
     votes: Dict[str, int] = {}
+    # Un pixel sur `pas` dans chaque direction, soit environ 25 points le
+    # long du plus petit côté de la zone examinée : assez pour voter sans
+    # parcourir toute la boîte.
     pas = max(1, min(x1 - x0, y1 - y0) // 25)      # ~600 pixels examinés
     n = 0
     for yy in range(y0, y1, pas):
@@ -95,8 +124,13 @@ def couleur_boite(data: bytes, largeur: int, hauteur: int,
 
 
 def mesure_couleur(data: bytes, largeur: int, hauteur: int, bbox: Sequence[int]) -> str:
-    """Pour le diagnostic : RGB moyen au centre de la boîte, et part des
-    pixels jugés colorés par couleur. Dit POURQUOI une couleur est rejetée."""
+    """Texte de diagnostic, qui dit pourquoi une couleur est rejetée.
+
+    Donne le RGB moyen au centre de la boîte (la moitié centrale, en largeur
+    comme en hauteur) et, pour chaque couleur, la part des pixels jugés de
+    cette couleur (« aucune » pour ceux sans couleur franche). Ce texte sert
+    seulement à comprendre ; il n'intervient pas dans la décision.
+    """
     x, y, w, h = (int(v) for v in bbox)
     x0, x1 = max(0, x + w // 4), min(largeur, x + 3 * w // 4)
     y0, y1 = max(0, y + h // 4), min(hauteur, y + 3 * h // 4)
@@ -120,6 +154,9 @@ def mesure_couleur(data: bytes, largeur: int, hauteur: int, bbox: Sequence[int])
 
 
 def _recouvrement(a, b) -> float:
+    """Recouvrement de deux boîtes (x, y, largeur, hauteur) : aire de leur
+    intersection divisée par celle de leur union, 0 si elles sont
+    disjointes."""
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
     ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
@@ -130,7 +167,14 @@ def _recouvrement(a, b) -> float:
 
 
 def sans_doublons(dets: List, seuil: float = 0.5) -> List:
-    """Plusieurs formulations voient la même boîte : on garde la plus sûre."""
+    """Retire les détections en double, en gardant la plus sûre.
+
+    Plusieurs formulations de la requête (« a box », « a cardboard box »)
+    voient souvent la même boîte. Les détections sont parcourues de la plus
+    confiante à la moins confiante ; une détection qui recouvre une
+    détection déjà gardée à `seuil` ou plus (voir _recouvrement) est
+    écartée.
+    """
     gardees: List = []
     for d in sorted(dets, key=lambda d: -d.confidence):
         if all(_recouvrement(d.bbox, g.bbox) < seuil for g in gardees):
@@ -139,15 +183,27 @@ def sans_doublons(dets: List, seuil: float = 0.5) -> List:
 
 
 class PerceptionCouleur:
-    """find(couleur) : boîtes détectées par l'IA, filtrées par leur couleur."""
+    """find(couleur) : boîtes détectées par l'IA, filtrées par leur couleur.
+
+    Une recherche interroge le détecteur une fois par formulation de
+    `requetes`, retire les doublons, puis classe chaque détection d'après la
+    couleur lue dans l'image de la caméra. Le résultat est gardé en mémoire
+    pour l'instant `now_ns` : chercher plusieurs couleurs au même instant ne
+    relance pas l'inférence (le calcul du réseau de neurones), coûteuse.
+    """
 
     def __init__(self, perception, camera, couleurs: Iterable[str],
                  requetes: Sequence[str] = ("a box", "a cardboard box"),
                  surface_max: float = 0.25):
-        """surface_max : fraction de l'image au-delà de laquelle une
-        détection n'est pas UN carton. Constaté sur GPU : OWL-ViT rend aussi
-        une boîte couvrant toute l'image ; le sol de la scène étant bleu,
-        elle aurait pu passer pour un carton bleu fantôme."""
+        """perception : détecteur d'objets, avec la méthode find() du
+        PerceptionService ; camera : source des images rgb8 dont on lit les
+        pixels ; couleurs : couleurs de tri reconnues (clés de TEINTES) ;
+        requetes : formulations envoyées au détecteur.
+
+        surface_max : fraction de l'image au-delà de laquelle une détection
+        ne peut pas être un carton. Constaté sur GPU : OWL-ViT rend aussi une
+        boîte couvrant toute l'image ; le sol de la scène étant bleu, elle
+        aurait pu passer pour un carton bleu fantôme."""
         self.surface_max = surface_max
         self.perception, self.camera = perception, camera
         self.couleurs = list(couleurs)
@@ -155,12 +211,17 @@ class PerceptionCouleur:
         self._cache_ns: Optional[int] = None
         self._cache: List = []
         self.stats = {"inferences": 0, "sans_couleur": 0}
-        # Ce qu'a vu la DERNIÈRE recherche, détection par détection : pour
-        # comprendre un « rien trouvé » (IA muette ? couleur rejetée ?
-        # position filtrée ?) sans deviner.
+        # Ce qu'a vu la dernière recherche, détection par détection. Il sert
+        # à comprendre un « rien trouvé » sans deviner : l'IA n'a-t-elle rien
+        # vu, la couleur a-t-elle été rejetée, la position filtrée ?
         self.diagnostic: dict = {}
 
     def _detections(self, now_ns, frame) -> Tuple[List, Optional[str]]:
+        """Détections de l'instant `now_ns`, classées par couleur.
+
+        Rend la liste des couples (couleur ou None, détection) et, si le
+        détecteur n'a rien rendu du tout, la raison de son dernier échec.
+        Remplit aussi self.diagnostic."""
         if now_ns is not None and now_ns == self._cache_ns:
             return self._cache, None
         dets, raison = [], None
@@ -207,6 +268,12 @@ class PerceptionCouleur:
 
     def find(self, query: str, now_ns: Optional[int] = None,
              frame: str = FRAME_WORLD) -> ServiceResult:
+        """Détections de la couleur `query`, de la plus confiante à la
+        moins confiante. Échoue seulement si le détecteur a échoué et
+        qu'aucune détection n'a pu être classée.
+
+        frame : repère des positions rendues ; FRAME_WORLD est le repère
+        « monde », fixe, celui de la carte."""
         classees, raison = self._detections(now_ns, frame)
         if raison and not classees:
             return ServiceResult(ok=False, value=[], reason=raison)
