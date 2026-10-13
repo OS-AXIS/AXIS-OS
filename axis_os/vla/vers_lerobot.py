@@ -1,18 +1,42 @@
 """
-Conversion des épisodes enregistrés au format LeRobot v2 — celui que lisent
+Conversion des épisodes enregistrés au format LeRobot v2, celui que lisent
 les scripts d'entraînement de NVIDIA Isaac GR00T.
+
+Usage :
 
     python -m axis_os.vla.vers_lerobot <dossier_episodes> <dossier_sortie> [--prise-seule]
 
---prise-seule : ne garde de chaque épisode que la PRISE, base immobile —
-les images qui suivent le dernier mouvement de la base (serrage, levage).
-Constaté au premier essai GPU (VLA complet, approche comprise) : le modèle
-marchait jusqu'à la table et tendait les bras, mais se plaçait 20-30 cm à
-côté du carton et ne serrait jamais. Partage des rôles retenu : les réflexes
-codés s'approchent (navigation, visée de face), le VLA ne fait que le geste.
+    <dossier_episodes>  dossier écrit par l'enregistreur (enregistreur.py) :
+                        episodes.jsonl et les fichiers episode_NNNNNN.npz
+                        (et .mp4) ;
+    <dossier_sortie>    jeu de données LeRobot à produire. Attention : s'il
+                        existe déjà, il est effacé puis recréé ;
+    --prise-seule       ne garde de chaque épisode que la prise, base
+                        immobile (voir plus bas).
 
-Seuls les épisodes RÉUSSIS sont gardés : le VLA imite le professeur quand
-il a bien fait, jamais quand il a raté.
+La commande affiche à la fin un bilan : épisodes convertis, images,
+consignes, épisodes ratés ignorés, épisodes écartés et pourquoi.
+
+GR00T est le modèle VLA (Vision-Language-Action) de NVIDIA pour les
+humanoïdes : il reçoit une image, une consigne en langage naturel et
+l'état du robot, et propose des mouvements. LeRobot v2 est le format de
+jeu de données de la bibliothèque LeRobot, que GR00T reprend.
+
+Seuls les épisodes réussis sont gardés : le VLA imite le professeur (le
+robot piloté par ses réflexes codés) quand il a bien fait, jamais quand il
+a raté. Un épisode qui garde moins de 10 images (après le découpage, si
+--prise-seule est donné) est ignoré.
+
+--prise-seule : ne garde de chaque épisode que la prise, base immobile,
+c'est-à-dire les images qui suivent le dernier mouvement de la base
+(serrage, levage), sans l'immobilité qui précède le geste. Pourquoi :
+constaté au premier essai sur la machine GPU (la machine louée, équipée
+d'une carte de calcul, où tournent la simulation et l'entraînement) avec
+le VLA complet (approche comprise), le modèle marchait jusqu'à la table et
+tendait les bras, mais se plaçait 20 à 30 cm à côté du carton et ne
+serrait jamais. Partage des rôles
+retenu : les réflexes codés font l'approche (navigation, visée de face), le
+VLA ne fait que le geste.
 
 Arborescence produite :
 
@@ -20,31 +44,41 @@ Arborescence produite :
     data/chunk-000/episode_000000.parquet
     videos/chunk-000/observation.images.ego_view/episode_000000.mp4
 
-meta/modality.json est propre à GR00T : il découpe le vecteur d'état et
-d'action en parties nommées (bras gauche, bras droit, base).
+Un fichier .parquet est un tableau de données rangé par colonnes (une
+ligne par image) ; « chunk-000 » est le premier paquet d'épisodes.
 
-LIMITE HONNÊTE : ce format suit la documentation publique de GR00T et de
+meta/modality.json est propre à GR00T : il découpe le vecteur d'état et
+d'action en parties nommées (bras gauche, bras droit, base), que reprend
+config_gr00t_g1.py.
+
+Limite connue : ce format suit la documentation publique de GR00T et de
 LeRobot v2 au moment de l'écriture. L'outillage de NVIDIA évolue (N1.5,
 N1.6, N1.7…) : vérifier avec leur chargeur de données, sur ce jeu, avant de
 lancer un entraînement de plusieurs heures.
 
 Nécessite pandas et pyarrow (présents dans l'environnement d'entraînement
-de GR00T, pas dans le conteneur Isaac Sim).
+de GR00T, pas dans le conteneur Isaac Sim, le simulateur de NVIDIA).
 
-LES ÉPISODES SONT DES DONNÉES NON FIABLES (audit du 2026-10-10) : ils
-reviennent d'une machine louée, ou d'une sauvegarde téléchargée
-(sauvegarder_vla.sh --restaurer). Donc :
-  - np.load toujours avec allow_pickle=False, écrit explicitement (c'est
-    la valeur par défaut de numpy, mais une valeur par défaut peut changer
-    et un tableau d'objets exécuterait du code au chargement) ;
+Les épisodes sont traités comme des données non fiables, à la demande d'un
+audit de sécurité (2026-10-10) : ils reviennent d'une machine louée, ou
+d'une sauvegarde téléchargée (deploy/machine_gpu/sauvegarder_vla.sh
+--restaurer). Donc :
+  - np.load est toujours appelé avec allow_pickle=False, écrit
+    explicitement. Pickle est le format Python de sérialisation d'objets,
+    dans lequel numpy range les tableaux d'objets : charger un tel tableau
+    exécuterait du code. C'est déjà la valeur par défaut de numpy, mais une
+    valeur par défaut peut changer ;
   - le nom d'épisode, lu dans episodes.jsonl, sert à construire un chemin :
-    seul « episode_NNNNNN » est accepté — sinon « ../../ailleurs » ferait
-    lire ou copier n'importe quel fichier. Un nom invalide ARRÊTE la
+    seul « episode_NNNNNN » est accepté. Sinon « ../../ailleurs » ferait
+    lire ou copier n'importe quel fichier. Un nom invalide arrête la
     conversion (fichier d'index corrompu ou falsifié), avant d'effacer quoi
     que ce soit ;
-  - formes, types et finitude vérifiés : un épisode avec un NaN, ou des
-    dimensions qui ne collent pas, est ÉCARTÉ et signalé — sinon il
-    empoisonnerait l'entraînement sans aucune erreur visible.
+  - formes, types et finitude sont vérifiés : un épisode avec un NaN (« pas
+    un nombre », valeur numérique invalide), ou des dimensions qui ne
+    collent pas, est écarté et signalé. Sinon il empoisonnerait
+    l'entraînement sans aucune erreur visible. Un npz illisible est écarté
+    de même. S'il ne reste aucun épisode valide, la conversion s'arrête en
+    erreur.
 """
 from __future__ import annotations
 
@@ -59,13 +93,16 @@ import numpy as np
 
 from axis_os.vla.enregistreur import lire_episodes
 
+# Nom de la vidéo de la caméra de tête dans le jeu LeRobot.
 CLE_VIDEO = "observation.images.ego_view"
-# Nom d'épisode tel que l'écrit EnregistreurEpisodes ; rien d'autre (voir
-# l'en-tête : il sert à construire des chemins).
+# Nom d'épisode tel que l'écrit EnregistreurEpisodes, et rien d'autre : il
+# sert à construire des chemins (voir l'en-tête).
 _NOM_EPISODE = re.compile(r"^episode_\d{6,}$")
 
 
 def _verifier_nom(e: Dict) -> str:
+    """Rend le nom de l'épisode s'il a la forme episode_NNNNNN ; sinon lève
+    ValueError, ce qui arrête toute la conversion (voir l'en-tête)."""
     nom = e.get("episode") if isinstance(e, dict) else None
     if not isinstance(nom, str) or not _NOM_EPISODE.match(nom):
         raise ValueError(f"nom d'épisode invalide {str(nom)[:80]!r} dans episodes.jsonl "
@@ -75,7 +112,9 @@ def _verifier_nom(e: Dict) -> str:
 
 
 def _incoherence(e: Dict, ref: Dict) -> Optional[str]:
-    """L'en-tête de l'épisode doit être celui du premier : un seul format par jeu."""
+    """Raison du rejet, ou None. L'en-tête de l'épisode (cadence, noms des
+    composantes, taille d'image) doit être celui du premier : un seul
+    format par jeu. La consigne doit être un texte non vide."""
     for cle in ("fps", "noms_etat", "noms_action", "hauteur", "largeur"):
         if e.get(cle) != ref.get(cle):
             return f"{cle} = {str(e.get(cle))[:60]} ≠ {str(ref.get(cle))[:60]} (premier épisode)"
@@ -86,7 +125,8 @@ def _incoherence(e: Dict, ref: Dict) -> Optional[str]:
 
 def _verifier_tableaux(etat, action, temps, images, n_etat: int, n_action: int,
                        h: int, w: int) -> Optional[str]:
-    """Formes, types numériques réels, finitude. None si tout va bien."""
+    """Vérifie formes, types (nombres réels uniquement) et finitude (ni
+    NaN, ni infini). Rend la raison du rejet, ou None si tout va bien."""
     for nom, a in (("etat", etat), ("action", action), ("temps", temps)):
         if a.dtype.kind not in "iuf":
             return f"{nom} de type {a.dtype} (nombres réels attendus)"
@@ -105,8 +145,11 @@ def _verifier_tableaux(etat, action, temps, images, n_etat: int, n_action: int,
 
 
 def _decoupage(noms: List[str]) -> Dict[str, Dict[str, int]]:
-    """Parties contiguës du vecteur, d'après les noms : left_*, right_*,
-    base_*. Un nom qui ne rentre dans aucune partie forme « autres »."""
+    """Parties contiguës du vecteur, d'après les noms : left_* (bras
+    gauche), right_* (bras droit), base_*. Un nom qui ne rentre dans aucune
+    partie va dans « autres ». Une partie qui n'est pas d'un seul tenant
+    lève ValueError : meta/modality.json ne la décrit que par un début et
+    une fin."""
     parties: Dict[str, List[int]] = {}
     for i, n in enumerate(noms):
         cle = ("bras_gauche" if n.startswith("left_") else
@@ -123,17 +166,21 @@ def _decoupage(noms: List[str]) -> Dict[str, Dict[str, int]]:
 
 def debut_prise(action: np.ndarray, n_base: int = 3, seuil: float = 0.01) -> int:
     """Indice de la première image après le dernier mouvement de la base
-    (les n_base dernières composantes de l'action : vx, vy, wz)."""
+    (les n_base dernières composantes de l'action : vx, vy, wz). Une
+    composante qui dépasse `seuil` en valeur absolue compte comme un
+    mouvement. Rend 0 si la base n'a jamais bougé."""
     bouge = np.flatnonzero(np.abs(action[:, -n_base:]).max(axis=1) > seuil)
     return int(bouge[-1]) + 1 if len(bouge) else 0
 
 
 def debut_geste(action: np.ndarray, i0: int, n_base: int = 3, seuil: float = 0.02) -> int:
-    """Après l'arrêt de la base, la première image où la consigne des BRAS
-    change (début du serrage) — moins une image. Constaté sur GPU (prise
-    seule, bras figés 30 s autour du carton) : les démonstrations commençaient
-    par 0.6 à 3 s d'immobilité (stabilisation de la base) ; pour la même image
-    et le même état, le modèle avait surtout appris « ne rien faire »."""
+    """Après l'arrêt de la base (image i0), la première image où la
+    consigne des bras s'écarte de plus de `seuil` (début du serrage), moins
+    une image. Pourquoi : constaté sur la machine GPU en mode prise seule
+    (bras restés figés 30 s autour du carton), les démonstrations
+    commençaient par 0,6 à 3 s d'immobilité (stabilisation de la base).
+    Pour la même image et le même état, le modèle avait surtout appris à ne
+    rien faire."""
     bras = action[:, :-n_base]
     if i0 >= len(bras):
         return i0
@@ -143,12 +190,25 @@ def debut_geste(action: np.ndarray, i0: int, n_base: int = 3, seuil: float = 0.0
 
 def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
               prise_seule: bool = False, images_min: int = 10) -> Dict:
+    """Convertit les épisodes réussis de `dossier` en jeu LeRobot v2 dans
+    `sortie`, effacé s'il existe déjà (voir l'en-tête du module). Rend le
+    bilan affiché par la commande.
+
+    robot        : nom écrit dans meta/info.json (robot_type).
+    prise_seule  : ne garder que la prise (option --prise-seule).
+    images_min   : un épisode qui garde moins d'images est ignoré (compté
+                   dans « trop_courts », affiché en mode prise seule).
+
+    Lève SystemExit s'il n'y a aucun épisode réussi, ou aucun valide, et
+    ValueError si un nom d'épisode est invalide (avant tout effacement).
+    """
     import pandas as pd
 
     eps = [e for e in lire_episodes(dossier) if e.get("succes") is True]
     if not eps:
         raise SystemExit("aucun épisode réussi à convertir")
-    # Noms vérifiés AVANT d'effacer la sortie : un index falsifié n'efface rien.
+    # Noms vérifiés avant d'effacer la sortie : un index falsifié n'efface
+    # rien.
     for e in eps:
         _verifier_nom(e)
     src, dst = Path(dossier), Path(sortie)
@@ -163,10 +223,11 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
     fps = eps[0]["fps"]
     noms_etat, noms_action = eps[0]["noms_etat"], eps[0]["noms_action"]
     h, w = eps[0]["hauteur"], eps[0]["largeur"]
-    k = -1
+    k = -1                                    # dernier épisode converti (-1 : aucun)
     rejetes: List[str] = []
 
     def rejeter(nom: str, raison: str) -> None:
+        # Un épisode n'est jamais écarté en silence : noté et affiché.
         rejetes.append(f"{nom} : {raison}")
         print(f"  [vers_lerobot] épisode ÉCARTÉ — {nom} : {raison}", flush=True)
 
@@ -179,7 +240,8 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
         try:
             d = np.load(src / f"{nom}.npz", allow_pickle=False)
             if not isinstance(d, np.lib.npyio.NpzFile):
-                # Un .npy renommé en .npz se charge en simple tableau.
+                # Un .npy renommé en .npz se charge en simple tableau, pas
+                # en archive : refusé.
                 raise ValueError(f"pas une archive npz ({type(d).__name__})")
             with d:
                 etat, action, temps = d["etat"], d["action"], d["temps"]
@@ -187,9 +249,10 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
         except Exception as exc:              # noqa: BLE001 — écarté, jamais chargé
             # Fichier absent, clé manquante, tableau d'objets (refusé par
             # allow_pickle=False), archive tronquée ou corrompue (BadZipFile,
-            # EOFError, zlib…) : l'épisode est ÉCARTÉ. Toute exception, et pas
-            # une liste : trouvé à la revue, un npz coupé par un docker cp
-            # interrompu levait BadZipFile, non attrapée, et faisait échouer
+            # EOFError, zlib…) : l'épisode est écarté. On attrape toute
+            # exception, et non une liste choisie : une revue du code a
+            # trouvé qu'un npz coupé par une copie interrompue (docker cp)
+            # levait BadZipFile, qui n'était pas attrapée, et faisait échouer
             # toute la conversion après l'effacement de la sortie existante.
             rejeter(nom, f"npz illisible ou refusé ({type(exc).__name__}: {str(exc)[:120]})")
             continue
@@ -198,6 +261,8 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
         if raison:
             rejeter(nom, raison)
             continue
+        # Première image gardée : le début du geste en mode prise seule
+        # (voir debut_prise et debut_geste), sinon tout l'épisode.
         i0 = debut_geste(action, debut_prise(action)) if prise_seule else 0
         if len(temps) - i0 < images_min:
             trop_courts += 1
@@ -209,6 +274,9 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
         n = len(etat)
         longueurs.append(n)
         t_idx = taches.setdefault(e["instruction"], len(taches))
+        # Une ligne par image, avec les colonnes attendues par LeRobot v2 et
+        # GR00T. La récompense vaut 1 à la dernière image seulement : seuls
+        # des épisodes réussis arrivent ici.
         df = pd.DataFrame({
             "observation.state": [r.astype(np.float32).tolist() for r in etat],
             "action": [r.astype(np.float32).tolist() for r in action],
@@ -222,6 +290,9 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
             "next.done": np.r_[np.zeros(n - 1, dtype=bool), True],
         })
         df.to_parquet(dst / "data" / "chunk-000" / f"episode_{k:06d}.parquet")
+        # Vidéo : copiée telle quelle si l'épisode est gardé entier ; sinon
+        # réécrite à partir de l'image i0, depuis les images du npz ou en
+        # relisant la vidéo d'origine.
         video = dst / "videos" / "chunk-000" / CLE_VIDEO / f"episode_{k:06d}.mp4"
         if i0 == 0 and e.get("video") and (src / f"{nom}.mp4").exists():
             shutil.copyfile(src / f"{nom}.mp4", video)
@@ -229,7 +300,7 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
             import imageio.v2 as imageio
             if images_npz is not None:
                 images = images_npz
-            else:                             # découper la vidéo d'origine
+            else:                             # relire la vidéo d'origine, pour la découper
                 with imageio.get_reader(str(src / f"{nom}.mp4")) as rd:
                     images = [im for im in rd]
             with imageio.get_writer(str(video), fps=fps, codec="libx264",
@@ -252,11 +323,14 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
         "state": _decoupage(noms_etat),
         "action": _decoupage(noms_action),
         "video": {"ego_view": {"original_key": CLE_VIDEO}},
-        # Clé lue par la configuration de modalités de GR00T :
-        # "annotation.human.task_description" -> colonne task_index.
+        # Clé lue par la configuration de modalités de GR00T
+        # (config_gr00t_g1.py) : "annotation.human.task_description"
+        # -> colonne task_index.
         "annotation": {"human.task_description": {"original_key": "task_index"}},
     }
     (dst / "meta" / "modality.json").write_text(json.dumps(modalite, indent=2))
+    # meta/info.json : description du jeu au format LeRobot v2 (chemins,
+    # cadence, type et forme de chaque colonne).
     info = {
         "codebase_version": "v2.0", "robot_type": robot,
         "total_episodes": k + 1, "total_frames": index_global,
@@ -296,6 +370,7 @@ def convertir(dossier: str, sortie: str, robot: str = "unitree_g1_axis_os",
 
 
 if __name__ == "__main__":
+    # Mauvais nombre d'arguments : afficher le mode d'emploi (l'en-tête).
     args = [a for a in sys.argv[1:] if a != "--prise-seule"]
     if len(args) != 2:
         raise SystemExit(__doc__)

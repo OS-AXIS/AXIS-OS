@@ -1,52 +1,73 @@
 """
-Évaluation du VLA contre les réflexes codés : MÊMES cartons, MÊME robot.
+Évaluation du VLA contre les réflexes codés : mêmes cartons, même robot.
+
+Un VLA (Vision-Language-Action) est un modèle appris qui reçoit une image,
+une consigne en langage naturel et l'état du robot, et qui propose des
+mouvements. Ici, c'est la politique GR00T de NVIDIA (la « politique » est
+le modèle qui choisit les mouvements), entraînée sur les démonstrations de
+collecte.py. Les réflexes codés sont le comportement programmé à la main
+qui a servi de professeur. Déroulement :
 
     pour chaque carton i (position, recul, rotation tirés d'avance) :
-        pour chaque mode (« reflexes », « vla ») :
-            PLACER   l'opérateur pose le carton i, à l'identique ;
-            ATTENTE  1 s, le carton se pose ;
-            ESSAI    reflexes : chercher (caméra + OWL-ViT), accoster, prendre —
-                               exactement le chemin de la collecte ;
-                     vla_prise: les réflexes cherchent et accostent (bras
-                               ouverts autour du carton), puis le VLA fait
-                               SEUL la prise, base immobile ;
-                     vla      : la politique GR00T reçoit l'image de la tête,
-                               l'état des bras et la consigne (« pick up the
-                               red box ») et pilote BRAS et BASE. Rien d'autre :
-                               ni détection, ni navigation, ni geste codé ;
-            LIBERER  reflexes : reposer le carton ; vla : bras ramenés pas à pas
-                     à la posture de départ (d'abord sans ouvrir, puis en
-                     ouvrant) ;
-            RETOUR   l'opérateur REPREND le carton, PUIS retour au poste de
-                     prise. Un carton tombé au sol pendant l'essai ou la
-                     libération est ramassé AUSSITÔT.
+        pour chaque mode demandé (« reflexes », « vla_prise », « vla ») :
+            PLACER   l'opérateur simulé pose le carton i, à l'identique ;
+            ATTENTE  1 s, le temps que le carton se pose ;
+            ESSAI    reflexes  : chercher (caméra + OWL-ViT, un modèle qui
+                                 détecte un objet décrit par un texte),
+                                 accoster, prendre : exactement le chemin
+                                 de la collecte ;
+                     vla_prise : les réflexes cherchent et accostent (bras
+                                 ouverts autour du carton), puis le VLA
+                                 fait seul la prise, base immobile ;
+                     vla       : la politique GR00T reçoit l'image de la
+                                 tête, l'état des bras et la consigne
+                                 (« pick up the red box ») et pilote bras
+                                 et base. Rien d'autre : ni détection, ni
+                                 navigation, ni geste codé ;
+            LIBERER  reflexes : reposer le carton ; vla et vla_prise : bras
+                     ramenés pas à pas à la posture de départ (d'abord sans
+                     ouvrir les bras, puis en les ouvrant) ;
+            RETOUR   l'opérateur REPREND le carton, PUIS le robot retourne
+                     au poste de prise. Un carton tombé au sol pendant
+                     l'essai ou la libération est ramassé aussitôt.
 
-POURQUOI REPRENDRE LE CARTON AVANT LE RECUL (audit du 2026-10-10, constaté sur
-GPU) : reposé sans poste de dépose, le carton dépassait parfois du bord de la
-table ; un carton tombé au sol restait près du robot. Dans les deux cas, le
-gardien voyait un obstacle inexpliqué à moins de d_arret et arrêtait le robot,
-qui ne pouvait plus s'en éloigner : bloqué jusqu'au délai du retour (60 s), et
-même indéfiniment en mode vla (les bras sont figés pendant l'arrêt de
-sécurité, le délai de LIBERER suspendu). Le gardien ne change pas : c'est le
-banc qui ne laisse plus d'obstacle derrière lui. Les résultats des essais sont
-inchangés : ils sont notés avant.
+Pourquoi reprendre le carton avant le recul. Problème constaté en
+simulation, sur la machine GPU (la machine équipée d'une carte de calcul,
+qui fait tourner la simulation), et relevé par un audit de sécurité du
+2026-10-10 : reposé sans poste de dépose, le carton dépassait parfois du
+bord de la table ; un carton tombé au sol restait près du robot. Dans les
+deux cas, le gardien de proximité (qui arrête le robot quand un obstacle
+inexpliqué, peut-être humain, est trop proche) voyait un obstacle à moins
+de d_arret, sa distance d'arrêt, et arrêtait le robot, qui ne pouvait plus
+s'en éloigner. Le robot restait bloqué jusqu'au délai du retour (60 s), et
+même indéfiniment en mode vla : les bras sont figés pendant l'arrêt de
+sécurité, et le délai de LIBERER est alors suspendu. Le gardien ne change
+pas : c'est le banc qui ne laisse plus d'obstacle derrière lui. Les
+résultats des essais sont inchangés : ils sont notés avant.
 
-RÉUSSITE, le même critère physique pour les deux modes : le carton a QUITTÉ la
-table, entre les mains (`carton_souleve()`), pendant `tenue_s` d'affilée. Pour
-les réflexes, c'est déjà ce que vérifie la manipulation avant de dire TENU.
+Réussite, avec le même critère physique pour tous les modes : le carton a
+quitté la table, entre les mains (`carton_souleve()`), pendant `tenue_s`
+secondes d'affilée. Pour les réflexes, c'est déjà ce que vérifie la
+manipulation avant de dire TENU.
 
-ÉCHEC : délai dépassé, carton au sol, VLA en défaut (serveur muet, erreurs
-répétées), refus de la façade. La raison est notée.
+Échec : délai dépassé, carton au sol, VLA en défaut (serveur muet, erreurs
+répétées), refus de la façade (FacadeServices, l'interface par laquelle
+l'application de tri commande le robot). La raison est notée.
 
-AUCUN PASSE-DROIT. En mode vla, les bras passent par VLAService (pas limité,
-gel sur arrêt de sécurité, échéance de fraîcheur) puis par l'adaptateur (butées)
-et le JointSafetyGuard ; la base par LocomotionService (vitesses bornées) et le
-gardien de proximité. Les refus du garde-fou et les arrêts de sécurité sont
-comptés PAR ESSAI : un VLA qui « réussit » en se faisant refuser des consignes
-n'est pas un VLA qui réussit.
+Aucun passe-droit. En mode vla, les bras passent par VLAService (qui limite
+l'amplitude de chaque pas, fige les bras pendant un arrêt de sécurité et
+arrête le mouvement si le modèle ne fournit plus de consigne fraîche), puis
+par l'adaptateur (qui ramène les cibles dans les butées, les limites
+mécaniques des articulations) et par le JointSafetyGuard (le garde-fou qui
+vérifie chaque commande d'articulation). La base passe par
+LocomotionService (vitesses bornées) et par le gardien de proximité. Les
+refus du garde-fou et les arrêts de sécurité sont comptés par essai : un
+VLA qui « réussit » en se faisant refuser des consignes n'est pas un VLA
+qui réussit.
 
-Les cartons sont tirés avec une graine DIFFÉRENTE de celle de la collecte : le
-modèle est jugé sur des positions qu'il n'a jamais vues.
+Les cartons sont tirés avec une graine (la valeur qui fixe le tirage au
+hasard) différente de celle de la collecte : le modèle est jugé sur des
+positions qu'il n'a jamais vues.
 """
 from __future__ import annotations
 
@@ -58,6 +79,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from axis_os.vla.collecte import consigne
 
+# Modes d'essai (voir l'en-tête) ; MODES_VLA : ceux où le VLA pilote.
 MODES = ("reflexes", "vla", "vla_prise")
 MODES_VLA = ("vla", "vla_prise")
 
@@ -65,8 +87,10 @@ MODES_VLA = ("vla", "vla_prise")
 def tirer_placements(n: int, graine: int, couleurs: Sequence[str] = ("rouge", "bleu"),
                      x: Tuple[float, float] = (3.55, 4.45), dy: Tuple[float, float] = (0.0, 0.05),
                      lacet_deg: float = 12.0) -> List[Tuple[str, Dict]]:
-    """Les n cartons de l'évaluation, tirés D'AVANCE (mêmes bornes que la
-    collecte) : chaque mode voit exactement la même suite."""
+    """Les n cartons de l'évaluation, tirés d'avance avec les mêmes bornes
+    que la collecte : chaque mode voit exactement la même suite. Chaque
+    carton : (couleur, {"x": position le long de la table, "dy": recul,
+    "lacet": rotation en degrés, entre -lacet_deg et +lacet_deg})."""
     rng = random.Random(graine)
     out = []
     for _ in range(n):
@@ -77,6 +101,10 @@ def tirer_placements(n: int, graine: int, couleurs: Sequence[str] = ("rouge", "b
 
 
 class EvaluateurPrises:
+    """Machine à états de l'évaluation (voir l'en-tête du module), avancée
+    d'un pas à chaque appel de pas() par la boucle de simulation. Les
+    résultats s'accumulent dans self.resultats, un par essai."""
+
     def __init__(self, placements: Sequence[Tuple[str, Dict]], modes: Sequence[str],
                  placer: Callable[[str, Dict], None], retirer: Callable[[], None],
                  horloge: Callable[[], float], facade, vla, bras: Dict[str, float],
@@ -88,14 +116,34 @@ class EvaluateurPrises:
                  delta_liberation: float = 0.02, roulis: Sequence[str] = (
                      "left_shoulder_roll_joint", "right_shoulder_roll_joint")):
         """
-        placer(couleur, meta) / retirer()  : l'opérateur simulé.
+        placements  : les cartons, tirés par tirer_placements().
+        modes       : les modes essayés sur chaque carton (voir MODES).
+        placer(couleur, meta) / retirer()  : l'opérateur simulé pose ou
+                      reprend le carton.
+        horloge()   : le temps simulé, en secondes.
         facade      : FacadeServices (mode reflexes, et retour au poste).
-        vla         : VLAService (mode vla) — None si seul le mode reflexes tourne.
-        bras        : adapt.pose_bras ; sa valeur au premier essai est la
-                      posture de départ, celle où la manipulation croit les bras.
-        compteurs   : () -> {"refus": …, "arrets": …} cumulés (garde-fou,
-                      gardien) ; l'évaluateur en fait la différence par essai.
-        halt        : () -> base à l'arrêt en équilibre.
+        vla         : VLAService (modes vla et vla_prise) ; None si seul le
+                      mode reflexes tourne.
+        bras        : adapt.pose_bras, les cibles des bras dans
+                      l'adaptateur ; sa valeur au premier essai est la
+                      posture de départ, celle où la manipulation croit
+                      les bras.
+        carton_souleve() / carton_au_sol() : état physique du carton.
+        arret_securite() : vrai pendant un arrêt de sécurité.
+        halt()      : met la base à l'arrêt, en équilibre.
+        compteurs() : {"refus": …, "arrets": …} cumulés (garde-fou,
+                      gardien) ; l'évaluateur en fait la différence par
+                      essai.
+        duree_max_s : délai d'un essai, au-delà duquel il est raté.
+        tenue_s     : durée pendant laquelle le carton doit rester soulevé
+                      pour que l'essai réussisse.
+        delta_liberation : pas maximal de chaque articulation, à chaque pas
+                      de commande, quand les bras sont ramenés à la posture
+                      de départ.
+        roulis      : articulations qui ouvrent les bras (roulis des
+                      épaules), ramenées en dernier.
+        journal     : fonction qui reçoit les messages de suivi.
+        poste_prise : poste de navigation où le robot attend chaque carton.
         """
         inconnus = [m for m in modes if m not in MODES]
         if inconnus or not modes:
@@ -112,7 +160,7 @@ class EvaluateurPrises:
         self.duree_max_s, self.tenue_s = duree_max_s, tenue_s
         self._delta, self._roulis = delta_liberation, tuple(roulis)
         self._depart: Optional[Dict[str, float]] = None
-        self.k = 0                                    # essai courant
+        self.k = 0                                    # indice de l'essai courant
         self.etat, self._t_etat, self._entree = "PLACER", 0.0, True
         self.sous_etat = ""
         self.resultats: List[Dict] = []
@@ -135,7 +183,9 @@ class EvaluateurPrises:
         return self.essais[min(self.k, len(self.essais) - 1)][1]
 
     def veut_rendu(self, t_prochain: float) -> bool:
-        """La boucle rend la caméra de tête au pas suivant si vrai."""
+        """Vrai si la boucle doit rendre la caméra de tête au pas suivant :
+        quand le VLA attend une image, ou pendant la recherche par les
+        réflexes."""
         if self.etat != "ESSAI":
             return False
         if self.sous_etat == "POLITIQUE":
@@ -153,9 +203,12 @@ class EvaluateurPrises:
 
     # ---- un pas de commande ----------------------------------------------
     def pas(self) -> None:
+        # _dt : temps écoulé depuis le pas précédent, pour suspendre un
+        # délai pendant un arrêt de sécurité (voir _liberer_vla).
         t = self._horloge()
         self._dt = 0.0 if self._t_pas is None else t - self._t_pas
         self._t_pas = t
+        # Traitement de l'état courant : _etat_placer, _etat_essai…
         getattr(self, f"_etat_{self.etat.lower()}")()
 
     def _etat_fin(self) -> None:
@@ -179,6 +232,8 @@ class EvaluateurPrises:
             self._commencer()
 
     def _commencer(self) -> None:
+        """Démarre l'essai courant : relève les compteurs, puis lance le
+        VLA (mode vla) ou la recherche par les réflexes (autres modes)."""
         i, mode = self.essais[self.k]
         couleur, _ = self.placements[i]
         self._t_essai, self._t_tenu, self._succes = self._horloge(), None, None
@@ -195,6 +250,10 @@ class EvaluateurPrises:
             self.sous_etat = "CHERCHER"
 
     def _finir(self, succes: bool, raison: str = "") -> None:
+        """Note le résultat de l'essai, avec les refus du garde-fou et les
+        arrêts de sécurité survenus pendant l'essai, puis passe à la
+        libération. Un seul résultat par essai : les appels suivants sont
+        ignorés."""
         if self._succes is not None:
             return
         i, mode = self.essais[self.k]
@@ -220,8 +279,8 @@ class EvaluateurPrises:
     # ---- ESSAI -------------------------------------------------------------
     def _etat_essai(self) -> None:
         if self._au_sol():
-            # Ramassé AUSSITÔT (voir l'en-tête) : laissé au sol, il tenait le
-            # robot à l'arrêt de sécurité, bras figés, sans fin.
+            # Ramassé aussitôt (voir l'en-tête du module) : laissé au sol, il
+            # tenait le robot à l'arrêt de sécurité, bras figés, sans fin.
             self._retirer()
             self._log("carton tombé au sol — ramassé par l'opérateur")
             self._finir(False, "carton tombé au sol")
@@ -235,6 +294,8 @@ class EvaluateurPrises:
             self._essai_reflexes()
 
     def _tenu_assez(self) -> bool:
+        """Vrai quand le carton est soulevé depuis au moins tenue_s secondes
+        d'affilée ; le chronomètre repart de zéro dès qu'il ne l'est plus."""
         if self._souleve():
             if self._t_tenu is None:
                 self._t_tenu = self._horloge()
@@ -243,6 +304,8 @@ class EvaluateurPrises:
         return False
 
     def _essai_vla(self) -> None:
+        """Le VLA pilote (mode vla, ou vla_prise après l'approche) : l'essai
+        réussit quand le carton est tenu assez longtemps."""
         self.vla.tick()
         if self.vla.etat.name == "DEFAUT":
             self._finir(False, f"VLA en défaut : {self.vla.raison}")
@@ -251,9 +314,11 @@ class EvaluateurPrises:
             self._finir(True)
 
     def _essai_reflexes(self) -> None:
+        """Chemin des réflexes codés : CHERCHER, ACCOSTER, puis PRENDRE ; en
+        mode vla_prise, la main passe au VLA une fois l'accostage fini."""
         se = self.sous_etat
         if se == "CHERCHER":
-            if self._duree() < 0.3:                   # une image fraîche rendue
+            if self._duree() < 0.3:                   # attendre une image fraîche
                 return
             i, _ = self.essais[self.k]
             vus = self.f.chercher(self.placements[i][0])
@@ -274,7 +339,7 @@ class EvaluateurPrises:
             e = self.f.navigation()
             if e == "ARRIVE" and self.mode == "vla_prise":
                 # Approche codée terminée, bras ouverts autour du carton :
-                # le VLA prend la main sur les BRAS seuls, base à l'arrêt.
+                # le VLA prend la main sur les bras seuls, base à l'arrêt.
                 self.f.suspendre(au_contact=True)
                 i, _ = self.essais[self.k]
                 r = self.vla.demarrer_mission(consigne(self.placements[i][0]),
@@ -292,6 +357,8 @@ class EvaluateurPrises:
             elif e == "ECHEC":
                 self._finir(False, "accostage en échec")
         elif se == "PRENDRE":
+            # Même critère physique que pour le VLA : TENU ne suffit pas, le
+            # carton doit aussi être soulevé depuis tenue_s.
             m = self.f.manipulation()
             if m == "TENU" and self._tenu_assez():
                 self._finir(True)
@@ -301,11 +368,12 @@ class EvaluateurPrises:
     # ---- LIBERER -------------------------------------------------------------
     def _etat_liberer(self) -> None:
         if self._au_sol():
-            # Lâché au sol PENDANT la libération (ouverture des mains, après un
-            # essai raté) : ramassé aussitôt. Trouvé à la revue de l'audit du
-            # 2026-10-10 : sinon le gardien arrêtait le robot, les bras restaient
-            # figés et le délai de libération suspendu — évaluation sans fin.
-            # Le gel des bras lui-même ne change pas.
+            # Lâché au sol pendant la libération (quand le robot desserre
+            # sa prise, après un essai raté) : ramassé aussitôt. Une revue
+            # des correctifs de l'audit de sécurité du 2026-10-10 a trouvé
+            # ce cas : sinon le gardien arrêtait le robot, les bras restaient
+            # figés et le délai de libération suspendu, d'où une évaluation
+            # sans fin. Le gel des bras lui-même ne change pas.
             self._retirer()
             self._log("carton tombé au sol pendant la libération — ramassé par l'opérateur")
         if self.mode in MODES_VLA:
@@ -314,6 +382,9 @@ class EvaluateurPrises:
             self._liberer_reflexes()
 
     def _liberer_reflexes(self) -> None:
+        """Mode reflexes : reposer le carton si l'essai a réussi, sinon
+        réinitialiser la manipulation ; 10 s au plus pour que les bras
+        soient libres, puis retour au poste."""
         if self._entree:
             self._entree = False
             if self._succes:
@@ -330,9 +401,11 @@ class EvaluateurPrises:
             self._aller("RETOUR")
 
     def _liberer_vla(self) -> None:
-        """Bras ramenés à la posture de départ, À PAS LIMITÉ : d'abord tout
-        sauf l'ouverture (le carton redescend vers la table), puis l'ouverture.
-        Figés pendant un arrêt de sécurité, comme partout ailleurs."""
+        """Bras ramenés à la posture de départ, à pas limité
+        (delta_liberation par pas) : d'abord tout sauf l'ouverture (roulis
+        des épaules), pour que le carton redescende vers la table, puis
+        l'ouverture. Figés pendant un arrêt de sécurité, comme partout
+        ailleurs. 8 s au plus par phase."""
         if self._entree:
             self._entree = False
             self.vla.terminer_mission()
@@ -363,7 +436,7 @@ class EvaluateurPrises:
     def _etat_retour(self) -> None:
         if self._entree:
             self._entree = False
-            # Carton repris AVANT le recul — voir l'en-tête.
+            # Carton repris avant le recul (voir l'en-tête du module).
             self._retirer()
             self.f.aller_au_poste(self.poste)
             return
@@ -377,8 +450,10 @@ class EvaluateurPrises:
 
 # ---- bilan -----------------------------------------------------------------
 def bilan(resultats: Sequence[Dict]) -> Dict:
-    """Par mode : taux de réussite, durées, refus, arrêts ; et la comparaison
-    APPARIÉE, carton par carton (les deux modes ont vu les mêmes)."""
+    """Par mode : taux de réussite, durées des essais réussis, refus du
+    garde-fou, arrêts de sécurité et raisons d'échec. Puis la comparaison
+    appariée, carton par carton, entre les réflexes et chaque mode VLA :
+    les deux modes ont vu les mêmes cartons."""
     out: Dict = {"par_mode": {}, "apparie": {}}
     for m in MODES:
         rs = [r for r in resultats if r["mode"] == m]
@@ -389,6 +464,8 @@ def bilan(resultats: Sequence[Dict]) -> Dict:
         raisons: Dict[str, int] = {}
         for r in rs:
             if not r["succes"]:
+                # Raison réduite à sa partie fixe (avant « ( » ou « : »),
+                # pour regrouper les échecs de même nature.
                 cle = r["raison"].split(" (")[0].split(" :")[0]
                 raisons[cle] = raisons.get(cle, 0) + 1
         out["par_mode"][m] = {
@@ -403,7 +480,7 @@ def bilan(resultats: Sequence[Dict]) -> Dict:
     par_carton: Dict[int, Dict[str, bool]] = {}
     for r in resultats:
         par_carton.setdefault(r["carton"], {})[r["mode"]] = r["succes"]
-    # Comparaison appariée : réflexes contre CHAQUE mode VLA présent.
+    # Comparaison appariée : réflexes contre chaque mode VLA présent.
     for vm in MODES_VLA:
         paires = [v for v in par_carton.values() if "reflexes" in v and vm in v]
         if paires:
@@ -418,6 +495,7 @@ def bilan(resultats: Sequence[Dict]) -> Dict:
 
 
 def texte_bilan(b: Dict) -> str:
+    """Le bilan en quelques lignes lisibles, pour le journal."""
     lignes = []
     for m, s in b["par_mode"].items():
         lignes.append(f"  {m:9s} : {s['reussis']}/{s['essais']} réussis ({100 * s['taux']:.0f} %)"
@@ -434,6 +512,8 @@ def texte_bilan(b: Dict) -> str:
 
 
 def ecrire(resultats: Sequence[Dict], chemin: str) -> Dict:
+    """Écrit le bilan et le détail des essais en JSON dans `chemin` ; rend
+    le bilan."""
     b = bilan(resultats)
     with open(chemin, "w", encoding="utf-8") as f:
         json.dump({"bilan": b, "essais": list(resultats)}, f, ensure_ascii=False, indent=1)
