@@ -1,7 +1,33 @@
 """
 AXIS-OS CLI — Templates
 =========================
-Contenu des fichiers générés par `axis-os init <app>`.
+Modèles (templates) des fichiers générés par `axis-os init <app>` :
+app.py (le code de l'app), manifest.json (ses métadonnées pour le Play
+Store, la boutique d'apps d'AXIS-OS), test_app.py (un test minimal) et
+README.md.
+
+Chaque modèle est rempli par str.format() dans cmd_init (main.py), avec
+les champs app_name, app_id, class_name, author, author_email et
+app_id_short. Piège à connaître avant d'en modifier un : les accolades
+qui doivent apparaître telles quelles dans le fichier généré sont
+doublées ({{ et }}), sinon format() les prend pour un champ à remplir.
+
+Le manifeste (la fiche qui décrit l'app : identifiant, version,
+permissions, matériel requis) est déclaré dans le code de app.py, et
+c'est lui que lit `axis-os simulate`. manifest.json en reprend une
+partie ; c'est ce fichier que vérifie `axis-os publish`. Le manifeste
+généré part de réglages prudents : seule la permission ACTUATORS_READ
+(lecture de l'état des articulations, accordée sans confirmation),
+vitesse de chaque commande articulaire plafonnée à 50 %
+(max_velocity_ratio=0.5) et supervision humaine déclarée
+(requires_human_supervision=True). Cette dernière n'est pour l'instant
+qu'une déclaration : le runtime (PlayStoreRuntime, qui installe et
+exécute les apps) ne s'en sert pas.
+
+Le test généré tourne sur un robot simulé. Il accorde donc sans
+confirmation, via accepter_tout_SIMULATION, les permissions DANGEROUS
+(celles qui exigent normalement l'accord explicite d'un humain, comme
+commander les moteurs) ; sur un vrai robot, cet accord reste exigé.
 
 Licence : Apache 2.0
 """

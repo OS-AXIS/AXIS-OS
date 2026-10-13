@@ -1,7 +1,21 @@
 """
 AXIS-OS CLI
 =============
+Outil en ligne de commande (CLI, Command-Line Interface) destiné aux
+auteurs d'apps pour le Play Store d'AXIS-OS, la boutique d'apps du robot.
 Point d'entrée : axis-os <commande>
+
+Trois commandes couvrent la vie d'une app :
+  - init : crée le squelette d'une nouvelle app (code, manifeste, test,
+    README) à partir des modèles de templates.py. Le manifeste est la
+    fiche qui décrit l'app : identifiant, version, auteur, permissions ;
+  - simulate : installe l'app sur un robot simulé et lui fait exécuter
+    une mission, sans aucun robot réel ;
+  - publish : vérifie le manifeste avant publication. L'envoi vers le
+    registre en ligne n'est pas encore branché (voir cmd_publish).
+
+Sans l'installation décrite plus bas, la même CLI se lance avec
+python3 -m axis_os.cli.main <commande> (voir docs/CREER_UNE_APP.md).
 
 Usage :
     axis-os init mon-app
@@ -31,13 +45,25 @@ from .templates import (
 
 
 def _slugify(name: str) -> str:
-    """'Mon App Cool' → 'mon_app_cool'"""
+    """
+    Transforme un nom libre en identifiant utilisable comme nom de dossier
+    et dans un app_id : tout en minuscules, chaque suite de caractères
+    autres que a-z et 0-9 (lettres accentuées comprises) remplacée par
+    « _ », puis les « _ » de début et de fin retirés.
+    Exemple : 'Mon App Cool' → 'mon_app_cool'.
+    """
     s = re.sub(r"[^a-zA-Z0-9]+", "_", name.strip().lower())
     return s.strip("_")
 
 
 def _class_name(name: str) -> str:
-    """'mon-app-cool' → 'MonAppCoolApp'"""
+    """
+    Construit le nom de la classe Python de l'app : le nom est coupé en
+    mots à chaque caractère autre que a-z, A-Z et 0-9, chaque mot prend
+    une majuscule initiale (le reste passe en minuscules), puis on ajoute
+    le suffixe « App ».
+    Exemple : 'mon-app-cool' → 'MonAppCoolApp'.
+    """
     parts = re.split(r"[^a-zA-Z0-9]+", name)
     return "".join(p.capitalize() for p in parts if p) + "App"
 
@@ -47,6 +73,15 @@ def _class_name(name: str) -> str:
 # ─────────────────────────────────────────────────────────────────
 
 def cmd_init(args: argparse.Namespace) -> int:
+    """
+    axis-os init <nom> : crée le dossier ./<slug>/ (le nom passé par
+    _slugify) avec app.py, manifest.json, test_app.py et README.md,
+    remplis à partir des modèles de templates.py. L'app_id suit la
+    notation de domaine inversé com.<auteur>.<app>, convention courante
+    qui évite que deux auteurs prennent le même identifiant. Refuse
+    d'écraser un dossier existant. Renvoie le code de sortie du
+    processus : 0 en cas de succès, 1 sinon.
+    """
     app_name  = args.name
     app_id    = f"com.{_slugify(args.author)}.{_slugify(app_name)}"
     class_nm  = _class_name(app_name)
@@ -83,11 +118,24 @@ def cmd_init(args: argparse.Namespace) -> int:
 # ─────────────────────────────────────────────────────────────────
 
 def cmd_simulate(args: argparse.Namespace) -> int:
+    """
+    axis-os simulate : à lancer depuis le dossier de l'app. Charge app.py,
+    y cherche la classe de l'app (une sous-classe de RobotApp, la classe
+    de base de toute app AXIS-OS), puis l'installe, la démarre et lui fait
+    exécuter une mission sur un humanoïde Unitree G1 simulé. Avec les deux
+    choix de --backend (isaac ou webots), c'est la physique simplifiée
+    intégrée (« stub ») qui sert : aucun simulateur 3D n'est lancé et
+    aucun moteur réel n'est commandé. Renvoie 0 si la mission réussit,
+    1 sinon.
+    """
     app_file = Path("app.py")
     if not app_file.exists():
         print("[ERREUR] Aucun app.py trouvé. Lancez depuis le dossier de l'app.")
         return 1
 
+    # Lecture facultative de manifest.json : un fichier absent ou illisible
+    # n'arrête pas la simulation. La suite utilise l'app_id déclaré par la
+    # classe de app.py (real_app_id plus bas), pas celui-ci.
     manifest_file = Path("manifest.json")
     app_id = "unknown"
     if manifest_file.exists():
@@ -98,22 +146,29 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 
     print(f"[axis-os] Simulation locale — backend={args.backend}")
 
-    # Import dynamique de l'app locale
+    # Import dynamique de l'app locale : le fichier app.py du dossier
+    # courant, chargé sous le nom de module « local_app ».
     spec = importlib.util.spec_from_file_location("local_app", app_file)
     module = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(Path.cwd()))
-    # ENREGISTRER le module avant de l'exécuter : le sandbox transmet
-    # l'app au processus isolé par sérialisation (pickle), qui retrouve
+    # Le module doit être enregistré dans sys.modules avant d'être exécuté.
+    # Raison : le sandbox (bac à sable, le processus séparé où l'app tourne
+    # isolée du reste d'AXIS-OS) reçoit l'app par sérialisation pickle (le
+    # format Python qui transforme un objet en octets), et pickle retrouve
     # la classe par le nom de son module dans sys.modules. Sans cette
-    # ligne, TOUTE app générée par `axis-os init` plantait dès
-    # `axis-os simulate` (on_start : CRASHED / SANDBOX_ERROR, sans
-    # autre explication). Constaté en rédigeant docs/CREER_UNE_APP.md.
+    # ligne, toute app générée par `axis-os init` plantait dès
+    # `axis-os simulate` (on_start : CRASHED / SANDBOX_ERROR, sans autre
+    # explication). Constaté en rédigeant docs/CREER_UNE_APP.md.
     sys.modules["local_app"] = module
     spec.loader.exec_module(module)
 
     from axis_os.store.sdk.app_base import RobotApp
     import inspect
 
+    # On ne retient que les sous-classes de RobotApp définies dans app.py
+    # lui-même (__module__ == "local_app"), pas celles qu'il importe. S'il
+    # y en a plusieurs, la première par ordre alphabétique de nom est
+    # prise (inspect.getmembers trie par nom).
     app_classes = [
         obj for name, obj in inspect.getmembers(module, inspect.isclass)
         if issubclass(obj, RobotApp)
@@ -133,20 +188,39 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     from axis_os.hal.watchdog.config import WatchdogConfig
     from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 
+    # Choix du simulateur. Sans backend fourni (backend=None), IsaacSimHAL
+    # se branche sur le pont vers Isaac Sim (le simulateur de NVIDIA) forcé
+    # en mode stub, une physique simplifiée intégrée. Webots, un autre
+    # simulateur robotique, est lui aussi forcé en mode stub
+    # (force_stub=True), même s'il est installé.
     backend = None
     if args.backend == "webots":
         from axis_os.hal.drivers.webots.backend import WebotsBackend
         backend = WebotsBackend(force_stub=True)
 
+    # Assemblage du robot simulé :
+    #  - IsaacSimHAL : le HAL (Hardware Abstraction Layer, couche
+    #    d'abstraction matérielle, seul chemin vers les moteurs), branché
+    #    ici sur le simulateur choisi ;
+    #  - NormalizedRobotHAL : traduit les angles propres au G1
+    #    (build_g1_normalizer) dans la convention commune, la seule que
+    #    voient les apps, pour qu'elles n'aient pas à connaître le robot ;
+    #  - WatchdogSystem : le chien de garde qui surveille en continu les
+    #    articulations. Son profil simulation() émet les alertes mais ne
+    #    déclenche jamais de lui-même l'e-stop (arrêt d'urgence).
     hal = IsaacSimHAL(robot_id="axis_sim", backend=backend)
     hal.initialize_all()
     norm = NormalizedRobotHAL(hal, build_g1_normalizer())
     wd   = WatchdogSystem(hal, WatchdogConfig.simulation())
     wd.start()
 
-    # « axis-os simulate » ne pilote que le SIMULATEUR : les permissions
-    # DANGEROUS y sont accordées explicitement, sans confirmation. Sur un vrai
-    # robot, le runtime exige une confirmation humaine (voir play_store.py).
+    # « axis-os simulate » ne pilote que le simulateur : les permissions
+    # DANGEROUS (celles qui exigent l'accord explicite d'un humain, comme
+    # commander les moteurs) y sont accordées explicitement, sans
+    # confirmation. Sur un vrai robot, le runtime (PlayStoreRuntime, qui
+    # installe et exécute les apps) exige une confirmation humaine et
+    # refuse accepter_tout_SIMULATION quand il reconnaît un robot réel
+    # (voir axis_os/store/runtime/play_store.py).
     runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION)
     app_instance = AppClass()
 
@@ -181,6 +255,15 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 # ─────────────────────────────────────────────────────────────────
 
 def cmd_publish(args: argparse.Namespace) -> int:
+    """
+    axis-os publish : vérifie, depuis le dossier de l'app, que
+    manifest.json et app.py existent et que le manifeste remplit les
+    champs obligatoires (app_id, name, version, author, author_email).
+    Limite connue : l'envoi vers le registre en ligne du Play Store n'est
+    pas encore branché. La commande s'arrête donc après cette validation
+    locale, avec ou sans --dry-run (essai à blanc, sans aucun envoi).
+    Renvoie 0 si le manifeste est valide, 1 sinon.
+    """
     manifest_file = Path("manifest.json")
     app_file      = Path("app.py")
 
@@ -218,6 +301,11 @@ def cmd_publish(args: argparse.Namespace) -> int:
 # ─────────────────────────────────────────────────────────────────
 
 def main() -> int:
+    """
+    Lit la ligne de commande et lance la sous-commande demandée. Sans
+    sous-commande, affiche l'aide et renvoie 1. Le nombre renvoyé devient
+    le code de sortie du processus (sys.exit en bas du fichier).
+    """
     parser = argparse.ArgumentParser(prog="axis-os",
         description="CLI AXIS-OS — développement d'apps Play Store")
     sub = parser.add_subparsers(dest="command")
