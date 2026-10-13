@@ -1,32 +1,44 @@
 """
 AXIS-OS — Service de perception.
 
-Répond à « qu'est-ce que le robot voit, et où ? ». Deuxième service
-système après MemoryService, même contrat IService.
+Ce service répond à la question « qu'est-ce que le robot voit, et où ? ».
+C'est le deuxième service système écrit après MemoryService (la mémoire du
+robot), et il respecte le même contrat : IService, l'interface commune à
+tous les services système (démarrage, arrêt, état de santé), définie dans
+axis_os/services/base.py.
 
-DEUX RESPONSABILITÉS SÉPARÉES, et la séparation est le point important :
+Le point important est la séparation en deux responsabilités :
 
-    PerceptionService  — le CODE : acquisition, calibration, repères,
-                         conversion pixel -> direction dans le repère
-                         du robot. Stable, testable, versionné avec
+    PerceptionService  — le CODE : acquisition des images, calibration de
+                         la caméra, repères (systèmes de coordonnées) et
+                         conversion d'un pixel en direction dans le repère
+                         du robot. Stable, testable, versionné avec l'OS.
+    IObjectDetector    — le MODÈLE, c'est-à-dire ce qui reconnaît les
+                         objets. Seule implémentation réelle à ce jour :
+                         OWL-ViT, un modèle de Google qui repère des
+                         objets décrits en texte libre (voir
+                         owlvit_detector.py). Remplaçable sans toucher à
                          l'OS.
-    IObjectDetector    — le MODÈLE : ce qui reconnaît les objets.
-                         Remplaçable sans toucher à l'OS.
 
-C'est la décision prise en §6.4 du document d'architecture : Android a
-mis dix-huit mois à distribuer ses correctifs parce que tout passait
-par une mise à jour système. Un détecteur meilleur ne doit pas exiger
-de republier AXIS-OS.
+Pourquoi cette séparation : Android a mis dix-huit mois à distribuer ses
+correctifs parce que tout passait par une mise à jour du système. Un
+meilleur détecteur ne doit pas exiger de republier AXIS-OS. C'est la
+décision prise au §6.4 du document d'architecture
+(docs/architecture_services.md).
 
-CE QUE CE SERVICE NE FAIT PAS : commander un actionneur. Il rend des
-observations, jamais des mouvements. Un service ne commande jamais un
-actionneur directement — invariant documenté sur IService, et déjà
-appliqué au niveau HAL par ICamera qui n'expose aucun moyen d'agir.
+Ce que ce service ne fait pas : commander un actionneur (moteur, pince).
+Il rend des observations, jamais des mouvements. C'est un invariant de
+sécurité documenté sur IService : un service ne commande jamais un
+actionneur directement. Il est déjà appliqué au niveau du HAL (la couche
+d'abstraction matérielle, qui présente chaque capteur et chaque moteur
+sous une interface commune) : ICamera, l'interface d'une caméra, n'expose
+aucun moyen d'agir.
 
-HONNÊTETÉ SUR LA PROFONDEUR : sans caméra de profondeur, une détection
-donne une DIRECTION, pas une POSITION. Le champ `position_3d` reste
-None dans ce cas, et c'est délibéré — inventer une distance plausible
-donnerait à la préhension des coordonnées qu'elle prendrait au sérieux.
+Honnêteté sur la profondeur : sans caméra de profondeur, une détection
+donne une DIRECTION, pas une POSITION. Le champ `position_3d` reste alors
+à None, et c'est délibéré : inventer une distance plausible donnerait à la
+préhension (la saisie des objets) des coordonnées qu'elle prendrait au
+sérieux.
 """
 from __future__ import annotations
 
@@ -52,24 +64,30 @@ class Detection:
 
     label: str
     confidence: float
+    # Boîte englobante (bbox) : le rectangle qui entoure l'objet dans
+    # l'image.
     bbox: Tuple[int, int, int, int]      # x, y, largeur, hauteur en pixels
     direction: Optional[Vector3] = None
-    """Direction vers l'objet DANS LE REPÈRE DU ROBOT. Toujours
-    renseignée dès qu'une calibration et un arbre de repères sont
-    disponibles — c'est ce qui permet au robot de s'orienter vers
-    l'objet, même sans en connaître la distance."""
+    """Direction vers l'objet, exprimée dans le repère du ROBOT (ou dans
+    le repère demandé à find()). Renseignée dès que la caméra est calibrée
+    (on connaît ses paramètres optiques, qui relient un pixel à une
+    direction) et qu'un arbre de repères (la position de la caméra, du
+    robot et du monde les uns par rapport aux autres) donne la
+    transformation nécessaire. C'est ce qui permet au robot de s'orienter
+    vers l'objet, même sans en connaître la distance."""
 
     position_3d: Optional[Vector3] = None
-    """Position dans le repère du robot. None sans caméra de
-    profondeur : une image couleur seule ne permet PAS de connaître la
-    distance. Un service qui inventerait une valeur ici ferait tendre la
-    main au mauvais endroit."""
+    """Position de l'objet, dans le même repère que `direction`. None sans
+    caméra de profondeur : une image couleur seule ne permet PAS de
+    connaître la distance. Un service qui inventerait une valeur ici
+    ferait tendre la main du robot au mauvais endroit."""
 
     timestamp_ns: int = 0
-    """Instant de l'IMAGE, pas de la détection. Sur un robot qui bouge,
-    associer une observation à la pose du moment où elle est traitée
-    plutôt qu'au moment où elle a été capturée décale l'objet de
-    plusieurs centimètres."""
+    """Instant de capture de l'IMAGE, en nanosecondes, et non instant de
+    la détection. Pourquoi : sur un robot qui bouge, associer une
+    observation à la pose (position et orientation) du moment où elle est
+    traitée, plutôt qu'à celle du moment où elle a été capturée, décale
+    l'objet de plusieurs centimètres."""
 
 
 class IObjectDetector(ABC):
@@ -82,31 +100,39 @@ class IObjectDetector(ABC):
     @abstractmethod
     def detect(self, frame: CameraFrame,
                query: Optional[str] = None) -> List[Detection]:
-        """Détecte dans `frame`. `query` décrit ce qu'on cherche en
-        langage naturel ; un détecteur à vocabulaire fermé peut
+        """Détecte les objets présents dans `frame`, l'image capturée.
+
+        `query` décrit ce qu'on cherche en langage naturel (None : pas de
+        recherche précise, comme pour describe_scene()). Un détecteur à
+        vocabulaire fermé, qui ne connaît qu'une liste fixe d'objets, peut
         l'ignorer, mais devrait alors le documenter."""
 
     @property
     @abstractmethod
     def is_open_vocabulary(self) -> bool:
-        """True si le détecteur trouve des objets décrits librement,
-        sans avoir été entraîné sur une liste fixe.
+        """True si le détecteur trouve des objets décrits librement, sans
+        avoir été entraîné sur une liste fixe de classes (« vocabulaire
+        ouvert »).
 
-        Cette distinction est structurante et pas cosmétique : un
-        détecteur à vocabulaire fermé oblige à réentraîner pour chaque
+        Cette distinction est structurante, pas cosmétique : un détecteur
+        à vocabulaire fermé oblige à réentraîner le modèle pour chaque
         nouvel objet, ce qui ne passe pas à l'échelle d'un catalogue
-        d'apps tierces. L'exposer permet à un orchestrateur de savoir
-        s'il peut demander n'importe quoi ou seulement une liste connue.
+        d'apps tierces. L'exposer permet à un orchestrateur (le composant
+        qui enchaîne les tâches du robot) de savoir s'il peut demander
+        n'importe quoi ou seulement une liste connue.
         """
 
 
 class NullObjectDetector(IObjectDetector):
-    """Détecteur qui ne détecte rien, honnêtement.
+    """Détecteur qui ne détecte rien, honnêtement : il se déclare à
+    vocabulaire fermé, si bien que describe_scene() précise qu'une absence
+    de détection ne prouve pas l'absence d'objet.
 
-    Permet de faire tourner et tester toute la chaîne — acquisition,
-    calibration, repères — SANS modèle. Même rôle que
-    NullBalanceModel : un service dégradé qui le dit, plutôt qu'un
-    service absent qui fait tout échouer.
+    Pourquoi : il permet de faire tourner et de tester toute la chaîne
+    (acquisition, calibration, repères) SANS modèle. Même rôle que
+    NullBalanceModel, le modèle d'équilibre factice qui ne corrige rien
+    (axis_os/hal/core/balance_model.py) : mieux vaut un service dégradé
+    qui le dit qu'un service absent qui fait tout échouer.
     """
 
     def detect(self, frame, query=None) -> List[Detection]:
@@ -138,17 +164,26 @@ class PerceptionService(IService):
         depth_camera: Optional[ICamera] = None,
     ):
         """
-        depth_camera : caméra de profondeur, si disponible. Sans elle,
-            les détections portent une DIRECTION mais jamais de
-            POSITION — un robot sait alors vers où s'orienter, pas où
-            s'arrêter. C'est la différence entre « le colis est par là »
-            et « le colis est à 2.3 m ».
+        camera : caméra couleur principale (interface ICamera du HAL).
+        frame_tree : arbre de repères. Sans lui, les détections sont
+            rendues sans direction.
+        detector : modèle de détection. Par défaut NullObjectDetector, qui
+            ne détecte rien.
+        max_frame_age_s : âge maximal d'une image, en secondes. Au-delà,
+            find() refuse de l'analyser, car la scène a pu changer.
+        depth_camera : caméra de profondeur, si disponible ; elle est lue
+            par sa méthode capture_depth(). Sans elle, les détections
+            portent une DIRECTION mais jamais de POSITION : le robot sait
+            alors vers où s'orienter, pas où s'arrêter. C'est la
+            différence entre « le colis est par là » et « le colis est à
+            2.3 m ».
 
-            Doit regarder la MÊME scène que `camera` : le service
+            Elle doit regarder la MÊME scène que `camera` : le service
             suppose les deux images alignées pixel à pixel. Sur une
-            RealSense, cela exige l'alignement profondeur/couleur ; sur
-            un montage où elles ne le sont pas, les positions seraient
-            fausses sans qu'aucune vérification ne s'en aperçoive.
+            RealSense (caméra de profondeur d'Intel), cela exige
+            l'alignement profondeur/couleur ; sur un montage où les images
+            ne sont pas alignées, les positions seraient fausses sans
+            qu'aucune vérification ne s'en aperçoive.
         """
         self._camera = camera
         self._depth_camera = depth_camera
@@ -186,7 +221,8 @@ class PerceptionService(IService):
             return ServiceHealth(running=True, healthy=False,
                                  detail="caméra non saine")
         if self._camera.get_intrinsics() is None:
-            # Sain mais DÉGRADÉ : on voit, mais on ne sait pas situer.
+            # Sain mais dégradé : le service voit, mais sans calibration
+            # il ne sait pas situer ce qu'il voit.
             return ServiceHealth(
                 running=True, healthy=True,
                 detail="caméra non calibrée — directions indisponibles",
@@ -196,8 +232,10 @@ class PerceptionService(IService):
     # ---- API ------------------------------------------------------------
 
     def describe_scene(self) -> ServiceResult:
-        """Ce que le robot voit, en clair. Entrée principale d'un futur
-        orchestrateur."""
+        """Ce que le robot voit, en clair : une chaîne qui énumère les
+        labels (noms des objets) détectés, sans doublon, par ordre
+        alphabétique et séparés par des virgules. Entrée principale d'un
+        futur orchestrateur."""
         r = self.find(None)
         if not r.ok:
             return r
@@ -219,31 +257,44 @@ class PerceptionService(IService):
 
         value = List[Detection], triée par confiance décroissante.
 
+        Échecs (ok=False) : service non démarré, aucune image disponible,
+        image trop ancienne (avec partial=True), détecteur en panne.
+
+        `now_ns` : instant présent, en nanosecondes ; par défaut,
+        l'horloge système.
+
         `frame` : repère dans lequel exprimer directions et positions.
 
-        FRAME_BASE (défaut) — repère du ROBOT. C'est ce qu'il faut pour
-        se diriger vers un objet : « 15° à gauche, à 2 m ».
+        FRAME_BASE (défaut) — repère du ROBOT, qui bouge avec lui. C'est
+        ce qu'il faut pour se diriger vers un objet : « 15° à gauche, à
+        2 m ».
 
-        FRAME_WORLD — repère FIXE. Indispensable dès qu'on mémorise une
-        position. Constaté : une app d'inventaire qui balayait en
-        TOURNANT SUR PLACE enregistrait ses observations dans le repère
-        du robot ; deux colis situés à 90° l'un de l'autre apparaissaient
-        tous deux à (2.2, 0) — face à chacun — et ont été fusionnés en un
-        seul. Un inventaire tenu dans un repère mobile n'a pas de sens.
+        FRAME_WORLD — repère FIXE, celui du monde. Indispensable dès qu'on
+        mémorise une position. Constaté : une app d'inventaire qui
+        balayait la pièce en TOURNANT SUR PLACE enregistrait ses
+        observations dans le repère du robot ; deux colis situés à 90°
+        l'un de l'autre apparaissaient tous deux à (2.2, 0), puisque le
+        robot leur faisait face tour à tour, et ont été fusionnés en un
+        seul. Un inventaire tenu dans un repère mobile n'a pas de sens
+        (détail dans docs/validation_inventaire.md).
         """
-        # Le paramètre `frame` désigne un REPÈRE ; la variable `frame`
-        # plus bas désigne l'IMAGE capturée. On fige le repère tout de
-        # suite pour éviter que l'une n'écrase l'autre — collision qui
-        # donnait un « unhashable type: CameraFrame » très opaque.
+        # Piège de nommage : le paramètre `frame` désigne un REPÈRE, mais
+        # la variable `frame` plus bas désigne l'IMAGE capturée. On copie
+        # le repère tout de suite pour que l'image ne l'écrase pas. Cette
+        # collision provoquait une erreur très opaque : « unhashable type:
+        # CameraFrame ».
         repere_sortie = frame
 
         if not self._started:
             return ServiceResult(ok=False, reason="service non démarré")
 
         if query is not None and not self._detector.is_open_vocabulary:
-            # On n'échoue pas — le détecteur peut connaître ce label —
-            # mais on ne laisse pas croire que la requête a été comprise
-            # telle quelle.
+            # Un détecteur à vocabulaire fermé ne comprend pas une
+            # description libre. On n'échoue pas pour autant, car il peut
+            # connaître ce label. L'intention est de ne pas laisser croire
+            # que la requête a été comprise telle quelle, mais ce bloc ne
+            # signale encore rien à l'appelant : celui-ci peut consulter
+            # stats["open_vocabulary"].
             pass
 
         frame = self._camera.capture()
@@ -251,6 +302,10 @@ class PerceptionService(IService):
             return ServiceResult(
                 ok=False, reason="aucune image disponible")
 
+        # Une image trop ancienne décrit une scène qui a pu changer : on
+        # refuse de l'analyser plutôt que de rendre des positions
+        # périmées. Une image sans horodatage (timestamp_ns à 0) est
+        # traitée comme fraîche, faute de pouvoir mesurer son âge.
         now = now_ns if now_ns is not None else time.time_ns()
         age_s = (now - frame.timestamp_ns) / 1e9 if frame.timestamp_ns else 0.0
         if age_s > self._max_frame_age_s:
@@ -264,12 +319,17 @@ class PerceptionService(IService):
         detections = self._detector.detect(frame, query)
         self._detections_count += len(detections)
 
-        # Une inférence en PANNE rend zéro détection — strictement
-        # indiscernable d'une scène vide pour l'appelant. Constaté en
-        # exécution réelle : le post-traitement d'OWL-ViT plantait à
-        # chaque image et find() rendait ok=True avec 0 détection, sans
-        # le moindre signal. Un détecteur qui expose son erreur doit la
-        # voir remonter.
+        # Une inférence (le passage de l'image dans le modèle) en PANNE
+        # rend zéro détection, ce qui est strictement indiscernable d'une
+        # scène vide pour l'appelant. Constaté en exécution réelle : le
+        # post-traitement d'OWL-ViT (la conversion de la sortie brute du
+        # modèle en boîtes et en scores) plantait à chaque image et find()
+        # rendait ok=True avec 0 détection, sans le moindre signal. Un
+        # détecteur qui expose son erreur, dans stats["last_inference_error"],
+        # doit donc la voir remonter.
+        # Attention : OwlViTDetector garde cette erreur en mémoire même
+        # après une inférence réussie ; une scène réellement vide observée
+        # après une panne est donc encore signalée comme une panne.
         det_err = getattr(self._detector, "stats", {}).get(
             "last_inference_error") if hasattr(self._detector, "stats") else None
         if det_err and not detections:
@@ -281,9 +341,10 @@ class PerceptionService(IService):
 
         intrinsics = self._camera.get_intrinsics()
         if intrinsics is None or self._tree is None:
-            # Dégradation HONNÊTE : les détections sont rendues, mais
-            # sans direction. Mieux qu'une direction inventée, et mieux
-            # qu'un échec total qui priverait l'appelant de l'info utile.
+            # Dégradation honnête : les détections sont rendues, mais sans
+            # direction. C'est mieux qu'une direction inventée, et mieux
+            # qu'un échec total qui priverait l'appelant de l'information
+            # utile : ce qui a été vu.
             return ServiceResult(
                 ok=True,
                 value=sorted(detections, key=lambda d: -d.confidence),
@@ -292,6 +353,8 @@ class PerceptionService(IService):
                        " — directions indisponibles",
             )
 
+        # Image de profondeur (une distance par pixel), seulement si la
+        # caméra de profondeur sait en fournir une.
         depth = None
         if self._depth_camera is not None:
             depth = getattr(self._depth_camera, "capture_depth", lambda: None)()
@@ -305,7 +368,13 @@ class PerceptionService(IService):
 
     def _locate(self, detections, intrinsics: CameraIntrinsics,
                 now_ns: int, depth=None, frame: str = FRAME_BASE):
-        """Ajoute à chaque détection sa direction dans le repère robot."""
+        """Ajoute à chaque détection sa direction et, si une image de
+        profondeur est fournie, sa position, dans le repère `frame`.
+
+        Si l'arbre de repères ne connaît pas la transformation entre la
+        caméra et ce repère, les détections sont rendues telles quelles.
+        Rend (détections, avertissement de l'arbre de repères ou None).
+        """
         tf, warn = self._tree.lookup(
             frame, FRAME_CAMERA_OPTICAL, now_ns=now_ns)
         if tf is None:
@@ -314,18 +383,22 @@ class PerceptionService(IService):
         out = []
         for d in detections:
             x, y, w, h = d.bbox
-            # Centre de la boîte — approximation assumée : le centre
-            # géométrique d'une boîte n'est pas le centre de masse de
-            # l'objet, ni son point de préhension. Suffisant pour
+            # Centre de la boîte : approximation assumée. Le centre
+            # géométrique d'une boîte n'est ni le centre de masse de
+            # l'objet ni son point de préhension. Suffisant pour
             # s'orienter vers lui, pas pour l'attraper.
             cx, cy = x + w / 2.0, y + h / 2.0
+            # Rayon dans le repère optique de la caméra (x vers la droite,
+            # y vers le bas, z vers l'avant), puis exprimé dans le repère
+            # demandé.
             ray_optical = intrinsics.pixel_to_ray(cx, cy)
             direction = tf.apply_direction(ray_optical)
 
-            # POSITION : direction x distance. pixel_to_ray rend un rayon
-            # de z=1 dans le repère optique, et la profondeur est mesurée
-            # perpendiculairement au plan image : le produit des deux
-            # donne directement le point, sans trigonométrie.
+            # POSITION = direction × distance. pixel_to_ray rend un rayon
+            # de composante z = 1 dans le repère optique, et la profondeur
+            # est mesurée perpendiculairement au plan de l'image : le
+            # produit des deux donne directement le point, sans
+            # trigonométrie.
             position = d.position_3d
             if position is None and depth is not None:
                 dist = self._depth_of_object(depth, d.bbox)
@@ -333,9 +406,10 @@ class PerceptionService(IService):
                     p_opt = Vector3(ray_optical.x * dist,
                                     ray_optical.y * dist,
                                     ray_optical.z * dist)
-                    position = tf.apply(p_opt)     # apply, PAS
-                    # apply_direction : un POINT subit la translation,
-                    # contrairement à une direction.
+                    # apply, et non apply_direction : un POINT subit la
+                    # translation entre repères, contrairement à une
+                    # direction.
+                    position = tf.apply(p_opt)
 
             out.append(Detection(
                 label=d.label, confidence=d.confidence, bbox=d.bbox,
@@ -350,19 +424,22 @@ class PerceptionService(IService):
         """Distance de la SURFACE VISIBLE de l'objet détecté.
 
         Prend la médiane du quart le plus PROCHE des profondeurs valides
-        dans la boîte, plutôt qu'un point au centre.
+        dans la boîte (réglé par `quantile`), plutôt qu'un point au
+        centre.
 
         Pourquoi : une boîte de détection contient toujours de
-        l'arrière-plan — d'autant plus qu'elle est large ou imprécise. Un
-        échantillon au centre tombe alors sur ce qu'il y a DERRIÈRE
+        l'arrière-plan, d'autant plus qu'elle est large ou imprécise. Un
+        échantillon pris au centre tombe alors sur ce qu'il y a DERRIÈRE
         l'objet. Constaté : un robot arrivé à 5 cm d'un colis le croyait
         encore à 1.87 m, parce que la mesure portait sur le sol visible
         au-delà (position z = -0.74 dans son repère, soit le plancher).
 
         Le quart le plus proche, lui, appartient à l'objet : c'est la
-        partie de la boîte qui est devant. Et prendre la médiane de ce
-        quart plutôt que le minimum absolu résiste au bruit et aux
-        pixels aberrants d'une caméra de profondeur.
+        partie de la boîte qui se trouve devant. Prendre la médiane de ce
+        quart plutôt que le minimum absolu résiste au bruit et aux pixels
+        aberrants d'une caméra de profondeur. Les valeurs invalides sont
+        écartées : NaN (« not a number », valeur non définie), infinies,
+        négatives, nulles ou quasi nulles (0.001 ou moins).
 
         Rend None si rien d'exploitable — jamais une distance par défaut.
         """
@@ -384,13 +461,18 @@ class PerceptionService(IService):
     @staticmethod
     def _depth_at(depth, cx: float, cy: float, half: int = 3):
         """Distance au centre d'une détection, par MÉDIANE d'un petit
-        voisinage.
+        voisinage (un carré de 2 × half + 1 pixels de côté).
 
-        Un pixel isolé suffit à tout fausser : sur un bord d'objet il
-        peut appartenir à l'arrière-plan, et une caméra de profondeur
-        rend régulièrement des valeurs invalides (0, inf, NaN). La
-        médiane d'un voisinage est robuste à ces deux cas. Rend None si
-        aucune valeur exploitable — jamais une distance par défaut.
+        Pourquoi la médiane : un pixel isolé suffit à tout fausser. Sur un
+        bord d'objet, il peut appartenir à l'arrière-plan, et une caméra
+        de profondeur rend régulièrement des valeurs invalides (0, inf,
+        NaN). La médiane d'un voisinage résiste à ces deux cas. Rend None
+        si aucune valeur n'est exploitable — jamais une distance par
+        défaut.
+
+        find() n'utilise pas cette méthode : il passe par
+        _depth_of_object, qui évite de mesurer l'arrière-plan derrière
+        l'objet. Elle reste couverte par test/test_perception_service.py.
         """
         import numpy as np
         h, w = depth.shape[0], depth.shape[1]
@@ -404,6 +486,9 @@ class PerceptionService(IService):
 
     @property
     def stats(self) -> dict:
+        """Compteurs de fonctionnement : nombre total de détections,
+        nombre d'images refusées parce que trop anciennes, et vocabulaire
+        ouvert ou non du détecteur."""
         return {
             "detections": self._detections_count,
             "stale_frames": self._stale_frames,
