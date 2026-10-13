@@ -1,26 +1,38 @@
 """
 AXIS-OS — Chargement d'une app depuis un fichier .axisapp chiffré
 ========================================================================
-Complète encryption.py (chiffrement/déchiffrement bruts, en octets)
-avec le VRAI chemin d'installation d'une app livrée sous forme
-chiffrée : lire le fichier .axisapp, déchiffrer en mémoire avec la
-clé privée plateforme, exécuter le code déchiffré dans un espace de
-noms isolé pour en extraire la classe RobotApp, l'instancier, puis
-l'installer normalement via PlayStoreRuntime.install().
+Une app peut être livrée au Play Store sous forme chiffrée, dans un
+fichier .axisapp, pour que seul AXIS-OS puisse en lire le code.
+encryption.py fournit le chiffrement et le déchiffrement bruts (en
+octets) ; ce module y ajoute le vrai chemin d'installation d'une telle
+app :
+  1. lire le fichier .axisapp ;
+  2. le déchiffrer en mémoire avec la clé privée de la plateforme
+     (la clé détenue par AXIS-OS, seule capable de le déchiffrer) ;
+  3. exécuter le code déchiffré dans un espace de noms isolé (un module
+     Python dédié) pour en extraire la classe RobotApp, c'est-à-dire la
+     classe qui définit l'app ;
+  4. l'instancier ;
+  5. confier l'instance à PlayStoreRuntime.install() (le moteur qui
+     installe et exécute les apps), qui l'installe normalement ; cette
+     dernière étape est faite par l'appelant.
 
-Le code déchiffré N'EST JAMAIS réécrit en clair sur disque à aucune
-étape de ce module — il transite uniquement en mémoire (une chaîne
-Python), du déchiffrement jusqu'à l'exécution via exec().
+Le code déchiffré n'est jamais réécrit en clair sur disque, à aucune
+étape de ce module : il ne transite qu'en mémoire (une chaîne Python),
+du déchiffrement jusqu'à son exécution par exec() (la fonction Python
+qui exécute du code fourni sous forme de texte).
 
-Ce module ne remplace ni n'affaiblit aucune des vérifications déjà en
-place dans PlayStoreRuntime.install() (signature, permissions,
-capacités, ProtectionLevel.SIGNATURE) — il livre simplement une
-instance de RobotApp à cette même méthode install() existante, qui
-applique ensuite exactement les mêmes vérifications qu'une app
-installée depuis une instance déjà en mémoire (voir
-_load_app_instance_from_source() ci-dessous : exec() extrait la
-classe, mais AUCUNE vérification de sécurité n'est court-circuitée —
-elles ont toutes lieu APRÈS, dans install(), sur l'instance obtenue).
+Ce module ne remplace ni n'affaiblit aucune des vérifications déjà
+faites par PlayStoreRuntime.install() : signature, permissions,
+capacités (ce que l'app déclare avoir besoin de faire), permissions de
+niveau ProtectionLevel.SIGNATURE (réservées aux apps signées avec la
+clé de la plateforme). Il livre simplement une instance de RobotApp à
+cette même méthode install(), qui applique ensuite exactement les mêmes
+vérifications qu'à une app installée depuis une instance déjà en
+mémoire. exec() sert seulement à extraire la classe : aucune
+vérification de sécurité n'est court-circuitée, elles ont toutes lieu
+après, dans install(), sur l'instance obtenue (voir
+_load_app_instance_from_source() ci-dessous).
 
 Licence : Apache 2.0
 """
@@ -38,59 +50,82 @@ from axis_os.store.sdk.encryption import (
 
 class AppLoadError(Exception):
     """
-    Levée quand le code déchiffré ne peut pas être chargé comme une
-    app AXIS-OS valide — distincte de EncryptionError/DecryptionError
-    (encryption.py), qui couvrent l'échec du DÉCHIFFREMENT lui-même.
-    Cette exception couvre l'étape SUIVANTE : le déchiffrement a
-    réussi (le contenu est un texte Python valide en soi), mais ce
-    texte ne définit pas de classe RobotApp exploitable — code
-    syntaxiquement invalide, aucune classe RobotApp trouvée, plusieurs
-    classes ambiguës, ou une erreur levée par le code lui-même pendant
-    son exécution (exec() peut exécuter du code arbitraire au niveau
-    module, exactement comme un import Python normal — voir la
-    docstring de _load_app_instance_from_source() pour la limite de
-    sécurité assumée ici, cohérente avec le reste du projet).
+    Levée quand le code déchiffré ne peut pas être chargé comme une app
+    AXIS-OS valide.
+
+    Distincte d'EncryptionError et de DecryptionError (encryption.py),
+    qui couvrent l'échec du déchiffrement lui-même. AppLoadError couvre
+    l'étape suivante : le déchiffrement a réussi, mais le contenu obtenu
+    ne définit pas de classe RobotApp exploitable. Cas couverts : contenu
+    qui n'est pas du texte UTF-8 valide (l'encodage attendu pour le code
+    source), code syntaxiquement invalide, aucune classe RobotApp
+    trouvée, plusieurs classes (ambiguïté), erreur levée par le code
+    lui-même pendant son exécution, ou échec de l'instanciation de la
+    classe.
+
+    Le cas « erreur pendant l'exécution » existe parce qu'exec() exécute
+    tout le code placé au niveau du module, exactement comme un import
+    Python normal. La limite de sécurité qui en découle, assumée et
+    cohérente avec le reste du projet, est décrite dans la docstring de
+    _load_app_instance_from_source().
     """
     pass
 
 
 def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> RobotApp:
     """
-    Exécute `source_code` dans un module Python DÉDIÉ et unique
-    (jamais le namespace global de ce module ni du process appelant),
-    puis instancie la SEULE classe RobotApp qu'il définit.
+    Exécute `source_code` dans un module Python dédié et unique (jamais
+    l'espace de noms global de ce module ni celui du processus appelant),
+    puis instancie la seule classe RobotApp qu'il définit.
 
-    Le module dynamique est ENREGISTRÉ dans sys.modules — trouvé
-    nécessaire par un test de bout en bout (installer une app chargée
-    ainsi via un vrai PlayStoreRuntime) : sans cet enregistrement, la
-    classe créée par exec() vit dans un namespace transitoire que
-    `pickle` ne peut PAS localiser (`PicklingError: import of module
-    ... failed`) — donc une instance de cette classe échoue à
-    traverser la frontière de process de SandboxRunner (qui pickle
-    l'app et ses arguments pour les transmettre au sous-process
-    sandboxé, voir sandbox.py). Un nom de module UNIQUE par appel
-    (préfixé de l'id de l'objet code compilé, jamais réutilisé) évite
-    toute collision entre deux apps chargées dans le même process
-    AXIS-OS — chaque app déchiffrée obtient son propre "faux module"
-    isolé, jamais partagé.
+    Pourquoi enregistrer ce module dynamique dans sys.modules (la table
+    des modules importés de Python) : un test de bout en bout l'a rendu
+    nécessaire, en installant une app chargée ainsi dans un vrai
+    PlayStoreRuntime. Sans cet enregistrement, la classe créée par exec()
+    vit dans un espace de noms transitoire que pickle (le format de
+    sérialisation d'objets de Python) ne sait pas retrouver
+    (`PicklingError: import of module ... failed`). Une instance de cette
+    classe ne peut alors pas franchir la frontière de processus de
+    SandboxRunner, qui sérialise l'app et ses arguments avec pickle pour
+    les transmettre au sous-processus isolé (la sandbox, ou « bac à
+    sable » : voir sandbox.py). Conséquence constatée avant ce
+    correctif : on_start() et run_mission() échouaient systématiquement
+    pour toute app chargée par ce module (voir CHANGELOG.md).
 
-    ⚠️ Limite de sécurité assumée, honnête, cohérente avec le reste du
-    projet (voir la même discussion dans signing.py sur ce qu'une
-    signature valide garantit ou non) : exec() exécute le code
-    déchiffré avec les MÊMES privilèges que le process Python
-    appelant — exactement le même niveau de confiance qu'un `import`
-    Python normal sur un fichier .py, PAS un sandbox au sens où
-    SandboxRunner (axis_os/store/runtime/sandbox.py) isole
-    l'EXÉCUTION D'UNE MISSION (process séparé, quotas CPU/RAM/temps).
-    Le déchiffrement + cette exécution transitoire au chargement,
-    utilisée uniquement pour EXTRAIRE la classe et sa méthode
-    manifest() (jamais pour exécuter run_mission() ici), précèdent
-    TOUJOURS PlayStoreRuntime.install() — qui, lui, sandboxe
-    réellement on_start()/on_stop()/run_mission() via SandboxRunner
-    (voir le correctif C4, CHANGELOG.md). Déchiffrer et signer
-    garantissent l'ORIGINE et la CONFIDENTIALITÉ du fichier, jamais
-    la bienveillance du code lui-même — exactement la même limite
-    documentée pour verify_app_signature() dans signing.py.
+    Un nom de module distinct à chaque appel évite les collisions entre
+    deux apps chargées dans le même processus AXIS-OS : chaque app
+    déchiffrée obtient son propre « faux module » isolé, jamais partagé.
+    Ce nom est construit avec l'id de l'objet code compilé et l'étiquette
+    d'origine (origin_label). Python ne garantit l'unicité d'un id que
+    tant que l'objet existe : l'unicité du nom est donc très probable,
+    mais pas absolue.
+    En cas d'échec, ce module est retiré de sys.modules, pour ne laisser
+    aucun module fantôme (vérifié par test/test_encrypted_app_packaging.py).
+
+    Limite de sécurité assumée, cohérente avec le reste du projet (voir
+    la même discussion dans signing.py sur ce qu'une signature valide
+    garantit ou non) : exec() exécute le code déchiffré avec les mêmes
+    privilèges que le processus Python appelant. C'est exactement le
+    niveau de confiance d'un `import` Python normal sur un fichier .py,
+    et non une sandbox au sens où SandboxRunner
+    (axis_os/store/runtime/sandbox.py) isole l'exécution d'une mission
+    (processus séparé, quotas de CPU, de mémoire et de temps).
+
+    Cette exécution au chargement sert uniquement à extraire la classe
+    et sa méthode manifest() (le manifeste : ce que l'app déclare de
+    ses permissions et de ses besoins), jamais à lancer run_mission()
+    ici. Le déchiffrement et cette exécution transitoire précèdent
+    toujours PlayStoreRuntime.install(), qui, lui, fait réellement
+    exécuter on_start(), on_stop() et run_mission() dans SandboxRunner
+    (depuis un correctif décrit dans CHANGELOG.md : auparavant,
+    on_start() et on_stop() tournaient hors sandbox). Cette isolation a
+    elle-même des faiblesses connues face à une app hostile : voir
+    docs/isolation_apps.md.
+
+    Le chiffrement et la signature garantissent l'origine et la
+    confidentialité du fichier, jamais la bienveillance du code
+    lui-même : c'est la même limite que celle documentée pour
+    verify_app_signature() dans signing.py.
     """
     import types
     import sys as _sys
@@ -153,15 +188,17 @@ def load_app_from_encrypted_bytes(
     encrypted_data: bytes, platform_private_key_b64: str, *, origin_label: str = "app",
 ) -> RobotApp:
     """
-    Déchiffre `encrypted_data` (le contenu brut d'un fichier .axisapp,
-    déjà lu en mémoire par l'appelant — jamais lu depuis un chemin ici,
-    pour que cette fonction reste utilisable aussi bien avec un
-    fichier disque qu'avec un contenu reçu par un autre canal, ex: un
-    futur téléchargement réseau) et retourne une instance RobotApp
-    prête à être passée à PlayStoreRuntime.install().
+    Déchiffre `encrypted_data` et retourne une instance de RobotApp prête
+    à être passée à PlayStoreRuntime.install().
 
-    Lève EncryptionError/DecryptionError (encryption.py) si le
-    déchiffrement échoue, AppLoadError si le déchiffrement réussit
+    `encrypted_data` est le contenu brut d'un fichier .axisapp, déjà lu
+    en mémoire par l'appelant. Cette fonction ne lit jamais elle-même un
+    chemin, pour rester utilisable aussi bien avec un fichier sur disque
+    qu'avec un contenu reçu par un autre canal (par exemple, un futur
+    téléchargement par le réseau).
+
+    Lève EncryptionError ou DecryptionError (encryption.py) si le
+    déchiffrement échoue, et AppLoadError si le déchiffrement réussit
     mais que le contenu n'est pas une app valide.
     """
     encrypted_app = EncryptedApp.from_bytes(encrypted_data)
@@ -179,12 +216,14 @@ def load_app_from_encrypted_file(
     encrypted_file_path: Union[str, Path], platform_private_key_b64: str,
 ) -> RobotApp:
     """
-    Raccourci : lit un fichier .axisapp depuis le disque et le
-    déchiffre. Voir load_app_from_encrypted_bytes() pour le contexte
-    complet — utilise `origin_label` = nom du fichier, pour que les
-    messages d'erreur d'AppLoadError identifient précisément quel
-    fichier a échoué à charger (utile dès qu'on installe plusieurs
-    apps chiffrées à la suite).
+    Raccourci : lit un fichier .axisapp sur le disque, puis le déchiffre
+    et le charge (voir load_app_from_encrypted_bytes() pour le contexte
+    complet).
+
+    `origin_label` prend le nom du fichier, pour que les messages
+    d'AppLoadError désignent précisément le fichier qui n'a pas pu être
+    chargé (utile dès qu'on installe plusieurs apps chiffrées à la
+    suite).
     """
     path = Path(encrypted_file_path)
     data = path.read_bytes()
