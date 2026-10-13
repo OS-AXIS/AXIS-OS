@@ -1,34 +1,46 @@
 """
 AXIS-OS — IsaacSimBackend
 ===========================
-ISimBackend pour NVIDIA Isaac Sim.
-Auto-détecte Isaac Sim — stub si absent.
+Implémentation d'ISimBackend (l'interface commune aux ponts vers un
+simulateur) pour NVIDIA Isaac Sim : le pont entre la HAL simulée
+(IsaacSimHAL ; HAL pour Hardware Abstraction Layer, la couche
+d'abstraction matérielle d'AXIS-OS) et le simulateur. Il détecte
+automatiquement Isaac Sim et, s'il est absent ou si le chargement du robot
+échoue, bascule sur un stub : une physique simplifiée intégrée
+(_StubPhysics), qui permet de faire tourner AXIS-OS sans simulateur.
 
-Mode production implémenté après confirmation manuelle que le G1
-officiel Unitree existe dans la bibliothèque d'assets Isaac Sim
-(chemin : Isaac/Robots/Unitree/G1/g1.usd) et que son squelette réel
-comporte 37 articulations (24 correspondant à ISAAC_G1_JOINT_MAP,
-13 supplémentaires pour les doigts — non gérées par AXIS-OS à ce
-stade, portée volontairement limitée aux membres, voir note plus bas).
+Le mode production (Isaac Sim réellement chargé) a été implémenté après
+avoir vérifié à la main que le G1 officiel d'Unitree existe dans la
+bibliothèque d'assets (modèles prêts à l'emploi) d'Isaac Sim, au chemin
+Isaac/Robots/Unitree/G1/g1.usd, et que son squelette réel comporte 37
+articulations : 24 correspondant à ISAAC_G1_JOINT_MAP et 13 de plus pour
+les doigts, non gérées par AXIS-OS à ce stade (portée volontairement
+limitée aux membres, voir plus bas). Ce décompte date d'avant la
+correction de la table décrite sous ISAAC_G1_JOINT_MAP, qui compte
+désormais 23 entrées.
 
-Historique : ce fichier ne contenait auparavant qu'une coquille —
-connect() détectait bien Isaac Sim (import réussi) mais ne chargeait
-jamais rien de réel ; toutes les méthodes de lecture/écriture ne
-fonctionnaient qu'en _stub_mode, jamais en vrai mode connecté. Le vrai
-pont vers Isaac Sim (chargement du G1, lecture/écriture via
-Articulation) est implémenté ici pour la première fois.
+Historique : ce fichier ne contenait auparavant qu'une coquille. connect()
+détectait bien Isaac Sim (l'import réussissait) mais ne chargeait jamais
+rien de réel ; toutes les méthodes de lecture et d'écriture ne
+fonctionnaient qu'en mode stub, jamais en mode réellement connecté. Le
+vrai pont vers Isaac Sim (chargement du G1, lecture et écriture via la
+classe Articulation d'Isaac Sim) a été implémenté ici pour la première
+fois.
 
-Portée volontairement limitée à cette version (documentée honnêtement) :
-  - Seuls les 24 joints de ISAAC_G1_JOINT_MAP sont lus/écrits. Les 13
-    joints de doigts du vrai G1 (left_five_joint, left_three_joint,
-    etc.) existent dans le squelette mais ne sont pas exposés par ce
-    backend — cohérent avec conventions.py qui ne définit que 24
-    JointDefinition.
-  - Un seul robot par instance de SimulationApp (limite Isaac Sim
-    lui-même, pas de ce backend).
-  - Le calcul du courant reste dérivé du couple (abs(torque)/10.0),
-    comme dans le stub — le vrai G1 dans Isaac Sim n'expose pas de
-    capteur de courant électrique séparé par défaut.
+Limites connues de cette version, dont la portée est volontairement
+restreinte :
+  - Seules les articulations de ISAAC_G1_JOINT_MAP sont lues et écrites
+    (24 à l'origine, 23 depuis la correction de la table). Les 13
+    articulations des doigts du vrai G1 (left_five_joint,
+    left_three_joint, etc.) existent dans le squelette mais ne sont pas
+    exposées par ce backend, ce qui était cohérent avec conventions.py,
+    qui ne définissait alors que 24 JointDefinition.
+  - Un seul robot par instance de SimulationApp (l'application Isaac Sim
+    lancée depuis Python) : c'est une limite d'Isaac Sim lui-même, pas de
+    ce backend.
+  - Le courant reste dérivé du couple (abs(torque)/10.0), comme dans le
+    stub : le G1 d'Isaac Sim n'expose pas par défaut de capteur de
+    courant électrique séparé.
 
 Licence : Apache 2.0
 """
@@ -68,32 +80,56 @@ ISAAC_G1_JOINT_MAP: Dict[str, str] = {
     "right_elbow_roll": "right_elbow_roll_joint",
 }
 """
-Corrigée le 2026-09-06 après vérification directe contre les 37 vrais
-dof_names du G1 lus depuis Isaac Sim (voir session du jour précédent) :
+Correspondance nom d'articulation AXIS-OS -> nom dans le modèle G1
+d'Isaac Sim.
 
-  - "waist_yaw"/"waist_roll" (2 joints supposés) → REMPLACÉS par un
-    seul "torso" → "torso_joint", le vrai G1 n'a qu'une seule
-    articulation de torse, pas deux.
-  - "left_elbow"/"right_elbow" (1 joint chacun, supposés) → REMPLACÉS
-    par 2 joints chacun : "_elbow_pitch" et "_elbow_roll" — confirmé,
-    le vrai coude du G1 a deux degrés de liberté, pas un seul.
-  - "left_wrist_roll"/"right_wrist_roll" → SUPPRIMÉS entièrement.
-    Aucun joint de poignet n'apparaît dans les 37 dof_names réels du
-    G1 — ce modèle Isaac Sim n'a pas de poignet articulé séparé
-    (le mouvement du poignet, s'il existe, doit être porté par les
-    joints de doigts, hors de portée actuelle d'AXIS-OS).
+Table corrigée le 2026-09-06, après vérification directe contre les 37
+vrais dof_names du G1 (les noms de ses degrés de liberté, DOF en
+anglais), lus la veille depuis Isaac Sim :
 
-Total : 24 → 23 joints (perte nette d'un joint de poignet non
-retrouvé, gain de 2 joints de coude pitch/roll détaillés — net -2+1
-sur les extrémités des bras). Ce changement modifie aussi
-conventions.py et tous les fichiers qui référencent "left_elbow" ou
-"waist_yaw"/"waist_roll" par ces anciens noms — non fait dans cette
-session, à traiter avant tout usage réel des bras/torse.
+  - "waist_yaw" et "waist_roll" (deux articulations supposées) ont été
+    remplacés par un seul "torso" -> "torso_joint" : le G1 chargé dans
+    Isaac Sim n'a qu'une articulation de torse, pas deux.
+  - "left_elbow" et "right_elbow" (une articulation chacun, supposée) ont
+    été remplacés par deux articulations chacun, "_elbow_pitch" et
+    "_elbow_roll" : c'est confirmé, le coude de ce G1 a deux degrés de
+    liberté, pas un seul.
+  - "left_wrist_roll" et "right_wrist_roll" ont été supprimés. Aucune
+    articulation de poignet n'apparaît dans les 37 dof_names réels : ce
+    modèle Isaac Sim n'a pas de poignet articulé séparé (le mouvement du
+    poignet, s'il existe, doit être porté par les articulations des
+    doigts, hors de la portée actuelle d'AXIS-OS).
+
+Total : de 24 à 23 articulations (torse -1, coudes +2, poignets -2). Ce
+changement concerne aussi conventions.py et tous les fichiers qui
+désignent le coude ou le torse par leurs anciens noms ("left_elbow",
+"waist_yaw", "waist_roll"). Cela n'a pas été fait lors de cette
+correction, et reste à traiter avant tout usage réel des bras et du
+torse. Depuis, conventions.py (correction du 2026-09-08, voir son en-tête)
+suit le fichier URDF officiel du G1 à 23 DOF (URDF, Unified Robot
+Description Format : le fichier standard qui décrit les articulations
+d'un robot). Ses identifiants diffèrent des clés de cette table (suffixe
+"_joint" : "left_knee_joint" au lieu de "left_knee"), et son modèle
+diffère de celui d'Isaac Sim (waist_yaw_joint au lieu de torso_joint, une
+seule articulation de coude par bras au lieu de deux) : les deux tables
+ne sont toujours pas mises en cohérence. Conséquence constatée :
+IsaacSimHAL, qui nomme ses articulations d'après ce même URDF, ne retrouve
+aucune d'elles dans le stub (voir la limite connue décrite dans hal.py).
 """
 
 
 class _StubPhysics:
-    """Moteur PD simplifié — stub sans Isaac Sim."""
+    """Physique simplifiée (le stub), utilisée à la place d'Isaac Sim.
+
+    Chaque articulation est simulée seule, avec les mêmes constantes pour
+    toutes. Trois modes de commande : en position, un régulateur PD
+    (proportionnel-dérivé : un couple proportionnel à l'écart de position,
+    freiné par un terme proportionnel à la vitesse) ; en vitesse, un
+    couple proportionnel à l'écart de vitesse ; en couple, le couple
+    demandé est appliqué directement. Dans tous les modes, un frottement
+    proportionnel à la vitesse (DAMPING) s'y ajoute, et l'accélération
+    tient compte de l'inertie INERTIA. Un fil d'exécution de fond (thread)
+    intègre le mouvement tous les DT = 4 ms."""
     INERTIA = 0.05; DAMPING = 2.0; STIFFNESS = 50.0; DT = 0.004
 
     def __init__(self, joint_names: list[str]):
@@ -149,6 +185,18 @@ class _StubPhysics:
 
 
 class IsaacSimBackend(ISimBackend):
+    """Pont entre AXIS-OS et Isaac Sim, avec repli automatique sur le stub.
+
+    robot_prim_path : chemin du robot dans la scène USD (Universal Scene
+        Description, le format de scène d'Isaac Sim).
+    force_stub : True pour utiliser le stub même si Isaac Sim est
+        installé.
+    usd_path : fichier USD du robot ; par défaut, le G1 de la bibliothèque
+        d'assets d'Isaac Sim.
+    """
+    # Tension et température fictives, utilisées dans les deux modes : le
+    # backend ne lit ni l'une ni l'autre dans Isaac Sim. La température
+    # rendue part de STUB_TEMP et augmente de 0.02 par unité de couple.
     STUB_VOLTAGE = 48.0; STUB_TEMP = 25.0
 
     def __init__(self, robot_prim_path: str = "/World/G1", force_stub: bool = False,
@@ -166,6 +214,8 @@ class IsaacSimBackend(ISimBackend):
         self._joint_indices: Dict[str, int] = {}
 
     def connect(self) -> bool:
+        # Isaac Sim est détecté par l'import de omni.isaac.core ; s'il
+        # échoue, on bascule sur le stub.
         if self._force_stub:
             return self._activate_stub("Stub forcé.")
         try:
@@ -177,9 +227,10 @@ class IsaacSimBackend(ISimBackend):
     def _connect_production(self) -> bool:
         """
         Charge réellement le G1 dans Isaac Sim et construit la table de
-        correspondance nom AXIS-OS → index d'articulation. Toute erreur
-        ici retombe sur le stub plutôt que de laisser AXIS-OS sans
-        backend fonctionnel.
+        correspondance nom AXIS-OS -> index d'articulation. Toute erreur
+        ici fait retomber sur le stub, plutôt que de laisser AXIS-OS sans
+        backend fonctionnel. Les articulations de la table absentes du
+        squelette chargé sont signalées par un message, puis ignorées.
         """
         try:
             import isaacsim.storage.native as nucleus
@@ -304,6 +355,9 @@ class IsaacSimBackend(ISimBackend):
         return all(self.send_command(c) for c in commands)
 
     def get_imu_state(self, imu_name: str = "imu") -> Optional[SimIMUState]:
+        # Centrale inertielle (IMU) : valeurs fixes dans les deux modes,
+        # celles d'un robot immobile et à plat (seule la gravité, 9.81 m/s²,
+        # selon z). Aucune mesure n'est lue dans Isaac Sim.
         if not self._connected: return None
         return SimIMUState(acc_x=0.0, acc_y=0.0, acc_z=9.81,
                            gyr_x=0.0, gyr_y=0.0, gyr_z=0.0,
@@ -332,6 +386,8 @@ class IsaacSimBackend(ISimBackend):
         return 0.0
 
     def get_backend_info(self) -> Dict[str, str]:
+        # En mode stub, toutes les articulations de la table existent par
+        # construction : elles sont toutes « résolues ».
         return {"name": "IsaacSimBackend", "version": "0.2.0",
                 "mode": "stub" if self._stub_mode else "production",
                 "robot_model": "Unitree G1", "joints": str(len(self._joint_map)),
@@ -345,13 +401,15 @@ class IsaacSimBackend(ISimBackend):
         return True
 
 
-# NOTE_JOINT_MISMATCH — En inspectant le vrai G1 chargé dans Isaac Sim
-# (37 articulations réelles trouvées via Articulation.dof_names),
-# certains noms diffèrent de ceux supposés dans ISAAC_G1_JOINT_MAP —
-# notamment le coude, qui semble avoir DEUX joints réels (pitch et
-# roll séparés) plutôt qu'un seul "elbow_joint" comme supposé
-# initialement. Ce backend gère cet écart sans planter (les joints
-# non résolus sont simplement absents, voir le print d'avertissement
-# dans _connect_production), mais la table elle-même n'a pas été
-# corrigée dans cette session — nécessiterait de valider chaque nom
-# un par un contre la vraie liste de dof_names.
+# NOTE_JOINT_MISMATCH. Cette note décrit l'état antérieur à la correction
+# de la table datée du 2026-09-06 (voir la docstring sous
+# ISAAC_G1_JOINT_MAP). En inspectant le vrai G1 chargé dans Isaac Sim (37
+# articulations réelles trouvées via Articulation.dof_names), certains
+# noms différaient de ceux supposés dans ISAAC_G1_JOINT_MAP, notamment le
+# coude, qui semblait avoir deux articulations réelles (pitch et roll
+# séparés) plutôt qu'un seul "elbow_joint" comme supposé au départ. Ce
+# backend tolère ce genre d'écart sans planter : les articulations non
+# résolues sont simplement absentes, et _connect_production affiche un
+# avertissement. La table elle-même n'avait pas encore été corrigée à ce
+# moment-là : il fallait valider chaque nom un par un contre la vraie
+# liste des dof_names.

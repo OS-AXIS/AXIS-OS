@@ -1,25 +1,35 @@
 """
-Lidar simulé pour Isaac Sim — par lancers de rayons PhysX.
+Lidar simulé pour Isaac Sim, par lancers de rayons PhysX.
 
-Modelé sur le Livox Mid-360 de la tête du G1, monté TÊTE EN BAS : son
-champ vertical, ~-52° à +7°, regarde le sol et les jambes autour du
-robot, ce qui est exactement ce dont le gardien de proximité a besoin. Le
-vrai Mid-360 balaie en motif non répétitif ; ici, une grille régulière
-(azimut × couches) suffit à la sécurité de proximité et reste
-déterministe.
+Un lidar mesure des distances en balayant l'espace avec des faisceaux
+laser ; il rend un nuage de points. Isaac Sim est le simulateur robotique
+de NVIDIA, et PhysX son moteur physique : on lui demande, rayon par rayon,
+le premier objet touché.
 
-Pourquoi des rayons PhysX plutôt que le capteur RTX d'Isaac : aucune
-dépendance à une extension dont le nom et l'API changent d'une version à
-l'autre (constaté entre 4.x et 6.x), et un coût maîtrisé. Les rayons ne
-voient que les objets qui ont une COLLISION — c'est aussi ce que « voit »
-la physique.
+Le modèle est le Livox Mid-360 de la tête du G1 (le robot humanoïde
+d'Unitree), monté tête en bas : son champ vertical, d'environ -52° à +7°,
+regarde le sol et les jambes autour du robot, ce qui est exactement ce
+dont le gardien de proximité a besoin. Ce gardien (GardienProximite, dans
+axis_os/services/locomotion/proximite.py) réduit la vitesse de marche,
+jusqu'à l'arrêt, quand un obstacle est trop proche. Le vrai Mid-360
+balaie selon un motif non répétitif ; ici, une grille régulière (azimut,
+c'est-à-dire angle horizontal, × couches) suffit à la sécurité de
+proximité et reste déterministe : le même balayage donne les mêmes
+points.
+
+Pourquoi des rayons PhysX plutôt que le capteur lidar RTX d'Isaac Sim
+(simulé par le moteur de rendu de la carte graphique) : aucune dépendance
+à une extension dont le nom et l'API (l'interface de programmation)
+changent d'une version à l'autre (constaté entre 4.x et 6.x), et un coût
+maîtrisé. Les rayons ne voient que les objets qui ont une forme de
+collision ; c'est aussi ce que « voit » la physique.
 
 Le robot ne doit pas se voir lui-même : un rayon qui touche un de ses
 corps est relancé juste derrière le point d'impact (les bras du G1 sont
 dans le champ des couches basses).
 
-Points rendus dans le repère MONDE (frame_id "world") : c'est ce qu'attend
-le GardienProximite, qui compare au plan du site.
+Les points sont rendus dans le repère monde (frame_id "world") : c'est ce
+qu'attend GardienProximite, qui les compare au plan du site.
 """
 from __future__ import annotations
 
@@ -31,18 +41,26 @@ import numpy as np
 from axis_os.hal.core.interfaces import ILidar
 from axis_os.hal.core.types import HALStatus, LidarScan, SensorType
 
-# Mid-360 inversé : couches plus serrées vers l'horizontale, où sont les
-# jambes des personnes à distance ; plus espacées vers le bas.
+# Élévations des couches, en degrés (0 = horizontale), pour un Mid-360
+# monté tête en bas : couches plus serrées vers l'horizontale, où se
+# trouvent les jambes des personnes à distance, et plus espacées vers le
+# bas.
 ELEVATIONS_MID360_INVERSE = (-50.0, -40.0, -31.0, -23.0, -16.0, -10.0, -5.0,
                              -1.0, 3.0, 7.0)
 
+# Lanceur de rayon : (origine, direction, portée) -> (point touché, chemin
+# dans la scène du corps touché), ou None si rien n'est touché.
 Lanceur = Callable[[Tuple[float, float, float], Tuple[float, float, float], float],
                    Optional[Tuple[Tuple[float, float, float], str]]]
 
 
 def directions_balayage(n_azimut: int, elevations_deg: Sequence[float]) -> np.ndarray:
-    """Vecteurs unitaires (N x 3) dans le repère du CAPTEUR (x devant,
-    y à gauche, z en haut)."""
+    """Vecteurs unitaires (tableau N x 3) des rayons d'un balayage, dans le
+    repère du capteur (x devant, y à gauche, z en haut).
+
+    Pour chaque élévation de elevations_deg (en degrés), n_azimut
+    directions réparties régulièrement sur un tour complet : N vaut donc
+    n_azimut × le nombre de couches."""
     az = np.linspace(-math.pi, math.pi, n_azimut, endpoint=False)
     dirs = []
     for e in elevations_deg:
@@ -53,7 +71,10 @@ def directions_balayage(n_azimut: int, elevations_deg: Sequence[float]) -> np.nd
 
 
 def lanceur_physx() -> Lanceur:
-    """Rayon le plus proche via la scène PhysX d'Isaac Sim."""
+    """Lanceur par défaut : le point touché le plus proche, demandé à la
+    scène PhysX d'Isaac Sim. Le chemin rendu est celui du corps rigide
+    touché, ou à défaut de sa forme de collision ; il sert à reconnaître
+    les impacts sur le robot lui-même."""
     from omni.physx import get_physx_scene_query_interface
     sqi = get_physx_scene_query_interface()
 
@@ -68,6 +89,11 @@ def lanceur_physx() -> Lanceur:
 
 
 class IsaacSimLidar(ILidar):
+    """Lidar simulé conforme à ILidar, l'interface lidar de la HAL
+    (Hardware Abstraction Layer, la couche qui cache au reste du système
+    les détails du matériel) : un service qui lit un lidar ne voit pas
+    s'il est réel ou simulé."""
+
     def __init__(self, sensor_id: str,
                  pose_capteur: Callable[[], Tuple[np.ndarray, np.ndarray]],
                  horloge: Callable[[], float],
@@ -79,12 +105,24 @@ class IsaacSimLidar(ILidar):
                  relances_max: int = 2):
         """
         pose_capteur : () -> (position monde (3,), rotation monde 3x3) du
-                       capteur. Sur le G1 : la tête, 1.3 m environ.
-        horloge      : horloge du ROBOT (temps simulé), pour l'horodatage
-                       que le gardien compare à age_max_s.
+                       capteur. Sur le G1 : la tête, à 1.3 m environ.
+        horloge      : horloge du robot (temps simulé), pour l'horodatage
+                       que le gardien compare à age_max_s (au-delà, le
+                       balayage est jugé périmé et le robot s'arrête).
         lanceur      : (origine, direction, portée) -> (point, chemin du
-                       corps touché) ou None. Par défaut : PhysX.
-        periode_s    : 10 Hz, comme le Mid-360.
+                       corps touché) ou None. Par défaut : PhysX, créé par
+                       initialize().
+        n_azimut, elevations_deg : grille de balayage, voir
+                       directions_balayage().
+        portee_m     : portée maximale d'un rayon, en mètres.
+        periode_s    : intervalle entre deux balayages ; 0.1 s, soit 10 Hz,
+                       comme le Mid-360.
+        prefixes_ignores : débuts des chemins de scène du robot lui-même
+                       (par défaut "/World/g1"). Un rayon qui touche un
+                       corps dont le chemin commence ainsi est relancé
+                       plus loin.
+        relances_max : nombre maximal de relances d'un même rayon après un
+                       impact sur le robot.
         """
         super().__init__(sensor_id, SensorType.LIDAR)
         self._pose = pose_capteur
@@ -97,6 +135,8 @@ class IsaacSimLidar(ILidar):
         self._relances = relances_max
         self._dernier: Optional[LidarScan] = None
         self._t_dernier: Optional[float] = None
+        # Compteurs de diagnostic. balayer() y ajoute le nombre de points
+        # du dernier balayage et le nombre de balayages vides.
         self.stats = {"balayages": 0, "rayons": 0, "impacts_sur_soi": 0}
 
     # ---- ISensor ------------------------------------------------------------
@@ -118,6 +158,9 @@ class IsaacSimLidar(ILidar):
         return any(chemin.startswith(p) for p in self._ignores)
 
     def _lancer(self, o: np.ndarray, d: np.ndarray) -> Optional[Tuple[float, float, float]]:
+        """Premier point touché, hors du robot lui-même, par le rayon parti
+        de o dans la direction d. Rend None si rien n'est touché dans la
+        portée, ou si les relances sont épuisées."""
         reste, origine = self._portee, o
         for _ in range(self._relances + 1):
             r = self._lanceur(tuple(float(v) for v in origine),
@@ -131,9 +174,10 @@ class IsaacSimLidar(ILidar):
             self.stats["impacts_sur_soi"] += 1
             p = np.asarray(p, dtype=float)
             parcouru = float(np.dot(p - origine, d))
-            # Impact à distance ~0 : le rayon est parti de L'INTÉRIEUR d'un
-            # corps du robot (PhysX signale le chevauchement initial). Un pas
-            # de 2 cm ne suffit pas à en sortir : on saute 15 cm.
+            # Impact à distance quasi nulle : le rayon est parti de
+            # l'intérieur d'un corps du robot (PhysX signale ce
+            # chevauchement initial comme un impact). Un pas de 2 cm ne
+            # suffit pas à en sortir : on saute 15 cm.
             saut = 0.15 if parcouru < 0.01 else 0.02
             reste -= parcouru + saut
             if reste <= 0:
@@ -142,6 +186,8 @@ class IsaacSimLidar(ILidar):
         return None
 
     def balayer(self) -> LidarScan:
+        """Balayage complet, fait tout de suite, sans tenir compte de la
+        période (scan() s'en charge)."""
         pos, R = self._pose()
         o = np.asarray(pos, dtype=float)
         dirs_monde = self._dirs @ np.asarray(R, dtype=float).T
@@ -159,6 +205,9 @@ class IsaacSimLidar(ILidar):
                          frame_id="world", timestamp_ns=int(t * 1e9))
 
     def scan(self) -> Optional[LidarScan]:
+        """Dernier balayage, refait seulement quand la période est écoulée
+        sur l'horloge du robot. None tant que initialize() n'a pas été
+        appelé."""
         if not self._initialized:
             return None
         t = self._horloge()
@@ -167,7 +216,8 @@ class IsaacSimLidar(ILidar):
         return self._dernier
 
     def source_gardien(self) -> Callable[[], Optional[Tuple[np.ndarray, float]]]:
-        """Adaptateur pour GardienProximite(source_scan=...)."""
+        """Adaptateur pour GardienProximite(source_scan=...) : rend une
+        fonction qui donne (points, horodatage en secondes), ou None."""
         def source():
             s = self.scan()
             if s is None:

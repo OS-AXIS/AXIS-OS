@@ -1,25 +1,33 @@
 """
-AXIS-OS — Caméra virtuelle Isaac Sim, via l'interface ICamera.
+AXIS-OS — Caméra virtuelle Isaac Sim, derrière l'interface ICamera.
 
-MÊME CONTRAT que G1RealSenseCamera : une app ou un service de
-perception ne voit AUCUNE différence entre une caméra simulée et la
-caméra réelle du robot. C'est tout l'intérêt d'avoir défini ICamera
-avant d'écrire le moindre driver — la chaîne perception peut être
+Isaac Sim est le simulateur robotique de NVIDIA. ICamera est l'interface
+commune à toutes les caméras d'AXIS-OS, définie dans la HAL (Hardware
+Abstraction Layer, la couche qui cache au reste du système les détails
+du matériel ; voir axis_os/hal/core/interfaces.py).
+
+Cette classe respecte le même contrat que G1RealSenseCamera, le driver
+de la caméra réelle du robot (une Intel RealSense) : une app ou un
+service de perception ne voit aucune différence entre une caméra simulée
+et la caméra réelle. C'est tout l'intérêt d'avoir défini ICamera avant
+d'écrire le moindre driver : la chaîne de perception peut être
 développée et validée entièrement en simulation, puis basculée sur le
 matériel en changeant une seule ligne d'instanciation.
 
-DIFFÉRENCE ASSUMÉE avec la RealSense : ici la capture est SYNCHRONE.
-Isaac Sim rend l'image sur demande, depuis le thread principal, et
-n'a pas de flux continu à consommer en arrière-plan. Le contrat
-ICamera est respecté (capture() ne bloque pas sur un flux réseau),
-mais le coût d'un rendu est réel — voir capture() pour le détail.
+Différence assumée avec la RealSense : ici, la capture est synchrone.
+Isaac Sim rend l'image à la demande, depuis le thread principal (le fil
+d'exécution principal du programme), et n'a pas de flux continu à
+consommer en arrière-plan. Le contrat ICamera est respecté (capture() ne
+bloque pas sur un flux réseau), mais le coût d'un rendu est bien réel :
+voir capture() pour le détail.
 
-CALIBRATION : Isaac Sim expose les paramètres de la caméra virtuelle
+Calibration : Isaac Sim expose les paramètres de la caméra virtuelle
 (focale, ouverture, résolution) ; get_intrinsics() les convertit en
-CameraIntrinsics. Une caméra simulée a une optique PARFAITE, donc
-aucune distorsion — c'est une différence réelle avec le matériel, et
-l'une des raisons pour lesquelles un modèle de perception validé en
-simulation peut échouer sur une vraie image.
+CameraIntrinsics, les paramètres intrinsèques de la caméra (focale en
+pixels, centre optique, distorsion). Une caméra simulée a une optique
+parfaite, donc aucune distorsion. C'est une différence réelle avec le
+matériel, et l'une des raisons pour lesquelles un modèle de perception
+validé en simulation peut échouer sur une vraie image.
 """
 from __future__ import annotations
 
@@ -35,7 +43,12 @@ from axis_os.hal.core.types import (
 class IsaacSimCamera(ICamera):
     """Caméra virtuelle attachée à un prim de la scène Isaac Sim.
 
-    Usage (THREAD PRINCIPAL uniquement, comme tout appel Isaac Sim) :
+    Un prim est un nœud de la scène USD (Universal Scene Description, le
+    format de scène d'Isaac Sim), désigné par un chemin comme
+    "/World/g1/head_camera".
+
+    À n'utiliser que depuis le thread principal, comme tout appel à Isaac
+    Sim. Exemple :
 
         cam = IsaacSimCamera("sim_head_rgb",
                              prim_path="/World/g1/head_camera",
@@ -58,17 +71,19 @@ class IsaacSimCamera(ICamera):
         depth: bool = False,
     ):
         """
-        focal_length_mm / horizontal_aperture_mm : valeurs par défaut
+        focal_length_mm, horizontal_aperture_mm : valeurs par défaut
             d'Isaac Sim (capteur 35 mm). Elles déterminent le champ de
             vision, donc la calibration rendue par get_intrinsics().
-        orientation : quaternion (w, x, y, z) du prim caméra. None =
-            orientation par défaut du prim.
+        orientation : orientation du prim caméra, donnée par un
+            quaternion (w, x, y, z), soit quatre nombres qui codent une
+            rotation. None garde l'orientation par défaut du prim.
+        depth : True pour une caméra de profondeur (voir ci-dessous).
         """
-        # depth=True : caméra de PROFONDEUR. capture() rend toujours
-        # l'image couleur ; capture_depth() rend la carte de distances,
-        # et n'est active que dans ce mode. Deux instances distinctes
-        # pour couleur et profondeur, à la MÊME position, comme sur une
-        # RealSense dont les deux flux sont alignés.
+        # depth=True crée une caméra de profondeur. capture() rend toujours
+        # l'image couleur ; capture_depth() rend la carte des distances et
+        # ne fonctionne que dans ce mode. On utilise deux instances
+        # distinctes pour la couleur et la profondeur, placées à la même
+        # position, comme sur une RealSense dont les deux flux sont alignés.
         self._depth = depth
         super().__init__(
             sensor_id,
@@ -108,22 +123,27 @@ class IsaacSimCamera(ICamera):
             self._camera = Camera(**kwargs)
             self._camera.initialize()
             if self._depth:
-                # La profondeur n'est PAS rendue par défaut : il faut
-                # activer l'annotateur correspondant. Sans lui,
+                # La profondeur n'est pas rendue par défaut : il faut
+                # activer l'annotateur correspondant (le module d'Isaac
+                # Sim qui extrait une donnée de chaque rendu). Sans lui,
                 # get_depth() rend None et la perception ne peut donner
-                # que des directions, jamais de distances — donc un
-                # robot qui ne sait pas quand s'arrêter devant un objet.
+                # que des directions, jamais de distances : le robot ne
+                # saurait pas quand s'arrêter devant un objet.
                 self._camera.add_distance_to_image_plane_to_frame()
             self._camera.set_focal_length(self._focal_mm / 10.0)
             self._camera.set_horizontal_aperture(self._aperture_mm / 10.0)
-            # Plan de coupe PROCHE à 1 cm. La valeur par défaut d'une caméra
-            # USD est 1 UNITÉ de scène, soit 1 m ici : tout ce qui est à
-            # moins d'un mètre était coupé, et on voyait l'INTÉRIEUR des
-            # objets, rendu en noir pur. Constaté sur GPU (T1) : faces des
-            # cartons tournées vers le robot noires (RGB 0,0,0) quel que
-            # soit l'éclairage, avec une frontière en biais là où le plan
-            # de coupe traversait un carton. Une caméra de tête doit voir
-            # ce qui est devant les mains.
+            # Plan de coupe proche à 1 cm : le rendu ignore tout ce qui est
+            # plus près de la caméra que ce plan. La valeur par défaut d'une
+            # caméra USD est 1 unité de scène, soit 1 m ici : tout ce qui
+            # était à moins d'un mètre était coupé, et on voyait
+            # l'intérieur des objets, rendu en noir pur. Constaté sur GPU
+            # (carte graphique) pendant l'essai Isaac Sim de tri de cartons
+            # (sim/validation/test_isaac_t1_tri_usine.py, décrit dans
+            # docs/demo_tri_usine.md) : les faces des cartons tournées vers
+            # le robot étaient noires (RGB 0,0,0) quel que soit l'éclairage,
+            # avec une frontière en biais là où le plan de coupe traversait
+            # un carton. Une caméra de tête doit voir ce qui est devant les
+            # mains.
             self._camera.set_clipping_range(0.01, 1000.0)
         except Exception as exc:        # noqa: BLE001
             self._last_error = f"création de la caméra : {exc}"
@@ -137,20 +157,26 @@ class IsaacSimCamera(ICamera):
         return HALStatus.OK
 
     def wait_until_ready(self, world, max_frames: int = 120) -> bool:
-        """Rend des images jusqu'à ce que la caméra produise VRAIMENT des
-        données, ou renonce après max_frames.
+        """Rend des images jusqu'à ce que la caméra produise vraiment des
+        données, ou renonce après max_frames images.
 
-        NÉCESSAIRE, et constaté en exécution réelle : Isaac Sim avertit
-        lui-même que « Annotator 'rgb' returned None or unexpected shape
-        — a few render frames may be required before data is available ».
-        Un nombre fixe de step() est un pari : l'annotateur peut mettre
-        plus ou moins de temps selon la scène, la charge GPU et le moment
-        où la caméra a été créée par rapport au reste.
+        Pourquoi c'est nécessaire (constaté en exécution réelle) : Isaac
+        Sim avertit lui-même que « Annotator 'rgb' returned None or
+        unexpected shape — a few render frames may be required before data
+        is available » : l'annotateur couleur peut ne rien produire
+        pendant les premières images. Un nombre fixe de step() est un
+        pari : l'annotateur peut mettre plus ou moins de temps selon la
+        scène, la charge du GPU et le moment où la caméra a été créée
+        par rapport au reste.
 
-        Le piège que cette méthode ferme : capture() rendait un tableau
-        de la BONNE TAILLE mais entièrement noir. Rien dans la forme des
-        données ne signalait l'anomalie — seul le contenu le trahissait.
-        On attend donc une image réellement non nulle, pas un compteur.
+        Le piège que cette méthode évite : capture() rendait un tableau de
+        la bonne taille mais entièrement noir. Rien dans la forme des
+        données ne signalait l'anomalie ; seul le contenu la trahissait.
+        On attend donc une image réellement non nulle (les 4096 premiers
+        octets ne sont pas tous à zéro), pas un nombre d'images.
+
+        Rend True dès que c'est le cas, False sinon ; le message affiché
+        conseille alors de vérifier qu'une lumière existe dans la scène.
         """
         for i in range(max_frames):
             world.step(render=True)
@@ -175,17 +201,18 @@ class IsaacSimCamera(ICamera):
     # ---- lecture ---------------------------------------------------------
 
     def capture_depth(self) -> Optional["np.ndarray"]:
-        """Carte de distances, en mètres, une valeur par pixel.
+        """Carte des distances, en mètres, une valeur par pixel.
 
-        « distance_to_image_plane » : la distance mesurée PERPENDICULAIREMENT
-        au plan de l'image, pas la distance en ligne droite jusqu'au point.
-        Pour un pixel au centre les deux coïncident ; sur les bords, la
-        distance vraie est plus grande. C'est exactement la convention
-        attendue par pixel_to_ray(), dont le rayon a z=1 : multiplier le
-        rayon par cette valeur donne directement la position 3D.
+        Convention « distance_to_image_plane » : la distance est mesurée
+        perpendiculairement au plan de l'image, et non en ligne droite
+        jusqu'au point. Pour un pixel au centre, les deux coïncident ; sur
+        les bords, la distance en ligne droite est plus grande. C'est
+        exactement la convention attendue par CameraIntrinsics.pixel_to_ray()
+        (axis_os/hal/core/types.py), dont le rayon a z = 1 : multiplier le
+        rayon par cette valeur donne directement la position 3D du point.
 
         Rend None si la caméra n'a pas été créée avec depth=True, ou si
-        aucune image n'est encore disponible — jamais une distance
+        aucune image n'est encore disponible : jamais une distance
         inventée.
         """
         if self._camera is None or not self._depth:
@@ -202,18 +229,18 @@ class IsaacSimCamera(ICamera):
     def capture(self) -> Optional[CameraFrame]:
         """Dernière image rendue par Isaac Sim, ou None.
 
-        Rend None tant qu'aucun `world.step(render=True)` n'a eu lieu :
-        la caméra ne produit une image qu'au rendu, et un rendu ne se
-        déclenche pas tout seul. Ce n'est pas une erreur — un capteur
-        qui n'a pas encore de donnée rend None, comme la RealSense
-        avant sa première image.
+        Rend None tant qu'aucun `world.step(render=True)` n'a eu lieu : la
+        caméra ne produit une image qu'au rendu, et un rendu ne se
+        déclenche pas tout seul. Ce n'est pas une erreur : un capteur qui
+        n'a pas encore de donnée rend None, comme la RealSense avant sa
+        première image.
 
-        ATTENTION : contrairement à G1RealSenseCamera, il n'y a pas de
-        thread de capture ici. Le coût d'un rendu Isaac Sim est porté
-        par le `step()` du thread principal, pas par cet appel — c'est
-        déjà comptabilisé dans les 4.26 ms de « pas de physique »
-        mesurés dans docs/latence_chemin_commande.md, qui deviennent
-        nettement plus élevés dès que render=True.
+        Attention : contrairement à G1RealSenseCamera, il n'y a pas ici de
+        thread de capture. Le coût d'un rendu Isaac Sim est porté par le
+        `step()` du thread principal, pas par cet appel. Il est déjà
+        compté dans les 4.26 ms de « pas de physique » mesurés dans
+        docs/latence_chemin_commande.md, une durée qui devient nettement
+        plus élevée dès que render=True.
         """
         if self._camera is None:
             return None
@@ -226,11 +253,13 @@ class IsaacSimCamera(ICamera):
         if rgba is None or getattr(rgba, "size", 0) == 0:
             return None
 
-        # Isaac Sim rend du RGBA ; ICamera/CameraFrame transportent du
-        # rgb8 pour rester alignés sur la RealSense et sur
-        # sensor_msgs/Image. On retire le canal alpha plutôt que
-        # d'inventer un encodage propre à la simulation, sinon tout
-        # consommateur devrait traiter deux formats selon la source.
+        # Isaac Sim rend du RGBA (rouge, vert, bleu, plus un canal alpha de
+        # transparence) ; ICamera et CameraFrame transportent du rgb8 (trois
+        # octets par pixel) pour rester alignés sur la RealSense et sur
+        # sensor_msgs/Image, le message d'image standard de ROS (Robot
+        # Operating System). On retire le canal alpha plutôt que d'inventer
+        # un encodage propre à la simulation : sinon, tout consommateur
+        # devrait traiter deux formats selon la source.
         import numpy as np
         rgb = np.asarray(rgba)[:, :, :3].astype(np.uint8)
         h, w = rgb.shape[0], rgb.shape[1]
@@ -244,13 +273,15 @@ class IsaacSimCamera(ICamera):
     def get_intrinsics(self) -> Optional[CameraIntrinsics]:
         """Calibration déduite des paramètres de la caméra virtuelle.
 
-        fx = largeur_px * focale / ouverture_horizontale. Le centre
-        optique est exactement au centre de l'image et la distorsion est
-        vide : une optique simulée est PARFAITE. C'est une différence
-        réelle avec le matériel — une vraie caméra a un centre décalé de
-        quelques pixels et une distorsion non nulle — et l'une des
-        raisons pour lesquelles une perception validée en simulation
-        peut échouer sur une image réelle.
+        fx = largeur_px * focale / ouverture_horizontale (fx est la focale
+        exprimée en pixels). Le centre optique est exactement au centre de
+        l'image et la distorsion est vide : une optique simulée est
+        parfaite. C'est une différence réelle avec le matériel (une vraie
+        caméra a un centre décalé de quelques pixels et une distorsion non
+        nulle), et l'une des raisons pour lesquelles une perception
+        validée en simulation peut échouer sur une image réelle.
+
+        Rend None tant que initialize() n'a pas réussi.
         """
         if not self._initialized:
             return None
@@ -264,24 +295,28 @@ class IsaacSimCamera(ICamera):
         )
 
     def look_at(self, target=(0.0, 0.0, 0.0), tolerance: float = 0.99) -> bool:
-        """Oriente la caméra vers un point du monde, et VÉRIFIE le résultat.
+        """Oriente la caméra vers un point du monde, puis vérifie le
+        résultat.
 
-        HISTORIQUE, constaté en exécution réelle : la première version
+        Historique, constaté en exécution réelle : la première version
         rendait True alors que la caméra regardait à 90° de la cible,
         selon (0, +1, 0) au lieu de (-0.99, 0, -0.26). Cause : la classe
         Camera d'Isaac Sim convertit les orientations entre trois
-        conventions d'axes (world, ros, usd), et on lui passait une
-        cible en déclarant la mauvaise. Aucune caméra n'a donc jamais
-        regardé le robot — d'où des images de ciel et de sol, et zéro
-        détection pour OWL-ViT, qui n'avait simplement rien à voir.
+        conventions d'axes (world, ros, usd), et on lui passait une cible
+        en déclarant la mauvaise convention. Aucune caméra n'a donc jamais
+        regardé le robot : d'où des images de ciel et de sol, et zéro
+        détection pour OWL-ViT (le modèle de détection d'objets utilisé
+        par la perception), qui n'avait simplement rien à voir.
 
-        Désormais : on calcule nous-mêmes l'orientation en convention
-        USD (la caméra regarde selon -Z, +Y vers le haut de l'image), on
-        la déclare explicitement comme telle, puis on RELIT la
-        transformation réellement composée dans la scène. True n'est
-        rendu que si l'axe de visée mesuré pointe vers la cible à
-        `tolerance` près (cosinus). Une réussite qui n'est pas vérifiée
-        n'est plus possible.
+        Désormais, on calcule nous-mêmes l'orientation en convention USD
+        (la caméra regarde selon -Z, +Y vers le haut de l'image), on la
+        déclare explicitement comme telle, puis on relit la transformation
+        réellement composée dans la scène. True n'est rendu que si l'axe
+        de visée mesuré pointe vers la cible à `tolerance` près (un
+        cosinus : 0.99 correspond à environ 8°). Si cette première méthode
+        échoue, une seconde est essayée (cible donnée en convention
+        monde). Une réussite non vérifiée n'est plus possible : en cas
+        d'échec, un message est affiché et la méthode rend False.
         """
         if self._camera is None:
             return False
@@ -294,6 +329,9 @@ class IsaacSimCamera(ICamera):
         if n < 1e-9:
             return False
         fwd = fwd / n
+        # Si la visée est presque verticale, le « haut » du monde (+Z) lui
+        # est parallèle et le produit vectoriel ci-dessous s'annulerait :
+        # on prend alors +Y comme référence.
         world_up = np.array([0.0, 0.0, 1.0])
         if abs(float(np.dot(fwd, world_up))) > 0.999:
             world_up = np.array([0.0, 1.0, 0.0])
@@ -301,10 +339,15 @@ class IsaacSimCamera(ICamera):
         right = right / np.linalg.norm(right)
         up = np.cross(right, fwd)
         # Colonnes = axes de la caméra exprimés dans le monde :
-        #   +X caméra = droite, +Y caméra = haut, +Z caméra = ARRIÈRE
+        #   +X caméra = droite, +Y caméra = haut, +Z caméra = arrière
         # (une caméra USD regarde selon -Z).
         q = _matrix_to_quat_wxyz(np.column_stack((right, up, -fwd)))
 
+        # Deux façons de poser l'orientation, essayées dans l'ordre ; le
+        # résultat de chacune est mesuré dans la scène avant d'être
+        # accepté.
+        # Une version d'Isaac Sim qui ne connaît pas l'un de ces arguments
+        # lève une exception : on passe alors à la suivante.
         tentatives = [
             ("orientation USD déclarée USD",
              lambda: self._camera.set_world_pose(
@@ -331,26 +374,31 @@ class IsaacSimCamera(ICamera):
 
     def optical_transform(self, parent: str = "world",
                           child: Optional[str] = None):
-        """Transformation `parent` <- repère OPTIQUE de la caméra, lue
-        dans la scène.
+        """Transformation `parent` <- repère optique de la caméra, lue dans
+        la scène.
 
-        NÉCESSAIRE, et découvert par la mesure : déclarer la caméra dans
-        l'arbre des repères avec sa seule POSITION, sans son
-        orientation, projette toutes les détections à l'horizontale. Une
-        caméra inclinée de 28° vers le bas plaçait ainsi un colis posé à
-        0.20 m de haut à 0.99 m — soit exactement sa propre hauteur. Les
-        coordonnées x et y restaient justes à 2 cm près, ce qui rend
-        l'erreur d'autant plus discrète.
+        Pourquoi c'est nécessaire (découvert par la mesure) : déclarer la
+        caméra dans l'arbre des repères (la hiérarchie des systèmes de
+        coordonnées du robot, voir axis_os/hal/core/frames.py) avec sa
+        seule position, sans son orientation, projette toutes les
+        détections à l'horizontale. Une caméra inclinée de 28° vers le bas
+        plaçait ainsi un colis posé à 0.20 m de haut à 0.99 m, soit
+        exactement la hauteur de la caméra elle-même. Les coordonnées x et
+        y restaient justes à 2 cm près, ce qui rendait l'erreur d'autant
+        plus discrète.
 
-        Sur le robot réel, cette pose doit venir de la cinématique (où
-        la caméra est montée, comment la tête est orientée), jamais
-        d'une valeur supposée.
+        Sur le robot réel, cette pose doit venir de la cinématique (où la
+        caméra est montée, comment la tête est orientée), jamais d'une
+        valeur supposée.
 
-        Le repère optique (x droite, y BAS, z avant) n'est pas celui du
-        prim caméra USD (x droite, y haut, z ARRIÈRE) : les deux
-        diffèrent d'une rotation d'un demi-tour autour de x, appliquée
-        ici. C'est la même distinction que camera_optical_to_link(), mais
-        mesurée sur la scène plutôt que supposée.
+        Le repère optique (x à droite, y vers le bas, z vers l'avant) n'est
+        pas celui du prim caméra USD (x à droite, y vers le haut, z vers
+        l'arrière) : les deux diffèrent d'un demi-tour autour de x, appliqué
+        ici. C'est la même distinction que camera_optical_to_link()
+        (axis_os/hal/core/frames.py), mais mesurée sur la scène plutôt que
+        supposée.
+
+        Rend None, avec un message, si la pose ne peut pas être lue.
         """
         try:
             import numpy as np
@@ -364,10 +412,14 @@ class IsaacSimCamera(ICamera):
             m = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
                 Usd.TimeCode.Default())
             t = m.ExtractTranslation()
-            # Axes du prim dans le monde (USD : vecteurs-lignes).
+            # Axes du prim exprimés dans le monde. USD travaille en
+            # vecteurs-lignes ; la transposée (.T) range chaque axe en
+            # colonne.
             ax = np.array([[m.TransformDir((1, 0, 0))[i] for i in range(3)],
                            [m.TransformDir((0, 1, 0))[i] for i in range(3)],
                            [m.TransformDir((0, 0, 1))[i] for i in range(3)]]).T
+            # Axes ramenés à une longueur de 1, pour retirer une éventuelle
+            # mise à l'échelle du prim.
             for c in range(3):
                 n = np.linalg.norm(ax[:, c])
                 if n > 1e-9:
@@ -385,9 +437,10 @@ class IsaacSimCamera(ICamera):
             return None
 
     def _measured_alignment(self, expected_fwd):
-        """Cosinus entre l'axe de visée RÉEL (relu dans la scène USD
-        composée) et la direction attendue. C'est la vérité terrain : on
-        ne se fie pas à ce qu'on a demandé, on mesure ce qui est."""
+        """Cosinus entre l'axe de visée réel (relu dans la scène USD
+        composée) et la direction attendue, ou None s'il ne peut pas être
+        lu. C'est la vérité terrain : on ne se fie pas à ce qu'on a
+        demandé, on mesure ce qui est."""
         try:
             import omni.usd
             import numpy as np
@@ -403,8 +456,8 @@ class IsaacSimCamera(ICamera):
 
     @property
     def horizontal_fov_deg(self) -> float:
-        """Champ de vision horizontal, utile pour vérifier qu'une scène
-        tient dans l'image avant de lancer une détection."""
+        """Champ de vision horizontal, en degrés. Utile pour vérifier
+        qu'une scène tient dans l'image avant de lancer une détection."""
         return math.degrees(
             2.0 * math.atan(self._aperture_mm / (2.0 * self._focal_mm))
         )
@@ -415,7 +468,11 @@ class IsaacSimCamera(ICamera):
 
 
 def _matrix_to_quat_wxyz(m):
-    """Matrice de rotation 3x3 (colonnes = axes) -> quaternion (w, x, y, z)."""
+    """Matrice de rotation 3x3 (colonnes = axes) -> quaternion (w, x, y, z).
+
+    La formule est choisie selon la trace de la matrice (la somme de sa
+    diagonale), puis selon le plus grand terme de cette diagonale, pour ne
+    jamais diviser par un nombre proche de zéro."""
     tr = float(m[0, 0] + m[1, 1] + m[2, 2])
     if tr > 0:
         s = math.sqrt(tr + 1.0) * 2.0

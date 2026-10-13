@@ -1,8 +1,15 @@
 """
 AXIS-OS — IsaacSimHAL
 =======================
-IRobotHAL pour simulateurs. Accepte n'importe quel ISimBackend.
-Swap Isaac→Webots : 1 ligne.
+Implémentation de IRobotHAL pour les simulateurs. La HAL (Hardware
+Abstraction Layer, couche d'abstraction matérielle) est l'interface par
+laquelle le reste d'AXIS-OS commande le robot, qu'il soit réel ou simulé.
+
+Cette classe accepte n'importe quel ISimBackend, le pont vers un
+simulateur précis : passer d'Isaac Sim (le simulateur de NVIDIA) à Webots
+(un autre simulateur robotique) ne demande de changer qu'une ligne. Sans
+backend fourni, elle utilise IsaacSimBackend en mode stub, une physique
+simplifiée qui fonctionne sans simulateur installé (voir backend.py).
 
 Licence : Apache 2.0
 """
@@ -23,12 +30,30 @@ from axis_os.hal.drivers.isaac_sim.backend import IsaacSimBackend
 
 class IsaacSimHAL(IRobotHAL):
     """
-    IRobotHAL pour Isaac Sim ou Webots.
+    IRobotHAL pour Isaac Sim ou Webots, avec les articulations du robot
+    Unitree G1 (le robot humanoïde d'Unitree Robotics).
 
     Usage :
-        hal = IsaacSimHAL()                                    # stub auto
-        hal = IsaacSimHAL(backend=WebotsBackend(...))          # Webots
-        hal = IsaacSimHAL(backend=IsaacSimBackend(force_stub=False))  # Isaac prod
+        hal = IsaacSimHAL()                            # stub automatique
+        hal = IsaacSimHAL(backend=WebotsBackend(...))  # Webots
+        # Vrai Isaac Sim :
+        hal = IsaacSimHAL(backend=IsaacSimBackend(force_stub=False))
+
+    Avec force_stub=False, le backend utilise Isaac Sim s'il est installé,
+    et ne se rabat sur le stub que s'il est absent ou ne se charge pas.
+
+    Limite connue, non corrigée : les noms d'articulations ne
+    correspondent pas entre cette classe et IsaacSimBackend. Cette classe
+    nomme les articulations comme l'URDF officiel du G1 (Unified Robot
+    Description Format, le fichier standard qui décrit les articulations
+    d'un robot), par exemple "left_knee_joint", via
+    _build_g1_joint_definitions(). Le stub d'IsaacSimBackend, lui,
+    connaît les clés de ISAAC_G1_JOINT_MAP, par exemple "left_knee" (voir
+    la docstring de cette table dans backend.py). Constaté en exécution
+    avec le backend par défaut : get_full_state() rend 0 articulation,
+    get_feedback() d'un actionneur rend None, et une commande en
+    position acceptée par le garde-fou revient en ERROR_COMM, car le
+    backend refuse le lot.
     """
 
     HAL_VERSION = "0.1.0"
@@ -67,6 +92,8 @@ class IsaacSimHAL(IRobotHAL):
         return HALStatus.OK
 
     def emergency_stop_all(self) -> HALStatus:
+        """Arrêt d'urgence (e-stop) : chaque actionneur simulé reçoit son
+        propre ordre d'arrêt d'urgence."""
         print(f"[AXIS-OS] ⚠️  E-STOP — {self.robot_id}")
         for a in self._actuators.values(): a.emergency_stop()
         return HALStatus.OK
@@ -78,14 +105,30 @@ class IsaacSimHAL(IRobotHAL):
         return dict(self._actuators)
 
     def get_imu(self, imu_id: str = "base_imu") -> Optional[IIMU]:
+        # Une seule centrale inertielle (IMU : accéléromètre et gyroscope)
+        # simulée : imu_id est ignoré.
         return self._imu
 
     def get_force_torque(self, sensor_id: str) -> Optional[IForceTorqueSensor]:
+        # Aucun capteur d'effort (force et couple) n'est simulé.
         return None
 
     def send_joint_commands(
         self, commands: Dict[str, ActuatorCommand]
     ) -> Dict[str, HALStatus]:
+        """Envoie un ensemble de commandes d'articulations, et rend un
+        statut par articulation.
+
+        Chaque commande passe d'abord par le garde-fou de sécurité de son
+        actionneur ; une commande refusée rend ERROR_LIMIT et n'est pas
+        envoyée. Une articulation inconnue rend ERROR_NOT_INIT, et une
+        commande que l'actionneur ne sait pas traduire pour le simulateur
+        rend NOT_SUPPORTED. Les commandes acceptées partent ensuite
+        ensemble, en un seul lot, vers le backend. Si l'envoi du lot
+        échoue, toutes celles qui avaient été acceptées passent en
+        ERROR_COMM. Un actionneur qui n'est pas un SimActuator traite
+        lui-même sa commande.
+        """
         results: Dict[str, HALStatus] = {}
         batch: list[SimCommand] = []
 
@@ -114,6 +157,16 @@ class IsaacSimHAL(IRobotHAL):
         return results
 
     def get_full_state(self) -> Dict[str, ActuatorFeedback]:
+        """État de toutes les articulations, lu en une fois sur le backend.
+
+        Le simulateur ne mesure pas de courant électrique : il est estimé
+        à partir du couple (abs(couple) / 10), comme dans SimActuator
+        (sim_common/sim_actuator.py). Une articulation que le backend ne
+        connaît pas est absente du résultat : avec le backend par défaut,
+        c'est le cas de toutes (voir la limite connue décrite dans la
+        docstring de la classe). Voir aussi les limites connues décrites
+        en tête de backend.py.
+        """
         all_sim = self._backend.get_all_joint_states()
         feedbacks = {}
         for jid, act in self._actuators.items():
