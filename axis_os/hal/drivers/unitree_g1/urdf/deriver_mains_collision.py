@@ -1,22 +1,32 @@
 """
-Dérive, de l'URDF OFFICIEL du G1 29 DOF, une copie où les mains en
-caoutchouc ont une géométrie de COLLISION.
+Dérive, de l'URDF officiel du G1 29 DOF (29 degrés de liberté,
+c'est-à-dire 29 articulations motorisées), une copie où les mains en
+caoutchouc ont une géométrie de collision.
 
-POURQUOI : dans g1_29dof_rev_1_0.urdf (unitree_ros), les liens
-`left_rubber_hand` et `right_rubber_hand` ont un visuel mais AUCUNE
-collision. Pour un simulateur, ce sont des fantômes : on les voit, rien
-ne les arrête. Constaté au test W3 : les mains TRAVERSAIENT le carton au
-lieu de le serrer. Dans l'URDF 23 DOF, la main fait partie du poignet et
-possède bien sa collision — l'omission est propre au fichier 29 DOF.
+Un URDF (Unified Robot Description Format) est le fichier XML standard
+qui décrit un robot. Chaque « lien » (pièce rigide) y a un visuel, la
+forme affichée, et éventuellement une collision, la forme dont le
+simulateur se sert pour calculer les contacts.
 
-CE QUE FAIT CE SCRIPT, et rien d'autre : pour chaque main sans
-collision, il ajoute une collision identique à son visuel (même maillage,
-même origine). Le simulateur en tire une enveloppe convexe. Aucune autre
-valeur n'est touchée — ni masses, ni limites, ni axes.
+Pourquoi ce script : dans g1_29dof_rev_1_0.urdf (dépôt officiel
+unitree_ros), les liens `left_rubber_hand` et `right_rubber_hand` ont un
+visuel mais aucune collision. Pour un simulateur, ce sont des fantômes :
+on les voit, mais rien ne les arrête. Constaté en simulation, lors de
+l'essai de prise d'un carton posé sur une table : les mains traversaient
+le carton au lieu de le serrer (voir docs/validation_port_carton.md).
+Dans l'URDF 23 DOF, la main fait partie du poignet et possède bien sa
+collision : l'omission est propre au fichier 29 DOF.
 
-L'URDF OFFICIEL N'EST PAS MODIFIÉ : il reste la source de vérité
-d'AXIS-OS. La copie dérivée est un artefact de SIMULATION, régénérable,
-et le vrai robot n'en a pas besoin — ses mains ont un volume physique.
+Ce que fait ce script, et rien d'autre : pour chaque main sans
+collision, il ajoute une collision identique à son visuel (même maillage
+3D, même origine). Le simulateur en tire une enveloppe convexe (la plus
+petite forme sans creux qui contient le maillage). Aucune autre valeur
+n'est touchée : ni masses, ni limites, ni axes.
+
+L'URDF officiel n'est pas modifié : il reste la source de vérité
+d'AXIS-OS. La copie dérivée est un fichier produit pour la simulation
+seulement, que l'on peut régénérer à tout moment ; le vrai robot n'en a
+pas besoin, puisque ses mains ont un volume physique.
 
     python3 deriver_mains_collision.py
       -> g1_29dof_rev_1_0_mains_collision.urdf
@@ -33,6 +43,9 @@ MAINS = ("left_rubber_hand", "right_rubber_hand")
 
 
 def deriver(source: Path = SOURCE, cible: Path = CIBLE) -> list:
+    """Écrit la copie dérivée dans `cible` et renvoie la liste des mains
+    auxquelles une collision a été ajoutée (vide si toutes en avaient
+    déjà une). Lève ValueError si une main n'a ni collision ni visuel."""
     arbre = ET.parse(source)
     ajoutees = []
     for lien in arbre.getroot().findall("link"):

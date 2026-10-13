@@ -1,12 +1,22 @@
 """
 AXIS-OS — Driver Unitree G1
 ==============================
-Implémentation concrète de IRobotHAL pour le Unitree G1.
-En simulation : actionneurs mockés (G1SimulatedActuator, ce fichier).
-En production : G1DDSActuator (voir g1_dds_actuator.py) — driver
-réel via le SDK officiel Unitree (unitree_sdk2py, protocole DDS),
-⚠️ non testé sur matériel physique, voir l'avertissement en tête de
-ce module.
+Implémentation concrète de IRobotHAL pour le robot humanoïde Unitree G1.
+Le HAL (Hardware Abstraction Layer, couche d'abstraction matérielle) est
+l'interface commune par laquelle le reste d'AXIS-OS commande un robot
+sans connaître son matériel ; ce fichier en fournit la version propre au
+G1.
+
+Deux modes de fonctionnement :
+  - en simulation, des actionneurs simulés (G1SimulatedActuator, défini
+    dans ce fichier) remplacent les moteurs ;
+  - sur le robot réel, G1DDSActuator (voir g1_dds_actuator.py) passe par
+    le SDK officiel Unitree (unitree_sdk2py, le kit de développement
+    logiciel du fabricant) et le protocole DDS (Data
+    Distribution Service, la messagerie temps réel par laquelle on
+    commande le G1). Attention : ce driver réel n'a encore jamais été
+    testé sur un robot physique (voir l'avertissement en tête de
+    g1_dds_actuator.py).
 
 Licence : Apache 2.0 (open-source)
 """
@@ -30,25 +40,36 @@ from axis_os.hal.core.motion_state import MotionStateTracker
 import time
 
 
-# Fichier URDF officiel Unitree (23 DOF) — voir urdf/README.md pour la
-# provenance, la licence (BSD 3-Clause), et le détail des écarts que
-# ce fichier a corrigés par rapport à l'ancien codage manuel (torque_max
-# sous-estimé jusqu'à 37% sur hanches/genoux, waist_roll inexistant
-# dans cette variante, coude déjà correct en un seul joint contrairement
-# à ce que la session précédente supposait).
+# Fichier URDF officiel du fabricant pour la variante 23 DOF (23 degrés
+# de liberté, c'est-à-dire 23 articulations motorisées). Un URDF (Unified
+# Robot Description Format) est le fichier XML standard qui décrit les
+# articulations d'un robot, leurs axes, leurs limites et sa géométrie.
+# Voir urdf/README.md pour sa provenance, sa licence (BSD 3-Clause) et le
+# détail des erreurs qu'il a permis de corriger par rapport à l'ancienne
+# description écrite à la main : couple maximal (torque_max) sous-estimé
+# jusqu'à 37 % sur les hanches et les genoux, articulation waist_roll qui
+# n'existe pas dans cette variante, et coude qui était déjà correct en une
+# seule articulation, contrairement à ce que supposait une version
+# antérieure du code.
 _G1_URDF_PATH = Path(__file__).parent / "urdf" / "g1_23dof_rev_1_0.urdf"
 
 
+# URDF officiel de la variante 29 DOF, de même provenance (voir
+# urdf/README.md).
 _G1_29DOF_URDF_PATH = Path(__file__).parent / "urdf" / "g1_29dof_rev_1_0.urdf"
 
 
 def build_g1_joint_definitions(variante: str = "23dof") -> List[JointDefinition]:
-    """Articulations d'une variante du G1, depuis l'URDF officiel.
+    """Articulations d'une variante du G1, lues dans l'URDF officiel.
 
     23dof : une articulation de taille, cinq par bras, mains en caoutchouc.
-    29dof : trois articulations de taille, sept par bras — la variante que
-            visent GR00T Whole-Body Control, les modèles GR00T et LeRobot
-            (docs/integration_gr00t_wbc.md).
+    29dof : trois articulations de taille, sept par bras. C'est la
+            variante que visent GR00T Whole-Body Control (la politique de
+            contrôle du corps entier de NVIDIA), les modèles GR00T et
+            LeRobot (bibliothèque de robotique de Hugging Face) ; voir
+            docs/integration_gr00t_wbc.md.
+
+    Toute autre valeur de `variante` lève ValueError.
     """
     if variante == "23dof":
         return _build_g1_joint_definitions()
@@ -61,42 +82,47 @@ def build_g1_joint_definitions(variante: str = "23dof") -> List[JointDefinition]
 
 def _build_g1_joint_definitions() -> List[JointDefinition]:
     """
-    23 joints du Unitree G1, chargés depuis le fichier URDF officiel
-    du fabricant (voir _G1_URDF_PATH) plutôt que recodés à la main.
+    Les 23 articulations du G1 23 DOF, chargées depuis le fichier URDF
+    officiel du fabricant (voir _G1_URDF_PATH) plutôt que recodées à la
+    main.
 
-    Remplace l'ancienne fonction qui construisait chaque JointDefinition
-    manuellement — approche abandonnée après la découverte (session du
-    2026-09-08) que le codage manuel comportait de vraies erreurs de
-    sécurité (limites de couple sous-estimées, pas seulement des noms
-    approximatifs) en plus des écarts déjà documentés sur le nombre de
-    joints du torse et du coude. Le fichier URDF du fabricant est
-    désormais l'unique source de vérité pour la géométrie et les
-    limites du G1 — voir urdf_loader.py pour le parseur et ses garanties
-    (rejet strict de tout joint actionné sans limites, par exemple).
+    Pourquoi : une version antérieure construisait chaque JointDefinition
+    à la main. Cette approche a été abandonnée le 2026-09-08, quand on a
+    découvert que ce codage manuel contenait de vraies erreurs de
+    sécurité (limites de couple sous-estimées, et pas seulement des noms
+    approximatifs), en plus des écarts déjà connus sur le nombre
+    d'articulations du torse et du coude. Le fichier URDF du fabricant est
+    désormais l'unique source de vérité pour la géométrie et les limites
+    du G1. Voir urdf_loader.py pour le parseur et ses garanties (par
+    exemple, le rejet strict de toute articulation motorisée sans
+    limites).
 
-    Lève URDFParseError si le fichier est absent/corrompu — volontaire :
-    un HAL qui ne peut pas charger sa propre définition de joints ne
-    doit jamais démarrer avec des valeurs par défaut silencieuses.
+    Lève URDFParseError si le fichier est absent ou corrompu. C'est
+    voulu : un HAL qui ne peut pas charger la définition de ses propres
+    articulations ne doit jamais démarrer avec des valeurs par défaut
+    silencieuses.
     """
     model = load_urdf(_G1_URDF_PATH)
     return [replace(j, group=_G1_JOINT_GROUPS[j.joint_id])
             for j in model.get_joints()]
 
 
-# Groupe fonctionnel de chaque articulation du G1, DÉCLARÉ ICI par le
+# Groupe fonctionnel de chaque articulation du G1, déclaré ici par le
 # driver. L'URDF décrit la géométrie et les limites, jamais le rôle
-# fonctionnel d'un joint — c'est une connaissance du robot, au même
-# titre que les conventions de signe de conventions.py.
+# fonctionnel d'une articulation : ce rôle est une connaissance du robot,
+# au même titre que les conventions de signe de conventions.py.
 #
-# Le SDK devinait auparavant ce rôle à partir de mots-clés anglais
-# ("shoulder", "knee"...). Conséquence sur le G1 lui-même :
-# waist_yaw_joint ne contenait aucun mot-clé, donc AUCUNE app ne
-# pouvait faire pivoter le torse, sauf via move_all(). Il est
-# désormais déclaré OTHER — toujours hors de move_arms/move_legs, ce
-# qui est correct (ce n'est ni un bras ni une jambe), mais
-# explicitement, et move_to_pose() le signale au lieu de l'ignorer.
+# Pourquoi le déclarer explicitement : le SDK des apps d'AXIS-OS
+# devinait auparavant ce rôle à partir de mots-clés anglais du nom
+# ("shoulder", "knee"...). Conséquence constatée sur le G1 :
+# waist_yaw_joint (rotation du torse) ne contenait aucun de ces
+# mots-clés, si bien qu'aucune app ne pouvait faire pivoter le torse,
+# sauf via move_all(). Il est désormais déclaré OTHER : il reste hors de
+# move_arms() et de move_legs(), ce qui est correct (ce n'est ni un bras
+# ni une jambe), mais de façon explicite, et move_to_pose() le signale
+# au lieu de l'ignorer.
 _G1_JOINT_GROUPS: Dict[str, JointGroup] = {
-    # Jambes — 12 joints
+    # Jambes : 12 articulations
     "left_hip_pitch_joint":       JointGroup.LOCOMOTION,
     "left_hip_roll_joint":        JointGroup.LOCOMOTION,
     "left_hip_yaw_joint":         JointGroup.LOCOMOTION,
@@ -111,7 +137,7 @@ _G1_JOINT_GROUPS: Dict[str, JointGroup] = {
     "right_ankle_roll_joint":     JointGroup.LOCOMOTION,
     # Torse — ni bras ni jambe
     "waist_yaw_joint":            JointGroup.OTHER,
-    # Bras — 10 joints
+    # Bras : 10 articulations
     "left_shoulder_pitch_joint":  JointGroup.MANIPULATION,
     "left_shoulder_roll_joint":   JointGroup.MANIPULATION,
     "left_shoulder_yaw_joint":    JointGroup.MANIPULATION,
@@ -125,9 +151,11 @@ _G1_JOINT_GROUPS: Dict[str, JointGroup] = {
 }
 
 
-# 29 DOF : les groupes du 23 DOF plus les six articulations nouvelles.
-# Taille en OTHER, comme waist_yaw : ni membre locomoteur, ni bras — le
-# groupe que la marche et les apps devront se partager explicitement.
+# Variante 29 DOF : les groupes du 23 DOF, plus les six articulations
+# propres à cette variante. Les nouvelles articulations de la taille
+# sont classées OTHER, comme waist_yaw : ni membre locomoteur, ni bras.
+# C'est le groupe que la marche et les apps devront se partager
+# explicitement.
 _G1_29DOF_JOINT_GROUPS: Dict[str, JointGroup] = {
     **_G1_JOINT_GROUPS,
     "waist_roll_joint":        JointGroup.OTHER,
@@ -140,23 +168,32 @@ _G1_29DOF_JOINT_GROUPS: Dict[str, JointGroup] = {
 
 
 class G1SimulatedActuator(IActuator):
-    """Mock actionneur G1 — pour simulation sans SDK physique."""
+    """Actionneur simulé d'une articulation du G1 (un « mock », c'est-à-dire
+    une imitation logicielle du moteur), pour la simulation sans le SDK
+    ni le robot physique."""
 
     def __init__(self, definition: JointDefinition):
         super().__init__(definition.joint_id, definition)
-        # Borne sur le delta de position (correctif C5, audit de
-        # sécurité) — même logique que G1DDSActuator, avec un kp de
-        # référence conservateur (40.0, cohérent avec le défaut de
-        # _DEFAULT_KP côté driver réel) puisque le simulé n'a pas de
-        # vrai contrôleur PD dont dériver cette valeur.
+        # Borne sur l'écart entre la position de consigne et la position
+        # mesurée. Pourquoi : un audit de sécurité a montré qu'en
+        # contrôle de position, le couple réellement produit par le
+        # moteur n'était borné par rien. Ce couple vaut à peu près l'écart
+        # de position multiplié par le gain kp du contrôleur PD
+        # (proportionnel-dérivé) intégré au moteur : un saut de consigne
+        # pourtant dans les limites pouvait donc dépasser le couple
+        # maximal. D'où position_delta_max = torque_max / kp, même logique
+        # que G1DDSActuator (détail : docs/audit_externe_2026-09-14.md).
+        # Le simulé n'ayant pas de vrai contrôleur PD dont tirer kp, il
+        # prend une valeur de référence prudente, 40.0, identique à la
+        # valeur par défaut de _DEFAULT_KP côté driver réel.
         limits_with_delta = replace(
             definition.limits,
             position_delta_max=definition.limits.torque_max / 40.0,
-            # current_is_measured=True UNIQUEMENT ici — ce simulé dérive
-            # bien son courant du couple simulé (voir get_feedback()
-            # ci-dessous), à la différence de G1DDSActuator où
-            # feedback.current vaut toujours 0.0 sur le G1 réel (voir
-            # JointLimits.current_is_measured pour le contexte complet).
+            # current_is_measured=True uniquement ici : ce simulé dérive
+            # réellement son courant du couple simulé (voir
+            # get_feedback() ci-dessous), alors que sur le G1 réel,
+            # G1DDSActuator reçoit toujours feedback.current = 0.0
+            # (contexte complet dans JointLimits.current_is_measured).
             current_is_measured=True,
         )
         self._guard       = JointSafetyGuard(definition.joint_id, limits_with_delta)
@@ -185,24 +222,27 @@ class G1SimulatedActuator(IActuator):
         return HALStatus.OK
 
     def send_command(self, command: ActuatorCommand, defer_publish: bool = False) -> HALStatus:
-        # defer_publish ignoré : pas de notion de publication groupée
-        # sur un bus partagé en simulation pure — voir IActuator.
-        # send_command() pour le contexte complet.
+        # defer_publish est ignoré : en simulation pure, il n'y a pas de
+        # bus partagé, donc pas de publication groupée à différer. Voir
+        # IActuator.send_command() pour le contexte complet.
         if self._state == ActuatorState.EMERGENCY_STOP:
             return HALStatus.ERROR_FAULT
 
         current_feedback = self.get_feedback()
 
-        # Trouvé par un audit de sécurité : check_feedback_health()
-        # existait déjà (détecte notamment TORQUE_OVERLOAD — couple
-        # mesuré > 110% du max, signe qu'un moteur force contre un
-        # obstacle, ex: un bras coincé) mais n'était appelée nulle
-        # part en dehors des tests. Le watchdog fait un contrôle
-        # voisin mais le classe seulement CRITICAL (pas FATAL, qui
-        # seul déclenche un e-stop) — un bras qui pousse contre un
-        # humain continuait donc de pousser. Ici, un TORQUE_OVERLOAD
-        # déclenche un arrêt d'urgence immédiat de CE joint avant même
-        # de traiter la nouvelle commande.
+        # Pourquoi contrôler la santé du moteur avant chaque commande : un
+        # audit de sécurité a montré que check_feedback_health() existait
+        # déjà (elle détecte notamment TORQUE_OVERLOAD, un couple mesuré
+        # supérieur à 110 % du maximum, signe qu'un moteur force contre
+        # un obstacle, par exemple un bras coincé), mais qu'elle n'était
+        # appelée nulle part en dehors des tests. Le watchdog (le
+        # superviseur qui surveille l'état du robot en continu) fait un
+        # contrôle voisin, mais le classe seulement CRITICAL, et non
+        # FATAL, le seul niveau qui déclenche un arrêt d'urgence
+        # (e-stop) : un bras qui poussait contre un humain continuait
+        # donc de pousser. Ici, une surcharge de couple (ou de courant)
+        # déclenche un arrêt d'urgence immédiat de cette articulation,
+        # avant même de traiter la nouvelle commande.
         if current_feedback is not None:
             health_violations = self._guard.check_feedback_health(current_feedback)
             for v in health_violations:
@@ -241,6 +281,10 @@ class G1SimulatedActuator(IActuator):
 
 
 class G1SimulatedIMU(IIMU):
+    """Centrale inertielle (IMU, le capteur qui mesure accélérations,
+    vitesses de rotation et orientation) simulée : elle décrit toujours un
+    robot immobile et droit (gravité seule, orientation neutre)."""
+
     def __init__(self):
         super().__init__("base_imu", SensorType.IMU)
 
@@ -267,7 +311,8 @@ class G1SimulatedIMU(IIMU):
 
 
 class UnitreeG1HAL(IRobotHAL):
-    """IRobotHAL complet pour le Unitree G1."""
+    """IRobotHAL complet pour le Unitree G1, en simulation ("sim") ou sur
+    le robot réel ("dds")."""
 
     HAL_VERSION = "0.1.0"
 
@@ -280,18 +325,24 @@ class UnitreeG1HAL(IRobotHAL):
         variante: str = "23dof",
     ):
         """
-        `backend` : "sim" (défaut, rétrocompatible — G1SimulatedActuator,
-        aucune dépendance externe) ou "dds" (matériel réel, G1DDSActuator
-        via unitree_sdk2py — voir g1_dds_actuator.py, ⚠️ non testé sur
-        matériel physique). Trou identifié par un audit de sécurité :
-        jusqu'ici AUCUN chemin de code ne permettait de construire un
-        UnitreeG1HAL avec le driver réel — il était instancié en dur sur
-        G1SimulatedActuator, sans option, rendant G1DDSActuator
-        totalement inatteignable malgré son existence.
+        `backend` : "sim" (par défaut, compatible avec l'existant :
+        G1SimulatedActuator, aucune dépendance externe) ou "dds" (robot
+        réel : G1DDSActuator via unitree_sdk2py, voir g1_dds_actuator.py ;
+        attention, jamais testé sur un robot physique).
 
-        `network_interface` et `domain_id` : requis uniquement si
-        `backend="dds"` — transmis tels quels à G1DDSHub (voir sa
-        docstring). Ignorés pour `backend="sim"`.
+        Pourquoi ce paramètre : un audit de sécurité a relevé qu'aucun
+        chemin de code ne permettait de construire un UnitreeG1HAL avec le
+        driver réel. La classe instanciait toujours G1SimulatedActuator,
+        sans option, si bien que G1DDSActuator existait mais restait
+        totalement inatteignable.
+
+        `network_interface` et `domain_id` : ne servent qu'avec
+        `backend="dds"` (network_interface y est alors obligatoire) et
+        sont transmis tels quels à G1DDSHub (voir sa docstring). Ignorés
+        avec `backend="sim"`.
+
+        `variante` : "23dof" (par défaut) ou "29dof", voir
+        build_g1_joint_definitions().
         """
         super().__init__(robot_id)
         if backend not in ("sim", "dds"):
@@ -313,11 +364,14 @@ class UnitreeG1HAL(IRobotHAL):
         self._actuators:  Dict[str, IActuator]  = {}
         self._imu:        Optional[IIMU]         = None
 
-        # MotionStateTracker branché ici — décision de conception actée :
-        # IRobotHAL le possède et l'instancie (composant générique, voir
-        # hal/core/motion_state.py), jamais un driver spécifique qui le
-        # créerait pour lui-même. Exposé via get_motion_tracker() pour
-        # que SafetyGuard et WatchdogSystem le consultent sans le dupliquer.
+        # Le MotionStateTracker (qui garde, pour chaque articulation, la
+        # dernière commande envoyée et la dernière mesure reçue) est
+        # branché ici. Décision de conception : c'est IRobotHAL qui le
+        # possède et l'instancie (le composant est générique, voir
+        # hal/core/motion_state.py), jamais un driver particulier qui le
+        # créerait pour lui-même. Il est
+        # exposé par get_motion_tracker() pour que SafetyGuard et
+        # WatchdogSystem le consultent sans le dupliquer.
         self._motion_tracker = MotionStateTracker(
             [jdef.joint_id for jdef in self._joint_defs]
         )
@@ -325,11 +379,15 @@ class UnitreeG1HAL(IRobotHAL):
     def initialize_all(self) -> HALStatus:
         print(f"\n[AXIS-OS] Initialisation Unitree G1 — id={self.robot_id} (backend={self._backend})")
 
-        # Validation de la table de conventions AVANT tout mouvement possible.
-        # Trou identifié par revue externe : sans ce check, un joint manquant
-        # ou un sign invalide (ex: 0.5 au lieu de ±1.0) ne serait détecté
-        # qu'au premier appel du normalizer sur ce joint précis — potentiellement
-        # jamais en test, potentiellement en plein mouvement en production.
+        # Validation de la table de conventions (sens et origine de chaque
+        # articulation, voir conventions.py) avant tout mouvement possible.
+        # Pourquoi : une revue extérieure du code a relevé que, sans ce
+        # contrôle, une articulation absente de la table ou un signe
+        # invalide (par exemple 0.5 au lieu de ±1.0) ne serait détecté
+        # qu'au premier appel du normaliseur (KinematicNormalizer, qui
+        # convertit les angles bruts du robot en angles normalisés) sur
+        # cette articulation précise : peut-être jamais en test, peut-être
+        # en plein mouvement en production.
         from .conventions import conventions_pour
         from .convention_validator import validate_convention_table
 
@@ -341,9 +399,10 @@ class UnitreeG1HAL(IRobotHAL):
             print("  [ERREUR] Table de conventions invalide — initialisation refusée.")
             return HALStatus.ERROR_FAULT
         if validation.non_verifiees and self._backend != "sim":
-            # Sur un VRAI robot, jamais : un signe non vérifié peut envoyer
-            # une articulation dans le sens opposé à celui demandé. C'est
-            # en simulation qu'on le vérifie, par la suite S2.
+            # Sur un robot réel, jamais : un signe non vérifié peut envoyer
+            # une articulation dans le sens opposé à celui demandé. Ce
+            # signe se vérifie en simulation, avec la suite de validation
+            # S2 (voir docs/campagne_validation_isaac.md).
             print(f"  [ERREUR] Conventions NON VÉRIFIÉES sur un robot réel : "
                   f"{validation.non_verifiees} — initialisation refusée. "
                   f"Lancer la suite S2 en simulation d'abord.")
@@ -367,11 +426,12 @@ class UnitreeG1HAL(IRobotHAL):
             self._actuators[jdef.joint_id] = act
 
         if self._backend == "dds":
-            # Pas d'IMU simulée en mode matériel réel — le vrai G1
-            # expose son IMU via G1DDSHub.read_imu_state(), pas via
-            # une classe IIMU séparée dans cette première version du
-            # driver. Documenté explicitement plutôt que de faire
-            # semblant avec une IMU simulée en contexte "réel".
+            # Pas d'IMU simulée en mode matériel réel : dans cette
+            # première version du driver, le vrai G1 expose sa centrale
+            # inertielle par G1DDSHub.read_imu_state(), et non par une
+            # classe IIMU séparée. Ce choix est documenté explicitement
+            # plutôt que de faire semblant avec une IMU simulée dans un
+            # contexte réel.
             self._imu = None
         else:
             self._imu = G1SimulatedIMU()
@@ -411,43 +471,51 @@ class UnitreeG1HAL(IRobotHAL):
         results = {}
         for jid, cmd in commands.items():
             if jid in self._actuators:
-                # defer_publish=True en mode dds — correctif d'un
-                # second audit de sécurité (après la correction
-                # initiale de C2) : publier après CHAQUE joint plutôt
-                # qu'une fois pour les 23 produisait des messages
-                # LowCmd_ intermédiaires incohérents (une partie des
-                # articulations sur la nouvelle consigne, l'autre sur
-                # l'ancienne) — voir G1DDSActuator.send_command() pour
-                # la justification physique complète. En mode "sim",
-                # G1SimulatedActuator ignore ce paramètre sans risque
-                # (pas de notion de publication groupée).
+                # defer_publish=True : en mode "dds", l'actionneur se
+                # contente de remplir le message commun, publié une seule
+                # fois plus bas. Pourquoi : un premier audit de sécurité
+                # avait montré qu'aucune commande n'atteignait jamais le
+                # robot, faute de publication sur le réseau DDS. Le
+                # premier correctif publiait après chaque articulation,
+                # plutôt qu'une seule fois pour les 23 ; un second audit
+                # a montré que cela produisait des messages LowCmd_
+                # intermédiaires incohérents. LowCmd_ est le message
+                # unique de commande bas niveau du G1, qui porte les
+                # consignes de tous les moteurs : publié en cours de
+                # remplissage, il mêle des articulations déjà sur la
+                # nouvelle consigne et d'autres encore sur l'ancienne.
+                # Voir G1DDSActuator.send_command() pour la justification
+                # physique complète, et CHANGELOG.md. En mode "sim",
+                # G1SimulatedActuator ignore ce paramètre sans risque (il
+                # n'y a pas de publication groupée).
                 status = self._actuators[jid].send_command(cmd, defer_publish=True)
-                # Enregistrement dans le tracker UNIQUEMENT si la
-                # commande a vraiment été acceptée — bug trouvé par un
-                # audit de sécurité (exécution réelle) : la version
-                # précédente enregistrait INCONDITIONNELLEMENT, malgré
-                # un commentaire affirmant le contraire ("reflète ce
+                # La commande n'est enregistrée dans le tracker que si
+                # elle a vraiment été acceptée. Pourquoi : un audit de
+                # sécurité, en exécutant le code, a trouvé que la version
+                # précédente l'enregistrait sans condition, malgré un
+                # commentaire qui affirmait le contraire (« reflète ce
                 # qui a effectivement été transmis... pas une commande
-                # hypothétique qui aurait pu être rejetée"). Une
+                # hypothétique qui aurait pu être rejetée »). Une
                 # commande rejetée par JointSafetyGuard (ERROR_LIMIT)
-                # était quand même enregistrée comme dernière commande
-                # du joint — un garde-fou de sécurité qui utiliserait
-                # cet historique (limite d'accélération basée sur le
-                # delta entre commandes successives) raisonnerait alors
-                # sur une référence falsifiée, pouvant soit déclencher
-                # un faux positif sur la commande légitime suivante,
-                # soit masquer une vraie violation.
+                # était donc quand même enregistrée comme dernière
+                # commande de l'articulation. Un garde-fou qui s'appuie
+                # sur cet historique (par exemple une limite
+                # d'accélération calculée sur l'écart entre commandes
+                # successives) raisonnait alors sur une référence
+                # faussée : il pouvait soit refuser à tort la commande
+                # légitime suivante, soit laisser passer une vraie
+                # violation.
                 if status == HALStatus.OK:
                     self._motion_tracker.record_command(jid, cmd)
                 results[jid] = status
             else:
                 results[jid] = HALStatus.ERROR_NOT_INIT
 
-        # Publication groupée UNIQUE, après avoir rempli le buffer pour
-        # les 23 joints — voir defer_publish ci-dessus. Aucune commande
-        # normale n'atteint le réseau DDS avant cette ligne ; seul
-        # emergency_stop() (sur chaque actionneur) publie immédiatement
-        # et indépendamment de ce chemin.
+        # Publication groupée unique, une fois le message (buffer) rempli
+        # pour toutes les articulations (voir defer_publish ci-dessus).
+        # Aucune commande normale n'atteint le réseau DDS avant cette
+        # ligne ; seul emergency_stop(), sur chaque actionneur, publie
+        # immédiatement et indépendamment de ce chemin.
         if self._backend == "dds" and self._dds_hub is not None:
             self._dds_hub.publish()
 
@@ -464,11 +532,12 @@ class UnitreeG1HAL(IRobotHAL):
 
     def get_motion_tracker(self) -> MotionStateTracker:
         """
-        Expose le tracker à qui doit le consulter — SafetyGuard (rate
-        limiting avant envoi) et WatchdogSystem (détection d'anomalie
-        après coup). Ni l'un ni l'autre ne le crée : IRobotHAL en reste
-        l'unique propriétaire, conformément à la décision de conception
-        actée (voir hal/core/motion_state.py).
+        Donne accès au tracker aux composants qui doivent le consulter :
+        SafetyGuard (limitation du rythme de variation des commandes, ou
+        « rate limiting », avant envoi) et WatchdogSystem (détection
+        d'anomalies après coup). Ni l'un ni l'autre ne le crée : IRobotHAL
+        en reste l'unique propriétaire, conformément à la décision de
+        conception décrite dans hal/core/motion_state.py.
         """
         return self._motion_tracker
 
@@ -487,17 +556,20 @@ class UnitreeG1HAL(IRobotHAL):
 
     def get_capabilities(self) -> CapabilitySet:
         """
-        Capacités réelles du G1 — humanoïde bipède avec bras
-        articulés, pas de roues ni de contrôle de vol. GRIPPER inclus
-        car le G1 dispose de mains capables de préhension (même si
-        AXIS-OS ne contrôle actuellement que 24 joints principaux,
-        sans le détail des doigts — voir backend.py IsaacSimBackend
-        pour cette limite déjà documentée ; déclarer GRIPPER ici
-        reste correct au niveau du ROBOT, indépendamment de ce
-        qu'AXIS-OS pilote effectivement aujourd'hui). CAMERA ajoutée
-        (oubli corrigé) : le G1 est équipé de série d'une caméra
-        frontale, indépendamment du fait qu'AXIS-OS n'expose pas
-        encore de driver de vision dédié pour l'utiliser.
+        Capacités réelles du G1 : humanoïde bipède avec bras articulés,
+        sans roues ni contrôle de vol.
+
+        Règle suivie : on décrit ce que le robot possède, et non ce
+        qu'AXIS-OS en pilote aujourd'hui. Ainsi :
+          - GRIPPER (préhension) est déclaré, car le G1 dispose de mains
+            capables de saisir, même si AXIS-OS ne pilote actuellement
+            que les articulations principales des membres (24 quand
+            cette règle a été écrite, 23 ou 29 aujourd'hui selon la
+            variante), sans le détail des doigts (limite déjà documentée
+            dans IsaacSimBackend, backend.py) ;
+          - CAMERA est déclarée (un oubli corrigé) : le G1 est équipé
+            de série d'une caméra frontale, même si AXIS-OS n'expose pas
+            encore de driver de vision dédié pour l'utiliser.
         """
         return CapabilitySet.from_iterable([
             RobotCapability.LEGS,
@@ -506,18 +578,19 @@ class UnitreeG1HAL(IRobotHAL):
             RobotCapability.IMU,
             RobotCapability.FORCE_TORQUE,
             RobotCapability.CAMERA,
-            # MICROPHONE / SPEAKER : même convention que CAMERA ci-dessus
-            # — on décrit ce que LE ROBOT possède, pas ce qu'AXIS-OS
-            # pilote aujourd'hui. Le G1 est équipé d'un micro et d'un
-            # haut-parleur intégrés.
+            # MICROPHONE / SPEAKER : même règle que CAMERA (voir la
+            # docstring) : on décrit ce que le robot possède, et non ce
+            # qu'AXIS-OS en pilote aujourd'hui. Le G1 est équipé d'un
+            # micro et d'un haut-parleur intégrés.
             #
             # Conséquence concrète, constatée : sans cette déclaration,
-            # le Play Store REFUSE d'installer toute app exigeant
-            # SPEECH_IN — ce qui était le comportement correct, puisque
-            # le robot ne déclarait aucun micro.
+            # le Play Store (la boutique d'apps d'AXIS-OS) refuse
+            # d'installer toute app qui exige SPEECH_IN (l'écoute de la
+            # parole par le micro). Ce refus était d'ailleurs le bon
+            # comportement, puisque le robot ne déclarait aucun micro.
             #
-            # À VÉRIFIER sur l'exemplaire réel avant mise en service :
-            # les configurations varient d'une version à l'autre, et une
+            # À vérifier sur l'exemplaire réel avant mise en service :
+            # l'équipement varie d'une version du robot à l'autre, et une
             # capacité déclarée à tort fait installer une app qui ne
             # pourra pas fonctionner.
             RobotCapability.MICROPHONE,
