@@ -1,26 +1,35 @@
 """
-Warehouse Inspector — première app AXIS-OS qui voit ET se déplace.
+Warehouse Inspector : la première app AXIS-OS qui voit et se déplace.
 
 Mission : chercher un colis, marcher jusqu'à lui, s'arrêter à bonne
-distance, et rapporter ce qui a été trouvé.
+distance et rapporter ce qui a été trouvé.
 
-CE QU'ELLE MONTRE : une app métier tient en quelques dizaines de lignes.
-Elle ne connaît ni la marche bipède, ni la politique apprise, ni les
-conventions de signe, ni la calibration de la caméra. Elle déclare une
-intention — « avance », « cherche un colis » — et l'OS fait le reste,
-en vérifiant chaque commande.
+Ce qu'elle montre : une app métier tient en quelques dizaines de lignes.
+Elle ignore tout de la marche bipède, de la politique apprise qui la
+produit (le modèle d'IA entraîné qui calcule les mouvements des jambes),
+des conventions de signe des axes et de la calibration de la caméra.
+Elle déclare une intention (« avance », « cherche un colis ») et l'OS
+fait le reste, en vérifiant chaque commande.
 
-TROIS RÈGLES QU'UNE APP N'A PAS À FAIRE RESPECTER ELLE-MÊME, et c'est
+Trois règles qu'une app n'a pas à faire respecter elle-même, et c'est
 tout l'intérêt :
-  - si elle plante, le robot s'arrête et reste debout (échéance de
-    fraîcheur du service de locomotion) ;
-  - si elle demande une vitesse hors domaine, elle est bornée ;
-  - si elle commande une articulation hors limites, c'est refusé.
+  - si elle plante, le robot s'arrête et reste debout : le service de
+    locomotion applique une échéance de fraîcheur, c'est-à-dire qu'une
+    consigne de marche que l'app cesse de renouveler retombe à zéro et le
+    robot s'immobilise en équilibre (voir
+    axis_os/services/locomotion/service.py) ;
+  - si elle demande une vitesse hors du domaine autorisé, cette vitesse
+    est bornée ;
+  - si elle commande une articulation au-delà de ses limites, la
+    commande est refusée.
 
-CE QU'ELLE FAIT, EN REVANCHE, ET QU'AUCUNE IA NE PEUT DEVINER : à quelle
+Ce qu'elle fait, en revanche, et qu'aucune IA ne peut deviner : à quelle
 distance s'arrêter d'un colis, combien de temps chercher avant
 d'abandonner, quoi faire si la distance est inconnue, que rapporter à la
-fin. C'est la connaissance métier — elle appartient à l'app.
+fin. C'est la connaissance métier, et elle appartient à l'app.
+
+Les positions utilisées ici sont exprimées dans le repère du robot :
+x vers l'avant, y vers la gauche, z vers le haut, origine au bassin.
 """
 from __future__ import annotations
 
@@ -32,50 +41,57 @@ from axis_os.store.sdk.manifest import (
     AppCategory, AppManifest, Capability, Permission, ResourceQuota,
 )
 
-CIBLE = "a cardboard box"
+CIBLE = "a cardboard box"    # description de l'objet cherché, en anglais
 DISTANCE_ARRET_M = 1.2
-"""Distance d'arrêt devant le colis.
+"""Distance d'arrêt devant le colis, en mètres.
 
-Choisie pour une raison PHYSIQUE, pas arbitraire : une caméra montée sur
-la tête et inclinée vers l'avant a une zone aveugle près des pieds. En
-dessous d'environ 1 m, le colis sort du champ et la mesure de distance
-se dégrade — constaté, un robot au contact du colis le mesurait encore à
-0.94 m, faute de le voir encore.
+Cette valeur tient à une raison physique, pas au hasard : la caméra,
+montée sur la tête et inclinée vers l'avant, a une zone aveugle près des
+pieds. En dessous d'environ 1 m, le colis sort du champ et la mesure de
+distance se dégrade. Constaté : un robot au contact du colis le mesurait
+encore à 0.94 m, parce qu'il ne le voyait plus.
 
-C'est aussi ce qu'on veut d'un robot d'inspection : se placer DEVANT un
+C'est aussi ce qu'on attend d'un robot d'inspection : se placer devant un
 colis pour le lire, pas le heurter. Un robot qui devrait le saisir aurait
-besoin d'une caméra de poignet ou d'un capteur de proximité — matériel
-que le G1 23 DOF n'a pas."""
+besoin d'une caméra au poignet ou d'un capteur de proximité, matériel que
+n'a pas le G1 23 DOF (l'humanoïde G1 d'Unitree dans sa version à 23
+degrés de liberté, c'est-à-dire 23 articulations motorisées)."""
 
 HAUTEUR_MIN_M = -0.60
-"""Hauteur minimale d'une détection valable, dans le repère du robot.
+"""Hauteur minimale d'une détection valable, en mètres, dans le repère
+du robot (origine au bassin).
 
-Le bassin étant vers 0.79 m, une détection sous -0.60 est au niveau du
-sol : c'est le plancher pris pour un carton, pas un colis. Un colis de
-60 cm posé au sol a sa face avant vers -0.5.
+Le bassin étant à environ 0.79 m du sol, une détection sous -0.60 m est
+au niveau du sol : c'est le plancher pris pour un carton, pas un colis.
+Pour comparaison, un colis de 60 cm posé au sol a sa face avant vers
+-0.5 m.
 
-Seuil resserré après un faux positif mesuré à -0.69 : le sol devant le
-robot, détecté comme carton avec une confiance de 0.129, a fait
-conclure à l'app qu'elle était arrivée SANS AVOIR BOUGÉ."""
+Le seuil a été resserré après un faux positif (une détection qui ne
+correspond à aucun objet réel) mesuré à -0.69 m : le sol devant le
+robot, détecté comme carton avec une confiance de 0.129, avait fait
+conclure à l'app qu'elle était arrivée sans avoir bougé."""
 
 CONFIRMATIONS_ARRIVEE = 3
 """Nombre d'images consécutives sous la distance d'arrêt avant de
-conclure.
+conclure à l'arrivée.
 
 Une seule image ne prouve rien : une détection isolée peut être un
-reflet, le sol, ou une boîte mal placée par le modèle. Exiger plusieurs
-images d'affilée coûte quelques dixièmes de seconde et élimine les
-conclusions sur un coup de chance. C'est de la logique métier — la
+reflet, le sol, ou une boîte mal placée par le modèle de détection.
+Exiger plusieurs images d'affilée coûte quelques dixièmes de seconde et
+évite de conclure sur un coup de chance. C'est de la logique métier : la
 perception ne peut pas savoir combien de preuves une tâche exige."""
-VITESSE_M_S = 0.4
+VITESSE_M_S = 0.4            # vitesse d'avance, m/s
 GAIN_CAP = 1.2               # correction de direction, rad/s par rad d'écart
-TIMEOUT_RECHERCHE_S = 20.0
-MEMOIRE_S = 2.0              # durée de confiance à une détection perdue
+TIMEOUT_RECHERCHE_S = 20.0   # durée maximale de la recherche, s
+MEMOIRE_S = 2.0              # durée de confiance à une détection perdue, s
 
 
 class WarehouseInspectorApp(RobotApp):
 
     def manifest(self) -> AppManifest:
+        # Le manifeste est la fiche que l'app présente à l'OS : identité,
+        # permissions demandées, matériel requis, quotas de ressources.
+        # L'OS refuse à l'app tout ce qui n'y est pas déclaré.
         return AppManifest(
             app_id="com.axisos.warehouse_inspector",
             name="Warehouse Inspector",
@@ -86,16 +102,20 @@ class WarehouseInspectorApp(RobotApp):
             category=AppCategory.LOGISTICS,
             permissions=[
                 Permission.SENSORS_CAMERA,
-                # Les DEUX sont nécessaires pour se déplacer : bouger les
-                # jambes, et changer de place dans le local.
+                # Les deux permissions suivantes sont nécessaires pour se
+                # déplacer : l'une autorise à bouger les jambes, l'autre
+                # à changer de place dans le local.
                 Permission.ACTUATORS_WRITE_LEGS,
                 Permission.LOCOMOTION_WALK,
             ],
             capabilities_required=[Capability.WALK, Capability.CAMERA_RGB],
-            # Le quota doit dépasser le délai de recherche, sinon le
-            # sandbox tue la mission avant qu'elle ne rende ses
-            # résultats — constaté : métriques vides après un
-            # TIMEOUT à la seconde près.
+            # La durée autorisée doit dépasser le délai de recherche,
+            # sinon le sandbox (le processus isolé dans lequel l'OS
+            # exécute chaque app) tue la mission avant qu'elle ne rende
+            # ses résultats. Constaté : avec une durée autorisée trop
+            # juste, la mission a été arrêtée pour dépassement de durée
+            # (TIMEOUT) à la seconde près, et ses métriques sont restées
+            # vides.
             quota=ResourceQuota(max_memory_mb=8192, max_runtime_s=300.0),
         )
 
@@ -104,18 +124,19 @@ class WarehouseInspectorApp(RobotApp):
         return True
 
     def on_stop(self, ctx: RobotContext) -> None:
-        # Toujours demander l'arrêt en partant. Même si l'OS le ferait de
-        # lui-même après expiration, une app propre ne laisse pas une
-        # consigne courir derrière elle.
+        # Toujours demander l'arrêt en partant. L'OS arrêterait le robot
+        # de lui-même une fois la consigne expirée, mais une app propre ne
+        # laisse pas une consigne courir derrière elle.
         ctx.stop_walking()
 
     def run_mission(self, ctx: RobotContext, params: Dict[str, Any]) -> MissionResult:
         t0 = ctx.now()
         cible = params.get("cible", CIBLE)
         stop_m = float(params.get("distance_arret_m", DISTANCE_ARRET_M))
-        # Réglable : en simulation, le temps réel avance plus vite que le
-        # temps simulé, et un délai calibré pour le robot réel expire
-        # avant que quoi que ce soit ait eu lieu.
+        # Délai réglable par paramètre : en simulation, le temps réel
+        # avance plus vite que le temps simulé, si bien qu'un délai
+        # calibré pour le robot réel expire avant que quoi que ce soit ait
+        # eu lieu.
         timeout_s = float(params.get("timeout_s", TIMEOUT_RECHERCHE_S))
 
         vue: Optional[Any] = None
@@ -129,17 +150,17 @@ class WarehouseInspectorApp(RobotApp):
             detections: List[Any] = ctx.look_for(cible)
 
             if not detections:
-                # MÉMOIRE DE COURTE DURÉE. Une détection est
+                # Mémoire de courte durée. La détection est
                 # intermittente : un colis lointain passe sous le seuil de
                 # confiance une image sur deux. Sans mémoire, l'app
-                # pivotait à chaque perte et perdait son cap — 20
+                # pivotait à chaque perte et perdait son cap : 20
                 # commandes d'approche seulement sur toute une mission,
-                # le reste passé à tourner sur place.
+                # le reste du temps passé à tourner sur place.
                 #
-                # Tant que la perte est récente, on continue sur le
-                # dernier cap connu. C'est de la connaissance métier :
-                # combien de temps faire confiance à une observation
-                # périmée dépend de la tâche, pas du robot.
+                # Tant que la perte est récente (moins de MEMOIRE_S), on
+                # continue sur le dernier cap connu. C'est de la
+                # connaissance métier : combien de temps se fier à une
+                # observation périmée dépend de la tâche, pas du robot.
                 maintenant = ctx.now()
                 if perdu_depuis is None:
                     perdu_depuis = maintenant
@@ -148,15 +169,17 @@ class WarehouseInspectorApp(RobotApp):
                     ctx.walk(VITESSE_M_S, 0.0, GAIN_CAP * self._cap_vers(vue))
                     approches += 1
                 else:
-                    # Perdu depuis trop longtemps : balayer le local.
+                    # Perdu depuis trop longtemps : on tourne sur place
+                    # pour balayer le local.
                     ctx.walk(0.0, 0.0, 0.5)
                 ctx.sleep(0.05)
                 continue
 
-            # Écarter les détections au niveau du SOL : à faible confiance,
-            # OWL-ViT désigne parfois le plancher. Avancer vers un
-            # « colis » qui est en réalité le sol fait tourner le robot en
-            # rond.
+            # Écarter les détections au niveau du sol : à faible
+            # confiance, OWL-ViT (le modèle qui détecte des objets décrits
+            # par une phrase libre) désigne parfois le plancher. Avancer
+            # vers un « colis » qui est en réalité le sol fait tourner le
+            # robot en rond.
             plausibles = [x for x in detections
                           if x.position_3d is None
                           or x.position_3d.z > HAUTEUR_MIN_M]
@@ -171,7 +194,7 @@ class WarehouseInspectorApp(RobotApp):
 
             if d.position_3d is None:
                 # Direction connue, distance inconnue : on s'oriente sans
-                # avancer. Avancer vers un objet dont on ignore la
+                # avancer, car avancer vers un objet dont on ignore la
                 # distance, c'est accepter de le heurter.
                 sans_distance += 1
                 cap = self._cap_vers(d)
@@ -188,14 +211,15 @@ class WarehouseInspectorApp(RobotApp):
                             f"{confirmations} images")
                     return self._resultat(ctx, t0, True, d, distance,
                                           approches, sans_distance, pertes)
-                # Pas encore assez sûr : on ralentit sans s'arrêter.
+                # Arrivée pas encore confirmée : on ralentit (30 % de la
+                # vitesse) sans s'arrêter.
                 ctx.walk(VITESSE_M_S * 0.3, 0.0, GAIN_CAP * self._cap_vers(d))
                 ctx.sleep(0.05)
                 continue
             confirmations = 0
 
-            # Avancer en corrigeant le cap : le colis n'est pas forcément
-            # droit devant.
+            # Avancer en corrigeant le cap, car le colis n'est pas
+            # forcément droit devant.
             cap = self._cap_vers(d)
             ctx.walk(VITESSE_M_S, 0.0, GAIN_CAP * cap)
             approches += 1
@@ -210,9 +234,10 @@ class WarehouseInspectorApp(RobotApp):
     def _cap_vers(d) -> float:
         """Écart angulaire horizontal vers l'objet, en radians.
 
-        La direction est déjà dans le repère du robot : x devant, y à
-        gauche. L'angle est donc atan2(y, x) — positif si l'objet est à
-        gauche, donc il faut tourner à gauche.
+        La direction est déjà exprimée dans le repère du robot (x devant,
+        y à gauche). L'angle vaut donc atan2(y, x) : positif quand l'objet
+        est à gauche, ce qui commande une rotation vers la gauche. Rend 0
+        si la direction est inconnue.
         """
         import math
         v = d.direction
@@ -220,6 +245,9 @@ class WarehouseInspectorApp(RobotApp):
 
     def _resultat(self, ctx, t0, ok, d, distance, approches, sans_distance,
                   pertes=0):
+        """Construit le résultat de mission. Les métriques qui dépendent
+        d'une détection (confiance, position, distance finale) ne sont
+        présentes que si elle existe."""
         metrics = {
             "approches": approches,
             "images_sans_distance": sans_distance,

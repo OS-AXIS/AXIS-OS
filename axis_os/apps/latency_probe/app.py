@@ -1,21 +1,29 @@
 """
-App de mesure : combien coûte UNE commande vue depuis le sandbox ?
+App de mesure : combien coûte une commande envoyée depuis le sandbox ?
 
-Répond à la seule question laissée ouverte par
-sim/validation/test_isaac_follower_latency.py :
-celui-ci mesurait 5.41 ms sur le chemin DIRECT (thread principal, sans
+Le sandbox est le processus isolé dans lequel l'OS exécute chaque app.
+Cette app répond à la seule question laissée ouverte par
+sim/validation/test_isaac_follower_latency.py : ce test mesurait en
+moyenne 5.41 ms par cycle sur le chemin direct (thread principal, sans
 sandbox). Il reste à savoir ce que coûtent, par-dessus :
 
-  - les deux multiprocessing.Queue entre le sous-process et le parent
-  - le thread HALBridgeServer qui les consomme
-  - l'attente du thread principal via MainThreadSimPump.submit()
+  - les deux multiprocessing.Queue (files d'attente entre processus de
+    Python) qui relient le sous-processus de l'app au processus de l'OS ;
+  - le thread HALBridgeServer qui les consomme, c'est-à-dire le pont qui
+    reçoit les commandes de l'app et les transmet à la HAL (la couche
+    d'abstraction matérielle, qui parle au robot) ;
+  - l'attente du thread principal via MainThreadSimPump.submit() : Isaac
+    Sim (le simulateur robotique de NVIDIA) ne peut être piloté que
+    depuis son thread principal, auquel les autres threads confient
+    leurs appels.
 
-Cette app ne fait RIEN d'autre que chronométrer des move_arms() depuis
-l'intérieur du sandbox. C'est la mesure de vérité : ce qu'une vraie app
-subit réellement, bout en bout.
+Cette app ne fait rien d'autre que chronométrer des move_arms() depuis
+l'intérieur du sandbox. C'est la mesure qui compte : ce qu'une vraie app
+subit, de bout en bout. Les résultats et leur interprétation sont dans
+docs/latence_chemin_commande.md.
 
 Volontairement une app séparée plutôt qu'une instrumentation de
-package_sorting : on mesure le COÛT DU CHEMIN, pas la performance d'une
+package_sorting : on mesure le coût du chemin, pas la performance d'une
 app métier dont les temps seraient mêlés à sa propre logique.
 """
 from __future__ import annotations
@@ -29,12 +37,15 @@ from axis_os.store.sdk.manifest import (
     AppCategory, AppManifest, Permission, ResourceQuota,
 )
 
-N_CALLS = 200
+N_CALLS = 200         # nombre de cycles mesurés
 DELTA = 0.01          # minuscule : on mesure le CHEMIN, pas le mouvement
-# Uniquement des joints de BRAS : l'app ne déclare que
-# ACTUATORS_WRITE_ARMS, et move_arms() filtre sur ces mots-clés
-# (shoulder/elbow/wrist). Un joint hors de cette famille serait
-# silencieusement écarté du routage, faussant la mesure.
+# Uniquement des articulations de bras : l'app ne déclare que la
+# permission ACTUATORS_WRITE_ARMS, et move_arms() écarte sans erreur
+# toute articulation hors du groupe des bras. Ce groupe est déclaré par
+# le driver (le pilote logiciel du robot) ou, à défaut, deviné par
+# mots-clés dans le nom : shoulder, elbow, wrist (voir _group_of dans
+# axis_os/store/sdk/app_base.py). Une articulation hors de cette famille
+# serait donc écartée en silence, ce qui fausserait la mesure.
 JOINTS = ["left_shoulder_pitch_joint", "left_elbow_joint",
           "right_shoulder_pitch_joint", "right_elbow_joint"]
 
@@ -69,6 +80,10 @@ class LatencyProbeApp(RobotApp):
         state_ms, move_ms, total_ms = [], [], []
         rejected = 0
 
+        # Chaque cycle : lire l'état des articulations, puis décaler de
+        # DELTA chaque articulation de JOINTS par rapport à sa position,
+        # en alternant le signe d'un cycle à l'autre pour que le bras
+        # oscille sans dériver.
         for i in range(N_CALLS):
             t0 = time.perf_counter()
             state = ctx.get_full_state()
@@ -94,10 +109,11 @@ class LatencyProbeApp(RobotApp):
             results = ctx.move_arms(cmds)
             t2 = time.perf_counter()
 
-            # getattr plutôt que s.name : si move_arms renvoie autre chose
-            # qu'un HALStatus pour un joint (None, str), un accès direct à
-            # .name ferait planter la mission sur un détail de forme, pas
-            # sur ce qu'on mesure.
+            # getattr plutôt que s.name : si move_arms renvoie pour une
+            # articulation autre chose qu'un HALStatus (le statut rendu
+            # par la HAL), par exemple None ou une chaîne, un accès direct
+            # à .name ferait planter la mission sur un détail de forme, et
+            # non sur ce qu'on mesure.
             rejected += sum(1 for s in results.values()
                             if getattr(s, "name", str(s)) != "OK")
             state_ms.append((t1 - t0) * 1000)
@@ -105,6 +121,8 @@ class LatencyProbeApp(RobotApp):
             total_ms.append((t2 - t0) * 1000)
 
         def stats(xs):
+            """Moyenne, médiane (p50), 95e centile (p95 : 95 % des mesures
+            sont en dessous) et maximum d'une série de durées en ms."""
             xs_sorted = sorted(xs)
             n = len(xs_sorted)
             return {

@@ -1,21 +1,26 @@
 """
-Apps FIGURANTES pour la démonstration D1 — pas des applications du
+Apps figurantes pour les démonstrations, et non des applications du
 catalogue.
 
-Elles existent pour montrer des REFUS : une app qui exige un organe
-absent, une qui tente ce qu'elle n'a pas déclaré, une qui occupe le
-robot. Aucune n'a d'usage réel.
+Elles servent à la démonstration « plusieurs apps sur un même robot »
+(sim/validation/test_isaac_d1_multiapp.py) et à la vidéo de l'app qui se
+fige (sim/video/video_v1_app_figee.py). Elles existent pour montrer des
+refus : une app qui exige un organe absent, une qui tente ce qu'elle n'a
+pas déclaré, une qui occupe le robot, une qui cesse de répondre. Aucune
+n'a d'usage réel.
 
-POURQUOI UN VRAI MODULE, et non des classes définies dans le script de
-démonstration : le sandbox exécute une app dans un SOUS-PROCESSUS, qui
-doit pouvoir importer sa classe. Une classe définie dans une fonction ne
-peut pas lui être transmise, et une classe définie dans le script
-principal oblige l'enfant à réimporter ce script — avec tout ce qu'il
-contient. Les deux ont échoué, en 0.3 s, pour des raisons sans rapport
-avec les scènes jouées.
+Pourquoi un vrai module, et non des classes définies dans le script de
+démonstration : le sandbox (le processus isolé dans lequel l'OS exécute
+chaque app) fait tourner l'app dans un sous-processus, qui doit pouvoir
+importer sa classe. Une classe définie dans une fonction ne peut pas lui
+être transmise, et une classe définie dans le script principal oblige le
+sous-processus à réimporter ce script, avec tout ce qu'il contient. Les
+deux approches ont échoué, en 0.3 s, pour des raisons sans rapport avec
+les scènes jouées.
 
-C'est une contrainte réelle du SDK, qui vaudra pour les développeurs
-tiers : **une app doit être un module importable**.
+C'est une contrainte réelle du SDK (le kit de développement des apps),
+qui vaudra aussi pour les développeurs tiers : **une app doit être un
+module importable** (voir docs/CREER_UNE_APP.md).
 """
 from axis_os.store.sdk.app_base import (
     MissionResult, RobotApp,
@@ -27,7 +32,13 @@ from axis_os.store.sdk.manifest import (
 
 
 class AppDeuxMains(RobotApp):
-    """Exige une préhension à DEUX mains — le G1 23 DOF ne l'a pas."""
+    """Exige une préhension à deux mains (capacité GRASP_DUAL), que le
+    G1 23 DOF n'a pas : l'installation doit être refusée faute de
+    matériel.
+
+    Le G1 23 DOF est l'humanoïde G1 d'Unitree dans sa version à 23 degrés
+    de liberté (23 articulations motorisées).
+    """
 
     def manifest(self):
         return AppManifest(
@@ -48,7 +59,13 @@ class AppDeuxMains(RobotApp):
 
 
 class AppCurieuse(RobotApp):
-    """Ne déclare que la caméra, mais essaie de faire marcher le robot."""
+    """Ne déclare que la caméra, mais essaie de faire marcher le robot.
+
+    Le SDK doit refuser la marche (PermissionError du SDK), faute de
+    permission déclarée dans le manifeste (la fiche que l'app présente à
+    l'OS). La mission réussit justement si la marche a été refusée ; la
+    métrique « a_pu_marcher » le confirme.
+    """
 
     def manifest(self):
         return AppManifest(
@@ -76,18 +93,20 @@ class AppCurieuse(RobotApp):
 
 
 class AppLente(RobotApp):
-    """Occupe le robot pendant plusieurs secondes."""
+    """Occupe le robot pendant six secondes, pour montrer qu'une deuxième
+    app ne peut pas lancer de mission tant que la première le tient."""
 
     def manifest(self):
         return AppManifest(
             app_id="com.demo.lente", name="App lente", version="1.0.0",
             author="Demo", author_email="d@d.d", description="Occupe.",
             category=AppCategory.RESEARCH, permissions=[],
-            # 8192 Mo comme toutes les vraies apps du projet : avec le
-            # défaut de 256 Mo, le processus enfant dépasse la limite
-            # dans l'environnement Python d'Isaac Sim, et la mission
-            # est tuée en 0.3 s — constaté sur cette app, alors qu'elle
-            # réussit en 6.01 s hors conteneur.
+            # 8192 Mo, comme toutes les vraies apps du projet. Avec le
+            # défaut de 256 Mo, le sous-processus de l'app dépasse la
+            # limite dans l'environnement Python d'Isaac Sim (le
+            # simulateur robotique de NVIDIA), et la mission est tuée en
+            # 0.3 s. Constaté sur cette app, alors qu'elle réussit en
+            # 6.01 s hors du conteneur Isaac Sim.
             quota=ResourceQuota(max_memory_mb=8192, max_runtime_s=30.0))
 
     def on_start(self, ctx): return True
@@ -101,20 +120,21 @@ class AppLente(RobotApp):
 
 
 class AppQuiSeFige(RobotApp):
-    """Fait marcher le robot, puis SE FIGE — comme une app qui plante.
+    """Fait marcher le robot, puis se fige, comme une app qui plante.
 
     Elle ne lève pas d'exception et ne se termine pas : elle cesse
     simplement de répondre, bloquée dans une attente sans fin. C'est le
     cas le plus difficile pour un système, parce que rien ne signale la
-    panne — l'app est toujours là, elle ne dit juste plus rien.
+    panne : l'app est toujours là, elle ne dit juste plus rien.
 
     Deux mécanismes d'AXIS-OS doivent alors agir, dans cet ordre :
-      1. l'échéance de fraîcheur du service de marche arrête le robot
-         EN ÉQUILIBRE, en une demi-seconde ;
-      2. le quota d'exécution du sandbox finit par tuer l'app.
+      1. l'échéance de fraîcheur du service de marche (une consigne qui
+         n'est plus renouvelée retombe à zéro) arrête le robot en
+         équilibre, en une demi-seconde ;
+      2. le quota de durée d'exécution du sandbox finit par tuer l'app.
     """
 
-    MARCHE_S = 10.0
+    MARCHE_S = 10.0              # durée de marche avant la panne, s
 
     def manifest(self):
         return AppManifest(
@@ -136,7 +156,8 @@ class AppQuiSeFige(RobotApp):
         while _t.monotonic() - t0 < self.MARCHE_S:
             ctx.walk(0.5, 0.0, 0.0)
             _t.sleep(0.1)
-        # LA PANNE : plus aucune consigne, plus aucune réponse.
+        # La panne : plus aucune consigne, plus aucune réponse, pendant
+        # une heure, bien au-delà du quota de 28 s.
         _t.sleep(3600.0)
         return MissionResult(success=True, mission_id="m",
                              app_id="com.demo.se_fige", duration_s=0.0)

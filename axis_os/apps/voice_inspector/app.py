@@ -1,10 +1,10 @@
 """
-Voice Inspector — le robot obéit à la voix.
+Voice Inspector : le robot obéit à la voix.
 
-« Va vers le carton. » Le robot écoute, comprend, et se déplace.
+« Va vers le carton. » Le robot écoute, comprend et se déplace.
 
-CE QUE CETTE APP DÉMONTRE, et qui n'est pas visible dans les autres :
-entre une phrase prononcée et un moteur qui tourne, il y a QUATRE
+Ce que cette app démontre, et qui n'est pas visible dans les autres :
+entre une phrase prononcée et un moteur qui tourne, il y a quatre
 étages, et chacun peut dire non.
 
     voix
@@ -15,14 +15,23 @@ entre une phrase prononcée et un moteur qui tourne, il y a QUATRE
       -> cette app (code écrit)    : décide quoi faire de l'intention
       -> JointSafetyGuard          : vérifie chaque commande
 
-Une phrase que personne n'a prévue ne produit AUCUN mouvement. Ce n'est
+Whisper est le modèle de reconnaissance vocale (d'OpenAI) qui transcrit
+la parole en texte. Une intention est une demande qu'une app déclare
+savoir traiter, reconnue à des groupes de mots-clés ; le registre
+d'intentions de l'OS confronte le texte transcrit aux intentions
+déclarées. JointSafetyGuard est le garde-fou de
+l'OS : il vérifie chaque commande d'articulation contre les limites de
+celle-ci et la refuse au besoin (axis_os/hal/safety/limits.py).
+
+Une phrase que personne n'a prévue ne produit aucun mouvement. Ce n'est
 pas un garde-fou ajouté après coup : c'est la seule chose que
 l'architecture permet. Un modèle de parole n'a aucun chemin vers un
 moteur.
 
 L'app déclare son vocabulaire au démarrage. Installer une app ajoute
-donc des mots que le robot comprend — sans réentraîner aucun modèle.
-C'est le modèle des intentions d'Android, appliqué à un robot.
+donc des mots que le robot comprend, sans réentraîner aucun modèle.
+C'est le principe des intentions d'Android (une app y déclare les
+actions qu'elle sait traiter), appliqué à un robot.
 """
 from __future__ import annotations
 
@@ -34,15 +43,19 @@ from axis_os.store.sdk.manifest import (
     AppCategory, AppManifest, Capability, Permission, ResourceQuota,
 )
 
-VITESSE_M_S = 0.4
-GAIN_CAP = 1.2
-DISTANCE_ARRET_M = 1.2
-MEMOIRE_S = 2.0
-HAUTEUR_MIN_M = -0.60
-CONFIRMATIONS_ARRIVEE = 3
+# Réglages de l'approche : mêmes valeurs, et mêmes raisons, que dans
+# warehouse_inspector/app.py, où chacune est expliquée.
+VITESSE_M_S = 0.4            # vitesse d'avance, m/s
+GAIN_CAP = 1.2               # correction de direction, rad/s par rad d'écart
+DISTANCE_ARRET_M = 1.2       # distance d'arrêt devant le colis, m
+MEMOIRE_S = 2.0              # durée de confiance à une détection perdue, s
+HAUTEUR_MIN_M = -0.60        # sous cette hauteur, la détection est le sol
+CONFIRMATIONS_ARRIVEE = 3    # images d'affilée avant de conclure
 
-# Vocabulaire de CETTE app. Chaque groupe doit être présent : il faut un
-# verbe ET un objet. « carton » seul ne fait rien, « va » seul non plus.
+# Vocabulaire de cette app. Chaque intention est décrite par : son nom,
+# ses groupes de mots, les paramètres transmis à l'app, une description.
+# Un mot de chaque groupe doit être présent : il faut un verbe ET un
+# objet. « carton » seul ne fait rien, « va » seul non plus.
 INTENTIONS = [
     ("aller_vers_colis",
      [["va", "aller", "avance", "rejoins", "approche"],
@@ -63,6 +76,8 @@ INTENTIONS = [
 class VoiceInspectorApp(RobotApp):
 
     def manifest(self) -> AppManifest:
+        # Le manifeste est la fiche que l'app présente à l'OS : identité,
+        # permissions demandées, matériel requis, quotas de ressources.
         return AppManifest(
             app_id="com.axisos.voice_inspector",
             name="Voice Inspector",
@@ -89,7 +104,7 @@ class VoiceInspectorApp(RobotApp):
                 declarees += 1
         ctx.log(f"Vocabulaire déclaré : {declarees}/{len(INTENTIONS)} intentions")
         # Une intention refusée signifie qu'une autre app l'a déjà
-        # déclarée : ce n'est pas une raison de ne pas démarrer, mais
+        # déclarée. Ce n'est pas une raison de ne pas démarrer, mais
         # l'app doit savoir qu'elle ne recevra pas ces phrases.
         return True
 
@@ -107,14 +122,18 @@ class VoiceInspectorApp(RobotApp):
         atteint = False
         distance_finale = None
 
+        # Boucle principale : écouter 2 s, puis, si une cible est en
+        # cours, poursuivre l'approche pendant une courte salve (voir
+        # _approcher), et recommencer.
         while ctx.now() - t0 < timeout_s and not atteint:
             intent = ctx.listen(duration_s=2.0)
 
             if intent is None:
-                # Cas NORMAL : silence, bruit, ou phrase hors
-                # vocabulaire. Le robot ne fait rien et continue
-                # d'écouter — il ne doit pas s'agiter parce qu'il a
-                # entendu parler autour de lui.
+                # Cas normal : silence, bruit, ou phrase hors
+                # vocabulaire. Le robot ne réagit pas et continue
+                # d'écouter : il ne doit pas s'agiter parce qu'il a
+                # entendu parler autour de lui. Une approche déjà en
+                # cours, elle, se poursuit.
                 ignorees += 1
                 if cible is None:
                     continue
@@ -157,12 +176,17 @@ class VoiceInspectorApp(RobotApp):
         )
 
     def _approcher(self, ctx, cible, stop_m):
-        """Une salve d'approche entre deux écoutes.
+        """Une salve d'approche entre deux écoutes, d'au plus 3 s.
 
-        Bornée dans le temps : le robot doit rester à l'écoute. Un robot
-        qui n'écoute plus pendant qu'il agit ne peut pas être arrêté à
-        la voix — et c'est précisément quand il bouge qu'on veut pouvoir
-        lui dire stop.
+        Pourquoi la borner dans le temps : le robot doit rester à
+        l'écoute. Un robot qui n'écoute plus pendant qu'il agit ne peut
+        pas être arrêté à la voix, et c'est précisément quand il bouge
+        qu'on veut pouvoir lui dire stop.
+
+        Même logique d'approche que warehouse_inspector/app.py (filtre du
+        sol, mémoire courte d'une détection perdue, confirmation de
+        l'arrivée sur plusieurs images). Rend (True, distance) si le colis
+        est atteint, sinon (False, None).
         """
         t_salve = ctx.now()
         perdu_depuis = None
@@ -170,10 +194,14 @@ class VoiceInspectorApp(RobotApp):
         vue = None
 
         while ctx.now() - t_salve < 3.0:
+            # Détections plausibles seulement : celles au niveau du sol
+            # sont écartées (voir HAUTEUR_MIN_M).
             dets: List[Any] = [d for d in ctx.look_for(cible)
                                if d.position_3d is None
                                or d.position_3d.z > HAUTEUR_MIN_M]
             if not dets:
+                # Colis perdu de vue : on garde le dernier cap pendant
+                # MEMOIRE_S, puis on tourne sur place pour le chercher.
                 maintenant = ctx.now()
                 if perdu_depuis is None:
                     perdu_depuis = maintenant
@@ -188,6 +216,8 @@ class VoiceInspectorApp(RobotApp):
             d = dets[0]
             vue = d
             if d.position_3d is None:
+                # Distance inconnue : on s'oriente sans avancer, pour ne
+                # pas risquer de heurter le colis.
                 ctx.walk(0.0, 0.0, GAIN_CAP * self._cap(d))
                 ctx.sleep(0.05)
                 continue
@@ -199,6 +229,8 @@ class VoiceInspectorApp(RobotApp):
                     ctx.stop_walking()
                     ctx.log(f"Arrivé à {dist:.2f} m du colis.")
                     return True, dist
+                # Arrivée pas encore confirmée : on ralentit sans
+                # s'arrêter.
                 ctx.walk(VITESSE_M_S * 0.3, 0.0, GAIN_CAP * self._cap(d))
             else:
                 confirmations = 0
@@ -209,6 +241,10 @@ class VoiceInspectorApp(RobotApp):
 
     @staticmethod
     def _cap(d) -> float:
+        """Écart angulaire horizontal vers l'objet, en radians, dans le
+        repère du robot (x devant, y à gauche) : positif si l'objet est à
+        gauche, 0 si la direction est inconnue. Voir _cap_vers dans
+        warehouse_inspector/app.py."""
         import math
         v = d.direction
         return math.atan2(v.y, v.x) if v is not None else 0.0
