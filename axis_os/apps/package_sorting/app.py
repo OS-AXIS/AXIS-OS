@@ -2,11 +2,14 @@
 AXIS-OS Robotics Play Store
 App : PackageSorting v1.0.0
 ================================
-Tri automatisé de colis sur ligne logistique.
-Première application tierce du Play Store AXIS-OS.
+Tri automatisé de colis sur une ligne logistique. C'est la première app
+tierce (publiée par un autre éditeur que le projet) du Play Store, la
+boutique d'apps d'AXIS-OS : chaque colis est saisi, puis déposé vers
+l'une de trois destinations (deux convoyeurs, ou retour à l'expéditeur).
 
 Auteur  : ACME Robotics Solutions
-Prix    : 2.00€/mission client (1.40€ net dev, 0.60€ commission)
+Prix    : le client paie 2.00 € par mission, dont 1.40 € nets pour le
+          développeur et 0.60 € de commission (30 %) pour la plateforme.
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE). L'auteur ci-dessus
 est fictif : cette app montre ce qu'un développeur tiers publierait sur le
 Play Store, où une app peut avoir sa propre licence.
@@ -44,6 +47,8 @@ class Package:
 
     @classmethod
     def simulate(cls, index: int) -> "Package":
+        """Fabrique un colis fictif, aux caractéristiques tirées au hasard
+        (simulation : aucun vrai colis n'est lu)."""
         return cls(
             package_id=  f"PKG-{index:04d}",
             weight_kg=   round(random.uniform(0.5, 15.0), 2),
@@ -53,7 +58,11 @@ class Package:
         )
 
 
-# Positions normalisées (positif = flexion — le normalizer gère les inversions G1)
+# Poses des bras, en radians, dans l'espace normalisé d'AXIS-OS : positif =
+# flexion, quel que soit le robot. Le KinematicNormalizer
+# (axis_os/hal/core/kinematic_normalizer.py) se charge des articulations du
+# G1 (le robot humanoïde Unitree G1) dont le sens est inversé par rapport à
+# cette convention. HOME est la pose de départ et de repos (tout à 0).
 HOME = {
     "left_shoulder_pitch_joint": 0.0, "left_shoulder_roll_joint": 0.0,
     "left_elbow_joint": 0.0, "left_wrist_roll_joint": 0.0,
@@ -71,11 +80,15 @@ DEPOSIT_CENTER = {"left_shoulder_pitch_joint": 0.6,  "left_elbow_joint": 0.5,
 
 
 def _cmds(pos_dict: Dict, velocity: float = 1.5) -> Dict[str, ActuatorCommand]:
+    """Transforme une pose (articulation → angle) en commandes de position,
+    toutes à la même vitesse."""
     return {jid: ActuatorCommand(ControlMode.POSITION, position=angle, velocity=velocity)
             for jid, angle in pos_dict.items()}
 
 
 class PackageSortingApp(RobotApp):
+    """App de tri de colis : saisit chaque colis d'un lot et le dépose
+    vers sa destination."""
 
     def manifest(self) -> AppManifest:
         return AppManifest(
@@ -97,11 +110,15 @@ class PackageSortingApp(RobotApp):
                 Permission.WATCHDOG_READ,
                 Permission.NETWORK_CLOUD,
             ],
-            # Capacité fonctionnelle réelle — un colis à la fois, avec
-            # UN SEUL bras (gauche OU droit selon la destination,
-            # jamais les deux simultanément — voir DEPOSIT_LEFT/
-            # DEPOSIT_RIGHT plus haut dans ce fichier). GRASP_DUAL
-            # serait un mensonge sur ce que fait vraiment cette app.
+            # Capacité fonctionnelle réellement exercée (ce que l'app doit
+            # savoir FAIRE) : un colis à la fois, saisi d'UN SEUL bras,
+            # gauche ou droit, jamais les deux ensemble (voir REACH_LEFT/
+            # REACH_RIGHT et DEPOSIT_LEFT/DEPOSIT_RIGHT plus haut dans ce
+            # fichier). Déclarer GRASP_DUAL (saisie à deux bras) serait
+            # mentir sur ce que fait vraiment cette app. Nuance :
+            # REACH_LEFT/REACH_RIGHT inclinent aussi un peu l'épaule
+            # opposée (0.2 rad), et la pose DEPOSIT_CENTER (retour
+            # expéditeur) bouge les deux bras.
             capabilities_required=[Capability.GRASP_SINGLE],
             hardware=HardwareRequirements(
                 required=[RobotCapability.ARMS, RobotCapability.IMU],
@@ -116,6 +133,9 @@ class PackageSortingApp(RobotApp):
 
     def on_start(self, ctx: RobotContext) -> bool:
         ctx.log("Initialisation PackageSorting...")
+        # Sans IMU (la centrale inertielle, qui mesure l'orientation et les
+        # accélérations du robot) disponible et qui répond, l'app refuse
+        # de démarrer.
         imu = ctx.get_imu()
         if imu is None:
             ctx.log("ERREUR : IMU non disponible.")
@@ -125,14 +145,17 @@ class PackageSortingApp(RobotApp):
             ctx.log("ERREUR : IMU ne répond pas.")
             return False
         ctx.log(f"IMU OK — gravity_z={imu_data.linear_acceleration.z:.2f} m/s²")
-        # move_to_pose() plutôt qu'un move_arms() direct — trouvé
-        # bloquant sur du vrai matériel : si le G1 démarre bras repliés
-        # (position réelle éloignée de HOME), JointSafetyGuard refuse à
-        # raison un saut de position trop grand en un seul appel
-        # (voir JointLimits.position_delta_max, correctif C5). Sans
-        # move_to_pose() pour interpoler depuis la position réelle,
-        # cette app ne pouvait jamais démarrer sur un vrai G1 dont les
-        # bras ne partent pas déjà de HOME.
+        # move_to_pose() plutôt qu'un move_arms() direct : le problème a
+        # été trouvé bloquant sur du vrai matériel. Si le G1 démarre bras
+        # repliés (position réelle éloignée de HOME), JointSafetyGuard (le
+        # garde-fou de sécurité de chaque articulation) refuse, à raison,
+        # un saut de position trop grand en un seul appel. C'est la borne
+        # JointLimits.position_delta_max, ajoutée après un audit de
+        # sécurité externe (voir CHANGELOG.md et
+        # docs/audit_externe_2026-09-14.md). Sans move_to_pose(), qui
+        # interpole par petits pas depuis la position réelle, cette app ne
+        # pouvait jamais démarrer sur un vrai G1 dont les bras ne partent
+        # pas déjà de HOME.
         reached = ctx.move_to_pose(HOME, duration_s=2.0)
         if not reached:
             ctx.log("ERREUR : impossible d'atteindre la position HOME.")
@@ -163,17 +186,18 @@ class PackageSortingApp(RobotApp):
                 errors.append(str(exc))
                 ctx.log(f"ERREUR {pkg.package_id}: {exc}")
 
-        # move_to_pose() plutôt qu'un move_arms() direct — même
-        # raisonnement que dans on_start() ci-dessus (voir sa
-        # docstring pour le contexte complet sur position_delta_max).
-        # Trouvé manquant ici précisément en testant cette app contre
-        # une vraie physique simulée (Isaac Sim) : 3 vraies violations
-        # POSITION_DELTA_LIMIT déclenchées en cours de mission,
-        # jamais visibles en tests unitaires purs (qui ne valident
-        # jamais un enchaînement RÉEL de positions successives). Le
-        # retour final vers HOME peut franchir un delta de 0.8 rad
-        # (ex: REACH_RIGHT.right_shoulder_pitch_joint = 0.8 → HOME =
-        # 0.0), largement au-delà de position_delta_max (0.625).
+        # move_to_pose() plutôt qu'un move_arms() direct, pour la même
+        # raison que dans on_start() ci-dessus (voir son commentaire sur
+        # position_delta_max). Cet appel manquait ici : on l'a constaté
+        # précisément en testant l'app contre une physique simulée
+        # réaliste (Isaac Sim, le simulateur physique de NVIDIA). Trois
+        # violations POSITION_DELTA_LIMIT réelles se déclenchaient en
+        # cours de mission, jamais visibles dans les tests unitaires purs,
+        # qui ne valident jamais un enchaînement RÉEL de positions
+        # successives. Le retour final vers HOME peut franchir un écart de
+        # 0.8 rad (par exemple REACH_RIGHT.right_shoulder_pitch_joint =
+        # 0.8 → HOME = 0.0), bien au-delà de position_delta_max
+        # (0.625 rad).
         ctx.move_to_pose(HOME, duration_s=1.0)
         ctx.log(f"Terminé : {sorted_count}/{batch_size} triés")
 
@@ -194,46 +218,49 @@ class PackageSortingApp(RobotApp):
 
     def on_stop(self, ctx: RobotContext) -> None:
         ctx.log("Arrêt — retour HOME")
-        # move_to_pose() — voir la docstring de run_mission() (juste
-        # avant son "Terminé : ...") pour le contexte complet sur
-        # cette même correction.
+        # move_to_pose(), pour la même correction : contexte complet dans
+        # le commentaire placé juste avant le « Terminé : ... » de
+        # run_mission().
         ctx.move_to_pose(HOME, duration_s=1.0)
 
     def _sort(self, ctx: RobotContext, pkg: Package, delay: float) -> None:
-        # move_to_pose() partout dans cette méthode — voir la
-        # docstring de run_mission() (juste avant son "Terminé : ...")
-        # pour le contexte complet. REACH_LEFT/RIGHT (0.8 rad) depuis
-        # HOME (0.0 rad), puis DEPOSIT_* (0.8 rad sur un autre joint)
-        # depuis REACH_* : deux sauts qui franchissent chacun
-        # position_delta_max (0.625) avec un move_arms() direct.
+        # move_to_pose() partout dans cette méthode (contexte complet dans
+        # le commentaire placé juste avant le « Terminé : ... » de
+        # run_mission()). Avec un move_arms() direct, deux sauts
+        # dépasseraient chacun position_delta_max (0.625 rad) : vers
+        # REACH_LEFT/RIGHT (0.8 rad) depuis HOME (0.0 rad), puis vers
+        # DEPOSIT_* (0.8 rad sur une autre articulation) depuis REACH_*.
         #
-        # duration_s FIXE (0.3s), jamais `delay` — trouvé nécessaire
-        # après un premier essai qui réutilisait `delay` (0.02 à 0.08s
-        # selon speed_mode) comme duration_s : avec step_s=0.05 par
-        # défaut, ça donne int(duration_s/step_s) = 1 SEUL pas
-        # d'interpolation pour delay <= 0.05 — revient exactement au
-        # saut direct qu'on cherche à éviter. `delay` régit le TEMPO
-        # de simulation de la mission (attente entre étapes), pas la
-        # durée d'un mouvement physique réel — les deux notions ne
-        # doivent jamais partager la même valeur.
+        # duration_s est FIXE (0.3 s), jamais égale à `delay`. Un premier
+        # essai réutilisait `delay` (0.02 à 0.08 s selon speed_mode) comme
+        # duration_s. Or, avec le pas par défaut step_s = 0.05 s,
+        # int(duration_s / step_s) ne donne qu'UN SEUL pas d'interpolation
+        # dès que delay <= 0.05 : on retombe exactement sur le saut direct
+        # qu'on cherche à éviter. `delay` règle le tempo simulé de la
+        # mission (l'attente entre deux étapes), pas la durée d'un
+        # mouvement physique réel : les deux notions ne doivent jamais
+        # partager la même valeur.
         #
-        # 0.3s délibérément CONSERVÉ, pas réduit pour accélérer les
-        # tests — revenu en arrière après une première tentative à
-        # 0.15s (2 pas) : le temps d'exécution d'un test n'est qu'un
-        # coût de développement, alors qu'un delta par pas plus grand
+        # 0.3 s est délibérément CONSERVÉ, et non réduit pour accélérer
+        # les tests : une première tentative à 0.15 s (2 pas) a été
+        # annulée (voir CHANGELOG.md). La durée d'un test n'est qu'un coût
+        # de développement, alors qu'un écart plus grand à chaque pas
         # entame la seule vraie marge de sécurité disponible. De plus,
-        # position_delta_max = torque_max / 40.0 dans ce HAL simulé
-        # (voir UnitreeG1HAL._build_g1_joint_definitions) utilise une
-        # constante UNIQUE de kp=40 pour tous les joints — le vrai
-        # driver (g1_dds_actuator.py::_DEFAULT_KP) a un kp variable
-        # par moteur (jusqu'à 100 sur certains genoux/chevilles), donc
-        # une limite RÉELLE plus serrée que celle mesurée ici en
-        # simulation sur ces joints précis. Un mouvement validé comme
-        # sûr en sim n'est pas automatiquement sûr sur le vrai G1 —
-        # raison de plus de garder de la marge maintenant. Un timeout
-        # de test plus généreux (pas une durée de mouvement réduite)
-        # est la bonne réponse si un test enchaînant de nombreuses
-        # missions dépasse son délai.
+        # dans le HAL simulé (le HAL est la couche d'abstraction matérielle,
+        # seul chemin vers les moteurs et les capteurs),
+        # position_delta_max = torque_max / 40.0 (voir
+        # G1SimulatedActuator dans axis_os/hal/drivers/unitree_g1/robot.py)
+        # repose sur une constante UNIQUE kp = 40 pour toutes les
+        # articulations ; kp est la raideur du régulateur PD
+        # (proportionnel-dérivé) intégré au moteur. Le pilote du vrai G1
+        # (_DEFAULT_KP dans g1_dds_actuator.py) a un kp propre à chaque
+        # moteur (jusqu'à 100 sur les genoux), donc une limite RÉELLE plus
+        # serrée sur ces articulations que celle mesurée ici en
+        # simulation. Un mouvement validé comme sûr en simulation n'est
+        # pas automatiquement sûr sur le vrai G1 : raison de plus de
+        # garder de la marge dès maintenant. Si un test qui enchaîne de
+        # nombreuses missions dépasse son délai, la bonne réponse est un
+        # délai de test plus généreux, pas une durée de mouvement réduite.
         MOVE_DURATION_S = 0.3
         reach = REACH_LEFT if pkg.side == "left" else REACH_RIGHT
         ctx.move_to_pose(reach, duration_s=MOVE_DURATION_S)

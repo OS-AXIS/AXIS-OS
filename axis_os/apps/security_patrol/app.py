@@ -1,31 +1,47 @@
 """
 AXIS-OS — SecurityPatrolApp
 ==============================
-Deuxième app Play Store, pensée pour tester le SDK sur un cas d'usage
-très différent de PackageSortingApp : planification de chemin autonome,
-pauses d'observation, interaction avec une personne détectée, et
-escalade d'alerte — plutôt que du tri d'objets déterministe.
+Ronde de sécurité nocturne autonome. C'est la deuxième app de référence
+du Play Store (la boutique d'apps d'AXIS-OS), écrite pour éprouver le SDK
+(le kit de développement des apps) sur un cas d'usage très différent de
+PackageSortingApp, l'app de tri de colis. Au lieu d'un tri d'objets
+déterministe, elle enchaîne un parcours autonome, des pauses
+d'observation, une interaction avec une personne détectée et, au besoin,
+l'escalade d'une alerte.
 
-Scénario (spécifié par l'utilisateur) :
-  - Se déclenche à une heure planifiée (23h par défaut, configurable)
-  - Génère un chemin de ronde ALÉATOIRE à travers des checkpoints connus
-  - S'arrête à intervalles pour "observer" (pause + scan)
-  - Si une personne est détectée : demande un badge
-      → badge valide (base connue)  → laisse passer, continue la ronde
-      → pas de badge / invalide      → déclenche une ALERTE
-  - L'alerte est envoyée via NETWORK_CLOUD (vers un serveur de sécurité),
-    PAS un appel police automatique — décision produit volontaire,
-    voir note de sécurité en bas de fichier.
+Scénario demandé pour cette app :
+  - La ronde se déclenche à une heure planifiée (23 h par défaut,
+    configurable).
+  - Elle suit un chemin ALÉATOIRE à travers des checkpoints (points de
+    passage) connus.
+  - Elle s'arrête à intervalles pour « observer » (pause puis scan).
+  - Si une personne est détectée, le robot lui demande son badge :
+      → badge valide (présent dans la base connue) : il la laisse
+        passer et continue la ronde ;
+      → pas de badge, ou badge invalide : il déclenche une ALERTE.
+  - L'alerte part vers un serveur de sécurité, grâce à la permission
+    NETWORK_CLOUD (l'accès réseau vers des services en ligne). Le robot
+    n'appelle jamais la police lui-même : c'est une décision produit
+    volontaire, expliquée dans la docstring de _send_alert().
 
-Portée volontairement simulée à ce stade (documentée honnêtement) :
-  - La détection de personne et la lecture de badge sont des STUBS
-    déterministes, exactement comme OpenVLAConnector — aucune caméra
-    ni capteur biométrique réel n'existe encore dans le HAL.
-  - Le "chemin aléatoire" est un ordre de checkpoints pré-définis,
-    pas une planification de trajectoire réelle (pas de Nav2/SLAM
-    branché à ce stade).
+Portée volontairement simulée à ce stade, et dite comme telle :
+  - La détection de personne et la lecture de badge sont des stubs
+    (des bouchons : simulations simples qui remplacent le vrai
+    composant), comme OpenVLAConnector, le connecteur vers un modèle
+    d'IA VLA (vision-langage-action), lui aussi simulé par défaut. Quand
+    cette app a été écrite, le HAL (la couche d'abstraction matérielle,
+    seul chemin vers les moteurs et les capteurs) n'offrait ni caméra
+    réelle ni capteur biométrique. Une caméra réelle existe désormais
+    (pilote RealSense du G1, lu par look_for() et describe_scene()), mais
+    cette app ne s'en sert pas encore ; aucun capteur biométrique n'existe.
+  - Le « chemin aléatoire » n'est qu'un ordre tiré au hasard parmi des
+    checkpoints prédéfinis, pas une vraie planification de trajectoire :
+    ni Nav2 (la pile de navigation de ROS 2, le cadre logiciel standard
+    de la robotique) ni un SLAM (cartographie et localisation
+    simultanées) ne sont branchés à ce stade.
 
-Licence : proposée en exemple public (comme PackageSortingApp)
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE). Proposée en
+exemple public, comme PackageSortingApp.
 """
 
 from __future__ import annotations
@@ -44,7 +60,8 @@ from axis_os.hal.core.types import ActuatorCommand, ControlMode
 from axis_os.hal.core.capabilities import RobotCapability
 
 
-# ── Base de badges connue (stub — remplacée par une vraie base en prod) ──
+# ── Base des badges connus ─────────────────────────────────────────────
+# Stub : en production, une vraie base de badges la remplacera.
 
 KNOWN_BADGES = {
     "BADGE-4471": "Agent d'entretien de nuit",
@@ -54,9 +71,12 @@ KNOWN_BADGES = {
 
 
 class AlertSeverity:
-    """Pas un Enum partagé volontairement : sévérité propre à CETTE app,
-    distincte de AlertSeverity du Watchdog (qui concerne le robot lui-même,
-    pas une alerte de sécurité de site)."""
+    """Gravité d'une alerte de sécurité du site.
+
+    Volontairement pas un Enum partagé : cette gravité est propre à CETTE
+    app. Elle est distincte de AlertSeverity du Watchdog (le superviseur
+    qui surveille l'état des moteurs, axis_os/hal/watchdog/events.py),
+    qui concerne le robot lui-même et non la sécurité du site."""
     INFO    = "INFO"
     WARNING = "WARNING"
     CRITICAL = "CRITICAL"
@@ -64,6 +84,8 @@ class AlertSeverity:
 
 @dataclass
 class PatrolCheckpoint:
+    """Point de passage de la ronde, avec ses coordonnées x, y sur le
+    plan du site."""
     checkpoint_id: str
     label:         str
     x: float
@@ -72,6 +94,8 @@ class PatrolCheckpoint:
 
 @dataclass
 class SecurityAlert:
+    """Alerte émise quand une personne détectée ne présente pas de badge
+    valide. badge_seen vaut None si elle n'a présenté aucun badge."""
     alert_id:    str
     severity:    str
     checkpoint:  str
@@ -88,9 +112,11 @@ class SecurityPatrolApp(RobotApp):
     """
     App de ronde de sécurité nocturne autonome.
 
-    Le manifest déclare des permissions plus larges que PackageSortingApp
-    (SENSORS_CAMERA, SENSORS_MICROPHONE, NETWORK_CLOUD) — c'est le premier
-    vrai test du système de permissions granulaires sur un cas d'usage
+    Son manifeste (la fiche qui déclare les permissions, les capacités,
+    les quotas et le prix de l'app) demande plus de permissions que
+    PackageSortingApp : caméra (SENSORS_CAMERA), micro
+    (SENSORS_MICROPHONE) et jambes (ACTUATORS_WRITE_LEGS). C'est le
+    premier vrai test du système de permissions fines sur un cas d'usage
     qui en a réellement besoin.
     """
 
@@ -106,12 +132,13 @@ class SecurityPatrolApp(RobotApp):
 
     def __init__(self):
         self._alerts: List[SecurityAlert] = []
-        self._rng = random.Random()  # instance dédiée, jamais random global
+        self._rng = random.Random()  # générateur propre, jamais random global
 
     def on_start(self, ctx: RobotContext) -> bool:
         ctx.log("SecurityPatrolApp démarrée — vérification hardware")
-        # Permissions déjà vérifiées par le Play Store à l'installation ;
-        # on_start confirme juste que le contexte est opérationnel.
+        # Les permissions ont déjà été vérifiées par le Play Store à
+        # l'installation : on_start() se contente de confirmer que le
+        # contexte est opérationnel.
         return True
 
     def on_stop(self, ctx: RobotContext) -> None:
@@ -126,9 +153,14 @@ class SecurityPatrolApp(RobotApp):
         self, checkpoints: List[PatrolCheckpoint], seed: Optional[int] = None
     ) -> List[PatrolCheckpoint]:
         """
-        Génère un ordre aléatoire de checkpoints. Toujours commence par
-        'entrance' (point de départ logique du robot), le reste est
-        mélangé — évite qu'un rôdeur apprenne un horaire de passage fixe.
+        Tire un ordre de passage aléatoire par les checkpoints.
+
+        Pourquoi l'aléatoire : avec un parcours fixe, un rôdeur pourrait
+        apprendre l'horaire de passage du robot à chaque endroit. Seul le
+        départ ne change pas : la ronde commence toujours par 'entrance',
+        point de départ logique du robot, et le reste est mélangé. Une
+        graine (seed) rend l'ordre reproductible, par exemple pour
+        rejouer un test.
         """
         rng = random.Random(seed) if seed is not None else self._rng
         start = [c for c in checkpoints if c.checkpoint_id == "entrance"]
@@ -136,25 +168,29 @@ class SecurityPatrolApp(RobotApp):
         rng.shuffle(rest)
         return start + rest
 
-    # ── Détection et interaction (stub déterministe) ────────────────
+    # ── Détection et interaction (stubs simulés) ────────────────────
 
     def _scan_for_person(self, ctx: RobotContext, checkpoint: PatrolCheckpoint) -> bool:
         """
-        STUB : simule une détection de présence humaine.
-        En production, ceci utiliserait SENSORS_CAMERA (vision) et/ou
-        SENSORS_MICROPHONE. Ici, comportement déterministe simple pour
-        rester testable sans dépendance externe.
+        Stub : simule la détection d'une présence humaine.
+
+        En production, cette méthode utiliserait la caméra
+        (SENSORS_CAMERA, vision) et/ou le micro (SENSORS_MICROPHONE).
+        Ici, une règle simple, sans dépendance externe, pour rester
+        testable : un tirage pseudo-aléatoire sur self._rng. Attention :
+        la graine (seed) de la mission ne fixe que l'ordre du chemin, pas
+        ce tirage.
         """
-        # Détection simulée : 1 checkpoint sur 4 en moyenne a "quelqu'un"
+        # Détection simulée : en moyenne, 1 checkpoint sur 4 a « quelqu'un ».
         return self._rng.random() < 0.25
 
     def _request_badge(self, ctx: RobotContext, checkpoint: PatrolCheckpoint) -> Optional[str]:
         """
-        STUB : simule la demande de badge à la personne détectée.
-        Retourne le badge présenté, ou None si la personne ne répond pas.
+        Stub : simule la demande de badge à la personne détectée.
+        Rend le badge présenté, ou None si la personne ne répond pas.
         """
-        # Simule 3 scénarios : badge valide (60%), pas de réponse (20%),
-        # badge invalide (20%)
+        # Trois scénarios simulés : badge valide (60 %), pas de réponse
+        # (20 %), badge invalide (20 %).
         roll = self._rng.random()
         if roll < 0.60:
             return self._rng.choice(list(KNOWN_BADGES.keys()))
@@ -173,7 +209,7 @@ class SecurityPatrolApp(RobotApp):
         mission_id = str(uuid.uuid4())[:8].upper()
 
         checkpoints = params.get("checkpoints", self.DEFAULT_CHECKPOINTS)
-        seed        = params.get("seed", None)  # utile pour rejouer un test
+        seed        = params.get("seed", None)  # rejouer le même chemin
 
         path = self._generate_random_path(checkpoints, seed=seed)
         ctx.log(f"Ronde {mission_id} — chemin généré : "
@@ -186,12 +222,14 @@ class SecurityPatrolApp(RobotApp):
         try:
             for checkpoint in path:
                 ctx.log(f"→ Arrivée à {checkpoint.label} ({checkpoint.checkpoint_id})")
-                # Déplacement réel vers le checkpoint — exerce vraiment
-                # ACTUATORS_WRITE_LEGS (pas seulement déclarée dans le
-                # manifest sans jamais être utilisée). La navigation
-                # complète (chemin, évitement d'obstacle) reste hors-scope
-                # sans Nav2 branché — ceci n'est qu'une commande de posture
-                # symbolique par checkpoint pour exercer le chemin HAL réel.
+                # Déplacement réel vers le checkpoint. Il exerce vraiment la
+                # permission ACTUATORS_WRITE_LEGS, au lieu de la déclarer
+                # dans le manifeste sans jamais s'en servir. La navigation
+                # complète (calcul du chemin, évitement d'obstacles) reste
+                # hors de portée tant que Nav2 n'est pas branché : ce n'est
+                # qu'une commande de posture symbolique à chaque
+                # checkpoint, pour passer par le vrai chemin de commande du
+                # HAL.
                 ctx.move_legs({
                     "left_hip_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.05),
                     "right_hip_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.05),
@@ -199,7 +237,8 @@ class SecurityPatrolApp(RobotApp):
 
                 checkpoints_visited += 1
 
-                # Pause d'observation — comportement demandé explicitement
+                # Pause d'observation, demandée explicitement par le
+                # scénario. Pour l'instant, elle n'est que journalisée.
                 ctx.log(f"  Pause d'observation à {checkpoint.label}")
 
                 if self._scan_for_person(ctx, checkpoint):
@@ -250,26 +289,31 @@ class SecurityPatrolApp(RobotApp):
 
     def _send_alert(self, ctx: RobotContext, alert: SecurityAlert) -> None:
         """
-        Envoie l'alerte vers le serveur de sécurité (NETWORK_CLOUD).
+        Transmet l'alerte au serveur de sécurité (permission NETWORK_CLOUD).
 
-        Décision produit volontaire : cette app N'APPELLE JAMAIS
-        automatiquement les secours ou la police elle-même. Elle
-        transmet l'alerte à un serveur de sécurité qui, lui, décide
-        de l'escalade (notification humaine, appel autorités, etc.).
-        Un robot autonome qui déclenche directement une intervention
-        d'urgence sans validation humaine est un risque de sécurité
-        et de responsabilité légale trop grand pour cette version.
+        Décision produit volontaire : cette app n'appelle JAMAIS
+        d'elle-même les secours ni la police. Elle transmet l'alerte à un
+        serveur de sécurité, et c'est lui qui décide de l'escalade
+        (prévenir une personne, appeler les autorités, etc.). Un robot
+        autonome qui déclenche directement une intervention d'urgence,
+        sans validation humaine, représente un risque de sécurité et de
+        responsabilité juridique trop grand pour cette version.
+
+        Limite actuelle : l'envoi n'est que journalisé (voir le
+        commentaire ci-dessous).
         """
         ctx.log(f"  → Alerte transmise au serveur de sécurité : {alert.alert_id}")
-        # En production : ctx.send_cloud_event(alert) — méthode qui
-        # n'existe pas encore dans RobotContext, voir notes de fin de session.
+        # En production : ctx.send_cloud_event(alert). Cette méthode
+        # n'existe pas encore dans RobotContext ; d'ici là, l'alerte est
+        # seulement inscrite dans le journal de mission et dans
+        # self._alerts.
 
     @property
     def alerts(self) -> List[SecurityAlert]:
         return list(self._alerts)
 
 
-# ── Manifest ─────────────────────────────────────────────────────────
+# ── Manifeste ────────────────────────────────────────────────────────
 
 SECURITY_PATROL_MANIFEST = AppManifest(
     app_id="com.axisos.security_patrol",
@@ -286,6 +330,10 @@ SECURITY_PATROL_MANIFEST = AppManifest(
     ),
     category=AppCategory.SECURITY,
 
+    # NETWORK_CLOUD n'est pas encore vérifiée à l'exécution : la sandbox
+    # (le processus isolé où tourne l'app) ne filtre pas le réseau. C'est
+    # une faiblesse connue de l'isolation des apps, décrite avec le plan
+    # prévu pour la fermer dans docs/isolation_apps.md.
     permissions=[
         Permission.ACTUATORS_READ,
         Permission.ACTUATORS_WRITE_LEGS,   # se déplacer entre checkpoints
@@ -296,17 +344,24 @@ SECURITY_PATROL_MANIFEST = AppManifest(
         Permission.NETWORK_CLOUD,             # transmission d'alerte
     ],
 
-    # Capacités fonctionnelles réelles — WALK (se déplace entre
-    # checkpoints, ACTUATORS_WRITE_LEGS ci-dessus), CAMERA_RGB
-    # (détection de personne, jamais de profondeur exercée dans ce
-    # fichier — voir _search_for_intruder ci-dessous). SPEECH_IN
-    # volontairement PAS déclarée malgré SENSORS_MICROPHONE ci-dessus
-    # : le G1 ne déclare pas RobotCapability.MICROPHONE (pas de vrai
-    # micro modélisé côté HAL aujourd'hui), et aucune ligne de ce
-    # fichier n'exerce réellement le micro — cohérent avec
-    # Permission.SENSORS_MICROPHONE, déjà marquée "NON APPLIQUÉE"
-    # dans manifest.py. La déclarer causerait un refus d'installation
-    # pour une capacité jamais réellement utilisée.
+    # Capacités fonctionnelles réellement exercées (ce que l'app doit
+    # savoir FAIRE, à distinguer du matériel exigé dans hardware
+    # ci-dessous) : WALK, pour se déplacer entre les checkpoints
+    # (ACTUATORS_WRITE_LEGS ci-dessus), et CAMERA_RGB (l'image couleur),
+    # pour la détection de personne. Aucune image de profondeur n'est
+    # utilisée dans ce fichier (voir _scan_for_person() plus haut).
+    #
+    # SPEECH_IN (l'écoute de la parole) n'est volontairement PAS
+    # déclarée, malgré SENSORS_MICROPHONE ci-dessus : aucune ligne de ce
+    # fichier n'utilise réellement le micro, la demande de badge étant
+    # simulée. Quand ce choix a été fait, le G1 (le robot humanoïde
+    # Unitree G1) ne déclarait pas non plus RobotCapability.MICROPHONE,
+    # faute de micro modélisé côté HAL, et manifest.py marquait
+    # SENSORS_MICROPHONE « NON APPLIQUÉE ». Depuis, le G1 déclare son
+    # micro et la permission est vérifiée par listen() et
+    # declare_intent(), mais la raison principale demeure : déclarer
+    # SPEECH_IN ferait refuser l'installation sur tout robot sans micro,
+    # pour une capacité que l'app n'utilise jamais.
     capabilities_required=[
         Capability.WALK, Capability.CAMERA_RGB,
     ],
@@ -321,10 +376,12 @@ SECURITY_PATROL_MANIFEST = AppManifest(
         compatible_models=["G1"],
     ),
 
-    # Une ronde peut durer plusieurs dizaines de minutes — quota par
-    # défaut (30s) totalement inadapté, contrairement à PackageSorting
-    # dont chaque mission est courte. Premier vrai cas où ResourceQuota
-    # doit être personnalisé plutôt que laissé par défaut.
+    # Quota de ressources (processeur, mémoire, durée maximale) imposé à
+    # l'app par la sandbox. Une ronde peut durer plusieurs dizaines de
+    # minutes : la durée maximale par défaut (30 s) serait totalement
+    # inadaptée, alors qu'elle convient à PackageSortingApp, dont chaque
+    # mission est courte. C'est le premier vrai cas où ResourceQuota doit
+    # être personnalisé plutôt que laissé par défaut.
     quota=ResourceQuota(
         max_cpu_percent=40.0,
         max_memory_mb=256,
@@ -332,10 +389,13 @@ SECURITY_PATROL_MANIFEST = AppManifest(
     ),
 
     pricing_model=PricingModel.SUBSCRIPTION,
-    base_price_eur=49.0,   # abonnement mensuel
+    base_price_eur=49.0,   # abonnement mensuel (facturé une fois par 30 jours)
 
-    max_velocity_ratio=0.5,          # vitesse réduite en ronde (prudence)
-    requires_human_supervision=False, # explicite : conçue pour tourner
-                                        # seule la nuit, sans supervision —
-                                        # contrairement au défaut du manifest
+    max_velocity_ratio=0.5,          # vitesse plafonnée à 50 % en ronde (prudence)
+    # Explicitement False, contrairement à la valeur par défaut du
+    # manifeste : l'app est conçue pour tourner seule la nuit, sans
+    # surveillance humaine. Pour l'instant, ce champ n'est qu'une
+    # déclaration : le Play Store ne s'en sert pour rien bloquer (voir
+    # manifest.py).
+    requires_human_supervision=False,
 )

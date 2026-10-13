@@ -1,42 +1,65 @@
 """
 AXIS-OS — WarehouseOpsApp
 ============================
-Troisième app Play Store, conçue explicitement comme test de charge
-maximal du SDK — pas pour un usage réel, mais pour exercer chaque
-permission, chaque type de commande, et chaque mode d'échec que le
-reste de la stack (Safety, Watchdog, Sandbox, MotionStateTracker,
-logging structuré) est censé gérer.
+Troisième app de référence du Play Store (la boutique d'apps d'AXIS-OS),
+conçue explicitement comme test de charge maximal du SDK (le kit de
+développement des apps). Elle ne vise pas un usage réel : elle doit
+exercer chaque permission, chaque type de commande et chaque mode
+d'échec que le reste de la pile logicielle est censé gérer, à savoir
+Safety (les garde-fous de sécurité), Watchdog (le superviseur qui
+surveille l'état des moteurs), Sandbox (le processus isolé dans lequel
+tourne chaque app), MotionStateTracker (le registre de l'état de
+mouvement de chaque articulation) et la journalisation structurée.
 
-Scénario : un robot d'entrepôt qui enchaîne plusieurs PHASES dans une
-seule mission — contrairement à PackageSorting (une action simple) et
-SecurityPatrol (une boucle homogène), ici chaque phase sollicite une
-partie différente du HAL :
+Scénario : un robot d'entrepôt enchaîne plusieurs PHASES dans une seule
+mission. PackageSortingApp répète une action simple et SecurityPatrolApp
+une boucle homogène ; ici, chaque phase sollicite une partie différente
+du HAL (la couche d'abstraction matérielle, seul chemin vers les moteurs
+et les capteurs) :
 
-  Phase 1 — RECONNAISSANCE : lecture capteurs (IMU, force/torque),
-            scan de la zone (caméra), décision simulée par IA (VLA)
-  Phase 2 — NAVIGATION : déplacement (jambes) vers plusieurs points
-  Phase 3 — MANIPULATION : saisie d'objet (bras), avec vérification
-            de force/torque pour détecter une prise ratée
-  Phase 4 — FACTURATION DYNAMIQUE : le prix facturé dépend du poids
-            réel manipulé, pas d'un tarif fixe (contrairement aux
-            2 apps précédentes)
-  Phase 5 — ESCALADE : si un problème est détecté en phase 3, la
-            mission ne s'arrête pas silencieusement — elle bascule
-            en mode dégradé et le signale explicitement
+  Phase 1 — RECONNAISSANCE : lecture des capteurs (IMU, la centrale
+            inertielle ; capteurs de force et de couple), scan de la
+            zone (caméra), décision simulée par une IA de type VLA
+            (modèle vision-langage-action).
+  Phase 2 — NAVIGATION : déplacement (jambes) vers plusieurs points.
+  Phase 3 — MANIPULATION : saisie d'un objet (bras), avec contrôle du
+            couple mesuré pour détecter une prise ratée.
+  Phase 4 — FACTURATION DYNAMIQUE : le prix doit dépendre du poids
+            réellement manipulé, et non d'un tarif fixe comme dans les
+            deux apps précédentes. Limite actuelle : l'app calcule et
+            rapporte ce poids (métrique total_weight_handled_kg), mais
+            la facturation du Play Store ne s'en sert pas encore : elle
+            facture le même prix fixe à chaque mission (base_price_eur,
+            plus la commission de la plateforme).
+  Phase 5 — ESCALADE : si un problème survient en phase 3, la mission
+            ne s'arrête pas en silence ; elle bascule en mode dégradé
+            (DEGRADED) et le signale explicitement.
 
-Portée honnêtement limitée (cohérent avec le reste du projet) :
-  - Caméra, IMU, force/torque : lus via le HAL mais leur contenu est
-    un stub déterministe (aucun vrai capteur physique).
-  - RobotContext expose désormais emergency_stop() (voir M11 dans
-    CHANGELOG.md) — EMERGENCY_STOP reste déclarée mais n'est pas
-    exercée par du vrai code dans cette app de démonstration.
-    FLEET_BROADCAST retirée (2026-09-15) : le Fleet Manager reste
-    non implémenté (voir docs/fleet_manager_design.md), et cette
-    permission est réservée aux apps système (ProtectionLevel.
-    SIGNATURE) — une app tierce qui la déclare sans jamais l'exercer
-    ne fait que se rendre non installable pour rien.
+Portée volontairement limitée, et dite comme telle, comme dans le reste
+du projet :
+  - Caméra, IMU, force et couple : aucun vrai capteur physique n'est lu.
+    Le scan de zone et le couple mesuré après la saisie sont des stubs
+    (des bouchons : simulations simples qui remplacent le vrai
+    composant), tirés au hasard et reproductibles si une graine (seed,
+    la valeur de départ du tirage) est fournie. RobotContext n'expose
+    d'ailleurs pas encore de lecture de force et de couple :
+    SENSORS_FORCE_TORQUE est marquée « NON APPLIQUÉE » dans manifest.py.
+  - RobotContext expose désormais emergency_stop(), qui permet à une app
+    de déclencher elle-même un e-stop (arrêt d'urgence). Cette méthode a
+    été ajoutée à la suite d'un audit externe du code (septembre 2026,
+    voir CHANGELOG.md). EMERGENCY_STOP reste déclarée, mais aucune ligne
+    de cette app de démonstration ne l'exerce.
+  - FLEET_BROADCAST (diffuser un message à toute une flotte de robots) a
+    été retirée le 2026-09-15. Le Fleet Manager, futur gestionnaire de
+    flotte, n'est toujours pas implémenté (voir
+    docs/fleet_manager_design.md), et cette permission est réservée aux
+    apps système (niveau de protection SIGNATURE : accordée seulement
+    aux apps signées avec la clé de la plateforme). Une app tierce qui la
+    déclare sans jamais l'exercer ne fait que se rendre non installable,
+    pour rien.
 
-Licence : proposée en exemple (comme PackageSorting, SecurityPatrol)
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE). Proposée en
+exemple, comme PackageSortingApp et SecurityPatrolApp.
 """
 
 from __future__ import annotations
@@ -57,15 +80,19 @@ from axis_os.hal.core.capabilities import RobotCapability
 
 
 class MissionPhase(Enum):
+    """Phase en cours d'une mission (voir la docstring du module)."""
     RECONNAISSANCE = auto()
     NAVIGATION      = auto()
     MANIPULATION     = auto()
     BILLING           = auto()
-    DEGRADED           = auto()  # atteint seulement en cas de problème
+    DEGRADED           = auto()  # atteinte seulement après une saisie ratée
 
 
 @dataclass
 class GraspAttempt:
+    """Résultat d'une tentative de saisie. measured_torque est le couple
+    simulé après fermeture de la pince ; l'app l'interprète comme un poids
+    en kg (voir _attempt_grasp())."""
     object_id:       str
     target_weight_kg: float
     measured_torque:  float
@@ -74,9 +101,9 @@ class GraspAttempt:
 
 class WarehouseOpsApp(RobotApp):
     """
-    App volontairement exigeante : exerce navigation ET manipulation
-    ET facturation dynamique ET détection d'échec dans UNE mission,
-    pour servir de test d'intégration applicatif maximal.
+    App volontairement exigeante : navigation, manipulation, facturation
+    dynamique et détection d'échec dans UNE seule mission, pour servir de
+    test d'intégration applicatif maximal.
     """
 
     PICKUP_POINTS = ["zone_a", "zone_b", "zone_c", "zone_d"]
@@ -100,9 +127,11 @@ class WarehouseOpsApp(RobotApp):
 
     def _scan_zone(self, ctx: RobotContext, zone: str) -> Dict[str, Any]:
         """
-        STUB déterministe — simule une lecture capteur (caméra + IMU).
-        Retourne une description de scène, comme le ferait un futur
-        VLAConnector en amont de cette app.
+        Stub : simule une lecture des capteurs (caméra et IMU) en tirant
+        au hasard le nombre d'objets présents (0 à 3). Rend une
+        description de la scène, comme le ferait un futur VLAConnector
+        (connecteur vers un modèle VLA) placé en amont de cette app.
+        Aucun capteur réel n'est lu.
         """
         objects_present = self._rng.randint(0, 3)
         return {"zone": zone, "objects_detected": objects_present}
@@ -111,8 +140,14 @@ class WarehouseOpsApp(RobotApp):
 
     def _navigate_to(self, ctx: RobotContext, zone: str) -> bool:
         """
-        Déplacement réel via le HAL (jambes) — exerce ACTUATORS_WRITE_LEGS
-        pour de vrai, pas juste déclaré dans le manifest sans être utilisé.
+        Déplacement réel par le HAL (jambes) : exerce vraiment la
+        permission ACTUATORS_WRITE_LEGS, au lieu de la déclarer dans le
+        manifeste (la fiche qui déclare permissions, capacités, quotas et
+        prix de l'app) sans jamais s'en servir. Comme dans
+        SecurityPatrolApp, ce n'est qu'une commande de posture symbolique
+        des deux hanches, pas une vraie navigation. Rend False si l'une
+        des commandes n'a pas de résultat (None), ce que run_mission()
+        traite comme un rejet par le HAL.
         """
         results = ctx.move_legs({
             "left_hip_pitch_joint":  ActuatorCommand(ControlMode.POSITION, position=0.08),
@@ -125,21 +160,23 @@ class WarehouseOpsApp(RobotApp):
     def _attempt_grasp(self, ctx: RobotContext, object_id: str,
                        target_weight_kg: float) -> GraspAttempt:
         """
-        Déplacement réel via le HAL (bras) — exerce ACTUATORS_WRITE_ARMS.
-        Le couple mesuré après la saisie détermine si elle a réussi :
-        un couple trop faible signifie que la pince s'est refermée sur
-        du vide (objet manqué), un couple absurdement élevé signifie
-        un objet plus lourd que prévu (poids mal déclaré).
+        Mouvement réel par le HAL (bras gauche) : exerce la permission
+        ACTUATORS_WRITE_ARMS.
+
+        Le couple mesuré après la saisie dit si elle a réussi. Un couple
+        trop faible signifie que la pince s'est refermée sur du vide
+        (objet manqué) ; un couple anormalement élevé, que l'objet est
+        plus lourd que prévu (poids mal déclaré).
         """
         ctx.move_arms({
             "left_shoulder_pitch_joint": ActuatorCommand(ControlMode.POSITION, position=0.4),
             "left_elbow_joint":           ActuatorCommand(ControlMode.POSITION, position=0.6),
         })
 
-        # STUB : simule le couple mesuré après la fermeture de la pince.
-        # 70% du temps : proche du poids annoncé (saisie réussie)
-        # 20% du temps : couple quasi nul (objet manqué)
-        # 10% du temps : couple bien supérieur (poids sous-déclaré)
+        # Stub : simule le couple mesuré après la fermeture de la pince.
+        #   70 % du temps : proche du poids annoncé (saisie réussie) ;
+        #   20 % du temps : couple quasi nul (objet manqué) ;
+        #   10 % du temps : couple bien supérieur (poids sous-déclaré).
         roll = self._rng.random()
         if roll < 0.70:
             measured = target_weight_kg * self._rng.uniform(0.9, 1.1)
@@ -156,12 +193,13 @@ class WarehouseOpsApp(RobotApp):
     # ── Mission principale ────────────────────────────────────────
 
     def run_mission(self, ctx: RobotContext, params: Dict[str, Any]) -> MissionResult:
-        # Générateur RECRÉÉ à chaque mission. Chaque mission s'exécute dans
-        # un processus fils qui repart de l'état de l'app à sa création :
-        # un générateur créé une seule fois dans __init__ y est figé, et
-        # toutes les missions tiraient exactement les mêmes nombres — 20
-        # échecs sur 20, ou 0 sur 20, au lieu de ~30 %. Une graine peut
-        # être fournie pour rendre une mission reproductible.
+        # Générateur RECRÉÉ à chaque mission. Pourquoi : chaque mission
+        # s'exécute dans un processus fils (la sandbox) qui repart de
+        # l'état de l'app tel qu'il était à sa création. Un générateur
+        # créé une seule fois dans __init__ y était donc figé, et toutes
+        # les missions tiraient exactement les mêmes nombres : 20 échecs
+        # sur 20, ou 0 sur 20, au lieu d'environ 30 %. Une graine (seed)
+        # peut être fournie pour rendre une mission reproductible.
         self._rng = random.Random(params.get("seed"))
         t_start = time.monotonic()
         mission_id = str(uuid.uuid4())[:8].upper()
@@ -218,8 +256,10 @@ class WarehouseOpsApp(RobotApp):
                                 f"à l'annoncé ({obj['weight_kg']} kg) — objet écarté "
                                 f"par sécurité")
 
-            # PHASE 4 — Facturation dynamique (dépend du poids réellement
-            # manipulé avec succès, pas d'un tarif fixe par mission)
+            # PHASE 4 — Facturation dynamique : elle doit dépendre du poids
+            # réellement manipulé avec succès, et non d'un tarif fixe par
+            # mission. L'app se contente ici de rapporter ce poids
+            # (total_weight_handled_kg) ; voir la docstring du module.
             phase = MissionPhase.BILLING
             duration = time.monotonic() - t_start
 
@@ -247,7 +287,7 @@ class WarehouseOpsApp(RobotApp):
             )
 
 
-# ── Manifest ─────────────────────────────────────────────────────────
+# ── Manifeste ────────────────────────────────────────────────────────
 
 WAREHOUSE_OPS_MANIFEST = AppManifest(
     app_id="com.axisos.warehouse_ops",
@@ -263,9 +303,11 @@ WAREHOUSE_OPS_MANIFEST = AppManifest(
     ),
     category=AppCategory.LOGISTICS,
 
-    # Le jeu de permissions le plus large parmi les 3 apps du projet —
-    # exerce délibérément ACTUATORS_WRITE_ARMS ET _LEGS dans la même
-    # mission, plus les catégories jamais utilisées jusqu'ici.
+    # Le jeu de permissions le plus large des trois apps de référence (tri
+    # de colis, ronde, entrepôt). Il exerce délibérément
+    # ACTUATORS_WRITE_ARMS et ACTUATORS_WRITE_LEGS dans la même mission,
+    # et ajoute des permissions qu'aucune des deux autres ne déclare
+    # (SENSORS_FORCE_TORQUE, EMERGENCY_STOP).
     permissions=[
         Permission.ACTUATORS_READ,
         Permission.ACTUATORS_WRITE_ARMS,
@@ -278,11 +320,12 @@ WAREHOUSE_OPS_MANIFEST = AppManifest(
         Permission.NETWORK_CLOUD,
     ],
 
-    # Capacités fonctionnelles réelles — WALK (move_legs, se déplace
-    # entre postes), GRASP_SINGLE (move_arms n'utilise jamais que le
-    # bras gauche, jamais les deux simultanément — voir _pick_item
-    # plus haut dans ce fichier), CAMERA_RGB (SENSORS_CAMERA
-    # ci-dessus, jamais de profondeur exercée).
+    # Capacités fonctionnelles réellement exercées : WALK (move_legs, pour
+    # se déplacer entre les postes), GRASP_SINGLE (move_arms ne commande
+    # que le bras gauche, jamais les deux bras à la fois : voir
+    # _attempt_grasp() plus haut dans ce fichier) et CAMERA_RGB (l'image
+    # couleur, d'où SENSORS_CAMERA ci-dessus ; aucune image de profondeur
+    # n'est utilisée).
     capabilities_required=[
         Capability.WALK, Capability.GRASP_SINGLE, Capability.CAMERA_RGB,
     ],
@@ -305,9 +348,11 @@ WAREHOUSE_OPS_MANIFEST = AppManifest(
         max_runtime_s=600.0,
     ),
 
+    # Facturé à chaque mission. L'ajustement prévu au poids réellement
+    # manipulé n'est pas encore appliqué (voir la docstring du module).
     pricing_model=PricingModel.PAY_PER_MISSION,
-    base_price_eur=3.50,  # facturé par mission, ajusté par le poids réel en pratique
+    base_price_eur=3.50,
 
     max_velocity_ratio=0.6,
-    requires_human_supervision=True,  # manipulation physique — supervision requise
+    requires_human_supervision=True,  # manipulation physique : supervision requise
 )
