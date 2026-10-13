@@ -1,27 +1,37 @@
 """
-AXIS-OS — Driver caméra Intel RealSense pour le Unitree G1.
+AXIS-OS — Driver de la caméra Intel RealSense du Unitree G1.
 
-CHEMIN MATÉRIEL, à ne pas confondre avec celui des moteurs : la caméra
-est branchée en USB sur le Jetson embarqué et se lit via librealsense
-(`pyrealsense2`). Elle ne passe PAS par le bus DDS/Ethernet de
-g1_dds_actuator.py. Les deux chemins sont indépendants : la caméra peut
-fonctionner alors que les moteurs sont injoignables, et réciproquement.
+Ce driver lit la caméra du G1 (l'humanoïde Unitree G1, robot de
+référence d'AXIS-OS). Intel RealSense est une gamme de caméras couleur
+et de profondeur ; librealsense est la bibliothèque d'Intel qui les
+pilote, utilisée ici depuis Python par le module `pyrealsense2`.
 
-C'est la configuration de référence de NVIDIA pour G1 + GR00T (RealSense
-D435 sur le robot). Ce driver ne suppose cependant aucun modèle précis :
-il interroge le capteur présent.
+La caméra suit un chemin matériel distinct de celui des moteurs, à ne
+pas confondre : elle est branchée en USB sur le Jetson embarqué
+(l'ordinateur de bord NVIDIA du robot) et se lit via librealsense. Elle
+ne passe pas par le réseau DDS sur Ethernet (Data Distribution Service,
+le système de messages qui commande les moteurs, voir
+g1_dds_actuator.py). Les deux chemins sont indépendants : la caméra peut
+fonctionner alors que les moteurs sont injoignables, et inversement.
 
-CAPTURE EN ARRIÈRE-PLAN — exigence de conception, pas un détail :
+C'est la configuration de référence de NVIDIA pour faire tourner GR00T
+(son modèle d'IA pour robots humanoïdes, voir docs/groot_architecture.md)
+sur un G1 : une RealSense D435 montée sur le robot. Ce driver ne suppose
+cependant aucun modèle précis : il interroge le capteur présent.
+
+Capture en arrière-plan, une exigence de conception et non un détail :
 `capture()` ne bloque JAMAIS. Un thread dédié lit le flux et conserve la
 dernière image ; `capture()` rend celle-ci immédiatement, ou None si
-aucune n'est encore arrivée. Une boucle de contrôle qui attendrait
-l'image suivante à 30 Hz s'imposerait 33 ms de latence par appel — plus
-de quatre fois le budget complet d'un cycle mesuré (6.87 ms, voir
-docs/latence_chemin_commande.md).
+aucune n'est encore arrivée. Pourquoi : une boucle de contrôle qui
+attendrait l'image suivante à 30 Hz s'imposerait 33 ms de latence par
+appel, soit plus de quatre fois le budget complet d'un cycle de commande
+mesuré (6.87 ms, voir docs/latence_chemin_commande.md).
 
-CALIBRATION : get_intrinsics() interroge le CAPTEUR. Les valeurs sont
-propres à chaque exemplaire, jamais au modèle — deux G1 sortis de la
-même chaîne n'ont pas la même calibration. Rien n'est codé en dur ici.
+Calibration : get_intrinsics() interroge le capteur. Les paramètres
+intrinsèques (focales, centre optique, distorsion de l'objectif) sont
+propres à chaque exemplaire, jamais au modèle : deux G1 sortis de la
+même chaîne n'ont pas la même calibration. Rien n'est donc codé en dur
+ici.
 """
 from __future__ import annotations
 
@@ -36,7 +46,11 @@ from axis_os.hal.core.types import (
 
 
 class G1RealSenseCamera(ICamera):
-    """Caméra RealSense du G1, via librealsense.
+    """Caméra RealSense du G1, lue via librealsense.
+
+    Implémente ICamera, l'interface commune à toutes les caméras dans la
+    HAL (couche d'abstraction matérielle : la partie d'AXIS-OS qui cache
+    aux applications les détails propres à chaque robot).
 
     Usage :
         cam = G1RealSenseCamera("head_rgb", width=640, height=480, fps=30)
@@ -55,14 +69,15 @@ class G1RealSenseCamera(ICamera):
         depth: bool = False,
     ):
         """
-        serial_number : cible un exemplaire précis si plusieurs caméras
-            sont branchées. None = la première trouvée, ce qui est
-            ambigu dès qu'il y en a deux — à renseigner explicitement
-            sur un robot multi-caméras.
-        depth : lit le flux de profondeur plutôt que la couleur. Les
-            deux flux d'un même capteur ont des calibrations
-            DIFFÉRENTES et ne sont pas alignés par défaut ; instancier
-            deux objets distincts si les deux sont nécessaires.
+        serial_number : numéro de série d'un exemplaire précis, à donner
+            si plusieurs caméras sont branchées. Avec None, c'est la
+            première caméra trouvée qui est lue, ce qui devient ambigu
+            dès qu'il y en a deux : à renseigner explicitement sur un
+            robot à plusieurs caméras.
+        depth : lit le flux de profondeur au lieu du flux couleur. Les
+            deux flux d'un même capteur ont des calibrations différentes
+            et ne sont pas alignés par défaut : créer deux objets
+            distincts si les deux sont nécessaires.
         """
         super().__init__(
             sensor_id,
@@ -86,9 +101,10 @@ class G1RealSenseCamera(ICamera):
     # ---- cycle de vie ----------------------------------------------------
 
     def initialize(self) -> HALStatus:
-        # Import local, même raison que dans g1_dds_actuator : ce module
-        # reste importable et lisible sur une machine sans le SDK, et
-        # le coût d'import n'est payé qu'à l'usage réel.
+        # Import local, pour la même raison que dans g1_dds_actuator.py :
+        # ce module reste importable et lisible sur une machine où le SDK
+        # (kit de développement, ici pyrealsense2) n'est pas installé, et
+        # le coût de l'import n'est payé qu'à l'usage réel.
         try:
             import pyrealsense2 as rs
         except ImportError:
@@ -108,8 +124,11 @@ class G1RealSenseCamera(ICamera):
             self._pipeline = rs.pipeline()
             profile = self._pipeline.start(config)
 
-            # Calibration lue SUR LE CAPTEUR. C'est tout l'intérêt :
-            # ces valeurs sont propres à cet exemplaire.
+            # Calibration lue sur le capteur lui-même : c'est tout
+            # l'intérêt, ces valeurs sont propres à cet exemplaire.
+            # librealsense fournit les focales (fx, fy, en pixels), le
+            # point principal, c'est-à-dire le centre optique (ppx, ppy,
+            # rangés dans cx, cy) et les coefficients de distorsion.
             vs = profile.get_stream(stream).as_video_stream_profile()
             intr = vs.get_intrinsics()
             self._intrinsics = CameraIntrinsics(
@@ -150,11 +169,13 @@ class G1RealSenseCamera(ICamera):
         return HALStatus.OK
 
     def is_healthy(self) -> bool:
-        """Saine = initialisée, thread vivant, et pas d'échecs répétés.
+        """La caméra est saine si elle est initialisée, si son thread de
+        capture est vivant et si les lectures n'échouent pas à répétition.
 
-        Le seuil sur _consecutive_errors évite de déclarer saine une
-        caméra dont le thread tourne mais dont chaque lecture échoue —
-        un capteur débranché à chaud se comporte exactement comme ça.
+        Pourquoi le seuil sur _consecutive_errors (10 échecs de suite) :
+        sans lui, une caméra dont le thread tourne mais dont chaque
+        lecture échoue serait déclarée saine. C'est exactement ainsi que
+        se comporte un capteur débranché à chaud.
         """
         return (
             self._initialized
@@ -166,24 +187,28 @@ class G1RealSenseCamera(ICamera):
     # ---- lecture ---------------------------------------------------------
 
     def capture(self) -> Optional[CameraFrame]:
-        """Dernière image reçue, ou None. NE BLOQUE JAMAIS.
+        """Dernière image reçue, ou None. Ne bloque JAMAIS.
 
-        Rend potentiellement la MÊME image sur deux appels rapprochés si
-        aucune nouvelle n'est arrivée : c'est voulu et cohérent avec
-        `timestamp_ns`, qui permet à l'appelant de détecter une image
-        périmée — même principe que l'échéance de fraîcheur de
-        SetpointFollower.
+        Peut rendre la même image à deux appels rapprochés si aucune
+        nouvelle n'est arrivée entre-temps. C'est voulu, et cohérent avec
+        `timestamp_ns` (l'horodatage de l'image), qui permet à l'appelant
+        de repérer une image périmée : même principe que l'échéance de
+        fraîcheur de SetpointFollower, le suiveur de consignes qui sait
+        reconnaître une consigne trop ancienne
+        (axis_os/services/policy/setpoint_follower.py).
         """
         with self._lock:
             return self._latest
 
     def get_intrinsics(self) -> Optional[CameraIntrinsics]:
-        """Calibration réelle du capteur, ou None si non initialisé.
+        """Calibration réelle du capteur, ou None si la caméra n'est pas
+        initialisée.
 
         Ne fabrique JAMAIS de valeurs plausibles à partir de la
-        résolution : un service de perception qui reçoit None doit
-        dégrader honnêtement, pas travailler sur une calibration
-        inventée qu'une préhension prendrait au sérieux.
+        résolution. Pourquoi : un service de perception qui reçoit None
+        doit passer honnêtement en mode dégradé, plutôt que travailler
+        sur une calibration inventée qu'une préhension (la saisie d'un
+        objet par le robot) prendrait au sérieux.
         """
         return self._intrinsics
 
@@ -194,6 +219,8 @@ class G1RealSenseCamera(ICamera):
     # ---- thread de capture -----------------------------------------------
 
     def _capture_loop(self) -> None:
+        """Boucle du thread de capture : lit les images en continu et
+        garde la dernière, jusqu'à l'appel de shutdown()."""
         import pyrealsense2 as rs      # noqa: F401 — déjà validé
 
         while not self._stop.is_set():
@@ -212,10 +239,13 @@ class G1RealSenseCamera(ICamera):
                     height=f.get_height(),
                     encoding="depth16" if self._depth else "rgb8",
                     data=bytes(f.get_data()),
-                    # Horodatage DU CAPTEUR quand il est disponible, pas
-                    # l'instant de réception : sur un robot qui bouge,
-                    # quelques dizaines de ms d'écart déplacent un objet
-                    # de plusieurs centimètres dans le repère monde.
+                    # Horodatage donné par le capteur quand il est
+                    # disponible, et non l'instant de réception.
+                    # Pourquoi : sur un robot qui bouge, quelques dizaines
+                    # de ms d'écart déplacent un objet de plusieurs
+                    # centimètres dans le repère du monde.
+                    # get_timestamp() est en millisecondes, d'où la
+                    # conversion en nanosecondes.
                     timestamp_ns=int(f.get_timestamp() * 1e6),
                 )
                 with self._lock:
@@ -225,7 +255,11 @@ class G1RealSenseCamera(ICamera):
 
             except Exception:           # noqa: BLE001 — flux interrompu
                 self._consecutive_errors += 1
-                # Ne pas boucler à plein régime sur un capteur mort :
-                # même erreur que la pompe Isaac Sim qui monopolisait le
-                # GIL (voir docs/latence_chemin_commande.md §4).
+                # Ne pas boucler à plein régime sur un capteur mort. Ce
+                # serait la même erreur que celle de la boucle qui fait
+                # avancer le simulateur Isaac Sim de NVIDIA
+                # (MainThreadSimPump) : elle tournait à vide sans jamais
+                # céder le GIL, le verrou global de l'interpréteur Python
+                # qui empêche les autres threads d'avancer (voir
+                # docs/latence_chemin_commande.md, section 4).
                 time.sleep(0.05)

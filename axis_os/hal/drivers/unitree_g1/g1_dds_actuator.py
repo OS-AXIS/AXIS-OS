@@ -1,54 +1,69 @@
 """
-AXIS-OS — Driver Unitree G1 (matériel réel, via unitree_sdk2py)
+AXIS-OS — Driver Unitree G1 pour le robot réel (via unitree_sdk2py)
 ====================================================================
-Implémentation de IActuator qui parle au VRAI G1 physique, en
-utilisant le SDK officiel Unitree (unitree_sdk2py), plutôt que le
-G1SimulatedActuator utilisé en simulation (voir robot.py).
+Ce module commande le vrai G1 physique (l'humanoïde Unitree G1, robot de
+référence d'AXIS-OS). Il implémente IActuator, l'interface commune à
+tous les moteurs d'articulation dans la HAL (couche d'abstraction
+matérielle : la partie d'AXIS-OS qui cache aux applications les détails
+propres à chaque robot). Il s'appuie sur unitree_sdk2py, le SDK (kit de
+développement logiciel) officiel d'Unitree. En simulation, c'est
+G1SimulatedActuator (voir robot.py) qui joue ce rôle.
 
-Comble un trou identifié lors d'un audit du projet : jusqu'ici,
-AUCUN chemin technique n'existait pour faire fonctionner AXIS-OS sur
-un G1 physique — seul G1SimulatedActuator existait, et le commentaire
-laissé dans robot.py ("remplacer G1SimulatedActuator par
-G1CANActuator") était lui-même erroné : le G1 ne communique PAS par
-CAN direct, mais par DDS (Data Distribution Service) via Ethernet —
-confirmé par le SDK officiel unitree_sdk2py
-(github.com/unitreerobotics/unitree_sdk2_python, licence BSD-3-Clause).
+Pourquoi ce module existe : un audit du projet a montré que, jusque-là,
+aucun chemin technique ne permettait de faire fonctionner AXIS-OS sur un
+G1 physique. Seul G1SimulatedActuator existait, et le commentaire qui
+figurait alors dans robot.py (« remplacer G1SimulatedActuator par
+G1CANActuator ») était lui-même faux : le G1 ne se commande pas en CAN
+direct (un bus de terrain courant en automobile et en robotique), mais
+par DDS (Data Distribution Service, un standard d'échange de messages
+entre programmes) sur Ethernet. C'est ce que confirme le SDK officiel
+unitree_sdk2py (github.com/unitreerobotics/unitree_sdk2_python, licence
+BSD-3-Clause).
 
-⚠️ NON TESTÉ SUR MATÉRIEL RÉEL — ce module a été écrit en lisant le
-code source officiel de unitree_sdk2py (structures LowCmd_/LowState_/
-MotorCmd_/MotorState_, exemple officiel
-example/g1/low_level/g1_low_level_example.py) et en suivant
-exactement ses patterns documentés, mais n'a jamais été exécuté
-contre un vrai G1. À valider sur du matériel physique avant tout
-déploiement client — voir la section "Points de sécurité obligatoires"
-ci-dessous, directement issus des avertissements du SDK officiel.
+Attention : ce module n'a JAMAIS été testé sur un G1 réel. Il a été
+écrit en lisant le code source officiel de unitree_sdk2py et en
+reprenant exactement les façons de faire qu'il documente : structures
+de messages LowCmd_ (commande bas niveau envoyée aux moteurs), LowState_
+(état bas niveau renvoyé par le robot), MotorCmd_ et MotorState_ (la
+part de ces messages propre à chaque moteur), et exemple officiel
+example/g1/low_level/g1_low_level_example.py. Il n'a cependant jamais
+tourné face à un vrai G1 et doit être validé sur du matériel physique
+avant tout déploiement chez un client. Voir la section « Points de
+sécurité obligatoires » ci-dessous, tirée directement des avertissements
+du SDK officiel.
 
-Dépendances (non incluses dans requirements.txt — optionnelles,
-nécessaires uniquement pour ce driver précis) :
+Dépendances (absentes de requirements.txt : elles sont optionnelles et
+ne servent qu'à ce driver) :
     pip install unitree_sdk2py
-    (nécessite aussi cyclonedds==0.10.2 — voir le README officiel du
-    SDK pour les instructions d'installation, notamment en cas
+    (il faut aussi cyclonedds==0.10.2, une implémentation de DDS ; voir
+    le README officiel du SDK pour l'installation, notamment en cas
     d'erreur "Could not locate cyclonedds")
 
 ## Points de sécurité obligatoires (issus du SDK officiel, jamais à contourner)
 
 1. **Désactiver le mode sport intégré AVANT tout contrôle bas niveau.**
-   Le G1 a un "high-level motion service" (sport_mode) actif par
-   défaut qui gère lui-même la marche/l'équilibre. Envoyer des
-   commandes bas niveau SANS le désactiver crée un conflit de
-   commandes directement sur les moteurs — dangereux. Le SDK officiel
-   fournit `MotionSwitcherClient` pour ça (voir `_ensure_low_level_mode()`
-   ci-dessous), utilisé exactement comme dans l'exemple officiel.
+   Le G1 embarque un service de mouvement de haut niveau (« high-level
+   motion service », appelé sport_mode), actif par défaut, qui gère
+   lui-même la marche et l'équilibre. Le contrôle bas niveau, lui,
+   commande directement chaque moteur. Envoyer des commandes bas niveau
+   sans avoir désactivé ce service met deux sources de commandes en
+   conflit directement sur les moteurs, ce qui est dangereux. Le SDK
+   officiel fournit pour cela `MotionSwitcherClient`, utilisé ici
+   exactement comme dans l'exemple officiel (voir
+   `_ensure_low_level_mode()` ci-dessous).
 
-2. **CRC obligatoire sur chaque commande.** Le champ `crc` de
-   `LowCmd_` doit être calculé via `unitree_sdk2py.utils.crc.CRC`
-   avant chaque envoi — une commande sans CRC valide est silencieusement
-   ignorée par le firmware du robot (protection déjà intégrée par
-   Unitree, pas quelque chose qu'AXIS-OS ajoute).
+2. **CRC obligatoire sur chaque commande.** Le CRC est une somme de
+   contrôle qui permet de détecter un message altéré. Le champ `crc` de
+   `LowCmd_` doit être calculé avec `unitree_sdk2py.utils.crc.CRC` avant
+   chaque envoi : le firmware du robot (son logiciel interne) ignore,
+   sans le signaler, toute commande dont le CRC est invalide. Cette
+   protection est intégrée par Unitree ; ce n'est pas AXIS-OS qui
+   l'ajoute.
 
-3. **`mode_machine` doit être lu depuis le premier LowState_ reçu**,
-   jamais deviné ou codé en dur — varie selon la configuration exacte
-   du robot.
+3. **`mode_machine` doit être lu dans le premier LowState_ reçu**,
+   jamais deviné ni codé en dur : sa valeur dépend de la configuration
+   exacte du robot. Ce champ de l'état renvoyé par le robot est ensuite
+   recopié dans chaque commande LowCmd_ envoyée (voir publish()).
 
 Licence : Apache 2.0 (open-source)
 """
@@ -67,15 +82,19 @@ from axis_os.hal.core.types import (
 from axis_os.hal.safety.limits import JointSafetyGuard, SafetyErrorKind
 
 
-# Table de correspondance joint_id AXIS-OS -> index officiel dans le
-# tableau motor_cmd[35]/motor_state[35] du protocole unitree_hg.
-# Source : example/g1/low_level/g1_low_level_example.py du SDK
-# officiel (classe G1JointIndex), copiée à l'identique — ne jamais
-# deviner ces index, une erreur ici enverrait une commande au MAUVAIS
-# moteur physique. Seuls les 23 joints de la variante 23dof sont
-# mappés (les index invalides pour cette variante — poignets pitch/
-# yaw, waist roll/pitch — sont documentés comme tels dans le SDK
-# officiel et volontairement absents ici).
+# Correspondance entre le joint_id d'AXIS-OS (le nom de l'articulation)
+# et l'index officiel du moteur dans les tableaux motor_cmd[35] et
+# motor_state[35] du protocole unitree_hg (le format des messages DDS du
+# G1).
+# Ces index ne doivent jamais être devinés : une erreur ici enverrait
+# une commande au MAUVAIS moteur physique. Ils sont donc copiés à
+# l'identique de la classe G1JointIndex de l'exemple officiel du SDK
+# (example/g1/low_level/g1_low_level_example.py).
+# Seuls les 23 joints de la variante à 23 degrés de liberté (« 23dof »)
+# figurent ici. Les index sans objet pour cette variante (poignets en
+# tangage et en lacet, « pitch » et « yaw » ; taille en roulis et en
+# tangage, « roll » et « pitch ») sont signalés comme tels dans le SDK
+# officiel et volontairement absents.
 G1_JOINT_ID_TO_MOTOR_INDEX: Dict[str, int] = {
     "left_hip_pitch_joint":      0,
     "left_hip_roll_joint":       1,
@@ -102,11 +121,14 @@ G1_JOINT_ID_TO_MOTOR_INDEX: Dict[str, int] = {
     "right_wrist_roll_joint":     26,
 }
 
-# Gains PD par défaut, copiés de l'exemple officiel (Kp/Kd indexés
-# 0-28 dans le SDK, ici restreints aux 23 index réellement utilisés
-# par la variante 23dof). Un développeur intégrateur DOIT les
-# retuner pour son robot précis — ce sont des valeurs de démarrage
-# sûres issues de l'exemple officiel, pas des valeurs optimisées.
+# Gains PD par défaut. Le moteur applique un régulateur PD
+# (proportionnel-dérivé) : le couple dépend de l'écart de position,
+# pondéré par le gain Kp (la « raideur »), et de l'écart de vitesse,
+# pondéré par le gain Kd (l'« amortissement »).
+# Valeurs copiées de l'exemple officiel, où Kp et Kd sont indexés de 0 à
+# 28, et restreintes ici aux 23 index réellement utilisés par la
+# variante 23dof. Ce sont des valeurs de départ sûres, pas des valeurs
+# optimisées : un intégrateur doit les réajuster pour son robot précis.
 _DEFAULT_KP: Dict[int, float] = {
     0: 60, 1: 60, 2: 60, 3: 100, 4: 40, 5: 40,        # jambe gauche
     6: 60, 7: 60, 8: 60, 9: 100, 10: 40, 11: 40,       # jambe droite
@@ -125,31 +147,35 @@ _DEFAULT_KD: Dict[int, float] = {
 
 def _ensure_low_level_mode(timeout_s: float = 5.0, max_attempts: int = 10) -> bool:
     """
-    Désactive le mode sport intégré du G1 avant tout contrôle bas
-    niveau — voir "Points de sécurité obligatoires" en tête de module.
-    Reproduit le pattern de l'exemple officiel Unitree (boucle
-    CheckMode/ReleaseMode jusqu'à confirmation), avec deux corrections
-    trouvées lors d'un audit de sécurité :
-      - `status` (code de retour de CheckMode/ReleaseMode) est
-        désormais vérifié — un `status` d'erreur (robot injoignable,
-        service indisponible) ne doit JAMAIS être traité comme
-        "mode sport déjà désactivé". L'exemple officiel l'ignore ;
-        AXIS-OS ne peut pas se permettre cette hypothèse optimiste
-        sur le chemin qui précède tout contrôle bas niveau.
-      - La boucle est bornée (`max_attempts`) — une boucle infinie
-        ici bloquerait `initialize()` indéfiniment sans aucun retour
-        à l'appelant, en silence.
+    Désactive le mode sport intégré du G1 avant tout contrôle bas niveau
+    (voir « Points de sécurité obligatoires » en tête de module).
 
-    Retourne True si le mode sport est confirmé désactivé, False
-    sinon (timeout, erreur de communication, ou statut non-nul
-    persistant) — l'appelant DOIT refuser de continuer sur un False,
-    voir son usage dans G1DDSHub.initialize().
+    Reprend la méthode de l'exemple officiel Unitree : appeler CheckMode
+    puis ReleaseMode en boucle jusqu'à confirmation. Un audit de sécurité
+    y a apporté deux corrections :
+      - Le code de retour `status` de CheckMode et de ReleaseMode est
+        désormais vérifié. Un `status` d'erreur (robot injoignable,
+        service indisponible) ne doit jamais être pris pour « mode sport
+        déjà désactivé ». L'exemple officiel l'ignore ; AXIS-OS ne peut
+        pas se permettre cette hypothèse optimiste juste avant de
+        prendre le contrôle direct des moteurs.
+      - La boucle est bornée par `max_attempts` (10 tentatives par
+        défaut, une seconde d'attente entre deux). Une boucle infinie
+        bloquerait `initialize()` indéfiniment, en silence, sans rien
+        rendre à l'appelant.
 
-    Importe unitree_sdk2py localement (pas en tête de module) : ce
-    driver reste importable et son code lisible même sur une machine
-    qui n'a pas le SDK installé (ex: CI, dev sans matériel réel) — le
-    coût d'import n'est payé qu'au moment où ce driver est réellement
-    instancié.
+    Retourne True si le mode sport est confirmé désactivé, False sinon :
+    délai dépassé, erreur de communication, statut d'erreur non nul, ou
+    mode sport toujours actif au bout des `max_attempts` tentatives.
+    L'appelant doit refuser de continuer sur un False : voir son usage
+    dans G1DDSHub.initialize().
+
+    unitree_sdk2py est importé ici, dans la fonction, et non en tête de
+    module : le driver reste ainsi importable et lisible sur une machine
+    où le SDK n'est pas installé (par exemple la CI, l'intégration
+    continue qui lance les tests, ou un poste de développement sans
+    robot). Le coût de l'import n'est payé qu'au moment où le driver est
+    réellement instancié.
     """
     from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
         MotionSwitcherClient,
@@ -162,8 +188,8 @@ def _ensure_low_level_mode(timeout_s: float = 5.0, max_attempts: int = 10) -> bo
     for _ in range(max_attempts):
         status, result = msc.CheckMode()
         if status != 0:
-            # Un statut d'erreur ne dit RIEN sur l'état réel du mode
-            # sport — ne jamais l'interpréter comme "déjà désactivé".
+            # Un statut d'erreur ne dit rien de l'état réel du mode
+            # sport : ne jamais le prendre pour « déjà désactivé ».
             return False
         if not result.get("name"):
             return True
@@ -177,18 +203,21 @@ def _ensure_low_level_mode(timeout_s: float = 5.0, max_attempts: int = 10) -> bo
 
 class G1DDSHub:
     """
-    Point de communication DDS partagé pour TOUS les G1DDSActuator
-    d'un même robot — un seul publisher/subscriber pour les 23
-    joints, pas un par joint (le protocole LowCmd_/LowState_ du G1
-    transporte déjà TOUS les moteurs dans un seul message, voir
-    MotorCmd_[35]/MotorState_[35] en tête de module).
+    Point de communication DDS unique, partagé par tous les
+    G1DDSActuator d'un même robot : un seul publisher (émetteur de
+    messages) et un seul subscriber (abonné qui les reçoit) pour les 23
+    joints, et non un par joint.
 
-    Instancié UNE FOIS par UnitreeG1HAL réel (jamais par
-    G1DDSActuator individuellement), puis passé à chaque actuateur
-    à sa construction — pattern différent de G1SimulatedActuator
-    (qui n'a pas besoin d'état partagé) mais nécessaire ici car le
-    protocole DDS réel du G1 fonctionne par message unique multi-
-    joints, pas par joint isolé.
+    Pourquoi : le protocole réel du G1 fonctionne par message unique
+    multi-joints, pas par joint isolé. LowCmd_ et LowState_ transportent
+    déjà tous les moteurs dans un seul message (tableaux MotorCmd_[35] et
+    MotorState_[35], voir en tête de module).
+
+    Le hub est donc créé une seule fois par UnitreeG1HAL en mode réel
+    (backend="dds", voir robot.py), jamais par un G1DDSActuator, puis
+    transmis à chaque actionneur à sa construction. Cette organisation
+    diffère de celle de G1SimulatedActuator, qui n'a pas besoin d'état
+    partagé.
     """
 
     def __init__(self, network_interface: str, domain_id: int = 0):
@@ -201,17 +230,20 @@ class G1DDSHub:
         self._subscriber = None
         self._crc = None
         self._initialized = False
-        # Verrou trouvé nécessaire lors d'un audit de sécurité : ce
-        # hub est explicitement partagé par les 23 G1DDSActuator d'un
-        # même robot (voir docstring de classe), avec au moins trois
-        # écrivains concurrents possibles en pratique — le thread de
-        # mission qui remplit le buffer joint par joint, le watchdog
-        # qui peut déclencher un arrêt d'urgence sur les 23 joints en
-        # même temps, et le callback DDS _on_low_state(). Sans verrou,
-        # publish() peut calculer un CRC valide sur un message dont la
-        # moitié porte une commande de mouvement et l'autre moitié un
-        # arrêt d'urgence entrelacé — un message parfaitement valide
-        # au sens CRC, mais incohérent au sens sécurité.
+        # Verrou dont un audit de sécurité a montré la nécessité. Ce hub
+        # est partagé par les 23 G1DDSActuator d'un même robot (voir la
+        # docstring de la classe), avec en pratique au moins trois
+        # écrivains concurrents possibles : le thread de mission, qui
+        # remplit le message joint par joint ; le watchdog (le chien de
+        # garde qui surveille le système), qui peut déclencher un arrêt
+        # d'urgence sur les 23 joints à la fois ; et le callback DDS
+        # _on_low_state(), appelé à chaque message d'état reçu.
+        # Sans verrou, publish() pourrait calculer un CRC valide sur un
+        # message dont une moitié porte une commande de mouvement et
+        # l'autre un arrêt d'urgence intercalé : un message parfaitement
+        # valide au sens du CRC, mais incohérent au sens de la sécurité.
+        # RLock est un verrou réentrant : le thread qui le détient peut
+        # le reprendre sans se bloquer lui-même.
         self._lock = threading.RLock()
 
     def initialize(self) -> HALStatus:
@@ -226,27 +258,31 @@ class G1DDSHub:
 
         ChannelFactoryInitialize(self._domain_id, self._network_interface)
 
-        # Le mode sport intégré DOIT être confirmé désactivé avant
-        # toute autre étape — un audit de sécurité a trouvé que la
-        # version précédente ignorait le code de retour de cette
-        # fonction et pouvait continuer sur un doute. Refuser
-        # d'initialiser plutôt que de risquer un conflit de commandes
-        # directement sur les moteurs (voir "Points de sécurité
-        # obligatoires" en tête de module).
+        # Le mode sport intégré doit être confirmé désactivé avant toute
+        # autre étape. Un audit de sécurité a montré que la version
+        # précédente ignorait le code de retour de cette vérification et
+        # pouvait continuer malgré un doute. Mieux vaut refuser
+        # d'initialiser que risquer un conflit de commandes directement
+        # sur les moteurs (voir « Points de sécurité obligatoires » en
+        # tête de module).
         if not _ensure_low_level_mode():
             return HALStatus.ERROR_COMM
 
         self._low_cmd = unitree_hg_msg_dds__LowCmd_()
         self._crc = CRC()
 
+        # Canaux DDS (« topics ») : rt/lowcmd pour envoyer les
+        # commandes, rt/lowstate pour recevoir l'état du robot, chaque
+        # LowState_ reçu étant transmis à _on_low_state().
         self._publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
         self._publisher.Init()
 
         self._subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self._subscriber.Init(self._on_low_state, 10)
 
-        # Attend le premier LowState_ pour connaître le vrai
-        # mode_machine — ne jamais le deviner (voir tête de module).
+        # Attend le premier LowState_ pour connaître la vraie valeur de
+        # mode_machine, qui ne doit jamais être devinée (voir en tête de
+        # module). Abandon si rien n'arrive en 5 secondes.
         waited_s = 0.0
         while self._mode_machine is None and waited_s < 5.0:
             time.sleep(0.1)
@@ -258,6 +294,8 @@ class G1DDSHub:
         return HALStatus.OK
 
     def _on_low_state(self, msg) -> None:
+        """Callback DDS : mémorise le dernier état reçu du robot et, la
+        première fois, la valeur de mode_machine qu'il contient."""
         with self._lock:
             self._low_state = msg
             if self._mode_machine is None:
@@ -267,12 +305,13 @@ class G1DDSHub:
         self, motor_index: int, mode: int, q: float, dq: float,
         tau: float, kp: float, kd: float,
     ) -> None:
-        """Écrit dans le message LowCmd_ partagé — ne l'envoie PAS
-        encore (voir publish()). Permet à plusieurs G1DDSActuator
-        d'accumuler leurs commandes respectives dans le MÊME message
-        avant un envoi groupé, cohérent avec le protocole réel du G1
-        (un seul message transporte tous les moteurs). Protégé par
-        verrou — voir __init__."""
+        """Écrit la commande d'un moteur dans le message LowCmd_ partagé,
+        sans l'envoyer : l'envoi se fait dans publish().
+
+        Pourquoi : le protocole réel du G1 transporte tous les moteurs
+        dans un seul message. Plusieurs G1DDSActuator peuvent ainsi
+        accumuler leurs commandes respectives dans le même message avant
+        un envoi groupé. Protégé par le verrou (voir __init__)."""
         with self._lock:
             cmd = self._low_cmd.motor_cmd[motor_index]
             cmd.mode = mode
@@ -283,12 +322,13 @@ class G1DDSHub:
             cmd.kd = kd
 
     def publish(self, mode_pr: int = 0) -> None:
-        """Calcule le CRC (obligatoire, voir tête de module) et
-        envoie le message LowCmd_ accumulé sur le réseau DDS. Le
-        verrou couvre le calcul du CRC ET l'écriture réseau, pour
-        qu'aucune écriture concurrente de send_motor_command() ne
-        puisse s'intercaler entre le calcul du CRC et l'envoi
-        effectif du message qu'il est censé authentifier."""
+        """Calcule le CRC (obligatoire, voir en tête de module) puis
+        envoie sur le réseau DDS le message LowCmd_ accumulé.
+
+        Le verrou couvre à la fois le calcul du CRC et l'envoi sur le
+        réseau : aucune écriture concurrente de send_motor_command() ne
+        peut ainsi se glisser entre le calcul du CRC et l'envoi effectif
+        du message qu'il est censé valider."""
         with self._lock:
             self._low_cmd.mode_pr = mode_pr
             self._low_cmd.mode_machine = self._mode_machine
@@ -296,14 +336,17 @@ class G1DDSHub:
             self._publisher.Write(self._low_cmd)
 
     def read_motor_state(self, motor_index: int):
-        """Retourne le MotorState_ courant pour cet index, ou None
-        si aucun LowState_ n'a encore été reçu."""
+        """Retourne le MotorState_ courant (l'état mesuré) de ce moteur,
+        ou None si aucun LowState_ n'a encore été reçu."""
         with self._lock:
             if self._low_state is None:
                 return None
             return self._low_state.motor_state[motor_index]
 
     def read_imu_state(self):
+        """Retourne l'état de l'IMU (centrale inertielle : le capteur
+        d'orientation et d'accélération du robot), ou None si aucun
+        LowState_ n'a encore été reçu."""
         with self._lock:
             if self._low_state is None:
                 return None
@@ -316,13 +359,14 @@ class G1DDSHub:
 
 class G1DDSActuator(IActuator):
     """
-    IActuator réel pour UN joint du G1 physique, via G1DDSHub partagé.
+    IActuator réel pour un seul joint du G1 physique, via le G1DDSHub
+    partagé.
 
-    ⚠️ NON TESTÉ SUR MATÉRIEL RÉEL — voir avertissement en tête de
-    module. Suit exactement le contrat IActuator (interfaces.py) déjà
-    validé par G1SimulatedActuator et par toute la suite de tests
-    existante — aucune application ne devrait avoir besoin d'être
-    modifiée pour utiliser ce driver à la place du simulé, seule la
+    Attention : jamais testé sur matériel réel, voir l'avertissement en
+    tête de module. Respecte exactement le contrat IActuator
+    (interfaces.py), déjà validé par G1SimulatedActuator et par toute la
+    suite de tests existante. Aucune application ne devrait donc avoir à
+    être modifiée pour utiliser ce driver à la place du simulé : seule la
     construction de UnitreeG1HAL change (voir robot.py).
     """
 
@@ -340,20 +384,31 @@ class G1DDSActuator(IActuator):
         self._kp = _DEFAULT_KP.get(self._motor_index, 40.0)
         self._kd = _DEFAULT_KD.get(self._motor_index, 1.0)
 
-        # Borne sur le delta de position (correctif C5, audit de
-        # sécurité) : torque_max / kp — voir JointLimits.
-        # position_delta_max pour la justification physique complète.
-        # Calculée ici (kp est propre à ce driver, pas à JointLimits
-        # lui-même) et injectée via dataclasses.replace() plutôt que de
-        # muter definition.limits, potentiellement partagé.
+        # Borne sur l'écart entre la position commandée et la position
+        # actuelle, ajoutée à la suite d'un audit de sécurité externe
+        # (voir docs/audit_externe_2026-09-14.md et CHANGELOG.md). Sans
+        # elle, une consigne pourtant comprise dans les limites de
+        # l'articulation, mais loin de la position actuelle, faisait
+        # produire au régulateur PD du moteur un couple bien au-delà de
+        # torque_max, le couple maximal autorisé pour l'articulation.
+        # La borne vaut torque_max / kp ; la justification
+        # physique complète est dans JointLimits.position_delta_max
+        # (axis_os/hal/core/types.py). Elle est vérifiée par
+        # JointSafetyGuard, le garde-fou de sécurité de chaque
+        # articulation (axis_os/hal/safety/limits.py).
+        # Calculée ici, car kp est propre à ce driver et non à
+        # JointLimits, puis injectée par dataclasses.replace() plutôt
+        # qu'en modifiant definition.limits, qui peut être partagé.
         limits_with_delta = replace(
             definition.limits,
             position_delta_max=definition.limits.torque_max / self._kp,
-            # current_is_measured reste False (défaut) — feedback.current
-            # vaut toujours 0.0 sur ce driver (voir get_feedback()
-            # ci-dessous, et JointLimits.current_is_measured pour le
-            # contexte complet, second audit externe) : émettre
-            # CURRENT_OVERLOAD ici rassurerait sans jamais protéger.
+            # current_is_measured garde sa valeur par défaut, False :
+            # feedback.current vaut toujours 0.0 sur ce driver (voir
+            # get_feedback() ci-dessous). Un second audit externe a
+            # relevé que surveiller la surintensité (CURRENT_OVERLOAD)
+            # sur une valeur toujours nulle rassurerait sans jamais
+            # protéger ; contexte complet dans
+            # JointLimits.current_is_measured.
         )
         self._guard = JointSafetyGuard(definition.joint_id, limits_with_delta)
 
@@ -368,10 +423,11 @@ class G1DDSActuator(IActuator):
         return HALStatus.OK
 
     def calibrate(self) -> HALStatus:
-        # Le G1 n'expose pas de calibration par joint via ce protocole
-        # bas niveau — la calibration se fait au niveau firmware du
-        # robot, hors de portée d'AXIS-OS. No-op documenté plutôt
-        # qu'une fausse implémentation.
+        # Le G1 ne propose pas de calibration articulation par
+        # articulation dans ce protocole bas niveau : elle se fait dans
+        # le firmware du robot, hors de portée d'AXIS-OS. D'où cette
+        # fonction volontairement sans effet, et documentée comme telle,
+        # plutôt qu'une fausse implémentation.
         return HALStatus.OK
 
     def set_control_mode(self, mode: ControlMode) -> HALStatus:
@@ -380,36 +436,50 @@ class G1DDSActuator(IActuator):
 
     def send_command(self, command: ActuatorCommand, defer_publish: bool = False) -> HALStatus:
         """
-        `defer_publish` : si True, écrit dans le buffer LowCmd_ partagé
-        SANS appeler hub.publish() — l'appelant est alors responsable
-        de publier explicitement une fois, après avoir rempli les 23
-        joints (voir UnitreeG1HAL.send_joint_commands()). False par
-        défaut, pour qu'un appel isolé à send_command() (hors du
-        chemin normal via send_joint_commands, ex: un test ou un
-        script de debug) reste immédiatement effectif, comme avant.
+        Valide la commande de ce joint, l'écrit dans le message LowCmd_
+        partagé et l'envoie, sauf si `defer_publish` est vrai.
 
-        Correctif trouvé par un second audit de sécurité, après la
-        correction initiale de C2 : publier après CHAQUE joint plutôt
-        qu'une fois pour les 23 produisait 22 messages LowCmd_
-        intermédiaires par cycle corps entier — chacun avec une partie
-        des articulations déjà sur la nouvelle consigne et l'autre
-        encore sur l'ancienne. LowCmd_ transporte les 35 moteurs dans
-        UN SEUL message (voir sa structure officielle en tête de
-        module) — le contrôleur du G1, plus rapide que la boucle de
-        commande logicielle, peut verrouiller une de ces poses
-        incohérentes à kp=100 : sur un bipède en appui, un déséquilibre
-        transitoire à chaque cycle de commande complet.
+        `defer_publish` : si True, la commande est écrite dans le message
+        partagé sans appel à hub.publish(). L'appelant doit alors publier
+        lui-même, une seule fois, après avoir rempli les 23 joints (voir
+        UnitreeG1HAL.send_joint_commands()). Vaut False par défaut pour
+        qu'un appel isolé à send_command(), hors du chemin normal qui
+        passe par send_joint_commands (un test ou un script de mise au
+        point, par exemple), reste immédiatement effectif, comme avant.
+
+        Pourquoi ce paramètre : un premier audit de sécurité avait
+        relevé qu'aucune commande n'était jamais envoyée sur le réseau
+        DDS, faute d'appel à publish() (voir CHANGELOG.md). Le premier
+        correctif publiait après chaque joint ; un second audit de
+        sécurité a montré que cela produisait 22 messages LowCmd_
+        intermédiaires par cycle de commande du corps entier, chacun avec
+        une partie des articulations déjà sur la nouvelle consigne et
+        l'autre encore sur l'ancienne. Or LowCmd_ transporte les 35
+        moteurs dans un seul message (voir sa structure officielle en
+        tête de module), et le contrôleur du G1, plus rapide que la
+        boucle de commande logicielle, peut figer l'une de ces poses
+        incohérentes avec un gain kp=100 : sur un bipède en appui, cela
+        crée un déséquilibre passager à chaque cycle de commande complet.
+
+        Retourne ERROR_FAULT si le joint est en arrêt d'urgence ou si une
+        surcharge est détectée (l'arrêt d'urgence du joint est alors
+        déclenché), ERROR_LIMIT si la commande viole une limite de
+        sécurité, OK sinon.
         """
         if self._state == ActuatorState.EMERGENCY_STOP:
             return HALStatus.ERROR_FAULT
 
         feedback = self.get_feedback()
 
-        # Voir robot.py (G1SimulatedActuator.send_command) pour le
-        # contexte complet de ce correctif (E4, audit de sécurité) —
-        # même logique appliquée ici pour le driver matériel réel,
-        # où une surcharge de couple non détectée a des conséquences
-        # physiques réelles, pas seulement simulées.
+        # Surveillance de la santé du moteur avant chaque commande. Un
+        # audit de sécurité a constaté que check_feedback_health(), qui
+        # détecte notamment une surcharge de couple (signe qu'un moteur
+        # force contre un obstacle), n'était appelée nulle part en
+        # production. Même correctif que dans robot.py (voir
+        # G1SimulatedActuator.send_command pour le contexte complet),
+        # appliqué ici au matériel réel, où une surcharge de couple non
+        # détectée a des conséquences physiques réelles, et pas
+        # seulement simulées.
         if feedback is not None:
             health_violations = self._guard.check_feedback_health(feedback)
             for v in health_violations:
@@ -424,17 +494,23 @@ class G1DDSActuator(IActuator):
             print(f"  [SAFETY] {violation}")
             return HALStatus.ERROR_LIMIT
 
-        # Trouvé par un audit de sécurité (exécution réelle) : q ne
-        # doit JAMAIS être transmis dans un mode où il n'a pas de sens
-        # physique. JointSafetyGuard ne valide command.position QUE
-        # si command.mode == POSITION — mais avant ce correctif, q
-        # était transmis inconditionnellement, quel que soit le mode.
-        # Une commande en mode TORQUE ou VELOCITY avec un champ
-        # position resté à une valeur aberrante (objet ActuatorCommand
-        # réutilisé, sortie brute d'un modèle VLA) atteignait le moteur
-        # sans jamais être vérifiée : avec kp≈100, une erreur de
-        # position de plusieurs centaines de radians sature
-        # instantanément le couple du contrôleur PD embarqué.
+        # q (la position de consigne) ne doit JAMAIS être transmis dans
+        # un mode où il n'a pas de sens physique. Un audit de sécurité,
+        # en exécutant réellement le code, a montré le problème : à
+        # l'époque, JointSafetyGuard ne validait command.position qu'en
+        # mode POSITION, alors que q était transmis au moteur quel que
+        # soit le mode. Une commande en mode TORQUE ou VELOCITY dont le
+        # champ position gardait une valeur aberrante (objet
+        # ActuatorCommand réutilisé, sortie brute d'un modèle VLA,
+        # c'est-à-dire un modèle d'IA vision-langage-action qui produit
+        # directement des commandes) atteignait le moteur sans jamais
+        # être vérifiée. Avec kp≈100, une erreur de position de
+        # plusieurs centaines de radians sature instantanément le couple
+        # du régulateur PD embarqué dans le moteur.
+        # Désormais, JointSafetyGuard vérifie la position dès qu'elle est
+        # renseignée, quel que soit le mode (voir
+        # axis_os/hal/safety/limits.py), et q n'est transmis qu'en mode
+        # POSITION ou IMPEDANCE, les seuls où il a un sens.
         send_position = command.mode in (ControlMode.POSITION, ControlMode.IMPEDANCE)
 
         self._hub.send_motor_command(
@@ -452,20 +528,24 @@ class G1DDSActuator(IActuator):
         return HALStatus.OK
 
     def emergency_stop(self) -> HALStatus:
-        # kp=kd=0, tau=0 : coupe le couple actif sur CE moteur tout en
-        # gardant mode=1 (Enable) — le moteur cesse de pousser mais
-        # reste "vu" par le firmware, plutôt que mode=0 qui pourrait
-        # le faire retomber en roue libre de façon incontrôlée selon
-        # la charge portée à cet instant précis (ex: un bras en l'air).
+        # Arrêt d'urgence (e-stop) de ce moteur.
+        # kp = kd = 0 et tau = 0 (tau est le couple de consigne) coupent
+        # le couple actif de ce moteur-ci, tout en gardant mode=1 (moteur
+        # activé, « Enable ») : le moteur cesse de pousser mais reste
+        # actif du point de vue du firmware.
+        # mode=0 pourrait au contraire le laisser retomber en roue libre
+        # de façon incontrôlée, selon la charge qu'il porte à cet instant
+        # précis (un bras levé, par exemple).
         #
-        # publish() immédiat et INCONDITIONNEL — trouvé critique par
-        # un audit de sécurité : send_motor_command() n'écrit que dans
-        # un buffer local partagé (voir sa docstring), il ne transmet
-        # rien sur le réseau DDS tant que publish() n'est pas appelé.
-        # L'arrêt d'urgence est le SEUL chemin du système qui ne doit
-        # jamais dépendre d'un envoi groupé ultérieur (voir
-        # send_command() ci-dessus, qui publie aussi — mais un e-stop
-        # ne doit pas attendre le prochain appel normal pour partir).
+        # publish() est appelé immédiatement et sans condition ; un audit
+        # de sécurité a jugé ce point critique. send_motor_command()
+        # n'écrit que dans un message local partagé (voir sa docstring)
+        # et ne transmet rien sur le réseau DDS tant que publish() n'est
+        # pas appelé. L'arrêt d'urgence est le SEUL chemin du système qui
+        # ne doit jamais dépendre d'un envoi groupé ultérieur.
+        # send_command() (ci-dessus) publie aussi par défaut, mais un
+        # e-stop ne doit pas attendre le prochain appel normal pour
+        # partir.
         self._hub.send_motor_command(
             motor_index=self._motor_index,
             mode=1, q=0.0, dq=0.0, tau=0.0, kp=0.0, kd=0.0,
@@ -475,6 +555,8 @@ class G1DDSActuator(IActuator):
         return HALStatus.OK
 
     def get_feedback(self) -> Optional[ActuatorFeedback]:
+        """Dernier état mesuré du moteur, converti en ActuatorFeedback,
+        ou None si le robot n'a encore envoyé aucun LowState_."""
         motor_state = self._hub.read_motor_state(self._motor_index)
         if motor_state is None:
             return None
@@ -484,12 +566,13 @@ class G1DDSActuator(IActuator):
             position=motor_state.q,
             velocity=motor_state.dq,
             torque=motor_state.tau_est,
-            current=0.0,  # non exposé par MotorState_ — voir sa définition
-            # temperature[0] = capteur moteur, temperature[1] = capteur
-            # driver selon la structure officielle MotorState_ ; on
-            # remonte le moteur, plus directement pertinent pour
-            # JointSafetyGuard (seuils déjà pensés pour une température
-            # de bobinage, pas de carte électronique).
+            current=0.0,  # absent de MotorState_ (voir sa définition)
+            # Selon la structure officielle MotorState_, temperature[0]
+            # vient du capteur du moteur et temperature[1] de celui du
+            # driver (la carte électronique qui l'alimente). On remonte
+            # celle du moteur, plus directement utile à JointSafetyGuard,
+            # dont les seuils visent une température de bobinage et non
+            # de carte électronique.
             temperature=float(motor_state.temperature[0]),
             voltage=motor_state.vol,
         )
