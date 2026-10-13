@@ -1,24 +1,27 @@
 """
 AXIS-OS — MemoryService, premier service système réel
 ============================================================
-Écrit pour valider le contrat IService/ServiceResult (axis_os/
-services/base.py) par l'usage — pas une coquille vide. Choisi en
-premier délibérément : c'est le seul des cinq services envisagés
-(voir docs/architecture_services*.md) sans dépendance à un modèle
-IA — du stockage clé-valeur persisté sur disque, entièrement
-testable ce soir, sans caméra, sans ASR/TTS, sans politique de
-marche.
+Ce service a été écrit pour valider par l'usage le contrat
+IService/ServiceResult (axis_os/services/base.py) : une vraie
+implémentation, pas une coquille vide. Il a été choisi en premier
+délibérément : des cinq services envisagés (voir
+docs/architecture_services.md §3.2), c'est le seul qui ne dépend
+d'aucun modèle d'IA. Il s'agit d'un stockage clé-valeur persisté sur
+disque, entièrement testable sans caméra, sans ASR ni TTS
+(reconnaissance et synthèse vocales) et sans politique de marche (le
+contrôleur qui fait marcher le robot).
 
-Corrige au passage un vrai bug relevé par un audit externe : l'état
-de facturation (InstalledApp.one_time_billed,
-last_subscription_bill_time_s dans axis_os/store/runtime/play_store.py)
-est tenu EN MÉMOIRE uniquement et perdu à tout redémarrage du
-process — documenté explicitement à l'époque comme limite assumée,
-faute d'une vraie couche de persistance. MemoryService.app_store()/
-app_load() est exactement cette couche, maintenant disponible.
-Brancher PlayStoreRuntime dessus reste un chantier séparé (pas fait
-ce soir, pour rester dans l'ordre demandé), mais le service lui-même
-est prêt à l'usage.
+Il corrige au passage un vrai bug relevé par un audit externe : l'état
+de facturation (InstalledApp.one_time_billed et
+last_subscription_bill_time_s, dans axis_os/store/runtime/play_store.py)
+n'était tenu qu'en mémoire, et donc perdu à chaque redémarrage du
+processus. C'était alors une limite documentée et assumée, faute d'une
+vraie couche de persistance. MemoryService.app_store()/app_load() est
+exactement cette couche. Le branchement de PlayStoreRuntime sur ce
+service a d'abord été laissé à un chantier séparé ; il a été fait
+depuis, en option, par le paramètre memory_service de PlayStoreRuntime
+(voir CHANGELOG.md, entrée du 2026-09-16, et
+test/test_billing_persistence.py).
 
 Licence : Apache 2.0
 """
@@ -37,12 +40,15 @@ from axis_os.services.base import IService, ServiceResult, ServiceHealth
 
 def _default_storage_dir() -> Path:
     """
-    Répertoire de stockage par défaut : ./memory_store/ relatif au
-    répertoire de travail courant — même pattern que
-    structured_log.py::_default_log_dir(), pour rester cohérent avec
-    le seul autre composant de persistance disque déjà existant dans
-    le projet. Override possible via AXIS_OS_MEMORY_DIR, utile pour
-    les tests (répertoire temporaire) sans changer le code appelant.
+    Répertoire de stockage par défaut : ./memory_store/, relatif au
+    répertoire de travail courant.
+
+    C'est le même choix que _default_log_dir() dans
+    axis_os/hal/core/structured_log.py, pour rester cohérent avec le
+    seul autre composant du projet qui écrivait déjà sur disque à
+    l'époque. La variable d'environnement AXIS_OS_MEMORY_DIR permet de
+    choisir un autre répertoire sans modifier le code appelant, ce qui
+    sert notamment aux tests (répertoire temporaire).
     """
     override = os.environ.get("AXIS_OS_MEMORY_DIR")
     return Path(override) if override else Path("memory_store")
@@ -50,23 +56,32 @@ def _default_storage_dir() -> Path:
 
 class MemoryService(IService):
     """
-    Persisté sur disque (JSON, un fichier par catégorie), survit au
-    redémarrage du process — c'est précisément ce qui manquait à
-    PlayStoreRuntime pour son état de facturation (voir docstring de
-    module).
+    Mémoire persistante du robot : lieux, objets, épisodes passés, et
+    un espace privé par app.
 
-    Cloisonnement obligatoire pour app_store()/app_load() : chaque
-    clé est préfixée par app_id, une app ne peut JAMAIS lire l'espace
-    d'une autre — sinon une app gratuite pourrait siphonner les
-    données d'une app payante. Implémenté dès cette première version,
-    pas ajouté après coup (voir docs/architecture_services*.md §3.2).
+    Les données sont écrites sur disque en JSON, un fichier par
+    catégorie, et survivent donc au redémarrage du processus. C'est
+    précisément ce qui manquait à PlayStoreRuntime pour son état de
+    facturation (voir la docstring du module).
 
-    Thread-safety : un verrou protège chaque écriture disque — ce
-    service est un singleton partagé, potentiellement appelé
-    concurremment par plusieurs apps (services système appelables
-    PENDANT une mission, contrairement aux apps sandboxées qui sont
-    mutuellement exclues par le verrou de mission — voir
-    docs/architecture_services*.md §6.1).
+    Cloisonnement obligatoire de app_store()/app_load() : chaque clé
+    est préfixée par l'app_id (l'identifiant unique de l'app), et une
+    app ne peut JAMAIS lire l'espace d'une autre. Sans cela, une app
+    gratuite pourrait siphonner les données d'une app payante. Ce
+    cloisonnement existe dès cette première version, il n'a pas été
+    ajouté après coup (voir docs/architecture_services.md §3.2).
+
+    Accès concurrents : un verrou protège chaque lecture et chaque
+    écriture sur disque. Ce service est un singleton (une seule instance
+    pour tout le robot) partagé, potentiellement appelé en même temps
+    par plusieurs apps : les services système restent appelables
+    pendant une mission, alors que
+    les apps, chacune dans son bac à sable (processus isolé), sont
+    mutuellement exclues par le verrou de mission (voir
+    docs/architecture_services.md §6.1). Limite : le verrou couvre la
+    lecture et l'écriture séparément, pas la séquence complète « lire,
+    modifier, réécrire » d'une méthode publique ; deux modifications
+    simultanées de la même catégorie peuvent donc s'écraser.
     """
 
     def __init__(self, storage_dir: Optional[Path] = None):
@@ -93,11 +108,11 @@ class MemoryService(IService):
         return HALStatus.OK
 
     def stop(self) -> None:
-        # Rien à libérer — chaque appel ouvre/ferme son propre
-        # fichier (voir _read_category()/_write_category()), pas de
-        # ressource persistante à relâcher ici. Idempotent par
-        # construction : appeler stop() plusieurs fois, ou avant
-        # start(), ne fait jamais rien de dangereux.
+        # Rien à libérer : chaque appel ouvre et ferme son propre
+        # fichier (voir _read_category() et _write_category()), aucune
+        # ressource ne reste ouverte entre deux appels. stop() est
+        # donc idempotent par construction : l'appeler plusieurs fois,
+        # ou avant start(), ne fait jamais rien de dangereux.
         self._started = False
 
     def health(self) -> ServiceHealth:
@@ -109,13 +124,16 @@ class MemoryService(IService):
                                  detail=f"Répertoire de stockage absent : {self._storage_dir}")
         return ServiceHealth(running=True, healthy=True)
 
-    # ── Mémoire sémantique : les faits stables ──────────────────────
+    # ── Mémoire sémantique : les faits stables (lieux, objets) ──────
 
     def remember_place(self, name: str, pose: dict) -> ServiceResult:
-        """`pose` : dict simple (ex: {"x": 1.2, "y": 0.5, "theta": 0.0})
-        — pas de dépendance à un type Pose du HAL, pour que ce service
-        reste utilisable sans navigation réelle (non implémentée ce
-        soir)."""
+        """Mémorise la pose (position et orientation) d'un lieu nommé.
+
+        `pose` est un dict simple, par exemple
+        {"x": 1.2, "y": 0.5, "theta": 0.0}, plutôt qu'un type Pose du
+        HAL (la couche d'abstraction matérielle, axis_os/hal/) : ce
+        service reste ainsi utilisable sans navigation réelle, qui
+        n'existait pas encore quand il a été écrit."""
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
         if not name or not name.strip():
@@ -126,6 +144,8 @@ class MemoryService(IService):
         return ServiceResult(ok=True, value=pose)
 
     def recall_place(self, name: str) -> ServiceResult:
+        """Rend la pose mémorisée du lieu `name`, ou un échec explicite
+        si ce lieu est inconnu."""
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
         places = self._read_category("places")
@@ -134,6 +154,9 @@ class MemoryService(IService):
         return ServiceResult(ok=True, value=places[name])
 
     def remember_object(self, label: str, place: str) -> ServiceResult:
+        """Note qu'un objet `label` a été vu au lieu `place`. Un même
+        objet peut être associé à plusieurs lieux, sans doublon ; la
+        valeur rendue est la liste complète de ses lieux."""
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
         objects = self._read_category("objects")
@@ -146,10 +169,13 @@ class MemoryService(IService):
     # ── Mémoire épisodique : ce qui s'est passé ─────────────────────
 
     def log_episode(self, episode: dict) -> ServiceResult:
-        """`episode` : dict simple, structure libre à l'appelant
-        (pas de dataclass Episode imposée ce soir — voir
-        docs/architecture_services*.md pour la conception cible
-        complète, non implémentée ici)."""
+        """Ajoute un épisode (un événement passé) à la fin du journal.
+
+        `episode` est un dict simple, de structure libre pour
+        l'appelant : aucune dataclass Episode n'est imposée pour
+        l'instant. La conception cible complète, non implémentée ici,
+        est décrite dans docs/architecture_services.md (§3.2,
+        Mémoire)."""
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
         episodes = self._read_category("episodes")
@@ -160,11 +186,16 @@ class MemoryService(IService):
         return ServiceResult(ok=True, value=episode)
 
     def recall_episodes(self, query: str, limit: int = 10) -> ServiceResult:
-        """Recherche NAÏVE (sous-chaîne, insensible à la casse) —
-        volontairement, pas d'embedding ni de similarité sémantique :
-        cohérent avec la même remarque faite pour
-        IntentRegistry.match() dans docs/architecture_services*.md,
-        « n'a pas besoin d'être intelligent au départ »."""
+        """Rend les épisodes dont le contenu contient `query`, au plus
+        `limit`, en gardant les plus récents.
+
+        La recherche est volontairement naïve : une sous-chaîne,
+        insensible à la casse, cherchée dans le JSON de chaque épisode,
+        sans embedding (représentation d'un texte par un vecteur
+        numérique) ni similarité sémantique. C'est cohérent avec ce que
+        docs/architecture_services.md (§4.1) dit de
+        IntentRegistry.match() : il « n'a pas besoin d'être intelligent
+        au départ »."""
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
         episodes = self._read_category("episodes")
@@ -181,12 +212,14 @@ class MemoryService(IService):
 
     def app_store(self, app_id: str, key: str, value: Any) -> ServiceResult:
         """
-        Cloisonnement : la clé physique sur disque est TOUJOURS
-        préfixée par app_id (voir _app_key() ci-dessous) — une app ne
-        peut jamais, même en fournissant une clé identique, écraser
-        ou lire les données d'une autre app_id. Vérifié explicitement
-        par test_memory_service.py, pas seulement supposé par
-        construction.
+        Écrit `value` sous `key` dans l'espace privé de l'app `app_id`.
+
+        Cloisonnement : la clé physique sur disque est TOUJOURS formée
+        à partir de app_id (voir _app_key() ci-dessous). Une app ne
+        peut donc jamais, même en fournissant une clé identique, écraser
+        ou lire les données d'un autre app_id. C'est vérifié
+        explicitement par test/test_memory_service.py, et pas seulement
+        supposé par construction.
         """
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
@@ -198,6 +231,8 @@ class MemoryService(IService):
         return ServiceResult(ok=True, value=value)
 
     def app_load(self, app_id: str, key: str) -> ServiceResult:
+        """Relit une valeur de l'espace privé de l'app `app_id`, ou rend
+        un échec explicite si cette clé n'existe pas pour cette app."""
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
         store = self._read_category("app_store")
@@ -209,17 +244,17 @@ class MemoryService(IService):
     @staticmethod
     def _app_key(app_id: str, key: str) -> str:
         """
-        Encode app_id et key en JSON avant de les joindre — trouvé
-        nécessaire par un test dédié (test_memory_service.py section
-        4) : un simple séparateur textuel ("::") reste vulnérable à
-        collision quand ce même séparateur apparaît DANS app_id ou
-        key (app_id="a::b", key="c" produit la même clé finale que
-        app_id="a", key="b::c" avec une simple concaténation).
-        json.dumps() échappe explicitement tout caractère spécial
-        dans chaque partie AVANT la concaténation, éliminant cette
-        classe de collision plutôt que de se reposer sur un
-        séparateur qui espère ne jamais apparaître dans les données
-        réelles.
+        Encode app_id et key en JSON avant de les assembler.
+
+        Un test dédié (section 4 de test/test_memory_service.py) a
+        montré que c'était nécessaire : un simple séparateur textuel
+        ("::") laisse des collisions possibles dès que ce séparateur
+        apparaît dans app_id ou dans key. Avec une concaténation simple,
+        app_id="a::b", key="c" donne la même clé finale que app_id="a",
+        key="b::c". json.dumps() échappe les caractères spéciaux de
+        chaque partie avant l'assemblage, ce qui élimine cette classe de
+        collision, au lieu de compter sur un séparateur dont on espère
+        qu'il n'apparaîtra jamais dans les données réelles.
         """
         return json.dumps([app_id, key], ensure_ascii=False)
 
@@ -229,6 +264,10 @@ class MemoryService(IService):
         return self._storage_dir / f"{category}.json"
 
     def _read_category(self, category: str):
+        """Lit une catégorie depuis son fichier JSON. « episodes » est
+        une liste (journal dans l'ordre d'arrivée), les autres
+        catégories sont des dictionnaires ; une catégorie absente rend
+        un conteneur vide du bon type."""
         path = self._category_path(category)
         with self._lock:
             if not path.exists():
@@ -237,10 +276,11 @@ class MemoryService(IService):
                 with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except (OSError, json.JSONDecodeError):
-                # Fichier corrompu ou illisible — ne jamais planter la
-                # lecture, repartir d'un état vide plutôt que de
-                # propager une exception jusqu'à l'appelant d'un
-                # service système censé être toujours disponible.
+                # Fichier corrompu ou illisible : un service système
+                # doit rester disponible, donc on ne fait jamais planter
+                # la lecture. On repart d'un état vide plutôt que de
+                # propager une exception jusqu'à l'appelant (cas vérifié
+                # par la section 5 de test/test_memory_service.py).
                 return {} if category != "episodes" else []
 
     def _write_category(self, category: str, data) -> None:
@@ -249,7 +289,9 @@ class MemoryService(IService):
             tmp_path = path.with_suffix(".json.tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            # Renommage atomique — évite un fichier à moitié écrit si
-            # le process est interrompu en plein milieu de
-            # l'écriture (coupure d'alimentation, kill -9).
+            # Écriture dans un fichier temporaire puis renommage
+            # atomique : si le processus est interrompu en pleine
+            # écriture (coupure d'alimentation, kill -9, c'est-à-dire
+            # un arrêt forcé), le fichier final n'est jamais laissé à
+            # moitié écrit.
             tmp_path.replace(path)

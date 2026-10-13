@@ -1,31 +1,35 @@
 """
 AXIS-OS — Service de parole : de la voix à une INTENTION.
 
-Quatrième service système. Transforme « va vers le carton » en une
-intention nommée, avec ses paramètres — jamais en commandes moteur.
+Quatrième service système. Il transforme une phrase comme « va vers le
+carton » en une intention nommée, avec ses paramètres, et jamais en
+commandes moteur.
 
-DEUX ÉTAGES, comme pour la perception :
+Deux étages, comme pour la perception :
 
-    ISpeechRecognizer  — le MODÈLE : audio -> texte. Remplaçable.
-    IntentRegistry     — les INTENTIONS : texte -> action nommée.
-                         Déclarées par les apps, pas par l'OS.
+    ISpeechRecognizer  — le modèle, qui passe de l'audio au texte ;
+                         il est remplaçable.
+    IntentRegistry     — les intentions, qui passent du texte à une
+                         action nommée ; elles sont déclarées par les
+                         apps, pas par l'OS.
 
-INVARIANT DE SÉCURITÉ, le même que pour toute IA dans AXIS-OS : un
-modèle de parole ne produit JAMAIS de commande articulaire. Il produit
-au mieux le nom d'une intention et des paramètres. C'est ensuite une
-app — code écrit, auditable, avec ses permissions — qui décide quoi en
-faire. Entre la phrase et le moteur, il y a toujours du code
-responsable.
+INVARIANT DE SÉCURITÉ, le même que pour toute IA dans AXIS-OS (voir
+docs/architecture_services.md §8) : un modèle de parole ne produit
+JAMAIS de commande articulaire (une consigne envoyée à un moteur). Il
+produit au mieux le nom d'une intention et des paramètres. C'est
+ensuite une app, c'est-à-dire du code écrit, auditable et soumis à ses
+permissions, qui décide quoi en faire. Entre la phrase et le moteur, il
+y a toujours du code responsable.
 
-Concrètement, cela veut dire qu'une phrase inattendue ne peut pas faire
-n'importe quoi : elle ne correspond à aucune intention déclarée, et il
-ne se passe rien. Le pire cas d'une reconnaissance ratée est
-l'inaction, jamais un mouvement imprévu.
+Concrètement, une phrase inattendue ne peut pas faire n'importe quoi :
+si elle ne correspond à aucune intention déclarée, il ne se passe rien.
+Le pire cas d'une reconnaissance ratée est l'inaction, jamais un
+mouvement imprévu.
 
-POURQUOI UN REGISTRE PLUTÔT QU'UN MODÈLE QUI DÉCIDE : une app déclare
-ce qu'elle sait faire, l'OS choisit qui appeler. C'est le modèle des
-intentions d'Android, et c'est ce qui permet d'installer une app sans
-réentraîner quoi que ce soit.
+Pourquoi un registre plutôt qu'un modèle qui décide : une app déclare
+ce qu'elle sait faire, et l'OS choisit qui appeler. C'est le principe
+des intentions (« intents ») d'Android, et c'est ce qui permet
+d'installer une app sans réentraîner quoi que ce soit.
 """
 from __future__ import annotations
 
@@ -44,7 +48,11 @@ from axis_os.store.sdk.manifest import Capability
 
 @dataclass(frozen=True)
 class Intent:
-    """Intention reconnue dans une phrase."""
+    """Intention reconnue dans une phrase.
+
+    `params` reprend les paramètres déclarés par l'app ; `confidence`
+    est le score de correspondance calculé par IntentRegistry.match()
+    (entre 0 et 1) ; `utterance` est la phrase d'origine."""
     name: str
     params: Dict[str, str] = field(default_factory=dict)
     confidence: float = 0.0
@@ -52,13 +60,14 @@ class Intent:
 
 
 class ISpeechRecognizer(ABC):
-    """Contrat d'un modèle de transcription — le MODÈLE, pas le service."""
+    """Contrat d'un modèle de transcription (audio vers texte) : le
+    modèle lui-même, pas le service."""
 
     @abstractmethod
     def transcribe(self, audio: AudioChunk) -> Tuple[str, float]:
-        """Rend (texte, confiance). Texte vide si rien n'a été compris :
-        ne jamais inventer une phrase plausible, le silence est une
-        réponse valable."""
+        """Rend (texte, confiance). Le texte est vide si rien n'a été
+        compris : ne jamais inventer une phrase plausible, le silence
+        est une réponse valable."""
 
     @property
     @abstractmethod
@@ -66,8 +75,9 @@ class ISpeechRecognizer(ABC):
 
 
 class NullSpeechRecognizer(ISpeechRecognizer):
-    """Ne transcrit rien, honnêtement. Permet de tester toute la chaîne
-    — micro, registre, app — sans modèle."""
+    """Reconnaisseur qui ne transcrit rien, honnêtement : il rend
+    toujours un texte vide. Il permet de tester toute la chaîne (micro,
+    registre, app) sans modèle."""
 
     def transcribe(self, audio: AudioChunk) -> Tuple[str, float]:
         return "", 0.0
@@ -85,6 +95,9 @@ def normalize(text: str) -> str:
     correspondre à la même intention. Faire dépendre une action d'un
     accent ou d'une virgule serait absurde.
     """
+    # La décomposition Unicode NFD sépare chaque lettre accentuée en
+    # lettre de base suivie d'un accent combinant (catégorie « Mn ») :
+    # « é » devient « e » + accent, et la ligne suivante retire l'accent.
     t = unicodedata.normalize("NFD", text.lower())
     t = "".join(c for c in t if unicodedata.category(c) != "Mn")
     return " ".join(re.sub(r"[^a-z0-9]+", " ", t).split())
@@ -98,6 +111,9 @@ class IntentDeclaration:
     présents pour que l'intention corresponde — « aller » ET « carton »,
     pas l'un ou l'autre. Exiger la conjonction évite qu'une phrase
     vague déclenche une action.
+
+    `params` : paramètres fixes, renvoyés tels quels dans l'Intent
+    reconnu. `description` : texte libre décrivant l'intention.
     """
     name: str
     keywords: Sequence[Sequence[str]]
@@ -106,19 +122,22 @@ class IntentDeclaration:
 
 
 class IntentRegistry:
-    """Correspondance phrase -> intention déclarée.
+    """Correspondance entre une phrase et une intention déclarée.
 
     Volontairement simple et LISIBLE plutôt que statistique : on doit
     pouvoir dire pourquoi une phrase a déclenché une action, et
-    pourquoi une autre n'a rien fait. Un modèle de langage
-    remplacerait ce composant un jour, mais il devrait rendre le même
-    type de résultat — une intention nommée, jamais une commande.
+    pourquoi une autre n'a rien fait. Un modèle de langage pourrait
+    remplacer ce composant un jour, mais il devrait rendre le même
+    type de résultat : une intention nommée, jamais une commande.
     """
 
     def __init__(self):
         self._intents: List[IntentDeclaration] = []
 
     def register(self, decl: IntentDeclaration) -> None:
+        """Ajoute une déclaration. Un nom déjà déclaré est refusé
+        (ValueError) : un nom d'intention désigne une seule
+        déclaration."""
         if any(d.name == decl.name for d in self._intents):
             raise ValueError(f"intention '{decl.name}' déjà déclarée")
         self._intents.append(decl)
@@ -143,14 +162,21 @@ class IntentRegistry:
         for decl in self._intents:
             touches = 0
             for groupe in decl.keywords:
+                # Un mot-clé compte s'il apparaît dans la phrase
+                # normalisée, y compris comme simple sous-chaîne : cela
+                # permet des mots-clés de plusieurs mots (« va vers »),
+                # mais un mot-clé court peut aussi correspondre à
+                # l'intérieur d'un mot plus long.
                 if any(normalize(k) in norm or normalize(k) in mots
                        for k in groupe):
                     touches += 1
             if touches != len(decl.keywords):
                 continue            # tous les groupes sont exigés
-            # Score : proportion de mots de la phrase expliqués par
-            # l'intention. Départage deux intentions qui correspondent
-            # toutes deux, en préférant la plus spécifique.
+            # Score : nombre de groupes divisé par le nombre total de
+            # synonymes déclarés. Il départage deux intentions qui
+            # correspondent toutes deux, en préférant la plus spécifique
+            # (celle dont le vocabulaire est le plus resserré). À
+            # égalité, la première déclarée l'emporte.
             attendus = sum(len(g) for g in decl.keywords)
             score = len(decl.keywords) / max(attendus, 1)
             if score > score_max:
@@ -163,7 +189,16 @@ class IntentRegistry:
 
 
 class SpeechService(IService):
-    """Écoute, transcrit, et rend une INTENTION."""
+    """Écoute, transcrit, et rend une INTENTION (jamais une commande).
+
+    `microphone` : le micro, vu à travers l'interface IMicrophone du HAL
+    (la couche d'abstraction matérielle). `recognizer` : le modèle de
+    transcription ; sans modèle, NullSpeechRecognizer. `registry` : les
+    intentions déclarées par les apps. `min_confidence` : seuil sous
+    lequel une transcription est ignorée plutôt qu'exécutée au hasard.
+    `stats` : compteurs d'écoutes, de transcriptions vides, de phrases
+    sans intention et d'intentions reconnues, utiles au diagnostic.
+    """
 
     def __init__(self, microphone: IMicrophone,
                  recognizer: Optional[ISpeechRecognizer] = None,
@@ -190,6 +225,9 @@ class SpeechService(IService):
         return self._registry
 
     def start(self) -> HALStatus:
+        # Le micro n'est initialisé que s'il n'est pas déjà en bonne
+        # santé ; un échec d'initialisation est rendu tel quel, et le
+        # service reste alors arrêté.
         if not self._mic.is_healthy():
             st = self._mic.initialize()
             if st is not HALStatus.OK:
@@ -204,6 +242,9 @@ class SpeechService(IService):
         if not self._started:
             return ServiceHealth(running=False, healthy=False,
                                  detail="service non démarré")
+        # Sans modèle, le service reste déclaré sain : la chaîne
+        # fonctionne, elle ne comprend simplement rien, et le détail le
+        # dit explicitement.
         if isinstance(self._rec, NullSpeechRecognizer):
             return ServiceHealth(running=True, healthy=True,
                                  detail="aucun modèle de transcription — "
@@ -214,12 +255,15 @@ class SpeechService(IService):
     # ---- API ---------------------------------------------------------
 
     def listen(self, duration_s: float = 3.0) -> ServiceResult:
-        """Écoute, transcrit, et cherche une intention.
+        """Écoute pendant `duration_s` secondes, transcrit, et cherche
+        une intention.
 
         value = Intent, ou None si rien ne correspond. `reason` dit
-        toujours POURQUOI il ne se passe rien : silence, transcription
-        vide, ou phrase hors du vocabulaire déclaré. Un robot muet qui
-        n'explique pas son silence est indébogable.
+        toujours pourquoi il ne se passe rien : silence, transcription
+        vide, transcription peu sûre ou phrase hors du vocabulaire
+        déclaré. Un robot muet qui n'explique pas son silence est
+        indébogable. ok=False est réservé au service non démarré et à
+        l'absence totale de son capté.
         """
         if not self._started:
             return ServiceResult(ok=False, reason="service non démarré")

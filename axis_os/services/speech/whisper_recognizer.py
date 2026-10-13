@@ -1,14 +1,22 @@
 """
 AXIS-OS — Transcription par Whisper (OpenAI), via transformers.
 
-Première implémentation réelle d'ISpeechRecognizer. Le service de parole
-ne change pas d'une ligne : même séparation code/modèle que pour la
-perception.
+Whisper est un modèle de reconnaissance de la parole publié par OpenAI ;
+transformers est la bibliothèque Python de Hugging Face (la plateforme
+qui héberge les modèles publiés) qui sert à le télécharger et à
+l'exécuter, en s'appuyant sur torch (PyTorch, la bibliothèque de calcul
+qui fait tourner le modèle).
 
-POURQUOI WHISPER : licence MIT, multilingue sans configuration,
-robuste au bruit, et disponible en plusieurs tailles — du modèle
-`tiny` (39 M paramètres, exploitable sur un Jetson) au `large`. La
-taille se choisit selon le matériel, sans changer une ligne d'AXIS-OS.
+Ce fichier est la première implémentation réelle d'ISpeechRecognizer
+(voir axis_os/services/speech/service.py). Le service de parole n'a pas
+changé d'une ligne pour l'accueillir : c'est la même séparation entre
+le code et le modèle que pour la perception.
+
+POURQUOI WHISPER : licence MIT (très permissive), multilingue sans
+configuration, robuste au bruit, et disponible en plusieurs tailles, du
+modèle `tiny` (39 M paramètres, exploitable sur un Jetson, la carte de
+calcul embarquée de NVIDIA) au `large`. La taille se choisit selon le
+matériel, sans changer une ligne d'AXIS-OS.
 
 CE QUI N'EST PAS FAIT ICI, volontairement : la détection d'activité
 vocale. Ce composant transcrit une durée fixe d'audio. Un robot qui
@@ -24,23 +32,41 @@ from axis_os.hal.core.types import AudioChunk
 from axis_os.services.speech.service import ISpeechRecognizer
 
 WHISPER_SAMPLE_RATE = 16000
-"""Whisper attend du 16 kHz. Un audio à une autre fréquence donne une
-transcription fausse SANS ERREUR : les mots sont déformés, le modèle
-rend quand même quelque chose de plausible. D'où le rééchantillonnage
-explicite ci-dessous."""
+"""Fréquence d'échantillonnage attendue par Whisper : 16 kHz (16 000
+échantillons par seconde). Un audio à une autre fréquence donne une
+transcription fausse SANS ERREUR : les mots sont déformés, mais le
+modèle rend quand même quelque chose de plausible. D'où le
+rééchantillonnage explicite dans to_float_mono() ci-dessous."""
 
 
 class WhisperRecognizer(ISpeechRecognizer):
+    """Reconnaisseur de parole fondé sur Whisper.
+
+    Le constructeur ne charge rien : c'est load() qui télécharge et
+    charge les poids (les paramètres appris du modèle), une opération
+    coûteuse à faire une fois. Tant que le modèle n'est pas chargé,
+    transcribe() rend un texte vide.
+    """
 
     def __init__(self, model_name: str = "openai/whisper-small",
                  language: str = "fr", device: Optional[str] = None,
                  revision: Optional[str] = None):
         """
-        revision : identifiant de commit des poids. None = dernière
-            version publiée, donc un comportement qui peut changer sans
-            qu'AXIS-OS bouge. (OWL-ViT, lui, est épinglé et refuse de
-            charger sans révision depuis l'audit du 2026-10-10 — voir
-            owlvit_detector.OWLVIT_REVISION ; Whisper reste à épingler.)
+        model_name : nom du modèle sur Hugging Face.
+        language : langue imposée à la transcription.
+        device : "cuda" (carte graphique NVIDIA) ou "cpu" ; None laisse
+            load() choisir la carte graphique si elle est disponible.
+        revision : identifiant de commit des poids, c'est-à-dire une
+            version figée du modèle publié. None = dernière version
+            publiée, donc un comportement qui peut changer sans
+            qu'AXIS-OS bouge. OWL-ViT (le modèle de détection d'objets
+            du service de perception), lui, est épinglé : depuis un
+            audit de sécurité du 10 octobre 2026, il refuse de charger
+            sans révision figée (voir
+            axis_os/services/perception/owlvit_detector.py,
+            OWLVIT_REVISION). Whisper reste
+            à épingler ; load() affiche un avertissement tant que ce
+            n'est pas fait.
         """
         self._model_name = model_name
         self._language = language
@@ -59,8 +85,20 @@ class WhisperRecognizer(ISpeechRecognizer):
         return self._model is not None
 
     def load(self) -> bool:
+        """Charge le préprocesseur de Whisper (WhisperProcessor, qui
+        prépare l'audio pour le modèle et décode le texte produit) et
+        les poids du modèle.
+
+        Rend True si le modèle est prêt (y compris s'il l'était déjà),
+        False sinon : dépendances absentes ou chargement impossible.
+        L'erreur est alors gardée dans _load_error et affichée, sans
+        lever d'exception, pour qu'un modèle absent ne fasse pas
+        planter l'appelant.
+        """
         if self._model is not None:
             return True
+        # Imports différés : torch et transformers sont des dépendances
+        # facultatives, dont l'absence doit donner un échec propre.
         try:
             import torch
             from transformers import (
@@ -73,6 +111,8 @@ class WhisperRecognizer(ISpeechRecognizer):
         try:
             if self._device is None:
                 self._device = "cuda" if torch.cuda.is_available() else "cpu"
+            # Sans révision explicite, aucun argument n'est passé :
+            # transformers prend alors la dernière version publiée.
             kw = {"revision": self._revision} if self._revision else {}
             self._processor = WhisperProcessor.from_pretrained(
                 self._model_name, **kw)
@@ -95,11 +135,16 @@ class WhisperRecognizer(ISpeechRecognizer):
     def to_float_mono(audio: AudioChunk):
         """AudioChunk (PCM entier) -> tableau de flottants mono à 16 kHz.
 
-        Trois conversions, chacune silencieuse si omise :
-          - entiers signés vers flottants dans [-1, 1] ;
+        PCM désigne l'audio brut, une suite d'échantillons entiers.
+        Trois conversions sont nécessaires, et chacune passe inaperçue
+        si on l'omet :
+          - entiers vers flottants dans [-1, 1] (16 et 32 bits sont
+            signés ; 8 bits est non signé, centré sur 128) ;
           - plusieurs canaux vers un seul (moyenne) ;
           - rééchantillonnage vers 16 kHz.
-        Une seule oubliée donne une transcription fausse sans erreur.
+        Une seule conversion oubliée donne une transcription fausse sans
+        erreur. Une largeur d'échantillon non gérée lève donc ValueError
+        plutôt que de produire une transcription fausse.
         """
         import numpy as np
         if audio.sample_width == 2:
@@ -119,12 +164,15 @@ class WhisperRecognizer(ISpeechRecognizer):
         x = x / echelle
 
         if audio.channels > 1:
+            # Les échantillons de queue qui ne forment pas une trame
+            # complète (un échantillon pour chaque canal) sont ignorés
+            # avant de faire la moyenne.
             n = (x.size // audio.channels) * audio.channels
             x = x[:n].reshape(-1, audio.channels).mean(axis=1)
 
         if audio.sample_rate != WHISPER_SAMPLE_RATE and x.size:
-            # Rééchantillonnage linéaire : suffisant pour de la parole,
-            # et sans dépendance supplémentaire.
+            # Rééchantillonnage par interpolation linéaire : suffisant
+            # pour de la parole, et sans dépendance supplémentaire.
             n_out = int(round(x.size * WHISPER_SAMPLE_RATE / audio.sample_rate))
             if n_out > 1:
                 x = np.interp(np.linspace(0, x.size - 1, n_out),
@@ -132,6 +180,14 @@ class WhisperRecognizer(ISpeechRecognizer):
         return x
 
     def transcribe(self, audio: AudioChunk) -> Tuple[str, float]:
+        """Rend (texte, confiance).
+
+        Rend ("", 0.0), c'est-à-dire « rien compris », plutôt que de
+        lever une exception ou d'inventer une phrase, dans tous ces
+        cas : modèle non chargé, audio absent, dépendances absentes,
+        format audio non géré, audio de moins de 100 ms, silence, ou
+        erreur pendant la transcription.
+        """
         if self._model is None or audio is None:
             return "", 0.0
         try:
@@ -148,7 +204,8 @@ class WhisperRecognizer(ISpeechRecognizer):
         if x.size < WHISPER_SAMPLE_RATE // 10:      # moins de 100 ms
             return "", 0.0
 
-        # Silence : inutile de faire tourner le modèle, et surtout il
+        # Silence (amplitude maximale sous 1e-3, soit 0,1 % de la pleine
+        # échelle) : inutile de faire tourner le modèle, et surtout il
         # rendrait une phrase plausible sur du bruit de fond.
         if float(np.abs(x).max()) < 1e-3:
             return "", 0.0
@@ -157,6 +214,8 @@ class WhisperRecognizer(ISpeechRecognizer):
             inputs = self._processor(
                 x, sampling_rate=WHISPER_SAMPLE_RATE, return_tensors="pt")
             feats = inputs.input_features.to(self._device)
+            # output_scores=True conserve les scores de chaque pas de
+            # génération, nécessaires au calcul de la confiance.
             with torch.no_grad():
                 ids = self._model.generate(
                     feats,
@@ -167,9 +226,13 @@ class WhisperRecognizer(ISpeechRecognizer):
                 )
             texte = self._processor.batch_decode(
                 ids.sequences, skip_special_tokens=True)[0].strip()
-            # Confiance : moyenne des probabilités du jeton retenu à
-            # chaque pas. Grossier, mais permet d'ignorer une
-            # transcription hasardeuse plutôt que de l'exécuter.
+            # Confiance : moyenne, sur tous les pas de génération, de la
+            # probabilité du jeton retenu (le jeton est l'unité de texte
+            # produite par le modèle ; softmax convertit les scores en
+            # probabilités). Grossier, mais suffisant pour ignorer une
+            # transcription hasardeuse plutôt que de l'exécuter (seuil
+            # min_confidence de SpeechService). Sans scores disponibles,
+            # la confiance vaut 1.0.
             conf = 1.0
             if getattr(ids, "scores", None):
                 probs = []
