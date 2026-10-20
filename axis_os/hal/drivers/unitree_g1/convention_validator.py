@@ -133,9 +133,12 @@ def validate_convention_table(
 
     # Non vérifiée par défaut (règle introduite par un audit de sécurité
     # du 2026-10-10) : seule une entrée qui déclare explicitement
-    # verifiee=True est tenue pour vérifiée, c'est-à-dire mesurée en
-    # simulation par la suite de validation S2 (voir
-    # docs/campagne_validation_isaac.md). Auparavant, un objet sans ce
+    # verifiee=True est tenue pour vérifiée. Cette déclaration se fait à
+    # la main, après la suite de validation S2 en simulation ; S2 ne
+    # mesure pourtant pas les signes de la table, et le sens absolu reste
+    # à contrôler par cinématique directe (voir l'en-tête de
+    # G1_JOINT_CONVENTIONS dans conventions.py, et
+    # docs/PREREQUIS_ROBOT.md). Auparavant, un objet sans ce
     # champ (table construite à la main, autre classe) était tenu pour
     # vérifié, et donc accepté sur un vrai robot, alors que personne
     # n'avait jamais mesuré le sens de son articulation. Le test est

@@ -264,10 +264,11 @@ class ResourceManager:
 # move_all() : tant que ce branchement n'est pas fait, la réservation
 # n'est pas imposée aux apps. C'est le prochain travail à faire,
 # volontairement séparé de la création du composant lui-même.
-# Pourquoi : le brancher touche app_base.py, un fichier central déjà
-# modifié plusieurs fois pendant la même séance de travail (ajout
-# d'EstopActiveError et de _require_no_estop, la vérification d'arrêt
-# d'urgence faite avant chaque mouvement). Une intégration non testée
-# sur le vrai G1 (le robot humanoïde Unitree G1) avant la fin de cette
-# séance ferait courir le même risque que celui déjà rencontré avec
-# conventions.py, où une modification a dû être annulée le soir même.
+# Pourquoi : le brancher modifie app_base.py, le fichier central du SDK
+# par lequel passe chaque mouvement d'une app. Cette intégration doit
+# donc d'abord être essayée sur le vrai G1 (le robot humanoïde Unitree
+# G1). Quand ce module a été écrit (2026-09-06), app_base.py venait déjà
+# d'être modifié plusieurs fois (ajout d'EstopActiveError et de
+# _require_no_estop, la vérification d'arrêt d'urgence faite avant
+# chaque mouvement), et une modification de conventions.py faite sans
+# cet essai avait dû être annulée le jour même.

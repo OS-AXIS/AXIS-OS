@@ -4,7 +4,7 @@ AXIS-OS — journal structuré persistant
 Pourquoi ce module existe : pendant le développement, on a constaté
 que les événements de sécurité du robot n'étaient qu'affichés par
 print(), sans jamais être conservés. Il s'agit des violations relevées
-par SafetyGuard (le garde-fou qui contrôle chaque commande avant
+par JointSafetyGuard (le garde-fou qui contrôle chaque commande avant
 qu'elle n'atteigne le moteur d'une articulation), des alertes du
 Watchdog (le « chien de garde » qui surveille en continu chaque
 articulation : communication, température, couple, vitesse, position)
@@ -187,7 +187,7 @@ class StructuredLogger:
     """
     Journal persistant, avec un fichier JSON Lines par catégorie
     d'événement. Il est sûr en multithread (thread-safe) : plusieurs
-    composants (Watchdog, SafetyGuard, sandbox) peuvent y écrire en même
+    composants (Watchdog, JointSafetyGuard, sandbox) peuvent y écrire en même
     temps sans corrompre le fichier, car toutes les écritures d'une
     même instance passent par un seul verrou.
 
@@ -200,7 +200,7 @@ class StructuredLogger:
 
     Ne lève jamais d'exception vers l'appelant : une panne d'écriture
     (disque plein, permissions refusées) ne doit pas faire planter le
-    Watchdog ou le SafetyGuard qui s'en servent. Pour que ces échecs ne
+    Watchdog ou JointSafetyGuard, qui s'en servent. Pour que ces échecs ne
     passent pas pour autant inaperçus, ils sont eux-mêmes notés en
     mémoire et consultables via get_write_failures().
     """
@@ -475,7 +475,7 @@ class ChainVerificationResult:
 
 
 # Instance partagée par défaut, créée au premier appel de
-# get_default_logger() : chaque composant (Watchdog, SafetyGuard,
+# get_default_logger() : chaque composant (Watchdog, JointSafetyGuard,
 # sandbox) n'a ainsi ni à créer son propre journal ni à choisir son
 # répertoire. Un composant qui a besoin d'un autre répertoire (tests,
 # isolation) peut toujours créer explicitement son propre

@@ -3,7 +3,9 @@ AXIS-OS CLI
 =============
 Outil en ligne de commande (CLI, Command-Line Interface) destiné aux
 auteurs d'apps pour le Play Store d'AXIS-OS, la boutique d'apps du robot.
-Point d'entrée : axis-os <commande>
+Point d'entrée : python3 -m axis_os.cli.main <commande> (voir
+docs/CREER_UNE_APP.md), ou axis-os <commande> une fois la commande
+installée (voir « Installation » plus bas).
 
 Trois commandes couvrent la vie d'une app :
   - init : crée le squelette d'une nouvelle app (code, manifeste, test,
@@ -14,15 +16,15 @@ Trois commandes couvrent la vie d'une app :
   - publish : vérifie le manifeste avant publication. L'envoi vers le
     registre en ligne n'est pas encore branché (voir cmd_publish).
 
-Sans l'installation décrite plus bas, la même CLI se lance avec
-python3 -m axis_os.cli.main <commande> (voir docs/CREER_UNE_APP.md).
-
-Usage :
+Usage, une fois la commande axis-os installée (sinon, remplacer
+axis-os par python3 -m axis_os.cli.main) :
     axis-os init mon-app
     axis-os simulate
     axis-os publish
 
-Installation (à ajouter dans setup.py / pyproject.toml) :
+Installation : le dépôt ne fournit pas encore de pyproject.toml ni de
+setup.py, donc rien n'installe aujourd'hui la commande axis-os. Pour
+l'obtenir, il faudra déclarer dans un pyproject.toml :
     [project.scripts]
     axis-os = "axis_os.cli.main:main"
 

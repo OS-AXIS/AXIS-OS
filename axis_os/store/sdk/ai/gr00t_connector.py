@@ -109,8 +109,17 @@ test/test_vla_gr00t_durcissement.py :
 Portée et limites connues
 -------------------------
   - Testé contre un faux serveur qui reproduit le protocole
-    (test/test_vla_gr00t_connector.py), PAS encore contre un vrai serveur
-    GR00T : le premier essai sur la machine GPU sera la vraie validation.
+    (test/test_vla_gr00t_connector.py, test/test_vla_gr00t_durcissement.py).
+    Utilisé aussi contre le vrai serveur GR00T, sur la machine GPU, pour
+    évaluer le modèle de prise (mode --evaluer-vla de
+    sim/validation/test_isaac_t1_tri_usine.py, lancé par
+    deploy/machine_gpu/evaluer_vla.sh) ; le constat de cet essai est
+    rapporté dans axis_os/services/policy/vla_service.py (paramètre
+    pas_executes, essai d'octobre 2026). Les protections ajoutées le
+    2026-10-10 (taille de message bornée, archives .npz et nombres non
+    réels refusés, serveur local par défaut, jeton d'accès) sont
+    vérifiées contre le faux serveur ; aucun essai documenté contre le
+    vrai serveur ne les couvre encore.
   - L'image doit avoir la même résolution et le même traitement qu'à la
     collecte (image de la caméra de tête réduite de moitié, couleurs RGB,
     c'est-à-dire rouge, vert, bleu, en uint8) : ce connecteur ne

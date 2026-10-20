@@ -5,9 +5,10 @@ Pourquoi ce module existe : un garde-fou qui dépend du même code que ce
 qu'il surveille se trompe en même temps que lui. Ce moniteur apporte
 donc une redondance « diverse » (un second contrôle bâti par un autre
 chemin logiciel) et non une simple duplication (la même vérification
-écrite deux fois) ; la distinction compte. C'est la troisième des cinq
+écrite deux fois) ; la distinction compte. C'est l'une des cinq
 recommandations de renforcement formulées à la suite du second audit
-externe du code (2026-09-15, voir CHANGELOG.md).
+externe du code (voir CHANGELOG.md, section « 5 recommandations
+externes de renforcement », du 2026-09-15).
 
 Les contrôles existants, JointSafetyGuard (le garde-fou qui vérifie
 chaque commande d'articulation avant qu'elle n'atteigne le moteur) et

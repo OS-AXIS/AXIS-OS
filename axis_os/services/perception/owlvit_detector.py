@@ -334,12 +334,15 @@ class OwlViTDetector(IObjectDetector):
         `post_process_grounded_object_detection`, variante dédiée aux
         modèles à vocabulaire ouvert.
 
-        On essaie les trois emplacements plutôt que d'épingler une
-        version : ce détecteur doit survivre à une mise à jour de
-        transformers sans casser la perception du robot. L'ordre suit la
-        préférence : la variante « grounded » (rattachée aux textes de la
-        requête) d'abord, puisque c'est celle qui correspond au
-        vocabulaire ouvert. Lève RuntimeError si aucune n'existe.
+        On essaie les trois emplacements, en plus de l'épinglage de
+        transformers (la même version exacte dans requirements.txt et
+        deploy/machine_gpu/installer.sh, vérifiée par
+        test/test_deploiement.py) : ce détecteur doit survivre à une
+        future mise à jour de transformers sans casser la perception du
+        robot. L'ordre suit la préférence : la variante « grounded »
+        (rattachée aux textes de la requête) d'abord, puisque c'est celle
+        qui correspond au vocabulaire ouvert. Lève RuntimeError si aucune
+        n'existe.
         """
         # 1. Variante moderne, dédiée au vocabulaire ouvert.
         fn = getattr(self._processor,

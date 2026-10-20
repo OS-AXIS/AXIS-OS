@@ -68,7 +68,7 @@ class EstopActiveError(Exception):
     mission déjà en cours au moment où le Watchdog (le chien de garde
     logiciel qui surveille en continu l'état du robot) déclenchait un
     e-stop continuait auparavant jusqu'au bout : emergency_stop_all()
-    coupait bien le matériel, mais rien n'empêchait le CODE DE L'APP de
+    coupait bien le matériel, mais rien n'empêchait le code de l'app de
     continuer à envoyer de nouvelles commandes de mouvement entre-temps.
 
     Correction : l'état e-stop est vérifié à chaque appel de move_arms(),
@@ -87,7 +87,7 @@ class UnauthorizedContextError(Exception):
     Le trou que ce jeton ferme : auparavant, rien n'empêchait un code
     disposant d'un vrai NormalizedRobotHAL et d'un vrai WatchdogSystem
     (par exemple du code qui importe axis_os directement, hors de tout
-    Play Store) de construire son PROPRE RobotContext avec un AppManifest
+    Play Store) de construire son propre RobotContext avec un AppManifest
     arbitraire, donc avec n'importe quelles permissions, sans jamais
     passer par install() ni par la vérification de signature
     (signing.py).
@@ -107,8 +107,8 @@ class _RuntimeSessionToken:
     """
     Jeton d'identité, créé une seule fois par instance de
     PlayStoreRuntime (voir PlayStoreRuntime.__init__) et transmis à
-    chaque RobotContext qu'elle construit. Il est reconnu par RÉFÉRENCE
-    D'OBJET (« est-ce le même objet ? »), jamais par une valeur
+    chaque RobotContext qu'elle construit. Il est reconnu par référence
+    d'objet (« est-ce le même objet ? »), jamais par une valeur
     comparable qu'on pourrait recopier.
 
     Limite assumée : en Python pur, sans extension compilée, aucune
@@ -207,7 +207,7 @@ class RobotContext:
         cls, robot: NormalizedRobotHAL, watchdog: WatchdogSystem, manifest: AppManifest,
     ) -> "RobotContext":
         """
-        Construit un RobotContext SANS passer par un PlayStoreRuntime
+        Construit un RobotContext sans passer par un PlayStoreRuntime
         complet. Le nom explicite `for_testing` rend chaque usage visible
         et intentionnel dans le code appelant : ce n'est jamais un
         contournement accidentel de UnauthorizedContextError.
@@ -241,7 +241,7 @@ class RobotContext:
 
     def _group_of(self, joint_id: str) -> JointGroup:
         """Groupe d'une articulation (bras, jambes ou autre), tel que le
-        DÉCLARE LE DRIVER du robot (le pilote logiciel propre à chaque
+        déclare le driver du robot (le pilote logiciel propre à chaque
         modèle de robot).
 
         Pourquoi : le SDK devinait autrefois le groupe à partir de
@@ -299,7 +299,7 @@ class RobotContext:
         self._clock = clock or time.monotonic
 
     def now(self) -> float:
-        """Heure du ROBOT, en secondes.
+        """Heure du robot, en secondes (l'heure simulée en simulation).
 
         Pourquoi ne pas mesurer le temps avec time.monotonic() : une app
         qui écoutait « deux secondes » et marchait « trois secondes » en
@@ -307,7 +307,7 @@ class RobotContext:
         le rendu vidéo, prenait ses décisions sur une perception décalée
         et perdait le colis qu'elle visait.
 
-        À utiliser À LA PLACE de time.monotonic() pour mesurer une durée
+        À utiliser à la place de time.monotonic() pour mesurer une durée
         dans une app. En simulation, c'est l'heure simulée ; sur le vrai
         robot, l'heure réelle. Le même code se comporte donc de la même
         façon dans les deux cas. C'est l'équivalent de l'option
@@ -318,7 +318,7 @@ class RobotContext:
         return float(self._clock())
 
     def sleep(self, secondes: float) -> None:
-        """Attend `secondes` du temps du ROBOT (voir now()).
+        """Attend `secondes` du temps du robot (voir now()).
 
         Sur l'heure réelle, c'est un simple time.sleep(). Sur une horloge
         simulée, l'attente suit cette horloge (vérifiée toutes les 2 ms) :
@@ -332,14 +332,14 @@ class RobotContext:
             time.sleep(0.002)
 
     def remember(self, key: str, value) -> bool:
-        """Enregistre une donnée qui SURVIT au redémarrage du robot.
+        """Enregistre une donnée qui survit au redémarrage du robot.
 
         Rend True si la donnée est enregistrée. Rend False si le robot n'a
         pas de mémoire persistante, ou si le service de mémoire refuse
         (la raison est alors notée dans le journal). Permission :
         STORAGE_PERSISTENT.
 
-        L'espace de stockage est celui de CETTE app : l'identifiant
+        L'espace de stockage est celui de cette app : l'identifiant
         utilisé est celui de son manifeste, qu'elle ne choisit pas. Une
         app ne peut donc, par cette API, ni lire ni écraser les données
         d'une autre, même en devinant sa clé. Ce cloisonnement est logique
@@ -359,7 +359,7 @@ class RobotContext:
         """Relit une donnée enregistrée par remember(), ou rend `default`
         si elle est absente.
 
-        Une clé inconnue est un cas NORMAL (premier démarrage, mémoire
+        Une clé inconnue est un cas normal (premier démarrage, mémoire
         effacée), pas une erreur. Un robot sans mémoire persistante rend
         aussi `default`. Permission : STORAGE_PERSISTENT.
         """
@@ -370,15 +370,15 @@ class RobotContext:
         return r.value if r.ok else default
 
     def listen(self, duration_s: float = 3.0):
-        """Écoute pendant `duration_s` secondes et rend une INTENTION
+        """Écoute pendant `duration_s` secondes et rend une intention
         reconnue, ou None.
 
         Pourquoi une intention et jamais un mouvement : une phrase ne
         commande pas un moteur, elle demande quelque chose à du code
-        responsable. L'objet Intent rendu porte un NOM d'action et des
+        responsable. L'objet Intent rendu porte un nom d'action et des
         paramètres ; c'est l'app qui décide ce que l'intention déclenche.
 
-        None est un résultat NORMAL et fréquent : silence, bruit, phrase
+        None est un résultat normal et fréquent : silence, bruit, phrase
         hors du vocabulaire déclaré (voir declare_intent()), ou robot
         sans service de parole. Une app doit traiter ce cas comme
         ordinaire, pas comme une erreur. Permission : SENSORS_MICROPHONE.
@@ -394,7 +394,7 @@ class RobotContext:
 
     def declare_intent(self, name: str, keywords, params=None,
                        description: str = "") -> bool:
-        """Déclare une intention que CETTE app sait traiter.
+        """Déclare une intention que cette app sait traiter.
 
         C'est le modèle des intentions (« intents ») d'Android : l'app
         annonce ce qu'elle sait faire, l'OS choisit qui appeler. Installer
@@ -437,7 +437,7 @@ class RobotContext:
 
         `frame` choisit le repère (le système de coordonnées) : "base"
         (défaut), lié au robot, pour se diriger vers un objet ; "world",
-        fixe, pour MÉMORISER sa position. Un repère lié au robot change
+        fixe, pour mémoriser sa position. Un repère lié au robot change
         quand le robot bouge : y enregistrer un inventaire n'a pas de
         sens (une app d'inventaire a ainsi fusionné deux colis situés à
         90° l'un de l'autre, voir docs/CREER_UNE_APP.md).
@@ -490,7 +490,7 @@ class RobotContext:
         en équilibre (voir LocomotionService.set_velocity et
         test/test_locomotion_non_finie.py).
 
-        La consigne doit être RENOUVELÉE régulièrement. Si l'app cesse de
+        La consigne doit être renouvelée régulièrement. Si l'app cesse de
         le faire, le service la ramène à zéro et le robot s'arrête en
         gardant l'équilibre : la sécurité ne dépend pas de l'app.
 
@@ -511,7 +511,7 @@ class RobotContext:
         return bool(r.ok)
 
     def stop_walking(self) -> bool:
-        """Arrêt EN ÉQUILIBRE (vitesse nulle). Ce n'est pas un arrêt
+        """Arrêt en équilibre (vitesse nulle). Ce n'est pas un arrêt
         d'urgence : voir emergency_stop().
 
         Rend False si le robot ne sait pas se déplacer ou si le service
@@ -523,7 +523,7 @@ class RobotContext:
         return bool(self._locomotion.halt().ok)
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
-        """Envoie des consignes aux articulations des BRAS (groupe
+        """Envoie des consignes aux articulations des bras (groupe
         MANIPULATION : bras, pinces).
 
         Les consignes destinées à une articulation d'un autre groupe sont
@@ -543,7 +543,7 @@ class RobotContext:
         return self._robot.send_joint_commands(filtered)
 
     def move_legs(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
-        """Envoie des consignes aux articulations des JAMBES (groupe
+        """Envoie des consignes aux articulations des jambes (groupe
         LOCOMOTION : jambes, pattes, roues).
 
         Mêmes règles que move_arms() : consignes d'un autre groupe
@@ -595,7 +595,7 @@ class RobotContext:
         moteur produirait un couple supérieur à sa limite. Un second audit
         externe a ensuite relevé (voir CHANGELOG.md) que cette borne
         protège correctement contre un saut de position dangereux, mais
-        ne laissait à une app AUCUN moyen d'atteindre en un seul appel une
+        ne laissait à une app aucun moyen d'atteindre en un seul appel une
         cible légitime située plus loin. Exemple concret : les
         bras ont `position_delta_max ≈ 0.62 rad` ; si le G1 (le robot
         humanoïde Unitree G1) démarre bras repliés (~1.2 rad) et que
@@ -604,7 +604,7 @@ class RobotContext:
         permettait alors à l'app d'atteindre HOME. `move_to_pose()` est ce
         chemin manquant : chaque pas reste sous `position_delta_max`.
 
-        Point de départ : la position RÉELLE de chaque articulation, lue
+        Point de départ : la position réelle de chaque articulation, lue
         par `get_full_state()` au moment de l'appel, jamais une position
         supposée ou mise en cache. Le trajet est ensuite calculé depuis ce
         point de départ ; la position n'est pas relue entre les pas. Si
@@ -698,12 +698,12 @@ class RobotContext:
         pouvaient le faire, et aucun des deux n'est visible ni pilotable
         par le code d'une app.
 
-        Requiert Permission.EMERGENCY_STOP, délibérément PAS incluse dans
-        les permissions accordées par défaut ni requise par les autres
-        méthodes de mouvement : c'est un pouvoir à part, qu'une app doit
-        demander explicitement dans son manifeste. C'est une permission
-        DANGEROUS, confirmée par une personne à l'installation (voir
-        PERMISSION_LEVELS dans manifest.py). Le déclenchement est
+        Requiert Permission.EMERGENCY_STOP, qui n'est délibérément ni
+        incluse dans les permissions accordées par défaut, ni requise par
+        les autres méthodes de mouvement : c'est un pouvoir à part, qu'une
+        app doit demander explicitement dans son manifeste. C'est une
+        permission DANGEROUS, confirmée par une personne à l'installation
+        (voir PERMISSION_LEVELS dans manifest.py). Le déclenchement est
         noté dans le journal ; rend le statut renvoyé par la HAL.
         """
         self._require(Permission.EMERGENCY_STOP)
@@ -743,13 +743,13 @@ class RobotContext:
 
     def _require_no_estop(self) -> None:
         """
-        Vérifie qu'aucun e-stop n'est actif AVANT chaque tentative de
+        Vérifie qu'aucun e-stop n'est actif avant chaque tentative de
         mouvement, et pas seulement une fois au début de la mission : une
-        mission déjà en cours doit s'arrêter net à la PROCHAINE commande
+        mission déjà en cours doit s'arrêter net à la prochaine commande
         de mouvement dès qu'un e-stop survient, au lieu de continuer
         jusqu'à la fin de sa boucle.
 
-        Pourquoi DEUX sources : avant ce double contrôle (correctif issu
+        Pourquoi deux sources : avant ce double contrôle (correctif issu
         de l'audit de sécurité externe du 2026-09-14, voir CHANGELOG.md),
         un e-stop déclenché par le Supervisor, précisément le cas où le
         Watchdog est mort ou bloqué, restait invisible ici : les apps
@@ -779,14 +779,14 @@ class RobotContext:
 
         Pourquoi une copie : un audit de sécurité, en exécutant réellement
         le code, a trouvé la version précédente cassée. Elle faisait
-        `cmd.velocity *= ratio` EN PLACE sur les objets de l'appelant, au
+        `cmd.velocity *= ratio` en place sur les objets de l'appelant, au
         lieu de plafonner. Une app qui construit son dict de commandes une
         fois et le réutilise à chaque cycle (usage courant) voyait sa
         vitesse décroître géométriquement d'un appel à l'autre (ratio^n)
         au lieu de rester à une valeur stable : un mouvement qui « traîne »
         de plus en plus, en silence, sans qu'aucune erreur ne soit levée.
 
-        Rend donc un NOUVEAU dict, avec de nouveaux objets ActuatorCommand,
+        Rend donc un nouveau dict, avec de nouveaux objets ActuatorCommand,
         plutôt que de modifier ceux de l'appelant : une app ne doit jamais
         voir ses propres objets changés par effet de bord après un appel à
         move_arms(), move_legs() ou move_all(). Une commande sans vitesse

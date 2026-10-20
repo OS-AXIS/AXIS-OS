@@ -50,10 +50,13 @@ Ce que ce module ne fait PAS (limites volontaires et documentées) :
   - Ne remplace pas la sandbox (le processus séparé dans lequel tourne
     une app, lancé par SandboxRunner) : une app signée reste soumise
     aux contrôles Permissions et Capabilities (les droits et les
-    capacités déclarés dans son manifest), au ResourceManager (qui
-    réserve chaque actionneur à une seule app à la fois) et aux
-    quotas de la sandbox (processeur, mémoire, durée). La signature
-    prouve l'origine et l'intégrité du code, pas ses bonnes intentions.
+    capacités déclarés dans son manifest), au verrou de mission de
+    PlayStoreRuntime (une seule mission active à la fois sur le robot)
+    et aux quotas de la sandbox (processeur, mémoire, durée). Le
+    ResourceManager, qui réservera chaque actionneur à une seule app à
+    la fois, n'est pas encore branché (voir resource_manager.py). La
+    signature prouve l'origine et l'intégrité du code, pas ses bonnes
+    intentions.
 
 Licence : Apache 2.0
 """

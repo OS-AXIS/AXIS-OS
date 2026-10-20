@@ -28,16 +28,16 @@ Décisions de conception (validées) :
   - Un seul MotionStateTracker par robot, qui tient un JointMotionState
     par joint. Il est créé et possédé par le HAL du robot (une
     implémentation d'IRobotHAL ; aujourd'hui UnitreeG1HAL), puis injecté,
-    et non dupliqué, dans SafetyGuard et WatchdogSystem.
+    et non dupliqué, dans JointSafetyGuard et WatchdogSystem.
 
 Architecture :
     IRobotHAL → MotionStateTracker (un JointMotionState par joint)
-              → SafetyGuard + Watchdog
+              → JointSafetyGuard + Watchdog
 
 Portée volontairement limitée dans cette version : ce module fournit
 uniquement le stockage et le calcul des écarts (position, vitesse, temps
 écoulé). Il ne décide de rien : bloquer ou rejeter une commande reste la
-responsabilité du SafetyGuard, jamais de ce tracker.
+responsabilité de JointSafetyGuard, jamais de ce tracker.
 
 Licence : Apache 2.0
 """
@@ -57,7 +57,7 @@ class MotionDelta:
     """
     Écart entre la commande (ou le feedback) actuelle et la précédente.
 
-    Consommé par SafetyGuard, pour limiter la vitesse de variation avant
+    Consommé par JointSafetyGuard, pour limiter la vitesse de variation avant
     l'envoi, et par WatchdogSystem, pour détecter une anomalie après
     coup : une même donnée, deux usages, aucun calcul en double.
 
@@ -111,7 +111,7 @@ class JointMotionState:
         """
         Calcule l'écart entre new_command et la dernière commande
         enregistrée, sans enregistrer new_command : c'est une lecture
-        seule. C'est au SafetyGuard de décider s'il accepte la commande,
+        seule. C'est à JointSafetyGuard de décider s'il accepte la commande,
         avant que record_command() ne l'enregistre.
 
         Une valeur absente ou non finie, d'un côté ou de l'autre, donne
@@ -184,7 +184,7 @@ class MotionStateTracker:
     Registre des JointMotionState d'un robot, un par joint.
 
     Créé et possédé par le HAL du robot (IRobotHAL), puis injecté dans
-    SafetyGuard et WatchdogSystem : ni l'un ni l'autre ne le crée ni ne
+    JointSafetyGuard et WatchdogSystem : ni l'un ni l'autre ne le crée ni ne
     le duplique.
 
     Un joint inconnu est ignoré en écriture (record_command,

@@ -5,9 +5,9 @@ catalogue.
 Elles servent à la démonstration « plusieurs apps sur un même robot »
 (sim/validation/test_isaac_d1_multiapp.py) et à la vidéo de l'app qui se
 fige (sim/video/video_v1_app_figee.py). Elles existent pour montrer des
-refus : une app qui exige un organe absent, une qui tente ce qu'elle n'a
-pas déclaré, une qui occupe le robot, une qui cesse de répondre. Aucune
-n'a d'usage réel.
+refus : une app qui exige une capacité que le robot n'offre pas, une qui
+tente ce qu'elle n'a pas déclaré, une qui occupe le robot, une qui cesse
+de répondre. Aucune n'a d'usage réel.
 
 Pourquoi un vrai module, et non des classes définies dans le script de
 démonstration : le sandbox (le processus isolé dans lequel l'OS exécute
@@ -32,9 +32,15 @@ from axis_os.store.sdk.manifest import (
 
 
 class AppDeuxMains(RobotApp):
-    """Exige une préhension à deux mains (capacité GRASP_DUAL), que le
-    G1 23 DOF n'a pas : l'installation doit être refusée faute de
-    matériel.
+    """Exige une préhension à deux mains (capacité GRASP_DUAL) :
+    l'installation doit être refusée. Ce n'est pas faute de mains (le
+    G1 23 DOF en a deux), mais parce que le Play Store n'offre pas
+    GRASP_DUAL sur ce robot : PlayStoreRuntime._available_capabilities()
+    ne la déduit jamais des bras, puisqu'elle demande deux bras
+    coordonnés. Le seul service qui déclare cette capacité, le service de
+    manipulation (ManipulationService), n'est pas pris en compte :
+    le constructeur de PlayStoreRuntime n'a aucun paramètre pour le
+    recevoir.
 
     Le G1 23 DOF est l'humanoïde G1 d'Unitree dans sa version à 23 degrés
     de liberté (23 articulations motorisées).

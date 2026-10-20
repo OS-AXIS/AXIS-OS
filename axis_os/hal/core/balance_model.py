@@ -101,7 +101,7 @@ class IBalanceModel(ABC):
     AXIS-OS n'entraîne jamais ce modèle lui-même (voir la note de
     conception en tête de fichier). Son rôle est de garantir que
     n'importe quelle implémentation de cette interface s'intègre au même
-    pipeline de sécurité (SafetyGuard, Watchdog), quel que soit le
+    pipeline de sécurité (JointSafetyGuard, Watchdog), quel que soit le
     fabricant qui l'a fournie.
     """
 

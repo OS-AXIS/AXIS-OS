@@ -15,7 +15,7 @@ exigences, fixées par docs/campagne_validation_isaac.md (§1), sont tenues :
    AXIS-OS sous forme de vrais ActuatorFeedback (le retour d'un moteur),
    et pas seulement les commandes dans l'autre sens. Les garde-fous
    d'AXIS-OS ont besoin de ce retour physique pour être testés.
-2. Le couple exposé est celui RÉELLEMENT appliqué par le solveur
+2. Le couple exposé est celui réellement appliqué par le solveur
    physique, pas le couple commandé : indispensable au test qui vérifie
    que le couple ne dépasse jamais la limite inscrite dans l'URDF
    (campagne, §2). L'URDF (Unified Robot Description Format) est le
@@ -31,7 +31,7 @@ MainThreadSimPump et run_mission_in_thread() permettent de piloter ce
 pont depuis une app isolée, dont les commandes arrivent par un autre
 thread.
 
-À exécuter DANS le conteneur Docker d'Isaac Sim (voir
+À exécuter dans le conteneur Docker d'Isaac Sim (voir
 docs/campagne_validation_isaac.md, §1). Suppose que /isaac-sim/axis_os
 existe (copié via `docker cp`) et que /isaac-sim/g1_23dof_rev_1_0.urdf
 existe (copié depuis le dépôt).
@@ -64,9 +64,9 @@ URDF_PATH = "/isaac-sim/g1_23dof_rev_1_0.urdf"
 # géométrie 3D).
 URDF_PATHS = {
     "23dof": URDF_PATH,
-    # Copie DÉRIVÉE de l'URDF officiel. Pourquoi : dans l'original, les
+    # Copie dérivée de l'URDF officiel. Pourquoi : dans l'original, les
     # mains en caoutchouc n'ont aucune géométrie de collision, et elles
-    # TRAVERSAIENT le carton lors de l'essai de prise d'un carton en
+    # traversaient le carton lors de l'essai de prise d'un carton en
     # simulation (docs/validation_port_carton.md, §2). Seule différence de
     # la copie : les mains y reçoivent une collision. Elle est produite par
     # unitree_g1/urdf/deriver_mains_collision.py. Le HAL, lui, lit
@@ -80,7 +80,7 @@ _simulation_app = None
 
 
 def start_simulation_app(headless: bool = False):
-    """Démarre l'application Isaac Sim. À appeler EN PREMIER, avant tout
+    """Démarre l'application Isaac Sim. À appeler en premier, avant tout
     autre usage de ce module et avant tout import isaacsim.* dans le
     processus.
 
@@ -121,11 +121,11 @@ def desactiver_dlss() -> None:
     Pourquoi : constaté sur une machine louée chez Vast.ai (service de
     location de cartes graphiques ; carte RTX 5090 GeForce, en
     conteneur), le rendu échouait à chaque image avec « NGX CreateFeature
-    failed: 0xbad00002 » et « RenderOp 'DLSS RenderOp' failed » : AUCUNE
-    image rendue, caméras
-    noires, test arrêté à t = 0. Le DLSS n'est pas disponible partout, et
-    nos caméras n'en ont pas besoin. Ce réglage vaut pour toutes les
-    cartes : les tests ne dépendent plus de la présence du DLSS.
+    failed: 0xbad00002 » et « RenderOp 'DLSS RenderOp' failed » : aucune
+    image rendue, caméras noires, test arrêté à t = 0. Le DLSS n'est pas
+    disponible partout, et nos caméras n'en ont pas besoin. Ce réglage
+    vaut pour toutes les cartes : les tests ne dépendent plus de la
+    présence du DLSS.
 
     Un échec du réglage est affiché, mais n'interrompt rien."""
     try:
@@ -143,14 +143,14 @@ def desactiver_dlss() -> None:
 def find_missing_meshes(urdf_path: str = URDF_PATH) -> List[str]:
     """Liste les meshes référencés par l'URDF mais absents du disque.
 
-    Pourquoi cette vérification est NÉCESSAIRE (découvert tardivement) :
+    Pourquoi cette vérification est nécessaire (découvert tardivement) :
     les meshes du G1 (fichiers de géométrie 3D au format .STL) ne sont
     pas versionnés dans le dépôt (106 Mo, voir
     axis_os/hal/drivers/unitree_g1/urdf/meshes/README.md). Sans eux,
-    Isaac Sim importe le robot SANS ERREUR, avec tout ce qui fait la
-    physique (articulations, masses, limites), mais sans AUCUNE
+    Isaac Sim importe le robot sans erreur, avec tout ce qui fait la
+    physique (articulations, masses, limites), mais sans aucune
     géométrie visuelle (dans l'URDF du G1, elle est à 100 %
-    faite de meshes) et avec une collision PARTIELLE (20 éléments de
+    faite de meshes) et avec une collision partielle (20 éléments de
     collision sur 32 sont des meshes).
 
     Symptôme trompeur, réellement constaté : tous les tests articulaires
@@ -198,7 +198,7 @@ def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False,
     autrement, divergence de nommage déjà rencontrée.
 
     fix_base : True épingle la base du robot au monde (pas de dynamique
-    du corps entier). Nécessaire pour tester la CONVENTION DE SIGNE d'un
+    du corps entier). Nécessaire pour tester la convention de signe d'un
     joint, c'est-à-dire le sens dans lequel il tourne
     (docs/campagne_validation_isaac.md, §3). Sans base fixe, le G1, qui
     n'a encore ni gains PD (asservissement proportionnel-dérivé, voir
@@ -224,9 +224,9 @@ def import_g1_urdf(force_reimport: bool = True, fix_base: bool = False,
     from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
     import shutil
 
-    # Vérifier les meshes AVANT d'importer. Pourquoi : l'importateur ne
+    # Vérifier les meshes avant d'importer. Pourquoi : l'importateur ne
     # signale pas leur absence de façon visible, et produit un robot
-    # physiquement correct mais INVISIBLE, avec une collision partielle.
+    # physiquement correct mais invisible, avec une collision partielle.
     missing = find_missing_meshes(urdf_path)
     if missing:
         msg = (f"{len(missing)} mesh(es) introuvable(s) à côté de "
@@ -334,7 +334,7 @@ class IsaacSimBridge:
         import omni.usd
 
         # L'ordre compte : le USD importé doit être référencé dans la
-        # scène AVANT la création de World() (voir la sélection de
+        # scène avant la création de World() (voir la sélection de
         # variante et le placement ci-dessous).
         usd_path = import_g1_urdf(urdf_path=URDF_PATHS[self._variante],
                                   fix_base=fix_base,
@@ -346,7 +346,7 @@ class IsaacSimBridge:
         # URDF d'Isaac Sim 6.1.0 crée, sur le prim référencé (un « prim »
         # est un nœud de la scène USD), un VariantSet nommé "Physics",
         # c'est-à-dire un jeu de variantes au choix. Tant qu'aucune variante
-        # n'y est sélectionnée, AUCUN joint physique n'est composé dans la
+        # n'y est sélectionnée, aucun joint physique n'est composé dans la
         # scène (le « stage »). Ce n'était ni un problème de timing (des
         # appels répétés à simulation_app.update() n'y changeaient rien),
         # ni un problème lié à l'interface de programmation (API)
@@ -371,11 +371,11 @@ class IsaacSimBridge:
                   "d'Isaac Sim testée, l'articulation risque d'être "
                   "introuvable au world.reset() suivant.")
 
-        # Placement dans la scène USD, AVANT que la physique ne démarre.
+        # Placement dans la scène USD, avant que la physique ne démarre.
         #
         # Pourquoi une hauteur d'apparition calculée, et non supposée :
         # constaté en diagnostic, le robot apparaissait avec sa boîte
-        # englobante de z=-0.69 à +0.64, pieds 70 cm SOUS le sol. Sans
+        # englobante de z=-0.69 à +0.64, pieds 70 cm sous le sol. Sans
         # conséquence tant que les meshes de collision manquaient ; dès
         # qu'ils ont été présents, les pieds pris dans le sol ont fait
         # diverger la physique (« PhysX error: non-finite bounds », en
@@ -391,12 +391,12 @@ class IsaacSimBridge:
         #   2. relever une ancre de joint attachée au monde : il n'en
         #      existe aucune, la base fixe n'est pas réalisée ainsi.
         # Plutôt que de deviner le mécanisme de fixation, on déplace le prim
-        # racine dans la scène AVANT la création du World : quel que soit ce
+        # racine dans la scène avant la création du World : quel que soit ce
         # mécanisme, la physique s'initialise depuis la pose « authorée »
         # (inscrite explicitement dans la scène, en vocabulaire USD) à ce
         # moment-là.
         #
-        # ground_clearance > 0 : robot SUSPENDU, pieds dans le vide.
+        # ground_clearance > 0 : robot suspendu, pieds dans le vide.
         # Indispensable aux tests de convention de signe des joints
         # (docs/campagne_validation_isaac.md, §3). Constaté : une fois le
         # robot posé avec de vraies collisions, le sol bloquait la rotation
@@ -417,7 +417,7 @@ class IsaacSimBridge:
         # contrôleur appris qui fait marcher le robot) entraînée à 500 Hz
         # (dt = 0.002 s) tomberait à coup sûr sur un pas huit fois plus
         # grossier, et l'on accuserait à tort la politique. Passer le dt
-        # utilisé à l'ENTRAÎNEMENT de la politique. Le rendu des images,
+        # utilisé à l'entraînement de la politique. Le rendu des images,
         # lui, reste au plus à 60 Hz.
         world_kw = {"stage_units_in_meters": 1.0}
         if physics_dt is not None:
@@ -427,11 +427,11 @@ class IsaacSimBridge:
         # Un seul plan de sol physique : add_default_ground_plane() suffit,
         # et évite le doublon de prim rencontré en ajoutant en plus un
         # GroundPlane() au même endroit. La grille affichée par défaut dans
-        # Isaac Sim n'a AUCUNE collision : sans ce plan, le G1 tombe à
+        # Isaac Sim n'a aucune collision : sans ce plan, le G1 tombe à
         # travers.
         self._world.scene.add_default_ground_plane()
 
-        # Lumière. Pourquoi : sans source lumineuse, TOUTE caméra de la
+        # Lumière. Pourquoi : sans source lumineuse, toute caméra de la
         # scène rend un noir uniforme, indéfiniment, sans lever d'erreur :
         # le tableau d'image a la bonne taille, seuls ses octets trahissent
         # le problème. Sans conséquence tant qu'on ne faisait que de la
@@ -450,8 +450,8 @@ class IsaacSimBridge:
         except Exception as exc:        # noqa: BLE001
             print(f"[bridge] AVERTISSEMENT : lumière non créée ({exc}) — "
                   f"une caméra de cette scène rendra du noir.")
-        # Le placement est déjà fait AVANT la création du World (voir plus
-        # haut) : on ne repasse PAS de position au Robot, ce qui écraserait
+        # Le placement est déjà fait avant la création du World (voir plus
+        # haut) : on ne repasse pas de position au Robot, ce qui écraserait
         # la pose authorée dans la scène.
         self._robot = self._world.scene.add(Robot(
             prim_path="/World/g1", name="g1_axisos"))
@@ -568,7 +568,7 @@ class IsaacSimBridge:
             print(f"[bridge] AVERTISSEMENT : ancres non déplacées ({exc})")
 
     def _verify_grounded(self, tolerance: float = 0.05, expected: float = 0.0) -> bool:
-        """Remesure la géométrie APRÈS placement, et signale si le robot
+        """Remesure la géométrie après placement, et signale si le robot
         n'est pas à la hauteur attendue.
 
         Même principe que look_at() dans sim_camera.py : on ne croit pas ce
@@ -606,7 +606,7 @@ class IsaacSimBridge:
         """Hauteur à laquelle placer l'origine du robot pour que son point
         le plus bas repose sur le sol (z = 0), plus `margin` mètres.
 
-        Mesure la boîte englobante de TOUTE la géométrie, collision
+        Mesure la boîte englobante de toute la géométrie, collision
         comprise, puisque c'est elle qui touche le sol. En USD, chaque
         géométrie porte un usage (« purpose ») ; celle de collision est
         rangée sous l'usage guide, d'où les quatre usages passés au calcul.
@@ -647,17 +647,17 @@ class IsaacSimBridge:
         sa position cible avec une raideur kp, et freine son mouvement avec
         un amortissement kd.
 
-        NÉCESSAIRE : l'URDF officiel ne fournit aucune donnée de raideur
+        Nécessaire : l'URDF officiel ne fournit aucune donnée de raideur
         ni d'amortissement (stiffness/damping). Confirmé en exécution
         réelle : l'avertissement d'Isaac Sim « actuator will be created
         without gain parameters » apparaît sur les 23 joints à chaque
-        import. Sans gains, une commande en POSITION ne tient rien du
+        import. Sans gains, une commande en position ne tient rien du
         tout : le joint devient un pendule libre sous la gravité dès la
         commande suivante. Cela a produit des résultats de test
         entièrement dominés par le bruit gravitationnel, plutôt que par
         la direction réellement commandée.
 
-        kp=80.0 et kd=8.0 sont des valeurs GÉNÉRIQUES DE TEST, choisies
+        kp=80.0 et kd=8.0 sont des valeurs génériques de test, choisies
         pour tenir une position sans osciller violemment. Ce ne sont PAS
         les gains réels du G1 : AXIS-OS ne les connaît pas, ce sont ceux
         du firmware Unitree, propriétaires. Ne jamais réutiliser ces
@@ -681,10 +681,10 @@ class IsaacSimBridge:
 
     def hold_all_except(self, free_joint_id: str, kp_hold: float = 80.0,
                          kd_hold: float = 8.0, kd_free: float = 1.0) -> None:
-        """Maintient tous les joints en position SAUF free_joint_id, laissé
+        """Maintient tous les joints en position sauf free_joint_id, laissé
         en couple pur (gain de position nul, amortissement kd_free).
 
-        NÉCESSAIRE pour isoler la réponse d'UN SEUL joint à un couple
+        Nécessaire pour isoler la réponse d'un seul joint à un couple
         commandé. set_pure_torque_mode() met tous les joints à zéro d'un
         coup : pendant qu'on teste le joint N dans la boucle, les joints 1
         à N-1, déjà « remis à zéro », retombent sous la gravité faute de
@@ -719,8 +719,8 @@ class IsaacSimBridge:
         self._robot.apply_action(ArticulationAction(joint_positions=positions))
 
     def reset_joint(self, joint_id: str, position: float = 0.0) -> None:
-        """Téléporte un joint à une position donnée, EN CONTOURNANT
-        DÉLIBÉRÉMENT AXIS-OS : ni garde-fou de sécurité
+        """Téléporte un joint à une position donnée en CONTOURNANT
+        délibérément AXIS-OS : ni garde-fou de sécurité
         (JointSafetyGuard), ni suivi des mouvements (MotionStateTracker),
         ni passage par le HAL (send_joint_commands()), donc ni par
         HALBridgeServer, le pont qui relaie les commandes des apps
@@ -728,7 +728,7 @@ class IsaacSimBridge:
 
         Pourquoi : ramener chaque joint à une pose de référence connue
         entre deux essais, et empêcher la dérive due à la gravité de
-        s'accumuler d'un joint testé au suivant. Ce n'est PAS un
+        s'accumuler d'un joint testé au suivant. Ce n'est pas un
         équivalent de ce qui existe sur un robot réel : aucun robot ne
         peut « téléporter » un joint. Outil de simulation pur, à ne jamais
         confondre avec une commande de mouvement réelle.
@@ -741,13 +741,13 @@ class IsaacSimBridge:
         positions[idx] = position
         self._robot.set_joint_positions(positions)
         self._robot.set_joint_velocities(velocities)
-        # Réaligner aussi la CIBLE du contrôleur PD, pas seulement l'état
+        # Réaligner aussi la cible du contrôleur PD, pas seulement l'état
         # physique. Pourquoi : sinon, une fois les gains de maintien
         # restaurés (hold_all_except()), le PD reprend sa poursuite vers
         # une ancienne cible résiduelle (par exemple la dernière cible du
         # test de direction en mode position, ou une cible jamais fixée
         # pendant une commande en couple pur). Il en résulte un mouvement
-        # parasite pendant qu'on teste un AUTRE joint. Constaté en
+        # parasite pendant qu'on teste un autre joint. Constaté en
         # exécution réelle : left_hip_yaw_joint lisait avant=-0.226 juste
         # après son propre reset, alors qu'aucun couple ne lui avait
         # jamais été appliqué.
@@ -767,10 +767,10 @@ class IsaacSimBridge:
         et/ou couple (effort). Un champ laissé à None n'est pas commandé.
         Thread principal uniquement (voir MainThreadSimPump).
 
-        BUG RÉEL corrigé : cette méthode n'acceptait auparavant que la
+        Bug réel, corrigé : cette méthode n'acceptait auparavant que la
         position et la vitesse. Un ActuatorCommand en ControlMode.TORQUE
         produisait donc une ArticulationAction totalement vide (les trois
-        champs à None), et RIEN n'était appliqué dans Isaac Sim pour les
+        champs à None), et rien n'était appliqué dans Isaac Sim pour les
         commandes de couple. Constaté en exécution réelle, lors du test de
         direction en mode couple (docs/campagne_validation_isaac.md, §3) :
         les petits mouvements observés étaient du bruit physique résiduel,
@@ -789,7 +789,7 @@ class IsaacSimBridge:
 
     def read_position(self, joint_id: str) -> float:
         """Lecture rapide de la seule position d'un joint. Pratique pour
-        construire des commandes en écart RELATIF plutôt qu'en absolu,
+        construire des commandes en écart relatif plutôt qu'en absolu,
         comme dans les tests de convention de signe
         (docs/campagne_validation_isaac.md, §3)."""
         idx = self._joint_index[joint_id]
@@ -801,7 +801,7 @@ class IsaacSimBridge:
         indéfinie) si cette version d'Isaac Sim n'expose pas
         get_applied_joint_efforts().
 
-        THREAD PRINCIPAL UNIQUEMENT : c'est cette méthode que
+        Thread principal UNIQUEMENT : c'est cette méthode que
         MainThreadSimPump appelle pour publier son instantané. Une seule
         lecture groupée par pas de simulation, plutôt qu'une lecture par
         joint (23 pour la variante 23dof), potentiellement incohérentes
@@ -823,11 +823,11 @@ class IsaacSimBridge:
 
     def read_feedback(self, joint_id: str) -> ActuatorFeedback:
         """État réel d'un joint, lu depuis le solveur physique d'Isaac
-        Sim : POSITION, VITESSE et COUPLE RÉELLEMENT APPLIQUÉ (pas le
+        Sim : position, vitesse et couple réellement appliqué (pas le
         couple commandé).
 
         Si une pompe est attachée et tourne (mode sandbox, multi-thread),
-        la méthode lit son INSTANTANÉ plutôt que d'appeler Isaac Sim.
+        la méthode lit son instantané plutôt que d'appeler Isaac Sim.
         Pourquoi : elle est invoquée par JointSafetyGuard (le garde-fou
         qui vérifie chaque commande et chaque retour des joints) depuis le
         thread du pont, et get_joint_positions() y serait aussi peu sûr
@@ -905,7 +905,7 @@ class IsaacSimBridge:
                 return statuses
 
             if bridge._pump is not None:
-                # Chemin multi-thread : on DÉPOSE les commandes et on attend
+                # Chemin multi-thread : on dépose les commandes et on attend
                 # le thread principal. Ne jamais appeler apply_command() ni
                 # step() ici : dès que l'app tourne en sandbox,
                 # send_via_isaac s'exécute dans le thread de HALBridgeServer.
@@ -936,7 +936,7 @@ class IsaacSimBridge:
 
 @dataclass
 class _SimRequest:
-    """Une demande d'actuation à exécuter sur le THREAD PRINCIPAL : les
+    """Une demande d'actuation à exécuter sur le thread principal : les
     commandes, l'événement signalé une fois la demande traitée, l'erreur
     éventuelle, et l'indicateur « commandes appliquées »."""
     commands: Dict[str, Any]
@@ -948,19 +948,19 @@ class _SimRequest:
 class MainThreadSimPump:
     """Fait exécuter tous les appels Isaac Sim sur le thread principal.
 
-    POURQUOI : World.step() et apply_action() ne sont PAS thread-safe
+    Pourquoi : World.step() et apply_action() ne sont PAS thread-safe
     (rien ne garantit leur bon fonctionnement s'ils sont appelés depuis
-    plusieurs threads), et ils bloquent dans du code C SANS RELÂCHER LE
+    plusieurs threads), et ils bloquent dans du code C sans relâcher le
     GIL, le verrou global de l'interpréteur Python, qui ne laisse
     s'exécuter qu'un thread à la fois. Appelés depuis un thread
     secondaire (par exemple HALBridgeServer._loop()), ils gèlent le
-    processus ENTIER : aucun autre thread Python ne peut plus s'exécuter,
+    processus entier : aucun autre thread Python ne peut plus s'exécuter,
     y compris le thread principal qui attendrait avec join(timeout=...).
     Il n'existe donc pas de version « prudente, avec délai maximal » de
     cet appel : la seule issue est de ne jamais le faire hors du thread
     principal.
 
-    ARCHITECTURE RÉSULTANTE :
+    Architecture résultante :
       - thread principal   : run_forever() ; applique les commandes,
                              appelle world.step(), publie un instantané
       - thread du pont     : submit() ; dépose et attend, ne touche
@@ -972,7 +972,7 @@ class MainThreadSimPump:
     Ce découpage rapproche d'ailleurs la simulation du matériel réel :
     sur un vrai G1, la publication DDS (le bus de messages par lequel
     passent les commandes moteur) se fait aussi depuis une boucle dédiée,
-    que les threads applicatifs alimentent. Le pont devient donc PLUS
+    que les threads applicatifs alimentent. Le pont devient donc plus
     fidèle au driver réel, pas moins.
 
     Les durées relevées (tick_apply_ms, tick_step_ms, submit_wait_ms)
@@ -989,9 +989,9 @@ class MainThreadSimPump:
         self._running = False
         self._main_thread_id: Optional[int] = None
         # Décomposition du coût d'un tick (un tour de boucle), en
-        # millisecondes. Pourquoi : distinguer le TRANSPORT (files
-        # d'attente, threads : le vrai coût de l'isolation des apps) du PAS
-        # DE SIMULATION (bridge.step(), qui n'existe pas sur un robot réel :
+        # millisecondes. Pourquoi : distinguer le transport (files
+        # d'attente, threads : le vrai coût de l'isolation des apps) du pas
+        # de simulation (bridge.step(), qui n'existe pas sur un robot réel :
         # la physique y est le monde, elle ne coûte rien au logiciel). Sans
         # cette séparation, on attribue à l'architecture un coût qui est en
         # réalité celui du simulateur. idle_ticks compte les tours de
@@ -1001,10 +1001,10 @@ class MainThreadSimPump:
         self.submit_wait_ms: list = []
         self.idle_ticks: int = 0
 
-    # ---- appelé depuis N'IMPORTE QUEL thread -----------------------------
+    # ---- appelé depuis n'importe quel thread -----------------------------
 
     def submit(self, commands: Dict[str, Any], timeout_s: float = 5.0) -> bool:
-        """Dépose des commandes et ATTEND leur application par le thread
+        """Dépose des commandes et attend leur application par le thread
         principal.
 
         Retourne True si elles ont été appliquées sans erreur ; False si la
@@ -1018,11 +1018,11 @@ class MainThreadSimPump:
         _t0 = time.perf_counter()
         self._queue.put(req)
         ok = req.done.wait(timeout=timeout_s)
-        # Attente vue DU THREAD APPELANT, du dépôt jusqu'à l'application
+        # Attente vue du thread appelant, du dépôt jusqu'à l'application
         # par le thread principal. C'est le coût que subit réellement
         # l'app, à distinguer du travail effectué (tick_apply_ms +
         # tick_step_ms). Un écart important entre les deux signifie du
-        # temps de RÉVEIL DE THREAD, pas du travail.
+        # temps de réveil de thread, pas du travail.
         self.submit_wait_ms.append((time.perf_counter() - _t0) * 1000)
         if not ok:
             return False
@@ -1042,13 +1042,13 @@ class MainThreadSimPump:
         """True tant que run_forever() tourne."""
         return self._running
 
-    # ---- THREAD PRINCIPAL UNIQUEMENT -------------------------------------
+    # ---- appelé depuis le thread principal uniquement --------------------
 
     def run_forever(self, should_stop, max_seconds: float = 600.0,
                     idle_sleep_s: float = 0.0) -> None:
-        """Boucle de simulation. À APPELER DEPUIS LE THREAD PRINCIPAL,
-        celui où SimulationApp a été instanciée. Tourne jusqu'à ce que
-        should_stop() renvoie True ou que max_seconds soit atteint.
+        """Boucle de simulation, à appeler UNIQUEMENT depuis le thread
+        principal, celui où SimulationApp a été instanciée. Tourne jusqu'à
+        ce que should_stop() renvoie True ou que max_seconds soit atteint.
 
         idle_sleep_s : attente maximale d'une commande à chaque tour
         (0 signifie 2 ms). Un pas de simulation est fait à chaque tour,
@@ -1062,7 +1062,7 @@ class MainThreadSimPump:
                 # vide. Pourquoi : une boucle sans pause monopolise le GIL.
                 # Le thread de HALBridgeServer et le sous-processus n'ont
                 # alors la main qu'au bon vouloir de l'ordonnanceur Python,
-                # ce qui ajoute des dizaines de ms d'attente PURE (ni
+                # ce qui ajoute des dizaines de ms d'attente pure (ni
                 # transport, ni physique) à chaque aller-retour.
                 # Queue.get(timeout=) relâche le GIL pendant l'attente, et
                 # laisse les autres threads progresser immédiatement.
@@ -1081,7 +1081,7 @@ class MainThreadSimPump:
 
     def _tick(self, first: "Optional[_SimRequest]" = None) -> None:
         """Un tour de boucle : applique toutes les demandes en attente,
-        fait UN pas de simulation, publie l'instantané, puis libère les
+        fait un seul pas de simulation, publie l'instantané, puis libère les
         threads demandeurs. Les durées ne sont relevées que pour les tours
         qui ont traité au moins une demande."""
         _t_apply = time.perf_counter()
@@ -1099,7 +1099,7 @@ class MainThreadSimPump:
         if pending:
             self.tick_apply_ms.append((time.perf_counter() - _t_apply) * 1000)
 
-        # UN SEUL pas de simulation pour tout le lot. Pourquoi : appeler
+        # Un seul pas de simulation pour tout le lot. Pourquoi : appeler
         # step() pour chaque commande ferait avancer la physique 23 fois
         # pour un mouvement du corps entier (variante 23dof), avec des
         # états intermédiaires incohérents. Même raisonnement que la
@@ -1152,7 +1152,7 @@ def run_mission_in_thread(fn, *args, **kwargs):
     """Lance fn (typiquement PlayStoreRuntime.start_app ou run_mission)
     dans un thread annexe, et retourne (thread, holder).
 
-    NÉCESSAIRE : le thread principal doit rester libre pour faire tourner
+    Nécessaire : le thread principal doit rester libre pour faire tourner
     MainThreadSimPump.run_forever(). Si la mission était lancée
     directement depuis le thread principal, celui-ci resterait bloqué
     dedans, la file de la pompe ne serait jamais vidée, et le thread du

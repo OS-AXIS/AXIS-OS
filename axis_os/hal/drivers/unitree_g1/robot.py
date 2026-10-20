@@ -370,7 +370,7 @@ class UnitreeG1HAL(IRobotHAL):
         # possède et l'instancie (le composant est générique, voir
         # hal/core/motion_state.py), jamais un driver particulier qui le
         # créerait pour lui-même. Il est
-        # exposé par get_motion_tracker() pour que SafetyGuard et
+        # exposé par get_motion_tracker() pour que JointSafetyGuard et
         # WatchdogSystem le consultent sans le dupliquer.
         self._motion_tracker = MotionStateTracker(
             [jdef.joint_id for jdef in self._joint_defs]
@@ -400,9 +400,12 @@ class UnitreeG1HAL(IRobotHAL):
             return HALStatus.ERROR_FAULT
         if validation.non_verifiees and self._backend != "sim":
             # Sur un robot réel, jamais : un signe non vérifié peut envoyer
-            # une articulation dans le sens opposé à celui demandé. Ce
-            # signe se vérifie en simulation, avec la suite de validation
-            # S2 (voir docs/campagne_validation_isaac.md).
+            # une articulation dans le sens opposé à celui demandé. Une
+            # entrée ne passe à verifiee=True qu'à la main, après la suite
+            # de validation S2 en simulation. S2 ne mesure pourtant pas les
+            # signes de la table, et le sens absolu se contrôle par
+            # cinématique directe (voir l'en-tête de G1_JOINT_CONVENTIONS
+            # dans conventions.py, et docs/PREREQUIS_ROBOT.md).
             print(f"  [ERREUR] Conventions NON VÉRIFIÉES sur un robot réel : "
                   f"{validation.non_verifiees} — initialisation refusée. "
                   f"Lancer la suite S2 en simulation d'abord.")
@@ -533,7 +536,7 @@ class UnitreeG1HAL(IRobotHAL):
     def get_motion_tracker(self) -> MotionStateTracker:
         """
         Donne accès au tracker aux composants qui doivent le consulter :
-        SafetyGuard (limitation du rythme de variation des commandes, ou
+        JointSafetyGuard (limitation du rythme de variation des commandes, ou
         « rate limiting », avant envoi) et WatchdogSystem (détection
         d'anomalies après coup). Ni l'un ni l'autre ne le crée : IRobotHAL
         en reste l'unique propriétaire, conformément à la décision de

@@ -46,17 +46,20 @@ Ce qui change concrètement par rapport à l'ancienne table :
     table, G1_29DOF_JOINT_CONVENTIONS, plus bas dans ce fichier (voir
     aussi urdf/README.md).
   - "left_elbow" et "right_elbow" restent une seule articulation chacun
-    (pas de séparation pitch/roll). C'était en fait déjà correct dans
-    l'ancienne table : l'écart supposé sur le coude, noté auparavant
-    comme « non corrigé », ne correspondait en réalité à aucune variante
-    officielle du G1. C'est IsaacSimBackend.ISAAC_G1_JOINT_MAP
-    (backend.py) qui avait tort sur ce point précis, pas cette table ;
-    à corriger séparément dans backend.py.
+    (pas de séparation pitch/roll), comme dans les deux URDF officiels
+    (23 et 29 DOF). C'était déjà le cas dans l'ancienne table. Le modèle
+    g1.usd fourni avec Isaac Sim, que décrit
+    IsaacSimBackend.ISAAC_G1_JOINT_MAP (backend.py), a en revanche deux
+    articulations de coude par bras (« _elbow_pitch » et « _elbow_roll »),
+    d'après ses dof_names lus dans Isaac Sim. Les deux tables décrivent
+    donc deux modèles différents, et elles ne sont pas encore mises en
+    cohérence (limite connue, voir backend.py et hal.py).
   - Tous les signes (+1.0/-1.0) et toutes les étiquettes anatomiques
     sont conservés à l'identique : la comparaison articulation par
     articulation (22 des 23 se correspondent exactement en anatomie,
     seul le suffixe "_joint" change) ne donne aucune raison de les
-    revoir. Seule la clé (l'identifiant) change.
+    revoir. Seule la clé (l'identifiant) change. (Deux étiquettes se
+    sont révélées fausses depuis, voir au-dessus de G1_JOINT_CONVENTIONS.)
 
 Licence : Apache 2.0 (open-source)
 """
@@ -78,9 +81,12 @@ class JointConvention:
     positive_label:  str
     negative_label:  str
     anatomical_note: str
-    # verifiee : sens confirmé par la suite de validation S2, c'est-à-dire
-    # par une mesure en simulation et non par un raisonnement (voir
-    # docs/campagne_validation_isaac.md).
+    # verifiee=True : l'entrée a été déclarée vérifiée, explicitement et
+    # à la main, après le passage de la suite de validation S2 en
+    # simulation.
+    # S2 ne mesure pourtant ni le signe ni les étiquettes de cette table :
+    # voir, au-dessus de G1_JOINT_CONVENTIONS, ce qu'elle contrôle
+    # réellement et ce qui reste à faire.
     # Faux par défaut depuis un audit de sécurité du 2026-10-10.
     # Pourquoi : une entrée ajoutée à la main sans mesure ne doit pas
     # pouvoir passer pour vérifiée. C'est au contraire « vérifiée » qui
@@ -93,8 +99,38 @@ class JointConvention:
     verifiee:        bool = False
 
 
-# Table du G1 23 DOF : ses 23 articulations, toutes vérifiées par la
-# suite S2.
+# Table du G1 23 DOF : ses 23 articulations, toutes déclarées vérifiées
+# (verifiee=True) sur la foi de la suite S2, passée à 23/23 le
+# 2026-09-22 (docs/validation_perception.md).
+#
+# Ce que S2 contrôle réellement (script
+# sim/validation/test_isaac_s2_normalization.py) : le script n'utilise
+# pas les signes de cette table. Il commande le HAL du G1 en angles
+# bruts ; seule l'initialisation du HAL contrôle la structure de la
+# table (voir convention_validator.py). Pour chaque articulation, il
+# envoie une consigne brute positive, d'abord en position (+0,15 rad),
+# puis en couple (+10 Nm), note si l'angle brut mesuré dans Isaac Sim a
+# augmenté, et vérifie que les deux modes donnent le même résultat. Il
+# ne contrôle ni la colonne sign ni les étiquettes anatomiques. La
+# version prévue de S2 (docs/campagne_validation_isaac.md, § 3 :
+# coordonnées normalisées, sens anatomique, aller-retour, posture
+# symétrique) n'est pas celle du script actuel. Le sens anatomique
+# absolu reste à contrôler par cinématique directe
+# (docs/PREREQUIS_ROBOT.md).
+#
+# Étiquettes connues fausses, sur les deux bras : le tangage d'épaule (un
+# tangage positif recule le bras, alors que l'étiquette dit
+# « flexion_anterieure ») et le coude (un coude positif le déplie, alors
+# que l'étiquette dit « flexion »). Constaté sur le G1 29 DOF, en
+# simulation et par cinématique directe sur son URDF
+# (docs/integration_gr00t_wbc.md, § 8) ; ces deux articulations y ont le
+# même axe que sur le 23 DOF, et la même entrée de table. La table
+# n'est volontairement pas corrigée à l'aveugle : le même document
+# prescrit d'abord un contrôle systématique du sens de chaque
+# articulation par cinématique directe. En attendant, ne pas déduire un
+# mouvement de bras de ces étiquettes (les postures de
+# services/manipulation/service.py sont écrites en angles bruts pour
+# cette raison).
 G1_JOINT_CONVENTIONS: dict[str, JointConvention] = {
 
     # ── Jambe gauche ─────────────────────────────────────────────
@@ -156,8 +192,11 @@ def get_inverted_joints() -> list[str]:
 # roulis des poignets) ne diffèrent que par leur position dans la chaîne
 # cinématique, parce que le 29 DOF intercale de nouvelles articulations
 # derrière elles. Leurs axes et limites étant identiques, leur convention
-# se transmet. À reconfirmer par la suite S2 sur le modèle 29 DOF, mais
-# sans raison d'en douter.
+# se transmet telle quelle, défauts compris : les deux étiquettes connues
+# fausses du tangage d'épaule et du coude (voir la table du 23 DOF) ont
+# d'ailleurs été constatées sur le 29 DOF. À reconfirmer sur ce modèle,
+# par la suite S2 puis par le contrôle du sens absolu en cinématique
+# directe.
 #
 # 6 articulations sont nouvelles, et personne n'a jamais vérifié leur
 # sens. Leur signe est donc provisoire : celui de l'URDF brut (+1), avec

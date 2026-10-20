@@ -112,13 +112,21 @@ class SetpointFollower:
     JointSafetyGuard) ; une articulation absente ne reçoit aucun pas vers
     la cible.
 
-    Usage typique (dans une app, via run_mission) :
+    Usage typique (dans une app, via run_mission). La source des consignes
+    est ici un connecteur VLA (IVLAConnector, voir
+    axis_os/store/sdk/ai/connector.py). Son predict_action() attend la
+    réponse du modèle : on l'appelle donc dans un autre thread, qui dépose
+    chaque action par set_target(), pendant que la boucle de mission
+    appelle tick() à cadence fixe.
 
-        follower = SetpointFollower(ctx, joint_limits)
+        follower = SetpointFollower(ctx, delta_max_by_joint)
+
+        # Thread de la politique, en boucle, à son propre rythme :
+        action = connecteur.predict_action(image, instruction)
+        follower.set_target(action.target_angles, action.timestamp_ns)
+
+        # Boucle de mission, un pas toutes les step_s secondes :
         while mission_active:
-            action = policy_service.latest_action()   # non bloquant
-            if action is not None:
-                follower.set_target(action.target_angles, action.timestamp_ns)
             follower.tick()
             time.sleep(follower.step_s)
     """
