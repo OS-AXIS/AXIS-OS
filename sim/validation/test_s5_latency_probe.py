@@ -1,9 +1,15 @@
 """
-Suite S5.3 — surcoût réel du sandbox sur une commande.
+Suite S5.2 — surcoût réel du sandbox sur une commande.
 
-Même architecture de threads que test_s5_full_stack.py (voir ce
-fichier pour la documentation complète) : pompe sur le thread
-principal, mission dans un thread annexe, app dans un sous-process.
+Numérotation : dans docs/campagne_validation_isaac.md, S5.2 est la
+latence du pont sous charge, que ce script mesure. Le libellé « S5.3 »
+qu'il affiche à l'exécution est un ancien numéro : dans ce document,
+S5.3 désigne l'essai d'endurance de 8 heures.
+
+Même architecture de threads que
+deploy/isaac_sim_validation/test_s5_full_stack.py (voir ce fichier pour
+la documentation complète) : pompe sur le thread principal, mission
+dans un thread annexe, app dans un sous-process.
 
 CE QU'ON COMPARE :
 
@@ -11,7 +17,9 @@ CE QU'ON COMPARE :
     thread principal -> hal.send_joint_commands -> JointSafetyGuard
                      -> apply_action + step
 
-  chemin sandbox  (ce script)                      : à mesurer
+  chemin sandbox  (ce script)                      : 6.87 ms / cycle
+                                   (mesure publiée dans
+                                   docs/latence_chemin_commande.md)
     sous-process -> Queue -> HALBridgeServer (thread) -> RobotContext
                  -> NormalizedRobotHAL -> JointSafetyGuard
                  -> pump.submit() -> attente du thread principal
@@ -22,7 +30,11 @@ reste-t-il assez de marge sous le budget de 20 ms (50 Hz) pour qu'une
 politique apprise pilote une app sandboxée sans dégrader la
 vérification de sécurité ?
 
-  docker exec isim-isaac-sim-1 /isaac-sim/python.sh \
+deploy/machine_gpu/copier_code.sh ne copie que les scripts
+sim/validation/test_isaac_*.py : celui-ci se copie à la main dans le
+conteneur (docker cp vers /isaac-sim/axis_os/) avant d'être lancé.
+
+  docker exec isim-isaac-sim-1 /isaac-sim/python.sh \\
       /isaac-sim/axis_os/test_s5_latency_probe.py
 """
 import sys

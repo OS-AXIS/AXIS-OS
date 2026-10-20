@@ -6,25 +6,27 @@ Le robot ne reçoit AUCUNE position. Il doit :
   CHERCHER    tourner sur lui-même jusqu'à ce qu'OWL-ViT reconnaisse
               « a cardboard box » dans l'image de sa caméra ;
   APPROCHER   marcher vers le carton en recalculant sa position à chaque
-              image, et s'ALIGNER pour que ses mains l'encadrent ;
+              image, et s'aligner pour que ses mains l'encadrent ;
   SAISIR      serrer et soulever — déclenché par la perception, quand il
               est en place, pas à une seconde fixée d'avance ;
   RECULER, SE RETOURNER, EMPORTER, DÉPOSER au sol.
 
-CE QUI RELÈVE DE L'IA : la recherche et la localisation (OWL-ViT +
-profondeur), et tout l'équilibre et la marche (GR00T WBC). CE QUI RESTE
-UN GESTE PROGRAMMÉ : le mouvement des bras lui-même. OWL-ViT voit, il ne
-commande pas de bras : l'app sait COMMENT on prend un carton, la
-perception lui dit QUAND et OÙ.
+Ce qui relève de l'IA : la recherche et la localisation (OWL-ViT +
+profondeur), et tout l'équilibre et la marche (GR00T WBC). Ce qui reste
+un geste programmé : le mouvement des bras lui-même. OWL-ViT voit, il ne
+commande pas de bras : l'app sait comment on prend un carton, la
+perception lui dit quand et où.
 
-Scène : carton sur une table SUR LE CÔTÉ GAUCHE du robot, hors de son
+Scène : carton sur une table, sur le côté gauche du robot, hors de son
 champ de vision au départ. Le robot doit le trouver.
 
 Deux limites, assumées et signalées :
-  - fin d'approche À L'AVEUGLE : sous 0.5 m environ, le carton sort du
-    champ de la caméra ; le robot finit sur la dernière position vue,
-    recalée par sa propre pose. En simulation la pose est exacte ; sur le
-    vrai robot, il faudra une odométrie.
+  - fin d'approche à l'aveugle : sous 0.9 m environ, l'estimation de la
+    position du carton n'est plus mise à jour, car la caméra n'y voit
+    plus que la table, les bras du robot et un morceau du carton ; le
+    robot finit sur la dernière position estimée, recalée par sa propre
+    pose. En simulation la pose est exacte ; sur le vrai robot, il
+    faudra une odométrie.
   - la vérification de la prise lit la position du carton dans la
     simulation. Sur le vrai robot, ce serait l'effort mesuré aux épaules.
 
@@ -45,7 +47,7 @@ from axis_os.hal.drivers.isaac_sim.bridge import (
 POLICIES = Path("/isaac-sim/policies")
 FAIL = 0
 
-# ---- scène (INCONNUE du robot) ---------------------------------------
+# ---- scène (inconnue du robot) ---------------------------------------
 MASSE_KG, PROFONDEUR, LARGEUR, HAUTEUR = 1.0, 0.20, 0.24, 0.20
 TABLE_HAUT = 0.80
 # Carton à gauche du robot, sur une table orientée vers lui.
@@ -60,14 +62,14 @@ ROULIS_OUVERT, ROULIS_SERRE = 0.20, -0.40
 KP_BRAS = [90, 100, 40, 60, 40, 40, 40]
 KD_BRAS = [2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 MAINS_DEVANT = 0.29          # le carton doit finir à 29 cm devant le bassin
-# Tolérances tirées de la GÉOMÉTRIE, et non choisies au jugé. Les mains
+# Tolérances tirées de la géométrie, et non choisies au jugé. Les mains
 # doivent tomber entre la face avant et la face arrière du carton (20 cm
 # de profondeur) : ±7 cm en avant-arrière, 6 cm retenus. Sur le côté,
 # l'écartement des mains (33 cm) moins la largeur du carton (24 cm) laisse
 # ±4.5 cm, 3.5 retenus. Première version : 3 cm et 2.5 cm — le robot,
 # arrivé dès 8 s, a piétiné 50 s sans jamais se déclarer en place.
 TOL_AVANT, TOL_COTE = 0.06, 0.035
-# En dessous de cette vitesse, GR00T WBC passe en mode ÉQUILIBRE et
+# En dessous de cette vitesse, GR00T WBC passe en mode équilibre et
 # n'avance plus : les consignes d'ajustement fin ne doivent pas y tomber.
 V_MIN = 0.06
 
@@ -126,7 +128,7 @@ def main():
     idx = bridge._joint_index
     names = sorted(idx, key=lambda j: idx[j])
 
-    # ---- scène, TOUT posé avant world.reset() -----------------------
+    # ---- scène, tout posé avant world.reset() -----------------------
     world.scene.add(FixedCuboid(
         prim_path="/World/table_plateau", name="table_plateau",
         position=np.array([CARTON[0], sum(PLATEAU_Y) / 2, TABLE_HAUT - 0.02]),
@@ -184,7 +186,7 @@ def main():
     cam.wait_until_ready(world)
     dep.wait_until_ready(world)
     tree = FrameTree()
-    # Seuil abaissé : au premier essai, AUCUNE détection n'a franchi les
+    # Seuil abaissé : au premier essai, aucune détection n'a franchi les
     # filtres en une minute de recherche. Ce carton (24 cm) est deux fois et
     # demie plus petit que ceux des tests précédents, déjà reconnus tout
     # juste au-dessus de 0.09. Les faux positifs (le sol) restent écartés
@@ -239,7 +241,7 @@ def main():
     prims_mains = {}
 
     def main_monde(nom):
-        """Position MONDE d'une main. Sur un vrai robot : cinématique à
+        """Position d'une main dans le repère du monde. Sur un vrai robot : cinématique à
         partir des capteurs articulaires. Le lien peut avoir été fusionné à
         l'import : on retombe alors sur le poignet qui le porte."""
         for cand in (nom, nom.replace("rubber_hand", "wrist_yaw_link")):
@@ -257,7 +259,7 @@ def main():
         return None
 
     def carton_entre_les_mains():
-        """La règle de Kenzo : dès que le carton est ENTRE les mains, on
+        """La règle de Kenzo : dès que le carton est entre les mains, on
         serre. Vérifiée dans le repère du robot : le centre estimé du carton
         doit tomber entre les deux mains sur le côté, et les mains doivent
         être entre sa face avant et sa face arrière."""
@@ -273,9 +275,9 @@ def main():
         avant_ok = (cr[0] - PROFONDEUR / 2 + 0.02) < mains_x < (cr[0] + PROFONDEUR / 2 - 0.02)
         return cote_ok and avant_ok, (cr[0] - mains_x, cr[1] - milieu_y)
 
-    # ---- l'APP : une machine à états ----------------------------------
+    # ---- l'app : une machine à états ----------------------------------
     etat = "CHERCHER"
-    estim = None                 # centre du carton estimé, repère MONDE
+    estim = None                 # centre du carton estimé, repère du monde
     vues = 0
     en_place = 0
     t_etat = 0.0
@@ -309,8 +311,8 @@ def main():
             p_w = np.asarray(pos, dtype=float)
             for c in (cam, dep):
                 c._position = tuple(float(v) for v in (p_w + R @ np.array([0.2, 0.0, 0.4])))
-                # Visée RELEVÉE. Premier réglage repris des tests où le carton
-                # était AU SOL : il visait 0.55 m sous le BASSIN, soit 36° vers
+                # Visée relevée. Premier réglage repris des tests où le carton
+                # était au sol : il visait 0.55 m sous le bassin, soit 36° vers
                 # le bas depuis la caméra — et non 20° comme calculé par erreur
                 # depuis la caméra. Le carton, sur une table à 0.90 m, tombait
                 # 25° au-dessus du centre de l'image (champ vertical : ±18°) :
@@ -331,7 +333,7 @@ def main():
             # Deux formulations, en alternance : OWL-ViT est sensible aux mots.
             requete = ("a cardboard box", "a brown box")[(k // 5) % 2]
             r = perception.find(requete, frame=FRAME_WORLD)
-            # DIAGNOSTIC — au premier essai, le test disait « pas vu » sans
+            # Diagnostic — au premier essai, le test disait « pas vu » sans
             # dire pourquoi : confiance trop basse, profondeur absente,
             # position filtrée ? On le fait parler une fois par seconde.
             if etat == "CHERCHER" and t - diag["t"] >= 1.0:
@@ -354,7 +356,7 @@ def main():
                     print(f"  [perception {t:5.1f} s] carton à {vrai:+4.0f}° | "
                           f"« {requete} » : rien"
                           + ("" if r.ok else f" — {r.reason}"))
-                # Ce que VOIT la caméra quand elle fait face au carton.
+                # Ce que voit la caméra quand elle fait face au carton.
                 if abs(vrai) < 10 and not diag["image"]:
                     f_ = cam.capture()
                     if f_ is not None:
@@ -368,12 +370,12 @@ def main():
                 p = d.position_3d
                 if p is None or not (0.6 < p.z < 1.3):
                     continue           # ni le sol, ni le plafond
-                # La profondeur mesure la FACE AVANT : le centre est 10 cm
+                # La profondeur mesure la face avant : le centre est 10 cm
                 # plus loin, dans l'axe du regard.
                 pr, _ = robot.get_world_pose()
                 v = np.array([p.x - float(pr[0]), p.y - float(pr[1])])
                 dist = float(np.linalg.norm(v))
-                # De PRÈS, plus de mise à jour : la caméra y voit la table,
+                # De près, plus de mise à jour : la caméra y voit la table,
                 # ses propres bras, un morceau de carton — des mesures qui
                 # ont tiré l'estimation vers le fond au premier essai.
                 if estim is not None and dist < 0.9:
@@ -396,12 +398,12 @@ def main():
             ex, ey = cible[0] - MAINS_DEVANT, cible[1]
             cap = math.atan2(cible[1], cible[0])
             if cible[0] > 0.7:
-                # LOIN : s'orienter, puis avancer.
+                # Loin : s'orienter, puis avancer.
                 vx = float(np.clip(0.8 * ex, 0.0, 0.25)) if abs(cap) < 0.4 else 0.0
                 loco.set_velocity(vx, 0.0, float(np.clip(1.5 * cap, -0.5, 0.5)))
                 en_place = 0
             else:
-                # PRÈS : ajuster par petits pas FRANCS. Une consigne sous
+                # Près : ajuster par petits pas francs. Une consigne sous
                 # V_MIN ferait passer la politique en équilibre sans bouger ;
                 # d'où une vitesse minimale, ou zéro si l'axe est déjà bon.
                 def pas(err, tol, vmax):
@@ -414,7 +416,7 @@ def main():
                     loco.halt()
                 else:
                     loco.set_velocity(vx, vy, 0.0)
-                # RÈGLE DE KENZO : dès que le carton est entre les mains, on
+                # Règle de Kenzo : dès que le carton est entre les mains, on
                 # serre — même si le corps oscille encore. La version
                 # précédente exigeait 0.5 s d'immobilité parfaite ; près d'un
                 # obstacle, la politique de marche ne s'immobilise jamais tout

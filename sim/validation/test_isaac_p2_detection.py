@@ -13,11 +13,14 @@ La cible est le G1 lui-même : c'est le seul objet certain d'être dans
 la scène, et sa position est connue, donc la direction calculée est
 vérifiable au lieu d'être crue sur parole.
 
-PRÉREQUIS DANS LE CONTENEUR :
-    docker exec -u root isim-isaac-sim-1 /isaac-sim/python.sh \
-        -m pip install transformers pillow
+PRÉREQUIS DANS LE CONTENEUR, aux versions de requirements.txt :
+transformers y est épinglé, parce qu'une version installée « du jour »
+a déjà cassé la perception (zéro détection, sans erreur). L'étape 8/9 de
+deploy/machine_gpu/installer.sh fait cette installation.
+    docker exec -u root isim-isaac-sim-1 /isaac-sim/python.sh \\
+        -m pip install "transformers==5.17.0" "pillow>=10.0.0"
 
-  docker exec isim-isaac-sim-1 /isaac-sim/python.sh \
+  docker exec isim-isaac-sim-1 /isaac-sim/python.sh \\
       /isaac-sim/axis_os/test_isaac_p2_detection.py
 """
 import sys

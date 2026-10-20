@@ -14,9 +14,10 @@ Deux phases, même consigne de virage (0.3 m/s en avançant, 0.6 rad/s) :
                      angulaire dans le repère du MONDE
 
   AVEC tient, SANS tombe   -> la correction était indispensable : prouvé
-  les deux tiennent         -> mon affirmation était EXAGÉRÉE, à corriger
-                               dans la documentation ; la correction reste
-                               juste mais n'était pas critique ici
+  les deux tiennent         -> l'affirmation était exagérée, à corriger
+                               dans docs/validation_locomotion.md ; la
+                               correction reste juste mais n'était pas
+                               critique ici
   AVEC tombe                -> problème de virage indépendant du repère
 
 Un test qui ne peut pas détecter le bug qu'il prétend couvrir ne prouve

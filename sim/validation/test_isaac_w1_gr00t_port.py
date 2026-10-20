@@ -1,5 +1,7 @@
 """
-Suite W1 — le test qui dit si le Graal est à portée.
+Suite W1 — le test qui dit si le Graal est à portée. On appelle ainsi,
+dans ces suites, l'objectif final : que le robot prenne un carton, le
+porte en marchant et le dépose.
 
 G1 29 DOF, politique GR00T Whole-Body Control, dans Isaac Sim. Quatre
 phases, dont chacune lève un risque avant la suivante :
@@ -43,12 +45,20 @@ from axis_os.hal.drivers.isaac_sim.bridge import (
 POLICIES = Path("/isaac-sim/policies")
 FAIL = 0
 
-# Pose de port en convention ANATOMIQUE, traduite par la table de
-# conventions validée — pas devinée en angles bruts.
+# Pose de port écrite en convention ANATOMIQUE, puis traduite en angles
+# bruts par la table de conventions (fonction brut() plus bas). Constaté
+# depuis, au premier essai de W2 : les étiquettes de tangage d'épaule et
+# de coude de cette table sont inversées, et cette posture a fait marcher
+# le robot les bras tirés vers l'ARRIÈRE (voir
+# sim/validation/test_isaac_w2_gr00t_carton.py et
+# docs/integration_gr00t_wbc.md §8). W1 prouve que la politique tient
+# pendant qu'on bouge les bras, pas qu'elle marche bras en avant.
 PORT_ANATOMIQUE = {
-    "shoulder_pitch": 0.6,     # flexion antérieure : bras vers l'avant
+    "shoulder_pitch": 0.6,     # « flexion antérieure » selon la table ;
+                               # en fait, bras vers l'arrière
     "shoulder_roll": -0.15,    # adduction : avant-bras rapprochés
-    "elbow": 1.2,              # flexion du coude
+    "elbow": 1.2,              # « flexion » selon la table ; en fait,
+                               # le coude se déplie
 }
 # Gains des bras, relevés dans la configuration de déploiement NVIDIA
 # (g1_29dof_gear_wbc.yaml, indices 15 à 28).
@@ -83,7 +93,7 @@ def main():
     cfg = GR00TWBCConfig()
     pol = GR00TWBCPolicy(POLICIES / "gr00t_wbc_balance.onnx",
                          POLICIES / "gr00t_wbc_walk.onnx", cfg)
-    pol.load()                      # affiche les empreintes, à épingler
+    pol.load()                      # vérifie les empreintes épinglées
 
     conv = conventions_pour("29dof")
 

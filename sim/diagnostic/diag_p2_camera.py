@@ -59,11 +59,11 @@ def main():
             print(f"  [{nom}] aucune image"); continue
 
         arr = np.frombuffer(f.data, dtype=np.uint8).reshape(f.height, f.width, 3)
-        # Un fond uniforme a un ecart-type quasi nul ; un robot visible
-        # cree du contraste.
+        # Un fond uniforme a un écart-type quasi nul ; un robot visible
+        # crée du contraste.
         std = float(arr.std())
         moy = float(arr.mean())
-        # Combien de pixels s'ecartent nettement du fond ?
+        # Combien de pixels s'écartent nettement du fond ?
         # CRITÈRE CORRIGÉ. Le précédent comparait chaque pixel à la
         # MÉDIANE de l'image : sur un simple dégradé de fond, la moitié
         # des pixels s'en écartent mécaniquement, d'où les 45 % mesurés

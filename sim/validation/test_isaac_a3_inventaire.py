@@ -13,9 +13,11 @@ Une app qui se souvient ne se démontre pas en une mission : il faut
 qu'elle retrouve ce qu'elle savait. Et retirer un objet entre les deux
 prouve que la mémoire décrit l'état actuel, pas une accumulation.
 
-La mémoire est écrite dans /isaac-sim/memory_store, qui survit entre
-deux exécutions du script — on peut donc relancer ce test et voir la
-mission 1 démarrer avec un inventaire déjà connu.
+La mémoire est écrite dans /isaac-sim/memory_store et survit entre
+deux exécutions du script, qui ne la vide pas. Il faut donc la vider
+avant chaque relance : les vérifications de la mission 1 exigent que
+rien ne soit connu avant elle, et échouent si l'inventaire d'une
+exécution précédente est encore sur disque.
 
   docker exec isim-isaac-sim-1 /isaac-sim/python.sh \\
       /isaac-sim/axis_os/test_isaac_a3_inventaire.py

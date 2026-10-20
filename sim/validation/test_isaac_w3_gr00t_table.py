@@ -1,14 +1,14 @@
 """
-Suite W3 — prendre un carton SUR UNE TABLE, le soulever, l'emporter.
+Suite W3 — prendre un carton sur une table, le soulever, l'emporter.
 
 Scène réaliste, comme un carton sur un convoyeur ou une étagère : il est
-posé sur une table, visible et stable DÈS LE DÉBUT. Dans W2, il était
+posé sur une table, visible et stable dès le début. Dans W2, il était
 placé entre les mains en cours de simulation — à l'écran, il apparaissait
 de nulle part, et il tombait avant que les bras ne se referment.
 
-  A. 0–3 s    debout, bras ouverts AUTOUR du carton posé sur la table
-  B. 3–4 s    les bras SERRENT
-  C. 4–5 s    les bras SOULÈVENT le carton de la table
+  A. 0–3 s    debout, bras ouverts autour du carton posé sur la table
+  B. 3–4 s    les bras serrent
+  C. 4–5 s    les bras soulèvent le carton de la table
   D. 5–8 s    recul à 0.2 m/s          -> s'écarter de la table
   E. 8–12 s   demi-tour sur place
   F. 12–16 s  marche à 0.3 m/s         -> il emporte le carton
@@ -19,7 +19,7 @@ et ramasser au sol exige de s'accroupir ET de se pencher bras tendus —
 le cas le plus exigeant pour l'équilibre. Étape suivante, pas celle-ci.
 
 Positions de la table et du carton calculées pour que le carton tombe
-ENTRE les mains ouvertes, d'après la position mesurée au test W2 :
+entre les mains ouvertes, d'après la position mesurée au test W2 :
 mains centrées 0.29 m devant le bassin, à 0.90 m, écartées de 0.33 m.
 
   docker exec isim-isaac-sim-1 /isaac-sim/python.sh \\
@@ -41,15 +41,15 @@ MASSE_KG = 1.0
 PROFONDEUR, HAUTEUR = 0.20, 0.20
 FAIL = 0
 
-# Postures en ANGLES BRUTS, calculées par CINÉMATIQUE DIRECTE sur l'URDF
+# Postures en angles bruts, calculées par cinématique directe sur l'URDF
 # 29 DOF — et non plus traduites par les étiquettes anatomiques de la
 # table de conventions.
 #
-# DÉCOUVERTE du premier essai : la « flexion antérieure » de la table
+# Constat du premier essai : la « flexion antérieure » de la table
 # (tangage d'épaule +0.6) envoyait les mains DERRIÈRE le bassin — x=-0.16
 # mesuré en simulation, x=-0.16 calculé par cinématique, deux sources
-# indépendantes. En angles bruts, un tangage d'épaule POSITIF recule le
-# bras, et un coude POSITIF le déplie (le coude du G1 est déjà plié à
+# indépendantes. En angles bruts, un tangage d'épaule positif recule le
+# bras, et un coude positif le déplie (le coude du G1 est déjà plié à
 # angle droit à zéro). Les étiquettes anatomiques de ces deux
 # articulations sont inversées ; le roulis, lui, est conforme.
 #
@@ -58,44 +58,50 @@ FAIL = 0
 EPAULE_TANGAGE = -0.30        # bras légèrement levés vers l'avant
 COUDE = 0.0                   # coude à angle droit (zéro du G1)
 ROULIS_OUVERT = 0.20          # bras écartés : 34 cm entre les mains
-ROULIS_SERRE = -0.40          # vise AU-DELÀ du contact : la raideur serre
+ROULIS_SERRE = -0.40          # vise au-delà du contact : la raideur serre
 LARGEUR = 0.24                # carton plus étroit que l'écartement ouvert
 EPAULE_LEVEE = -0.50          # soulever : les mains montent d'environ 6 cm
 # Position des mains mesurée au test W2, bras ouverts : c'est là que doit
 # se trouver le carton.
 MAINS_X, MAINS_Z = 0.29, 0.90
 TABLE_HAUT = MAINS_Z - HAUTEUR / 2          # plateau sous le carton
-# PREMIER ESSAI : table dont le bord avant était à +0.14 m du bassin. La
-# CUISSE du robot, en posture accroupie, touchait la table dès 0.3 s ; la
-# politique d'équilibre a répondu à la poussée en RECULANT de 26 cm, et
+# Historique des essais de placement, dans l'ordre. Les valeurs en
+# vigueur sont celles des constantes : CARTON_X = 0.29 et, après le
+# quatrième essai, TABLE_AVANT = 0.18.
+#
+# Premier essai : table dont le bord avant était à +0.14 m du bassin. La
+# cuisse du robot, en posture accroupie, touchait la table dès 0.3 s ; la
+# politique d'équilibre a répondu à la poussée en reculant de 26 cm, et
 # les mains ont fini devant le carton, à serrer le vide. Le calcul avait
 # prévu les genoux, pas le volume de la cuisse.
 #
-# Table avancée : bord avant à +0.26 m, 16 cm de dégagement. Carton
-# avancé à +0.33 m pour que son centre de masse repose sur la table ; il
-# s'étend de +0.23 à +0.43, donc ses flancs restent ENTRE les mains
-# (centrées à +0.29).
-# Carton CENTRÉ sur les mains. Décalé de 4 cm vers l'avant au troisième
-# essai, il basculait en se soulevant. Son centre de masse (+0.29) reste
-# au-dessus de la table (bord à +0.26).
+# Correction qui a suivi (remplacée depuis) : table avancée, bord avant
+# à +0.26 m, 16 cm de dégagement. Carton avancé à +0.33 m pour que son
+# centre de masse repose sur la table ; il s'étend de +0.23 à +0.43, donc
+# ses flancs restent entre les mains (centrées à +0.29).
+#
+# Puis carton centré sur les mains. Décalé de 4 cm vers l'avant au
+# troisième essai, il basculait en se soulevant. Son centre de masse
+# (+0.29) restait au-dessus de la table d'alors (bord à +0.26), ce qui
+# n'a pas suffi : voir le quatrième essai ci-dessous.
 CARTON_X = 0.29
-# QUATRIÈME ESSAI : carton centré à +0.29, mais bord de table à +0.26 —
+# Quatrième essai : carton centré à +0.29, mais bord de table à +0.26 —
 # 3 cm d'appui seulement. Il a basculé par-dessus le bord dès la première
 # seconde et s'est coincé entre la table et les jambes du robot.
 #
 # Contradiction de géométrie : le carton doit être à +0.29 (entre les
 # mains), mais un bloc plein ne peut pas s'approcher à moins de +0.26 sans
-# toucher les cuisses. Solution, celle de toute vraie table : un PLATEAU
-# FIN, à 80 cm, qui passe AU-DESSUS des cuisses et avance jusqu'à +0.18 ;
-# et un PIED placé en arrière, hors de portée des jambes. Le carton repose
+# toucher les cuisses. Solution, celle de toute vraie table : un plateau
+# fin, à 80 cm, qui passe au-dessus des cuisses et avance jusqu'à +0.18 ;
+# et un pied placé en arrière, hors de portée des jambes. Le carton repose
 # alors entièrement sur le plateau.
 TABLE_AVANT, TABLE_ARRIERE = 0.18, 0.60
 EPAISSEUR_PLATEAU = 0.04
 PIED_AVANT = 0.42
-# Gains des bras RAIDIS pour la prise. NVIDIA utilise une raideur de 4
-# aux POIGNETS — réglage de téléopération, où l'on veut des poignets
+# Gains des bras raidis pour la prise. NVIDIA utilise une raideur de 4
+# aux poignets — réglage de téléopération, où l'on veut des poignets
 # souples. Constaté au troisième essai de W3 : sous le serrage des épaules,
-# les poignets pliaient, les mains PIVOTAIENT et s'écartaient du carton au
+# les poignets pliaient, les mains pivotaient et s'écartaient du carton au
 # lieu de le pincer ; il montait d'un centimètre, basculait, et glissait.
 # La force de serrage se perdait dans les poignets.
 #            épaule tangage, roulis, lacet, coude, poignet roulis, tangage, lacet
@@ -153,11 +159,13 @@ def main():
     idx = bridge._joint_index
     names = sorted(idx, key=lambda j: idx[j])
 
-    # Carton créé AU DÉPART, loin ; téléporté plus tard.
+    # Matériau du carton. La table et le carton sont créés directement à
+    # leur place, avant world.reset() ; le carton n'est jamais déplacé
+    # ensuite (contrairement à W2, où il était téléporté).
     materiau = PhysicsMaterial(prim_path="/World/Materiaux/carton",
                                static_friction=1.0, dynamic_friction=0.8,
                                restitution=0.0)
-    # Table FIXE, plateau juste sous les mains ; carton posé dessus, entre
+    # Table fixe, plateau juste sous les mains ; carton posé dessus, entre
     # les mains ouvertes. Visible et stable dès la première image.
     world.scene.add(FixedCuboid(
         prim_path="/World/table_plateau", name="table_plateau",
@@ -190,10 +198,10 @@ def main():
     # de taille du carton en W2). Règle : tout ce qui touche la physique se
     # pose avant l'initialisation.
     #
-    # MAINS EN CAOUTCHOUC : leur donner le frottement du caoutchouc. Au
+    # Mains en caoutchouc : leur donner le frottement du caoutchouc. Au
     # cinquième essai, le carton a été soulevé, tenu en reculant et pendant
     # tout le demi-tour, puis a glissé jusqu'à tomber en marche avant. Les
-    # mains avaient le frottement PAR DÉFAUT du simulateur, celui d'une
+    # mains avaient le frottement par défaut du simulateur, celui d'une
     # surface quelconque — alors qu'Unitree les a faites en caoutchouc
     # précisément pour qu'elles adhèrent.
     import omni.usd
@@ -219,7 +227,7 @@ def main():
         kds=np.array([g[j][1] for j in names]))
     q0 = {j: 0.0 for j in names}
     q0.update(dict(zip(cfg.controlled_joints, cfg.default_angles)))
-    # Bras DÉJÀ ouverts autour du carton : le robot ne le percute pas en
+    # Bras déjà ouverts autour du carton : le robot ne le percute pas en
     # prenant la posture.
     q0.update(pose(ROULIS_OUVERT))
     q0v = np.array([q0[j] for j in names])
@@ -254,7 +262,7 @@ def main():
     chemins = {}
 
     def position_lien(nom):
-        """Position MONDE d'un lien du robot, lue dans la scène. Le lien de
+        """Position d'un lien du robot dans le repère du monde, lue dans la scène. Le lien de
         la main peut avoir été fusionné à l'import : on retombe alors sur le
         lien de poignet qui le porte."""
         for candidat in (nom, nom.replace("rubber_hand", "wrist_yaw_link")):
@@ -271,7 +279,7 @@ def main():
                 return np.array([t[0], t[1], t[2]], dtype=float), candidat
         return None, None
 
-    # CAMÉRA : suit le robot, trois quarts avant, PROCHE et visée à hauteur
+    # Caméra : suit le robot, trois quarts avant, proche et visée à hauteur
     # de poitrine — c'est la prise qu'on veut voir, pas la silhouette.
     rec = SceneRecorder(world, "/isaac-sim/videos/w3_table.mp4",
                         position=(2.0, -2.2, 1.3), cible=(0.0, 0.0, 0.9),
@@ -347,7 +355,7 @@ def main():
         politiques.setdefault(phase, set()).add(pol.derniere_politique)
         capture = video_ok and (k % 2 == 0)        # 25 images/s
         if capture:
-            rec.cadrer()                           # AVANT le rendu
+            rec.cadrer()                           # avant le rendu
         for i in range(cfg.decimation - 1):
             world.step(render=(capture and i == 0))
         sim_t[0] += cfg.control_dt
@@ -368,7 +376,9 @@ def main():
     print("  t     phase  hauteur carton  distance au bassin  x robot")
     derniere = -1.0
     for t, ph, z, d, x in trace:
-        pas = 0.25 if 6.3 <= t <= 8.0 else 1.0     # finesse au relâchement
+        pas = 0.25 if 6.3 <= t <= 8.0 else 1.0     # finesse pendant le recul
+                                                   # (phase D) ; fenêtre
+                                                   # reprise de W2
         if t - derniere >= pas:
             print(f"  {t:5.1f}   {ph}     {z:6.3f} m        {d:5.2f} m        {x:+.2f}")
             derniere = t
@@ -391,7 +401,7 @@ def main():
         check(f"Aucun recul parasite avant le serrage : "
               f"{abs(xa[-1] - xa[0]) * 100:.1f} cm (au premier essai : 26 cm, "
               f"la table poussait la cuisse)", abs(xa[-1] - xa[0]) < 0.08)
-    # Soulèvement : sur C et le DÉBUT de D — au cinquième essai, le carton
+    # Soulèvement : sur C et le début de D — au cinquième essai, le carton
     # a quitté la table (+2.5 cm) juste au passage en phase D.
     pts_c = [(z, d) for t, p, z, d, x in trace
              if p == "C" or (p == "D" and t < 6.0)]

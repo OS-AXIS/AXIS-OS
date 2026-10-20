@@ -30,7 +30,8 @@ from axis_os.services.policy.setpoint_follower import (
     SetpointFollower, FollowerState,
 )
 
-KP_SIM = 40.0        # robot.py:77 — position_delta_max = torque_max / 40
+KP_SIM = 40.0        # comme G1SimulatedActuator (robot.py) :
+                     # position_delta_max = torque_max / 40
 STEP_S = 0.02        # 50 Hz
 N_TRACKING_TICKS = 200
 

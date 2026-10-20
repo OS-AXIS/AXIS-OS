@@ -15,8 +15,9 @@ colis au lieu de s'arrêter devant.
 
 Les colis sont des boîtes créées dans la scène plutôt que des modèles
 téléchargés : leur position est ainsi EXACTE et choisie, ce qui rend la
-mesure vérifiable. Une scène d'entrepôt NVIDIA viendra ensuite, pour le
-réalisme visuel.
+mesure vérifiable. Une scène d'entrepôt réaliste, faite de modèles
+NVIDIA, était prévue ensuite pour le réalisme visuel ; aucune n'est
+encore chargée dans le dépôt.
 
   docker exec isim-isaac-sim-1 /isaac-sim/python.sh \\
       /isaac-sim/axis_os/test_isaac_p3_warehouse.py

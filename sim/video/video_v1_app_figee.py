@@ -111,7 +111,6 @@ def main():
     runtime.install(app)
     runtime.start_app(app.manifest().app_id)
 
-    # Caméra spectateur : de trois quarts, couvrant le trajet du robot.
     # Caméra qui SUIT le robot, en trois quarts avant, à ~3.7 m. Version
     # précédente : caméra fixe reculée à 6.5 m pour garder tout le trajet
     # dans le champ — le robot y paraissait minuscule. Une caméra proche

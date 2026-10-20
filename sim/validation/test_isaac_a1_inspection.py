@@ -1,7 +1,7 @@
 """
-Suite A1 — première app AXIS-OS qui voit ET se déplace, bout en bout.
+Suite A1 — première app AXIS-OS qui voit et se déplace, bout en bout.
 
-L'app tourne dans le SANDBOX, via le Play Store, et doit :
+L'app tourne dans le sandbox, via le Play Store, et doit :
   chercher un colis -> marcher vers lui -> s'arrêter devant -> rapporter
 
 Toutes les briques validées séparément sont ici assemblées pour la
@@ -9,10 +9,11 @@ première fois : perception (OWL-ViT + profondeur + repères), locomotion
 (politique Unitree + service + échéance de fraîcheur), sandbox, Play
 Store, permissions, garde-fou.
 
-ARCHITECTURE DES FILS D'EXÉCUTION — la raison d'être de ce montage :
+Architecture des fils d'exécution — la raison d'être de ce montage :
 
-  thread principal : fait tourner la SIMULATION et la boucle de
-                     locomotion à 50 Hz (MainThreadSimPump)
+  thread principal : fait tourner la simulation et la boucle de
+                     locomotion à 50 Hz (boucle écrite à la main plus
+                     bas, sans MainThreadSimPump)
   thread mission   : PlayStoreRuntime, qui lance l'app
   sous-process     : l'app elle-même, sandboxée
 
@@ -115,7 +116,7 @@ def main():
     dep.wait_until_ready(world)
 
     tree = FrameTree()
-    # 0.09 : compromis mesuré. À 0.05, le SOL était détecté comme carton
+    # 0.09 : compromis mesuré. À 0.05, le sol était détecté comme carton
     # (confiance 0.129) et l'app concluait à l'arrivée sans avoir bougé.
     # Le vrai colis marque 0.10 à distance et 0.31 de près.
     detector = OwlViTDetector(threshold=0.09)
@@ -172,9 +173,14 @@ def main():
     runtime.install(app)
     runtime.start_app(man.app_id)
 
-    # Quota RÉELLEMENT appliqué par le runtime, pas celui déclaré : la
-    # mission a été tuée pour TIMEOUT à 10.6 s alors que le manifeste
-    # annonce 300 s. L'un des deux ment.
+    # Quota RÉELLEMENT appliqué par le runtime, affiché à côté de celui
+    # que déclare l'app. Cet affichage a été ajouté quand un essai a vu
+    # la mission tuée pour TIMEOUT à 10.6 s, alors que le manifeste
+    # annonce 300 s. À l'essai suivant, les deux valeurs affichées
+    # étaient identiques (300 s) : ce TIMEOUT est resté inexpliqué, et
+    # l'affichage reste là pour le surveiller. Le runtime ne reçoit ici
+    # aucune horloge (pas de clock=) : le quota se compte donc en temps
+    # mural.
     _entry = runtime._get(man.app_id)
     _q = _entry.manifest.quota if _entry else None
     print(f"\n[quota] déclaré par l'app : runtime={man.quota.max_runtime_s}s "
@@ -198,10 +204,10 @@ def main():
     th.start()
 
     # --- Thread principal : simulation + locomotion à 50 Hz ----------
-    # L'app ne tient PAS cette cadence : elle déclare une vitesse, l'OS
+    # L'app ne tient pas cette cadence : elle déclare une vitesse, l'OS
     # l'exécute. C'est tout l'intérêt de l'architecture.
-    # EXACTEMENT decimation pas de physique par pas de commande. La
-    # première version en faisait UN DE PLUS (un world.step(render=True)
+    # Exactement decimation pas de physique par pas de commande. La
+    # première version en faisait un de plus (un world.step(render=True)
     # ajouté en fin de boucle pour la caméra) : la politique croyait
     # avancer de 20 ms quand la simulation avançait de 22 ms. 10 %
     # d'erreur, accumulée — or cette politique compte le temps pour sa
@@ -210,7 +216,7 @@ def main():
     # (action de 4.6 sur une cheville, contre moins de 1 en marche
     # normale), le garde-fou a refusé, et le robot est tombé à 18.8 s.
     #
-    # Le rendu se fait DANS la décimation, jamais en plus.
+    # Le rendu se fait dans la décimation, jamais en plus.
     RENDER_TOUS_LES = 5          # la perception lit ~5 images/s, inutile
                                  # de rendre à 50 Hz — et le rendu est ce
                                  # qui ralentit le plus la boucle.
@@ -226,10 +232,10 @@ def main():
         k += 1
 
         if rendre:
-            # CAMÉRA RÉELLEMENT MONTÉE SUR LE ROBOT : sa position ET son
+            # Caméra réellement montée sur le robot : sa position et son
             # axe de visée suivent l'orientation du robot. La première
-            # version la plaçait en coordonnées du MONDE (regard toujours
-            # vers +x) tout en la déclarant dans le repère du ROBOT. Tant
+            # version la plaçait en coordonnées du monde (regard toujours
+            # vers +x) tout en la déclarant dans le repère du robot. Tant
             # qu'il regardait droit devant, les deux coïncidaient ; dès
             # qu'il tournait, la direction reçue par l'app était fausse,
             # elle corrigeait à l'envers et le robot s'éloignait — il a
@@ -246,7 +252,7 @@ def main():
                 c._position = tuple(float(v) for v in (p_w + mount))
                 c.look_at(tuple(float(v) for v in aim))
 
-            # L'ARBRE DES REPÈRES fait la conversion, au lieu de la
+            # L'arbre des repères fait la conversion, au lieu de la
             # supposer : monde <- robot (odométrie) et monde <- caméra
             # (montage). PerceptionService demande robot <- caméra, et
             # FrameTree compose les deux. C'est exactement son rôle.
@@ -294,7 +300,7 @@ def main():
             check(f"Arrêt à la distance visée par l'app ({d:.2f} m pour une "
                   f"consigne de 1.2 m)", 0.5 <= d <= 1.4)
 
-        # Distance RÉELLE, calculée depuis les positions connues — la
+        # Distance réelle, calculée depuis les positions connues — la
         # seule qui ne dépende pas de ce que le robot croit voir.
         face_avant = COLIS[1][0] - COLIS[2][0] / 2.0
         reelle = face_avant - avance

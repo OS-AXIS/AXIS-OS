@@ -2,7 +2,7 @@
 Suite T1 — la démonstration : tri de colis autonome dans un entrepôt, avec
 des personnes qui circulent. G1 29 DOF, GR00T WBC, Isaac Sim 6.1.
 
-Ce script branche, SANS LES MODIFIER, les services répétés sur CPU par
+Ce script branche, sans les modifier, les services répétés sur CPU par
 test/test_tri_pile_logicielle.py, sur la même disposition
 (axis_os/apps/tri_colis/scene_demo.py) :
 
@@ -30,10 +30,10 @@ Usage (dans le conteneur) :
   --duree        secondes SIMULÉES (défaut 240 : premier essai court)
   --acceleration la vidéo montre 1 image pour N×2 pas de 20 ms
                  (10 : 30 min -> 3 min de vidéo)
-  --port-direct  suivi EN DIRECT dans un navigateur (défaut 8080) :
+  --port-direct  suivi en direct dans un navigateur (défaut 8080) :
                    ssh -L 8080:localhost:8080 <machine>, puis
                    http://localhost:8080 — image, journal, bouton d'arrêt
-  --hote-direct  nom d'hôte accepté EN PLUS de localhost par la page de suivi
+  --hote-direct  nom d'hôte accepté en plus de localhost par la page de suivi
                  (relais web de tunnel SSH) ; répétable
 """
 import argparse
@@ -74,7 +74,7 @@ def main():
     ap.add_argument("--collecte-vla", default=None, metavar="DOSSIER")
     ap.add_argument("--episodes", type=int, default=200)
     # Évaluation du VLA contre les réflexes (axis_os/vla/evaluation.py) : les
-    # MÊMES cartons, essayés par chaque mode. ENDPOINT : serveur GR00T
+    # mêmes cartons, essayés par chaque mode. ENDPOINT : serveur GR00T
     # (tcp://127.0.0.1:5555) ; --episodes = nombre de cartons.
     ap.add_argument("--evaluer-vla", default=None, metavar="ENDPOINT")
     ap.add_argument("--modes", default="reflexes,vla")
@@ -146,7 +146,7 @@ def main():
     stage = omni.usd.get_context().get_stage()
 
     # ================================================================
-    # SCÈNE — tout ce qui touche la physique AVANT world.reset()
+    # Scène : tout ce qui touche la physique, posé avant world.reset()
     # ================================================================
     GRIS, GRIS_F = np.array([0.45, 0.45, 0.50]), np.array([0.35, 0.35, 0.40])
 
@@ -198,7 +198,7 @@ def main():
             cartons.append({"obj": c, "couleur": couleur, "lieu": "stock", "t": 0.0,
                             "parc": np.array([30.0 + 0.5 * k, 30.0, sd.HAUTEUR_CARTON / 2])})
 
-    # Personnes : silhouettes CINÉMATIQUES (déplacées, pas poussées).
+    # Personnes : silhouettes cinématiques (déplacées, pas poussées).
     EVAL = args.evaluer_vla is not None
     # Collecte et évaluation VLA (même scène, même geste) : on ne fait que des
     # prises répétées. Dans la suite, COLLECTE couvre les deux.
@@ -229,16 +229,16 @@ def main():
                 mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
     # Éclairage. Premier essai GPU : la seule lumière venait de derrière la
-    # table, la face des cartons tournée vers le robot était NOIRE sur la
+    # table, la face des cartons tournée vers le robot était noire sur la
     # caméra de tête — couleur illisible, aucun colis trié. Un entrepôt est
-    # éclairé de partout : lumière ambiante (dôme) + lumière venant du côté
-    # du robot (vers +y, en plongée de 30°).
+    # éclairé de partout. Solution retenue : une lumière ambiante (dôme) et
+    # quatre lumières en diagonale, décrites ci-dessous.
     from pxr import Gf, UsdLux
     dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
     dome.CreateIntensityAttr(400.0)   # 900 délavait les couleurs
-    # QUATRE lumières en diagonale (une par coin, plongée de 50°), comme
-    # les rampes d'un entrepôt. Historique GPU, faces des cartons TOURNÉES
-    # VERS LE ROBOT restées NOIRES (RGB 0,0,0) avec :
+    # Quatre lumières en diagonale (une par coin, plongée de 50°), comme
+    # les rampes d'un entrepôt. Historique GPU, faces des cartons tournées
+    # vers le robot restées noires (RGB 0,0,0) avec :
     #   - une lumière de face à 60°, puis presque verticale (15°) ;
     #   - deux lumières en diagonale du côté du robot (±40°) — les faces
     #     latérales des cartons s'allumaient, les faces avant restaient
@@ -315,8 +315,8 @@ def main():
     def pose_tete():
         p, q = robot.get_world_pose()
         R = quat_wxyz_to_matrix(q)
-        # 0.62 m au-dessus du bassin, soit ~1.42 m : AU-DESSUS de la tête du
-        # G1 (1.32 m). Premier essai GPU à 0.45 m : le capteur était DANS le
+        # 0.62 m au-dessus du bassin, soit ~1.42 m : au-dessus de la tête du
+        # G1 (1.32 m). Premier essai GPU à 0.45 m : le capteur était dans le
         # volume de collision de la tête, chaque rayon s'y arrêtait — balayage
         # vide, robot arrêté pour de bon.
         return np.asarray(p, dtype=float) + R @ np.array([0.0, 0.0, 0.62]), R
@@ -369,7 +369,7 @@ def main():
             sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.015
         if not ok_ and sim_t[0] - diag_prise[0] > 5.0:
             diag_prise[0] = sim_t[0]          # une fois par tentative, pas à chaque pas
-            # DIAGNOSTIC d'une prise ratée : où étaient les mains, le carton,
+            # Diagnostic d'une prise ratée : où étaient les mains, le carton,
             # et dans quel sens le carton était tourné (poussé en avançant ?).
             g_, d_ = mains()
             pr_ = pose2d()
@@ -415,7 +415,7 @@ def main():
     loco = LocomotionService(adapt, read_state, send_targets, command_timeout_s=0.5,
                              clock=horloge, gardien=gardien)
     nav = NavigationService(sd.carte(), pose2d, loco, horloge=horloge)
-    # Le ManipulationService écrit DANS le dictionnaire de bras de
+    # Le ManipulationService écrit dans le dictionnaire de bras de
     # l'adaptateur : il en est le seul écrivain.
     manip = ManipulationService(adapt.pose_bras, mains, vers_robot, verifier_prise,
                                 gardien=gardien, horloge=horloge)
@@ -439,7 +439,7 @@ def main():
         journal.append(msg)
         print("  " + msg, flush=True)
         if "navigation vers" in msg and "échec" in msg:
-            # DIAGNOSTIC (essai 30 min : 4 fois « navigation vers prise en
+            # Diagnostic (essai 30 min : 4 fois « navigation vers prise en
             # échec » sans arrêt de sécurité) : où est le robot, où va-t-il,
             # et ce que fait le suiveur.
             pr_ = pose2d()
@@ -512,11 +512,11 @@ def main():
             if limite is not None and t - c["t"] > limite:
                 poser_carton(c, c["parc"])
                 c["lieu"], c["t"] = "stock", t
-        # 2b. Carton BOUSCULÉ sur la table de prise. Constaté sur GPU (T1,
+        # 2b. Carton bousculé sur la table de prise. Constaté sur GPU (T1,
         #     30 min) : un carton poussé à 5 cm au-delà du bord ; le gardien le
         #     voit comme un obstacle inconnu à 52 cm et arrête le robot —
         #     à raison, il ne peut pas savoir que ce n'est pas une main —,
-        #     qui reste bloqué et le SIGNALE. Dans un vrai atelier, l'opérateur
+        #     qui reste bloqué et le signale. Dans un vrai atelier, l'opérateur
         #     alerté vient remettre le carton en place : on fait de même
         #     après 20 s, et on le journalise (le déplacement aussi, pour
         #     comprendre quel geste l'a causé).
@@ -642,7 +642,7 @@ def main():
             from axis_os.vla.evaluation import EvaluateurPrises, tirer_placements
             modes = [m.strip() for m in args.modes.split(",") if m.strip()]
             if any(m in ("vla", "vla_prise") for m in modes):
-                # Image : la MÊME qu'à la collecte (tête 640x480 réduite de
+                # Image : la même qu'à la collecte (tête 640x480 réduite de
                 # moitié) — le connecteur refuse toute autre taille.
                 # Jeton d'API : optionnel, lu dans l'environnement (passé par
                 # lancer_t1.sh quand evaluer_vla.sh en a reçu un) — jamais
@@ -704,7 +704,7 @@ def main():
     if not COLLECTE:
         operateur(0.0, stats)
     viol_humain, d_min_humain = 0, float("inf")
-    # Rapprochement CUMULÉ vers chaque personne tant qu'elle est à moins de
+    # Rapprochement cumulé vers chaque personne tant qu'elle est à moins de
     # 0.75 m. Un robot debout oscille de quelques millimètres en gardant
     # l'équilibre : ce n'est pas « aller vers » quelqu'un. Est en défaut un
     # rapprochement de plus de 1 cm pendant un même épisode de proximité.
@@ -739,12 +739,12 @@ def main():
         if loco.state is LocomotionState.FALLEN:
             chute = (t, tri.etat)
             break
-        # DIAGNOSTIC PERCEPTION : une recherche vient de ne rien donner.
+        # Diagnostic de perception : une recherche vient de ne rien donner.
         # On dit ce qu'OWL-ViT a vu, et on garde ce que voyait la tête.
         if etat_prec == "CHERCHER" and tri.colis is not None \
                 and tri.etat not in ("CHERCHER", "ATTENDRE"):
-            # DIAGNOSTIC : position PERÇUE du colis visé contre sa position
-            # RÉELLE. Un écart latéral de quelques cm suffit à ce qu'une main
+            # Diagnostic : position perçue du colis visé contre sa position
+            # réelle. Un écart latéral de quelques cm suffit à ce qu'une main
             # pousse le carton en approchant (constaté sur RTX 5090).
             pp = tri.colis.position
             reel = min((c_ for c_ in cartons if c_["lieu"] == "prise"),
@@ -761,7 +761,7 @@ def main():
                 journaliser(msg_)
         if etat_prec == "CHERCHER" and tri.etat not in ("CHERCHER", "ATTENDRE") \
                 and suivi is not None:
-            # Recherche RÉUSSIE : on garde aussi ce que voyait la tête, pour
+            # Recherche réussie : on garde aussi ce que voyait la tête, pour
             # comparer avec une recherche vide (/tete_ok.jpg).
             f_ = cam.capture()
             if f_ is not None:
@@ -786,8 +786,8 @@ def main():
                 if d_.get("mesure"):
                     print(f"           {d_['mesure']}", flush=True)
             if suivi is not None:
-                # Vue de la tête À CHAQUE recherche vide (écrasée), avec les
-                # boîtes d'OWL-ViT et la couleur retenue : on VOIT pourquoi.
+                # Vue de la tête à chaque recherche vide (écrasée), avec les
+                # boîtes d'OWL-ViT et la couleur retenue : on voit pourquoi.
                 f_ = cam.capture()
                 if f_ is not None:
                     from PIL import Image as _I, ImageDraw as _D
@@ -804,8 +804,8 @@ def main():
                         print("      vue de la tête (mise à jour à chaque recherche vide) : "
                               "/tete.jpg sur la page de suivi", flush=True)
         etat_prec = tri.etat
-        # DIAGNOSTIC SÉCURITÉ : à chaque arrêt, dire OÙ est l'obstacle et CE
-        # QUE c'est — une personne, ou autre chose (le robot lui-même mal
+        # Diagnostic de sécurité : à chaque arrêt, dire où est l'obstacle et ce
+        # que c'est — une personne, ou autre chose (le robot lui-même mal
         # filtré par le lidar, une table mal déclarée…). Premier essai GPU :
         # arrêt près de la table de prise, cause non identifiable sans ça.
         v_ = loco.dernier_verdict
@@ -831,7 +831,7 @@ def main():
                 suivi.journal(msg)
         elif v_ is not None and v_.facteur > 0.0:
             arret_signale = False
-        # Pendant un arrêt qui DURE : toutes les 10 s simulées, l'état complet.
+        # Pendant un arrêt qui dure : toutes les 10 s simulées, l'état complet.
         # Premier essai GPU : arrêt de plus de 60 s alors que la personne
         # devait partir après 45 s — on veut voir où elle est vraiment, pour
         # la simulation (f.p) ET pour la physique (ce que voit le lidar).
@@ -871,7 +871,7 @@ def main():
                 tree.set(tf)
             if filmer:
                 rec.cadrer()
-        # send_targets (dans loco.tick) a DÉJÀ fait un pas de physique : on
+        # send_targets (dans loco.tick) a déjà fait un pas de physique : on
         # complète la décimation. En faire un de trop décalerait le temps
         # simulé de 25 % et ferait tourner GR00T hors de sa fréquence.
         for i in range(cfg.decimation - 1):

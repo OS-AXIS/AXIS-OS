@@ -1,17 +1,26 @@
 """
-DIAGNOSTIC — que contient RÉELLEMENT la scène USD sous /World/g1 ?
+Diagnostic — que contient réellement la scène USD sous /World/g1 ?
 
 Les meshes sont présents sur le disque (vérifié par
 find_missing_meshes), et pourtant les caméras rendent exactement la
 même image qu'avant leur ajout, à la décimale près. Il faut donc
 regarder la scène elle-même plutôt que de deviner une cinquième fois.
 
-Ce script répond à quatre questions, chacune excluant une hypothèse :
+Ce script a d'abord répondu à quatre questions, chacune excluant une
+hypothèse (sections [3] à [6] de l'affichage) :
   1. Y a-t-il des prims Mesh sous /World/g1 ?       -> import des visuels
   2. Sont-ils visibles, et avec quel « purpose » ?   -> masquage USD
   3. Où sont-ils dans l'espace (boîte englobante) ?  -> hors champ / sous le sol
   4. Quelles variantes sont sélectionnées ?          -> visuels dans une
                                                         variante non active
+
+Les sections [0] à [2] préparent ces mesures : diagnostics USD
+réactivés, meshes manquants sur disque, présence de /World/g1. Les
+sections [8] à [11], ajoutées ensuite, vérifient la conversion des STL
+(geometries.usd), le contenu des instances USD, le chargement des
+payloads, puis la visibilité et l'échelle des meshes vus en entrant dans
+les instances. La section [7], affichée en dernier, donne la hauteur de
+la base du robot, pour vérifier que ses jambes ne traversent pas le sol.
 """
 import sys
 sys.path.insert(0, "/isaac-sim")
@@ -24,7 +33,7 @@ from axis_os.hal.drivers.isaac_sim.bridge import (
 def main():
     simulation_app = start_simulation_app(headless=True)
 
-    # RALLUMER les diagnostics USD, masqués par défaut dans Isaac Sim.
+    # Rallumer les diagnostics USD, masqués par défaut dans Isaac Sim.
     # C'est derrière « USD Diagnostics are currently muted » que se
     # cachaient les erreurs de fichiers introuvables — et c'est là que se
     # trouve, selon toute vraisemblance, la raison pour laquelle les STL
@@ -51,7 +60,7 @@ def main():
     root = stage.GetPrimAtPath("/World/g1")
     print(f"[2] /World/g1 valide : {root.IsValid()}")
 
-    # Parcours COMPLET, y compris prims inactifs et payloads non
+    # Parcours complet, y compris prims inactifs et payloads non
     # chargés — un visuel peut exister sans être chargé.
     all_types, active_types = Counter(), Counter()
     inactive = 0
@@ -111,7 +120,7 @@ def main():
         print("      (aucune)")
 
     # --- [8] La conversion a-t-elle produit de la géométrie ? --------
-    # On ouvre geometries.usd COMME SON PROPRE STAGE, hors de toute
+    # On ouvre geometries.usd comme son propre stage, hors de toute
     # composition : ça répond sans ambiguïté à « les STL ont-ils été
     # convertis en meshes ? », indépendamment de la façon dont la scène
     # les assemble.
@@ -129,12 +138,12 @@ def main():
                 n_pts += len(pts) if pts is not None else 0
         print(f"    meshes dans le fichier : {n_mesh}, sommets : {n_pts}")
 
-    # --- [9] Dans la scène, EN ENTRANT DANS LES INSTANCES -----------
-    # CORRECTION DE MON PROPRE DIAGNOSTIC : le parcours [3] n'entrait
-    # pas dans les instances USD. Or instances.usda indique que les
-    # meshes sont instanciés — ils vivent dans des prototypes partagés,
-    # invisibles à un parcours ordinaire. Le « 0 mesh » de [3] pouvait
-    # donc être un artefact de méthode.
+    # --- [9] Dans la scène, en entrant dans les instances -----------
+    # Correction du parcours [3] : il n'entrait pas dans les instances
+    # USD. Or instances.usda indique que les meshes sont instanciés — ils
+    # vivent dans des prototypes partagés, invisibles à un parcours
+    # ordinaire. Le « 0 mesh » de [3] pouvait donc être un artefact de
+    # méthode.
     pred = Usd.TraverseInstanceProxies(Usd.PrimAllPrimsPredicate)
     n_inst_mesh, n_instanceable = 0, 0
     for p in Usd.PrimRange(root, pred):
@@ -158,7 +167,11 @@ def main():
         print(f"       {u}")
 
     # --- [11] Les 47 meshes : rendus, et à la bonne échelle ? -------
-    # [4] ne portait que sur le parcours SANS instances, donc vide. On
+    # 47, c'est le nombre de meshes que [9] a comptés sur le G1 à 23 DOF
+    # lors de l'essai du 2026-09-22 : 27 visuels et 20 de collision,
+    # exactement les références de l'URDF. Les messages ci-dessous
+    # reprennent ce nombre tel quel.
+    # [4] ne portait que sur le parcours sans instances, donc vide. On
     # refait la mesure en entrant dans les instances.
     vis11, pur11, sizes = Counter(), Counter(), []
     bb_cache = UsdGeom.BBoxCache(
@@ -188,7 +201,7 @@ def main():
         for sz, pur, name in sizes[-3:]:
             print(f"       {name:32} {sz:.4f} m  purpose={pur}")
 
-    # Boîte englobante SELON le purpose : si elle ne vient que des
+    # Boîte englobante selon le purpose : si elle ne vient que des
     # primitives de collision (guide), les visuels sont hors du rendu.
     for label, toks in [("default+render", [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]),
                         ("guide seul", [UsdGeom.Tokens.guide])]:

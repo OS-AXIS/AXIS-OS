@@ -7,7 +7,8 @@ Isaac Sim 6.1 a un autre moteur de contact : rien ne garantit qu'elle y
 tienne. C'est précisément ce que ce test mesure.
 
 DEUX PHASES, et leur comparaison est le vrai résultat — même méthode
-différentielle que celle qui a débloqué la perception :
+différentielle que sim/diagnostic/diag_diff.py, qui a débloqué la
+perception : comparer deux essais au lieu d'en interpréter un seul.
 
   A. BRUT     : consignes de la politique appliquées directement.
                 Répond à : la politique fonctionne-t-elle dans Isaac Sim ?
@@ -20,8 +21,12 @@ différentielle que celle qui a débloqué la perception :
                              AVANT tout essai réel (limites, chevilles…)
   A et B marchent         -> la marche passe par AXIS-OS sans raccourci
 
-PRÉREQUIS :
-  git clone --depth 1 https://github.com/unitreerobotics/unitree_rl_gym.git /tmp/rl_gym
+PRÉREQUIS — la politique doit venir du commit 276801e d'unitree_rl_gym :
+G1LocomotionPolicy.load() vérifie l'empreinte SHA-256 de ce fichier-là
+et refuse tout autre motion.pt, qu'une version plus récente du dépôt
+pourrait livrer.
+  git clone https://github.com/unitreerobotics/unitree_rl_gym.git /tmp/rl_gym
+  git -C /tmp/rl_gym checkout 276801e
   docker exec -u root isim-isaac-sim-1 mkdir -p /isaac-sim/policies
   docker cp /tmp/rl_gym/deploy/pre_train/g1/motion.pt \\
       isim-isaac-sim-1:/isaac-sim/policies/g1_motion.pt

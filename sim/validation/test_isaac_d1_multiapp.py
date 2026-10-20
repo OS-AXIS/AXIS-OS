@@ -2,7 +2,8 @@
 Suite D1 — démonstration : ce qu'un OS fait, et qu'un robot seul ne fait pas.
 
 Cinq scènes, sur un vrai robot debout, avec le vrai Play Store, le vrai
-sandbox et le vrai garde-fou. Chacune montre un refus — c'est le sujet.
+sandbox et le vrai garde-fou. La première installe le catalogue ; les
+quatre suivantes montrent chacune un refus — c'est le sujet.
 
   1. CATALOGUE     : trois apps installées, chacune avec ses permissions
   2. MATÉRIEL      : une app refusée parce que le robot n'a pas l'organe

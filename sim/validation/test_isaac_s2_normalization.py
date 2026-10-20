@@ -1,5 +1,11 @@
 """
-Suite S2 — normalisation contre la physique réelle. VERSION 3.
+Suite S2 — cohérence des signes, en position et en couple, contre la
+physique. VERSION 3.
+
+Malgré le nom du fichier, ce script commande et lit les angles BRUTS
+(le UnitreeG1HAL rendu par bridge.build_hal(), sans normaliseur) : il
+n'utilise ni NormalizedRobotHAL ni la table de conventions. La liste
+INVERTED_JOINTS ci-dessous ne sert qu'à annoter l'affichage.
 
 Historique des deux versions précédentes (voir git log) :
   v1 : position absolue au lieu de delta relatif, mode TORQUE jamais
@@ -17,7 +23,9 @@ Historique des deux versions précédentes (voir git log) :
        pas d'un couple commandé).
 
 v3 (celle-ci) : gains de maintien explicites (set_holding_gains) pour
-S2.1, gains à zéro pour S2.2 (set_pure_torque_mode), et reset_joint()
+S2.1 ; pour S2.2, gain de position nul sur le seul joint testé, les
+autres tenus (hold_all_except — set_pure_torque_mode, qui libérait tous
+les joints d'un coup, a été abandonné, voir le pont) ; et reset_joint()
 entre CHAQUE essai pour empêcher toute dérive de s'accumuler d'un
 joint au suivant. Chaque joint est testé depuis une pose de référence
 à 0.0 rad, isolément.
