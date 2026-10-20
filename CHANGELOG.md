@@ -10,6 +10,24 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Sécurité, changement cassant — apps chiffrées : signature vérifiée avant toute exécution (2026-10-20)
+
+Le chargeur d'apps chiffrées exécutait le code de niveau module de l'app
+avant que sa signature ne soit vérifiée, et seule cette vérification,
+faite plus tard par `install()`, établissait l'origine du code : le
+chiffrement seul ne la prouve pas, puisque la clé qui sert à chiffrer est
+publique.
+
+- `load_app_from_encrypted_bytes()` et `load_app_from_encrypted_file()`
+  exigent maintenant `code_signature` (la signature du développeur, faite
+  avec `sign_app_code()`) et `developer_public_key` (la clé publique
+  attendue du développeur, obtenue par un canal de confiance, jamais lue
+  dans le paquet). La signature est vérifiée sur le code déchiffré avant
+  toute compilation ou exécution : si elle est invalide ou malformée,
+  `AppLoadError` est levée et aucune ligne de l'app n'est exécutée.
+
+Test : `test/test_encrypted_app_packaging.py`, section 7.
+
 ### Changements cassants — permissions DANGEROUS confirmées à l'installation (2026-10-10)
 
 Le niveau DANGEROUS promettait une confirmation humaine qu'`install()` ne

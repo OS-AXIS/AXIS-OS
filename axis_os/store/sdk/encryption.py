@@ -75,9 +75,11 @@ chiffre le contenu) :
   - À l'installation, le chargeur d'apps chiffrées
     (axis_os/store/runtime/packaging.py) déchiffre le fichier EN
     MÉMOIRE avec decrypt_app_code() et la clé privée de la plateforme,
-    sans jamais le réécrire en clair sur disque, et en tire une
-    instance de l'app, que l'appelant confie ensuite à
-    PlayStoreRuntime.install().
+    sans jamais le réécrire en clair sur disque, vérifie la signature
+    du développeur, et seulement alors en tire une instance de l'app,
+    que l'appelant confie ensuite à PlayStoreRuntime.install(). Le
+    chiffrement seul ne prouve pas l'origine : la clé qui sert à
+    chiffrer est publique.
 
 Pourquoi X25519 plutôt que de réutiliser Ed25519 (déjà présent dans
 signing.py) : Ed25519 est une clé de SIGNATURE, pas de chiffrement. Par

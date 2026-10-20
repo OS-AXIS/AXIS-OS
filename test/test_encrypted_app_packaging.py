@@ -8,6 +8,10 @@ code, instanciation, et installation via un vrai PlayStoreRuntime,
 y compris à travers le sandboxing complet (on_start/start_app/
 run_mission, tous sandboxés depuis le correctif C4).
 
+La section 7 prouve que la signature du développeur est vérifiée
+avant toute exécution : une app à signature invalide n'exécute aucune
+ligne (un fichier témoin créé par sa première ligne n'apparaît pas).
+
 Point technique critique testé explicitement (section 2) : une classe
 créée par exec() dans un namespace transitoire n'est PAS picklable
 par défaut — trouvé en testant ce module contre un vrai
@@ -22,6 +26,7 @@ import sys
 sys.path.insert(0, ".")
 
 from axis_os.store.sdk.encryption import generate_platform_keypair, encrypt_app_code
+from axis_os.store.sdk.signing import generate_developer_keypair, sign_app_code
 from axis_os.store.runtime.packaging import (
     load_app_from_encrypted_bytes, load_app_from_encrypted_file, AppLoadError,
 )
@@ -81,10 +86,20 @@ def make_runtime():
 section("1 — Chargement et instanciation depuis du code chiffré")
 
 kp = generate_platform_keypair()
+dev = generate_developer_keypair()
+
+
+def signe(source, cle=None):
+    """Signature du développeur attendu (dev) sur `source`, sous la forme
+    des deux arguments que le chargeur exige."""
+    return dict(code_signature=sign_app_code(source, (cle or dev).private_key_b64),
+                developer_public_key=dev.public_key_b64)
+
+
 source = VALID_APP_SOURCE.format(app_id="com.developer.secretapp_w1")
 encrypted = encrypt_app_code(source, kp.public_key_b64)
 
-app_instance = load_app_from_encrypted_bytes(encrypted.to_bytes(), kp.private_key_b64)
+app_instance = load_app_from_encrypted_bytes(encrypted.to_bytes(), kp.private_key_b64, **signe(source))
 check("Instance retournée hérite bien de RobotApp", isinstance(app_instance, RobotApp))
 check("Le manifest de l'app chargée est correct",
       app_instance.manifest().app_id == "com.developer.secretapp_w1")
@@ -97,7 +112,7 @@ section("2 — CRITIQUE : l'app chargée survit au sandboxing complet "
 runtime2 = make_runtime()
 source2 = VALID_APP_SOURCE.format(app_id="com.developer.secretapp_w2")
 encrypted2 = encrypt_app_code(source2, kp.public_key_b64)
-app2 = load_app_from_encrypted_bytes(encrypted2.to_bytes(), kp.private_key_b64)
+app2 = load_app_from_encrypted_bytes(encrypted2.to_bytes(), kp.private_key_b64, **signe(source2))
 
 result_install = runtime2.install(app2)
 check("install() réussit avec une app chargée depuis du code chiffré",
@@ -120,7 +135,7 @@ section("3 — Pas de fuite dans sys.modules après un chargement réussi ou éc
 modules_before_ok = len(sys.modules)
 source3 = VALID_APP_SOURCE.format(app_id="com.developer.secretapp_w3")
 encrypted3 = encrypt_app_code(source3, kp.public_key_b64)
-load_app_from_encrypted_bytes(encrypted3.to_bytes(), kp.private_key_b64)
+load_app_from_encrypted_bytes(encrypted3.to_bytes(), kp.private_key_b64, **signe(source3))
 modules_after_ok = len(sys.modules)
 check("Un chargement RÉUSSI enregistre bien un nouveau module (attendu, "
       "nécessaire au pickling — voir section 2) mais un seul",
@@ -129,7 +144,8 @@ check("Un chargement RÉUSSI enregistre bien un nouveau module (attendu, "
 modules_before_fail = len(sys.modules)
 encrypted_bad = encrypt_app_code("x = 42  # pas de classe RobotApp", kp.public_key_b64)
 try:
-    load_app_from_encrypted_bytes(encrypted_bad.to_bytes(), kp.private_key_b64)
+    load_app_from_encrypted_bytes(encrypted_bad.to_bytes(), kp.private_key_b64,
+                                  **signe("x = 42  # pas de classe RobotApp"))
 except AppLoadError:
     pass
 modules_after_fail = len(sys.modules)
@@ -142,14 +158,15 @@ section("4 — Cas d'erreur : contenu invalide après déchiffrement réussi")
 
 try:
     enc_no_class = encrypt_app_code("x = 42", kp.public_key_b64)
-    load_app_from_encrypted_bytes(enc_no_class.to_bytes(), kp.private_key_b64)
+    load_app_from_encrypted_bytes(enc_no_class.to_bytes(), kp.private_key_b64, **signe("x = 42"))
     check("Aucune classe RobotApp dans le code déchiffré -> AppLoadError", False)
 except AppLoadError:
     check("Aucune classe RobotApp dans le code déchiffré -> AppLoadError", True)
 
 try:
     enc_syntax = encrypt_app_code("def broken(:\n    pass", kp.public_key_b64)
-    load_app_from_encrypted_bytes(enc_syntax.to_bytes(), kp.private_key_b64)
+    load_app_from_encrypted_bytes(enc_syntax.to_bytes(), kp.private_key_b64,
+                                  **signe("def broken(:\n    pass"))
     check("Code syntaxiquement invalide -> AppLoadError", False)
 except AppLoadError:
     check("Code syntaxiquement invalide -> AppLoadError", True)
@@ -178,7 +195,7 @@ class AppB(RobotApp):
 """
 try:
     enc_ambig = encrypt_app_code(AMBIGUOUS_SOURCE, kp.public_key_b64)
-    load_app_from_encrypted_bytes(enc_ambig.to_bytes(), kp.private_key_b64)
+    load_app_from_encrypted_bytes(enc_ambig.to_bytes(), kp.private_key_b64, **signe(AMBIGUOUS_SOURCE))
     check("Deux classes RobotApp (ambigu) -> AppLoadError", False)
 except AppLoadError:
     check("Deux classes RobotApp (ambigu) -> AppLoadError", True)
@@ -193,8 +210,8 @@ source_b = VALID_APP_SOURCE.format(app_id="com.developer.appB_w5")
 enc_a = encrypt_app_code(source_a, kp.public_key_b64)
 enc_b = encrypt_app_code(source_b, kp.public_key_b64)
 
-app_a = load_app_from_encrypted_bytes(enc_a.to_bytes(), kp.private_key_b64)
-app_b = load_app_from_encrypted_bytes(enc_b.to_bytes(), kp.private_key_b64)
+app_a = load_app_from_encrypted_bytes(enc_a.to_bytes(), kp.private_key_b64, **signe(source_a))
+app_b = load_app_from_encrypted_bytes(enc_b.to_bytes(), kp.private_key_b64, **signe(source_b))
 
 check("Deux apps chargées séparément ont bien des app_id distincts",
       app_a.manifest().app_id != app_b.manifest().app_id)
@@ -220,12 +237,54 @@ source6 = VALID_APP_SOURCE.format(app_id="com.developer.fileapp_w6")
 encrypted6 = encrypt_app_code(source6, kp.public_key_b64)
 axisapp_path.write_bytes(encrypted6.to_bytes())
 
-app6 = load_app_from_encrypted_file(axisapp_path, kp.private_key_b64)
+app6 = load_app_from_encrypted_file(axisapp_path, kp.private_key_b64, **signe(source6))
 check("Chargement depuis un vrai fichier .axisapp sur disque réussit",
       isinstance(app6, RobotApp)
       and app6.manifest().app_id == "com.developer.fileapp_w6")
 
 shutil.rmtree(tmp_dir, ignore_errors=True)
+
+# ══════════════════════════════════════════════════════════════════
+
+section("7 — La signature est vérifiée AVANT toute exécution du code de l'app")
+
+# La toute première ligne du module crée un fichier témoin : si une seule
+# ligne de l'app s'exécute, le témoin existe.
+dossier7 = Path(tempfile.mkdtemp(prefix="axis_os_signature_test_"))
+temoin = dossier7 / "code_execute"
+SOURCE_TEMOIN = (f"open({str(temoin)!r}, 'w').close()\n"
+                 + VALID_APP_SOURCE.format(app_id="com.developer.temoin_w7"))
+enc7 = encrypt_app_code(SOURCE_TEMOIN, kp.public_key_b64)
+autre_dev = generate_developer_keypair()
+
+refus = {
+    "Signée par un autre développeur que celui attendu":
+        signe(SOURCE_TEMOIN, cle=autre_dev),
+    "Signature valide d'un autre code que celui chiffré":
+        signe(VALID_APP_SOURCE.format(app_id="com.developer.temoin_w7")),
+    "Signature malformée":
+        dict(code_signature="pas du base64 !", developer_public_key=dev.public_key_b64),
+}
+for cas, arguments in refus.items():
+    modules_avant = len(sys.modules)
+    try:
+        load_app_from_encrypted_bytes(enc7.to_bytes(), kp.private_key_b64, **arguments)
+        refusee = False
+    except AppLoadError:
+        refusee = True
+    check(f"{cas} -> AppLoadError", refusee)
+    check(f"{cas} -> aucune ligne de l'app exécutée (pas de fichier témoin)",
+          not temoin.exists())
+    check(f"{cas} -> aucun module ajouté à sys.modules",
+          len(sys.modules) == modules_avant)
+
+# Contre-épreuve : avec la bonne signature, le témoin apparaît, preuve que
+# ce test voit bien une exécution quand elle a lieu.
+app7 = load_app_from_encrypted_bytes(enc7.to_bytes(), kp.private_key_b64,
+                                     **signe(SOURCE_TEMOIN))
+check("Contre-épreuve : avec la signature du développeur attendu, l'app se "
+      "charge et le témoin apparaît", isinstance(app7, RobotApp) and temoin.exists())
+shutil.rmtree(dossier7, ignore_errors=True)
 
 # ══════════════════════════════════════════════════════════════════
 
@@ -240,5 +299,6 @@ if FAIL == 0:
     print("  ✓ Deux apps chargées séparément n'interfèrent jamais entre")
     print("    elles, même en même temps dans le même process")
     print("  ✓ Confirmé de bout en bout via un vrai fichier .axisapp")
+    print("  ✓ Une app dont la signature est invalide n'exécute aucune ligne")
 
 sys.exit(0 if FAIL == 0 else 1)

@@ -9,11 +9,14 @@ app :
   1. lire le fichier .axisapp ;
   2. le déchiffrer en mémoire avec la clé privée de la plateforme
      (la clé détenue par AXIS-OS, seule capable de le déchiffrer) ;
-  3. exécuter le code déchiffré dans un espace de noms isolé (un module
-     Python dédié) pour en extraire la classe RobotApp, c'est-à-dire la
-     classe qui définit l'app ;
-  4. l'instancier ;
-  5. confier l'instance à PlayStoreRuntime.install() (le moteur qui
+  3. vérifier la signature du développeur sur le code déchiffré, avant
+     toute exécution : sans signature valide, aucune ligne de l'app
+     n'est exécutée ;
+  4. exécuter le code dans un espace de noms isolé (un module Python
+     dédié) pour en extraire la classe RobotApp, c'est-à-dire la classe
+     qui définit l'app ;
+  5. l'instancier ;
+  6. confier l'instance à PlayStoreRuntime.install() (le moteur qui
      installe et exécute les apps), qui l'installe normalement ; cette
      dernière étape est faite par l'appelant.
 
@@ -22,17 +25,17 @@ Le code déchiffré n'est jamais réécrit en clair sur disque, à aucune
 du déchiffrement jusqu'à son exécution par exec() (la fonction Python
 qui exécute du code fourni sous forme de texte).
 
-Ce module ne remplace ni n'affaiblit aucune des vérifications déjà
-faites par PlayStoreRuntime.install() : signature, permissions,
-capacités (ce que l'app déclare avoir besoin de faire), permissions de
-niveau ProtectionLevel.SIGNATURE (réservées aux apps signées avec la
-clé de la plateforme). Il livre simplement une instance de RobotApp à
-cette même méthode install(), qui applique ensuite exactement les mêmes
-vérifications qu'à une app installée depuis une instance déjà en
-mémoire. exec() sert seulement à extraire la classe : aucune
-vérification de sécurité n'est court-circuitée, elles ont toutes lieu
-après, dans install(), sur l'instance obtenue (voir
-_load_app_instance_from_source() ci-dessous).
+La signature est vérifiée ici, et non seulement dans install(), parce
+qu'exec() exécute déjà tout le code placé au niveau du module : une
+vérification faite après aurait été trop tardive (voir
+load_app_from_encrypted_bytes()). Ce module ne remplace ni n'affaiblit
+ensuite aucune des vérifications de PlayStoreRuntime.install() :
+permissions, capacités (ce que l'app déclare avoir besoin de faire),
+permissions de niveau ProtectionLevel.SIGNATURE (réservées aux apps
+signées avec la clé de la plateforme). Il livre une instance de
+RobotApp à cette même méthode install(), qui applique exactement les
+mêmes vérifications qu'à une app installée depuis une instance déjà en
+mémoire.
 
 Licence : Apache 2.0
 """
@@ -46,6 +49,7 @@ from axis_os.store.sdk.encryption import (
     decrypt_app_file_to_bytes, decrypt_app_code, EncryptedApp,
     EncryptionError, DecryptionError,
 )
+from axis_os.store.sdk.signing import verify_app_signature, SignatureError
 
 
 class AppLoadError(Exception):
@@ -55,8 +59,10 @@ class AppLoadError(Exception):
 
     Distincte d'EncryptionError et de DecryptionError (encryption.py),
     qui couvrent l'échec du déchiffrement lui-même. AppLoadError couvre
-    l'étape suivante : le déchiffrement a réussi, mais le contenu obtenu
-    ne définit pas de classe RobotApp exploitable. Cas couverts : contenu
+    l'étape suivante : le déchiffrement a réussi, mais la signature du
+    développeur est invalide ou malformée (aucun code n'est alors
+    exécuté), ou le contenu obtenu ne définit pas de classe RobotApp
+    exploitable. Autres cas couverts : contenu
     qui n'est pas du texte UTF-8 valide (l'encodage attendu pour le code
     source), code syntaxiquement invalide, aucune classe RobotApp
     trouvée, plusieurs classes (ambiguïté), erreur levée par le code
@@ -114,7 +120,8 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
     Cette exécution au chargement sert uniquement à extraire la classe
     et sa méthode manifest() (le manifeste : ce que l'app déclare de
     ses permissions et de ses besoins), jamais à lancer run_mission()
-    ici. Le déchiffrement et cette exécution transitoire précèdent
+    ici. Elle n'a lieu qu'après la vérification de la signature du
+    développeur (load_app_from_encrypted_bytes()), et elle précède
     toujours PlayStoreRuntime.install(), qui, lui, fait réellement
     exécuter on_start(), on_stop() et run_mission() dans SandboxRunner
     (depuis un correctif décrit dans CHANGELOG.md : auparavant,
@@ -185,11 +192,13 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
 
 
 def load_app_from_encrypted_bytes(
-    encrypted_data: bytes, platform_private_key_b64: str, *, origin_label: str = "app",
+    encrypted_data: bytes, platform_private_key_b64: str, *,
+    code_signature: str, developer_public_key: str, origin_label: str = "app",
 ) -> RobotApp:
     """
-    Déchiffre `encrypted_data` et retourne une instance de RobotApp prête
-    à être passée à PlayStoreRuntime.install().
+    Déchiffre `encrypted_data`, vérifie la signature du développeur, et
+    seulement alors retourne une instance de RobotApp prête à être passée
+    à PlayStoreRuntime.install().
 
     `encrypted_data` est le contenu brut d'un fichier .axisapp, déjà lu
     en mémoire par l'appelant. Cette fonction ne lit jamais elle-même un
@@ -197,12 +206,39 @@ def load_app_from_encrypted_bytes(
     qu'avec un contenu reçu par un autre canal (par exemple, un futur
     téléchargement par le réseau).
 
+    `code_signature` est la signature Ed25519 du code source en clair
+    (sign_app_code() de signing.py). `developer_public_key` est la clé
+    publique ATTENDUE du développeur, obtenue par un canal de confiance
+    (par exemple le registre des développeurs du Play Store), jamais lue
+    dans le paquet lui-même : une signature vérifiée avec une clé fournie
+    par le paquet ne prouverait rien.
+
+    Pourquoi vérifier ici : la clé de chiffrement de la plateforme est
+    publique, n'importe qui peut donc produire un .axisapp que ce module
+    sait déchiffrer. La signature est vérifiée sur les octets déchiffrés
+    AVANT toute compilation ou exécution : une app dont la signature est
+    invalide n'exécute aucune ligne (test/test_encrypted_app_packaging.py,
+    section 7).
+
     Lève EncryptionError ou DecryptionError (encryption.py) si le
-    déchiffrement échoue, et AppLoadError si le déchiffrement réussit
-    mais que le contenu n'est pas une app valide.
+    déchiffrement échoue, et AppLoadError si la signature est invalide ou
+    malformée, ou si le contenu n'est pas une app valide.
     """
     encrypted_app = EncryptedApp.from_bytes(encrypted_data)
     plaintext_bytes = decrypt_app_code(encrypted_app, platform_private_key_b64)
+    try:
+        signature_valide = verify_app_signature(
+            plaintext_bytes, code_signature, developer_public_key,
+        )
+    except SignatureError as e:
+        raise AppLoadError(
+            f"Signature ou clé malformée ({origin_label}) : {e}"
+        ) from e
+    if not signature_valide:
+        raise AppLoadError(
+            f"Signature invalide ({origin_label}) : le code ne correspond pas "
+            f"à la signature du développeur attendu ; il n'est pas exécuté."
+        )
     try:
         source_code = plaintext_bytes.decode("utf-8")
     except UnicodeDecodeError as e:
@@ -213,12 +249,13 @@ def load_app_from_encrypted_bytes(
 
 
 def load_app_from_encrypted_file(
-    encrypted_file_path: Union[str, Path], platform_private_key_b64: str,
+    encrypted_file_path: Union[str, Path], platform_private_key_b64: str, *,
+    code_signature: str, developer_public_key: str,
 ) -> RobotApp:
     """
-    Raccourci : lit un fichier .axisapp sur le disque, puis le déchiffre
-    et le charge (voir load_app_from_encrypted_bytes() pour le contexte
-    complet).
+    Raccourci : lit un fichier .axisapp sur le disque, puis le déchiffre,
+    vérifie sa signature et le charge (voir load_app_from_encrypted_bytes()
+    pour le contexte complet, signature comprise).
 
     `origin_label` prend le nom du fichier, pour que les messages
     d'AppLoadError désignent précisément le fichier qui n'a pas pu être
@@ -228,5 +265,6 @@ def load_app_from_encrypted_file(
     path = Path(encrypted_file_path)
     data = path.read_bytes()
     return load_app_from_encrypted_bytes(
-        data, platform_private_key_b64, origin_label=path.name,
+        data, platform_private_key_b64, code_signature=code_signature,
+        developer_public_key=developer_public_key, origin_label=path.name,
     )
