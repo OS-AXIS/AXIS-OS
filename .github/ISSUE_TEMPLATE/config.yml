@@ -1,0 +1,12 @@
+# Security vulnerabilities must never be reported in a public issue.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/OS-AXIS/AXIS-OS/security/advisories/new
+    about: >-
+      Do not open a public issue for a vulnerability. Use GitHub's private
+      reporting, or write to axis.project.dev@gmail.com with [SECURITY] in
+      the subject. See SECURITY.md.
+  - name: Security policy and known limits
+    url: https://github.com/OS-AXIS/AXIS-OS/blob/main/SECURITY.md
+    about: What counts as a vulnerability, and the weaknesses already known.

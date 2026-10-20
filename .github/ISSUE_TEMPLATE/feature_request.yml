@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest a new capability, service, app or improvement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues can be written in English or French. Before proposing a
+        change to the safety layer (JointSafetyGuard, proximity guard,
+        watchdog, Play Store permissions), please read
+        [CONTRIBUTING.md](https://github.com/OS-AXIS/AXIS-OS/blob/main/CONTRIBUTING.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and why it is hard or impossible today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you would like AXIS-OS to do. Sketch the API if you have one in mind.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - App SDK or Play Store
+        - System services
+        - HAL or robot drivers
+        - Safety layer
+        - Simulation (sim/)
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety impact
+      description: |
+        Could this let an app, a model or a message move the robot in a way
+        it cannot today? If yes, how should the OS keep it in check?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

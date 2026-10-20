@@ -17,8 +17,8 @@ check that the problem still exists there.
 
 - write to **axis.project.dev@gmail.com**, with `[SECURITY]` at the start of
   the subject; or
-- use GitHub's private reporting, once it is enabled on this repository:
-  tab **Security**, then **Report a vulnerability**.
+- use GitHub's private reporting: tab **Security**, then **Report a
+  vulnerability**.
 
 Please include what you did, what happened, what you expected, the commit
 you tested, and, if you can, a script or test that shows the problem. A
@@ -120,8 +120,8 @@ maintenue : vérifiez que le problème y existe toujours.
 
 - écrivez à **axis.project.dev@gmail.com**, avec `[SECURITY]` au début de
   l'objet ;
-- ou utilisez le signalement privé de GitHub, une fois activé sur ce
-  dépôt : onglet **Security**, puis **Report a vulnerability**.
+- ou utilisez le signalement privé de GitHub : onglet **Security**, puis
+  **Report a vulnerability**.
 
 Indiquez ce que vous avez fait, ce qui s'est passé, ce que vous attendiez,
 le commit essayé et, si possible, un script ou un test qui montre le

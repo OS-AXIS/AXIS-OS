@@ -1,0 +1,70 @@
+name: Bug report
+description: Something does not work as documented (not a security issue).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Issues can be written
+        in English or French.
+
+        **Security vulnerability?** Do not use this form: report it
+        privately, as explained in [SECURITY.md](https://github.com/OS-AXIS/AXIS-OS/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The smallest command or script that shows the problem. A failing
+        test in the style of `test/` is the most useful thing you can send.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      options:
+        - Test suite (pytest test/, no GPU)
+        - App SDK or Play Store
+        - System services (locomotion, navigation, perception, speech…)
+        - Isaac Sim scripts (sim/, GPU machine)
+        - Deployment scripts (deploy/)
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system and Python version (`python3 --version`).
+      placeholder: Ubuntu 24.04, Python 3.12.3
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      description: Paste the relevant output. Remove any token or personal data first.
+      render: text
