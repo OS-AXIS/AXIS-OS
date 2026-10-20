@@ -57,9 +57,9 @@ config:
   themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; } .edge-animation-fast { stroke: #007aff; stroke-dasharray: 0 20 !important; stroke-width: 5px; } @media (prefers-reduced-motion: reduce) { .edge-animation-fast { animation: none; } }"
 ---
 flowchart TB
-    PS("<b>Play Store</b><br/>✓ signature · permissions<br/>✓ user confirms DANGEROUS ones")
+    PS("<b>Play Store</b><br/>signature (optional outside production, see SECURITY.md)<br/>✓ permissions<br/>✓ user confirms DANGEROUS ones")
 
-    A("<b>Third-party app</b> · RobotApp<br/>separate process, sandboxed<br/>CPU, memory and time quotas")
+    A("<b>Third-party app</b> · RobotApp<br/>separate process, sandboxed<br/>CPU, memory and time quotas<br/>⚠ isolation incomplete, see SECURITY.md")
 
     subgraph OS["AXIS-OS process"]
         CTX("<b>RobotContext</b><br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap")
@@ -78,7 +78,7 @@ flowchart TB
     R(["<b>Robot motors</b>"])
 
     PS e1@-->|installs| A
-    A e2@-->|"IPC bridge"| CTX
+    A e2@-->|"IPC bridge · pickle, to be replaced"| CTX
     CTX e3@--> SV
     CTX e4@--> N
     SV e5@-->|walk| G
