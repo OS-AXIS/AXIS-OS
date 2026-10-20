@@ -117,17 +117,15 @@ class Permission(Enum):
     # IA/script dans les permissions », que la documentation avait
     # volontairement reportée (voir docs/groot_architecture.md, section 6).
     #
-    # Limite connue, relevée à la relecture d'un audit de sécurité
-    # (10 octobre 2026) : la permission est DANGEROUS, donc confirmée à
-    # l'installation quand elle est déclarée, mais elle est
-    # NON APPLIQUÉE à l'exécution. Aucune méthode de RobotContext ne la
-    # vérifie, et une app qui fait tourner un connecteur VLA (l'interface
-    # qui interroge un tel modèle, axis_os/store/sdk/ai/connector.py) dans
-    # sa mission en ne déclarant que ACTUATORS_WRITE_ARMS n'est pas
-    # détectée. La règle « Capability.AI_POLICY exige ACTUATORS_AI_DRIVEN »
-    # (voir validate()) vaudra pour le futur service VLA ; le runtime ne
-    # fournit pas encore AI_POLICY.
-    ACTUATORS_AI_DRIVEN  = auto()  # NON APPLIQUÉE à l'exécution
+    # DANGEROUS, donc confirmée à l'installation. À l'exécution, toute
+    # consigne produite par une action d'IA du SDK (VLAAction,
+    # GR00TAction, LocomotionAction : ActuatorCommand.origine == "ia")
+    # l'exige aussi (RobotContext._exiger_pilotage_ia). Limite : une app
+    # qui fabrique elle-même ses consignes depuis la sortie d'un modèle
+    # n'est pas détectée (voir SECURITY.md). La règle « Capability.AI_POLICY
+    # exige ACTUATORS_AI_DRIVEN » (voir validate()) vaudra pour le futur
+    # service VLA ; le runtime ne fournit pas encore AI_POLICY.
+    ACTUATORS_AI_DRIVEN  = auto()
     # Faire se déplacer le robot dans l'espace (marche, roues...). Distincte
     # d'ACTUATORS_WRITE_LEGS, qui autorise à commander les articulations des
     # jambes : une app qui déplace le robot change son environnement, peut

@@ -23,6 +23,7 @@ from axis_os.hal.core.types import (
 from axis_os.hal.watchdog.system import WatchdogSystem, WatchdogConfig
 from axis_os.hal.watchdog.events import AlertKind
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALCommand
 from axis_os.store.sdk.app_base import RobotContext, PermissionError, MissionResult, RobotApp
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, PricingModel, Permission
@@ -149,7 +150,8 @@ section("E10 — e-stop du Supervisor visible par run_mission()")
 robot_e10 = NormalizedRobotHAL(UnitreeG1HAL("g1_e10_w2"), build_g1_normalizer())
 robot_e10.initialize_all()
 wd_e10 = WatchdogSystem(robot_e10)
-runtime_e10 = PlayStoreRuntime(robot_e10, wd_e10, confirmer_permissions=accepter_tout_SIMULATION)
+runtime_e10 = PlayStoreRuntime(robot_e10, wd_e10, confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
 runtime_e10.install(PackageSortingApp())
 runtime_e10.start_app("com.acme.package_sorting")
 
@@ -204,7 +206,8 @@ for model, expected_bills in [
     (PricingModel.ONE_TIME, 1), (PricingModel.SUBSCRIPTION, 1),
     (PricingModel.PAY_PER_MISSION, 3),
 ]:
-    runtime_m2 = PlayStoreRuntime(robot_m2, wd_m2, confirmer_permissions=accepter_tout_SIMULATION)
+    runtime_m2 = PlayStoreRuntime(robot_m2, wd_m2, confirmer_permissions=accepter_tout_SIMULATION,
+                                  profil=Profil.SIMULATION)
     app = _PricingTestApp(model)
     runtime_m2.install(app)
     runtime_m2.start_app(app.manifest().app_id)
@@ -237,7 +240,8 @@ class _LyingApp(RobotApp):
 robot_m3 = NormalizedRobotHAL(UnitreeG1HAL("g1_m3_w2"), build_g1_normalizer())
 robot_m3.initialize_all()
 wd_m3 = WatchdogSystem(robot_m3)
-runtime_m3 = PlayStoreRuntime(robot_m3, wd_m3, confirmer_permissions=accepter_tout_SIMULATION)
+runtime_m3 = PlayStoreRuntime(robot_m3, wd_m3, confirmer_permissions=accepter_tout_SIMULATION,
+                              profil=Profil.SIMULATION)
 liar = _LyingApp()
 runtime_m3.install(liar)
 runtime_m3.start_app(liar.manifest().app_id)
@@ -249,7 +253,8 @@ check("App qui ment sur success=True sans bouger le robot → aucune facture ém
 robot_m3b = NormalizedRobotHAL(UnitreeG1HAL("g1_m3b_w2"), build_g1_normalizer())
 robot_m3b.initialize_all()
 wd_m3b = WatchdogSystem(robot_m3b)
-runtime_m3b = PlayStoreRuntime(robot_m3b, wd_m3b, confirmer_permissions=accepter_tout_SIMULATION)
+runtime_m3b = PlayStoreRuntime(robot_m3b, wd_m3b, confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
 runtime_m3b.install(PackageSortingApp())
 runtime_m3b.start_app("com.acme.package_sorting")
 result_m3b = runtime_m3b.run_mission("com.acme.package_sorting", params={})

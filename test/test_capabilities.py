@@ -233,16 +233,18 @@ from axis_os.hal.core.normalized_robot import NormalizedRobotHAL as _NRH
 from axis_os.hal.watchdog.system import WatchdogSystem as _WD
 from axis_os.services.memory.service import MemoryService as _MS
 from axis_os.store.runtime.play_store import PlayStoreRuntime as _PSR
+from axis_os.store.runtime.profil import Profil as _Profil
 from axis_os.store.sdk.manifest import Capability as _Cap
 
 with _ctx.redirect_stdout(_io.StringIO()):
     _hal = UnitreeG1HAL(backend="sim"); _hal.initialize_all()
     _rb = _NRH(_hal, _norm()); _rb.initialize_all()
     _wd = _WD(_rb)
-    _c_sans = _PSR(_rb, _wd)._available_capabilities()
+    _c_sans = _PSR(_rb, _wd, profil=_Profil.SIMULATION)._available_capabilities()
     with _tmp.TemporaryDirectory() as _d:
         _mem = _MS(_P(_d)); _mem.start()
-        _c_avec = _PSR(_rb, _wd, memory_service=_mem)._available_capabilities()
+        _c_avec = _PSR(_rb, _wd, memory_service=_mem,
+                       profil=_Profil.SIMULATION)._available_capabilities()
 
 print()
 check("Sans service de mémoire : MEMORY_PERSISTENT indisponible",

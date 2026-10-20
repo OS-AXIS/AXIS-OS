@@ -31,7 +31,8 @@ Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Dict, Any, List
+from typing import Callable, Optional, Dict, Any, List, Union
+import os
 import time
 import uuid
 import traceback
@@ -49,8 +50,9 @@ from axis_os.store.sdk.app_base import (
     _RuntimeSessionToken,
 )
 from axis_os.store.runtime.sandbox import (
-    SandboxRunner, SandboxResult, SandboxState, SandboxErrorKind,
+    SandboxRunner, SandboxResult, SandboxState, SandboxErrorKind, _try_import_psutil,
 )
+from axis_os.store.runtime.profil import Profil, lire_cles_approuvees
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
 from axis_os.store.runtime.processus_app import (
     AppNonRechargeable, etat_json, spec_depuis_instance,
@@ -96,6 +98,12 @@ def accepter_tout_SIMULATION(manifest: AppManifest,
     print(f"  [SIMULATION] permissions DANGEROUS accordées SANS confirmation "
           f"humaine : {[p.name for p in permissions]}")
     return True
+
+
+# Marque lue par PlayStoreRuntime : refusée sur un robot réel et en
+# production. Un confirmateur maison qui accorde tout sans humain doit
+# porter la même marque.
+accepter_tout_SIMULATION.accorde_sans_humain = True
 
 
 def _affichable(texte: Any, n: int = 80) -> str:
@@ -250,7 +258,7 @@ class PlayStoreRuntime:
         self,
         robot: NormalizedRobotHAL,
         watchdog: WatchdogSystem,
-        require_signed_apps: bool = False,
+        require_signed_apps: Optional[bool] = None,
         platform_public_key: Optional[str] = None,
         memory_service: Optional[MemoryService] = None,
         perception_service=None,
@@ -258,8 +266,26 @@ class PlayStoreRuntime:
         speech_service=None,
         clock=None,
         confirmer_permissions: Optional[ConfirmationPermissions] = None,
+        *,
+        profil: Profil,
+        cles_approuvees: Optional[Union[str, os.PathLike]] = None,
     ):
         """
+        `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
+        PRODUCTION (voir axis_os/store/runtime/profil.py). En PRODUCTION :
+        signature obligatoire (require_signed_apps ne peut pas valoir
+        False), clés de développeur lues dans `cles_approuvees` (fichier
+        local, obligatoire), accepter_tout_SIMULATION refusé, quotas CPU et
+        mémoire exigés (psutil), et installation depuis la source signée
+        seulement (install_source) : le code d'une app n'est jamais exécuté
+        dans le processus de l'OS. SIMULATION est refusé sur un robot réel.
+        En SIMULATION et en DÉVELOPPEMENT, les facilités historiques restent
+        possibles, mais chacune est signalée dans le journal ([PROFIL …]).
+
+        `cles_approuvees` : chemin du fichier des clés publiques de
+        développeur approuvées (format dans profil.py). Fourni hors
+        production, il est appliqué de même.
+
         `robot` : le HAL du robot, vu à travers NormalizedRobotHAL, la
         façade qui présente aux apps les positions et vitesses dans une
         convention commune plutôt que celle du driver brut.
@@ -322,27 +348,68 @@ class PlayStoreRuntime:
         par son RobotContext ; voir _make_ctx(). `clock` : horloge du
         robot, voir le commentaire dans le corps de cette méthode.
         """
-        if confirmer_permissions is accepter_tout_SIMULATION and _robot_reel(robot):
+        if not isinstance(profil, Profil):
+            raise TypeError(
+                "profil doit être Profil.SIMULATION, Profil.DEVELOPPEMENT ou "
+                "Profil.PRODUCTION, donné explicitement (il n'est jamais deviné).")
+        reel = _robot_reel(robot)
+        if profil is Profil.SIMULATION and reel:
+            raise ValueError(
+                "Profil SIMULATION refusé : ce runtime pilote un robot RÉEL. "
+                "Choisir DEVELOPPEMENT (banc d'essai) ou PRODUCTION.")
+        sans_humain = getattr(confirmer_permissions, "accorde_sans_humain", False) is True
+        if sans_humain and reel:
             raise ValueError(
                 "accepter_tout_SIMULATION refusé : ce runtime pilote un robot RÉEL. "
                 "Les permissions DANGEROUS doivent y être confirmées par un humain "
                 "(confirmer_au_terminal, ou un écran de confirmation).")
+        if profil is Profil.PRODUCTION:
+            if sans_humain:
+                raise ValueError(
+                    "Profil PRODUCTION : accepter_tout_SIMULATION refusé, les "
+                    "permissions DANGEROUS y sont toujours confirmées par un humain.")
+            if require_signed_apps is False:
+                raise ValueError(
+                    "Profil PRODUCTION : la signature des apps est obligatoire "
+                    "(require_signed_apps=False refusé).")
+            require_signed_apps = True
+            if cles_approuvees is None:
+                raise ValueError(
+                    "Profil PRODUCTION : fichier des clés de développeur approuvées "
+                    "requis (paramètre cles_approuvees, format dans profil.py).")
+            if _try_import_psutil() is None:
+                raise RuntimeError(
+                    "Profil PRODUCTION : psutil est requis pour appliquer les quotas "
+                    "CPU et mémoire des apps.")
+        self._profil = profil
+        self._cles_approuvees: Optional[Dict[str, str]] = (
+            None if cles_approuvees is None else lire_cles_approuvees(cles_approuvees))
         self._confirmer_permissions = confirmer_permissions
         self._robot   = robot
         self._watchdog = watchdog
         self._apps:    Dict[str, InstalledApp] = {}
         self._billing: List[BillingReport]     = []
         self._id = str(uuid.uuid4())[:8]
-        self._require_signed_apps = require_signed_apps
-        if not require_signed_apps:
-            # Avertissement affiché à chaque démarrage, et pas seulement
-            # documenté : un choix silencieux s'oublie facilement dans une
-            # configuration de production. Sans require_signed_apps=True,
-            # n'importe quel fichier .py dont une classe hérite de
-            # RobotApp s'installe sans vérification d'identité : install()
-            # ne contrôle alors que les permissions et les capacités
-            # déclarées, jamais qui a écrit le code. Contexte complet dans
-            # la docstring de __init__.
+        self._require_signed_apps = bool(require_signed_apps)
+        if profil is not Profil.PRODUCTION:
+            # Chaque facilité est dite au démarrage : un choix silencieux
+            # s'oublie facilement, et finit dans une configuration de
+            # production.
+            facilites = []
+            if not self._require_signed_apps:
+                facilites.append("apps non signées acceptées")
+            if self._cles_approuvees is None:
+                facilites.append("toute clé de développeur acceptée")
+            if sans_humain:
+                facilites.append("permissions DANGEROUS accordées sans humain")
+            facilites.append("installation d'objets app chargés dans l'OS")
+            print(f"  [PROFIL {profil.name}] ne convient pas à un vrai robot en "
+                  f"service : {', '.join(facilites)}.")
+        if not self._require_signed_apps:
+            # Contexte complet dans la docstring de __init__ : sans
+            # require_signed_apps=True, n'importe quel fichier .py dont une
+            # classe hérite de RobotApp s'installe sans vérification
+            # d'identité.
             print(
                 "  [SECURITY] PlayStoreRuntime démarré avec "
                 "require_signed_apps=False — toute app non signée "
@@ -395,6 +462,15 @@ class PlayStoreRuntime:
         capacités fonctionnelles, matériel, puis, en dernier, confirmation
         humaine des permissions DANGEROUS.
         """
+        if self._profil is Profil.PRODUCTION:
+            # L'objet app a déjà été créé dans ce processus : son code (son
+            # module, son constructeur, et manifest() juste après) y
+            # tourne avec tous les droits de l'OS.
+            print("  [ERREUR] Profil PRODUCTION : une app s'installe depuis sa source "
+                  "signée (install_source), jamais depuis un objet déjà chargé dans "
+                  "le processus de l'OS.")
+            return False
+
         # On travaille sur une copie du manifeste, validée puis conservée :
         # RobotContext consultera celle-ci, jamais l'objet fourni par
         # l'app, que l'app pourrait modifier après la confirmation des
@@ -419,18 +495,8 @@ class PlayStoreRuntime:
         # peut attendre un autre format pour HardwareRequirements ou
         # Capabilities, contrôlés plus loin ; mieux vaut échouer ici avec
         # un message clair qu'avec une erreur confuse ensuite.
-        if manifest.sdk_version_min is not None:
-            from axis_os import __version__ as axis_os_version, SemVer
-            required = SemVer.parse(manifest.sdk_version_min)
-            current  = SemVer.parse(axis_os_version)
-            if not required.is_compatible_with(current):
-                print(
-                    f"  [ERREUR] Incompatible avec AXIS-OS {current} — "
-                    f"cette app requiert {required} (SDK mineur ou majeur "
-                    f"différent). Mettez à jour l'app ou installez-la sur "
-                    f"une version d'AXIS-OS compatible."
-                )
-                return False
+        if not self._sdk_compatible(manifest):
+            return False
 
         # Signature du code (voir axis_os/store/sdk/signing.py). Contrôlée
         # après le SDK (inutile d'aller plus loin si le SDK est déjà
@@ -492,7 +558,28 @@ class PlayStoreRuntime:
             # C'est ce texte précis, et non le fichier relu plus tard sur le
             # disque, que le processus de l'app exécutera.
             source_verifiee = source
+            if not self._cle_approuvee(manifest.developer_public_key):
+                return False
 
+        # Comment le processus de l'app retrouvera son code. Une app qui ne
+        # peut pas être rechargée (classe définie dans une fonction)
+        # s'installe quand même, comme avant, mais chacun de ses hooks
+        # échouera avec un message clair.
+        try:
+            spec, spec_erreur = spec_depuis_instance(app, source_verifiee), None
+        except (AppNonRechargeable, OSError, UnicodeDecodeError) as exc:
+            spec, spec_erreur = None, str(exc)
+            print(f"  [ATTENTION] {spec_erreur}")
+        return self._terminer_installation(manifest, app, spec, spec_erreur)
+
+    def _terminer_installation(self, manifest: AppManifest, app: Optional[RobotApp],
+                               spec: Optional[Dict[str, Any]],
+                               spec_erreur: Optional[str]) -> bool:
+        """Contrôles communs à install() et install_source(), une fois le
+        manifeste obtenu et la signature vérifiée : permissions SIGNATURE,
+        capacités, matériel, confirmation des permissions DANGEROUS, puis
+        enregistrement."""
+        app_id = manifest.app_id
         # Permissions de niveau ProtectionLevel.SIGNATURE, réservées aux
         # apps système (par exemple ACTUATORS_RAW, les commandes
         # articulaires brutes, ou FLEET_BROADCAST, l'envoi d'un message à
@@ -623,23 +710,122 @@ class PlayStoreRuntime:
             last_subscription_bill_time_s = self._read_billing_flag(
                 app_id, "last_subscription_bill_time_s", None)
 
-        # Comment le processus de l'app retrouvera son code. Une app qui ne
-        # peut pas être rechargée (classe définie dans une fonction)
-        # s'installe quand même, comme avant, mais chacun de ses hooks
-        # échouera avec un message clair.
-        try:
-            spec, spec_erreur = spec_depuis_instance(app, source_verifiee), None
-        except (AppNonRechargeable, OSError, UnicodeDecodeError) as exc:
-            spec, spec_erreur = None, str(exc)
-            print(f"  [ATTENTION] {spec_erreur}")
-
         self._apps[app_id] = InstalledApp(
             app=app, manifest=manifest, spec=spec, spec_erreur=spec_erreur,
             one_time_billed=one_time_billed,
             last_subscription_bill_time_s=last_subscription_bill_time_s,
         )
         print(f"  ✓ '{manifest.name}' installée.")
+        if manifest.code_signature is None:
+            print(f"  [PROFIL {self._profil.name}] app non signée installée : "
+                  f"{_affichable(app_id)}")
         return True
+
+    def _sdk_compatible(self, manifest: AppManifest) -> bool:
+        """Compatibilité du SDK, dont la version est celle d'AXIS-OS (voir
+        axis_os/__init__.py ; versions au format SemVer). Vérifiée avant le
+        reste : une app écrite pour une version incompatible peut attendre
+        un autre format pour HardwareRequirements ou Capabilities."""
+        if manifest.sdk_version_min is not None:
+            from axis_os import __version__ as axis_os_version, SemVer
+            required = SemVer.parse(manifest.sdk_version_min)
+            current  = SemVer.parse(axis_os_version)
+            if not required.is_compatible_with(current):
+                print(
+                    f"  [ERREUR] Incompatible avec AXIS-OS {current} — "
+                    f"cette app requiert {required} (SDK mineur ou majeur "
+                    f"différent). Mettez à jour l'app ou installez-la sur "
+                    f"une version d'AXIS-OS compatible."
+                )
+                return False
+        return True
+
+    def _cle_approuvee(self, cle: Optional[str]) -> bool:
+        """Vrai si `cle` (clé publique du développeur, déjà vérifiée contre
+        la signature) est acceptée : clé plateforme, ou clé du fichier des
+        clés approuvées. Sans ce fichier (hors production), toute clé
+        est acceptée."""
+        if self._cles_approuvees is None:
+            return True
+        if cle is not None and (cle in self._cles_approuvees
+                                or cle == self._platform_public_key):
+            return True
+        print(f"  [ERREUR] Clé de développeur non approuvée sur ce robot "
+              f"({_affichable(cle or '', 20)}…) : absente du fichier des clés "
+              f"approuvées.")
+        return False
+
+    def install_source(self, source: str, *, code_signature: str,
+                       developer_public_key: str, origine: str = "app") -> bool:
+        """Installe une app à partir de son code source et de sa signature,
+        sans jamais exécuter ce code dans le processus de l'OS.
+
+        C'est le seul chemin d'installation en profil PRODUCTION. Ordre :
+          1. la signature est vérifiée sur le texte (de simples octets) et
+             la clé doit être approuvée (voir _cle_approuvee) ;
+          2. le processus neuf de l'app exécute ce texte et appelle
+             manifest() ; le manifeste revient en JSON et est revérifié
+             champ par champ (manifeste_json.py) ;
+          3. ce manifeste passe ensuite par les mêmes contrôles
+             qu'install() : validate(), SDK, permissions SIGNATURE,
+             capacités, matériel, confirmation des permissions DANGEROUS.
+
+        code_signature et developer_public_key du manifeste sont ceux
+        vérifiés ici, jamais ceux que le code de l'app annonce. Une app déjà
+        installée sous le même app_id est refusée : sa mise à jour depuis la
+        source n'est pas encore prise en charge (update_app() ne connaît
+        que les objets app).
+        """
+        from axis_os.store.sdk.signing import verify_app_signature, SignatureError
+        from axis_os.store.runtime.manifeste_json import manifeste_depuis_json, MessageRefuse
+
+        etiquette = "".join(c if c.isalnum() else "_" for c in origine)[:64] or "app"
+        print(f"\n[PlayStore] Installation depuis la source ({_affichable(origine)})")
+        if not isinstance(source, str):
+            print("  [ERREUR] Source de l'app attendue sous forme de texte.")
+            return False
+        try:
+            valide = verify_app_signature(source, code_signature, developer_public_key)
+        except SignatureError as exc:
+            print(f"  [ERREUR] Signature ou clé malformée : {exc}")
+            return False
+        if not valide:
+            print("  [ERREUR] Signature invalide — le code ne correspond pas à sa "
+                  "signature (code modifié après signature, ou mauvaise clé).")
+            return False
+        if not self._cle_approuvee(developer_public_key):
+            return False
+
+        spec = {"genre": "source", "module": f"axis_app_{etiquette}", "classe": None,
+                "source": source, "fichier": f"<{etiquette}>", "paquet": None}
+        runner = SandboxRunner(etiquette, None, clock=self._clock,
+                               strict=self._profil is Profil.PRODUCTION)
+        res = runner.run_app(spec, "manifest", serveur=None,
+                             tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR)
+        if not res.success:
+            print(f"  [ERREUR] Manifeste illisible : {res.state.name} — {res.error}")
+            return False
+        try:
+            manifest = manifeste_depuis_json(res.result["manifeste"])
+        except (MessageRefuse, KeyError, ValueError) as exc:
+            print(f"  [ERREUR] Manifeste refusé : {exc}")
+            return False
+        manifest.code_signature = code_signature
+        manifest.developer_public_key = developer_public_key
+
+        print(f"  App       : '{_affichable(manifest.name)}' v{_affichable(manifest.version)}")
+        print(f"  Auteur    : {_affichable(manifest.author)}")
+        errors = manifest.validate()
+        if errors:
+            for e in errors:
+                print(f"  [ERREUR] {e}")
+            return False
+        if manifest.app_id in self._apps:
+            print(f"  [ERREUR] '{_affichable(manifest.app_id)}' est déjà installée.")
+            return False
+        if not self._sdk_compatible(manifest):
+            return False
+        return self._terminer_installation(manifest, None, spec, None)
 
     # ── Cycle de vie ──────────────────────────────────────────────
 
@@ -1078,8 +1264,11 @@ class PlayStoreRuntime:
                 False, SandboxState.CRASHED,
                 error=f"App impossible à recharger dans son processus : {entry.spec_erreur}",
                 error_kind=SandboxErrorKind.SANDBOX_ERROR), bridge_server
+        # En production, quotas CPU et mémoire obligatoires (psutil) : voir
+        # `strict` dans SandboxRunner.
         runner = SandboxRunner(entry.manifest.app_id, entry.manifest.quota,
-                               clock=self._clock)
+                               clock=self._clock,
+                               strict=self._profil is Profil.PRODUCTION)
         # L'état de l'instance est relu à chaque appel, comme le faisait
         # pickle : un attribut changé par l'opérateur entre deux missions
         # est vu par la suivante.

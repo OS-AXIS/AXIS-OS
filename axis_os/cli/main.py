@@ -189,6 +189,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     from axis_os.hal.watchdog.system import WatchdogSystem
     from axis_os.hal.watchdog.config import WatchdogConfig
     from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+    from axis_os.store.runtime.profil import Profil
 
     # Choix du simulateur. Sans backend fourni (backend=None), IsaacSimHAL
     # se branche sur le pont vers Isaac Sim (le simulateur de NVIDIA) forcé
@@ -223,7 +224,8 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     # installe et exécute les apps) exige une confirmation humaine et
     # refuse accepter_tout_SIMULATION quand il reconnaît un robot réel
     # (voir axis_os/store/runtime/play_store.py).
-    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION)
+    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
     app_instance = AppClass()
 
     if not runtime.install(app_instance):

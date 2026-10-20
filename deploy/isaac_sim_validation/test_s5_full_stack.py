@@ -124,11 +124,13 @@ def main():
     from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
     from axis_os.hal.watchdog.system import WatchdogSystem
     from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+    from axis_os.store.runtime.profil import Profil
 
     robot = NormalizedRobotHAL(hal, build_g1_normalizer())
     robot.initialize_all()
     wd = WatchdogSystem(robot)
-    runtime = PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION)
+    runtime = PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
 
     def mission():
         app = PackageSortingAppBigQuota()

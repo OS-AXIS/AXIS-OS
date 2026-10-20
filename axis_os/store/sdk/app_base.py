@@ -40,7 +40,7 @@ import time
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.core.types import (
     ActuatorCommand, ActuatorFeedback, HALStatus, ControlMode,
-    JointGroup, infer_joint_group,
+    JointGroup, infer_joint_group, ORIGINE_IA,
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
 from .manifest import AppManifest, Permission
@@ -537,6 +537,7 @@ class RobotContext:
         e-stop est actif.
         """
         self._require(Permission.ACTUATORS_WRITE_ARMS)
+        self._exiger_pilotage_ia(commands)
         self._require_no_estop()
         filtered = self._apply_velocity_cap(
             self._route(commands, JointGroup.MANIPULATION))
@@ -555,6 +556,7 @@ class RobotContext:
         e-stop est actif.
         """
         self._require(Permission.ACTUATORS_WRITE_LEGS)
+        self._exiger_pilotage_ia(commands)
         self._require_no_estop()
         filtered = self._apply_velocity_cap(
             self._route(commands, JointGroup.LOCOMOTION))
@@ -572,6 +574,7 @@ class RobotContext:
         e-stop est actif.
         """
         self._require(Permission.ACTUATORS_WRITE_ALL)
+        self._exiger_pilotage_ia(commands)
         self._require_no_estop()
         commands = self._apply_velocity_cap(commands)
         return self._robot.send_joint_commands(commands)
@@ -731,6 +734,23 @@ class RobotContext:
         """Copie du journal de mission (les lignes écrites par log()).
         Aucune permission requise."""
         return list(self._log_entries)
+
+    def _exiger_pilotage_ia(self, commands: Dict[str, ActuatorCommand]) -> None:
+        """Exige ACTUATORS_AI_DRIVEN dès qu'une consigne vient d'un modèle
+        d'IA (ActuatorCommand.origine == ORIGINE_IA, posée par les actions
+        du SDK : VLAAction, GR00TAction, LocomotionAction).
+
+        Pourquoi : la permission était confirmée à l'installation mais
+        jamais vérifiée à l'exécution (SECURITY.md, limite n° 2) ; une app
+        qui faisait tourner un modèle sans la déclarer n'était pas
+        arrêtée. Le contrôle a lieu ici, dans le processus de l'OS, quel
+        que soit le chemin (app sandboxée ou contexte direct). Limite : une
+        app qui fabrique elle-même ses consignes à partir de la sortie d'un
+        modèle, sans passer par les actions du SDK, ne porte pas la marque
+        et n'est pas détectée ; l'OS ne peut pas distinguer un nombre
+        calculé par un modèle d'un nombre écrit en dur."""
+        if any(getattr(c, "origine", None) == ORIGINE_IA for c in commands.values()):
+            self._require(Permission.ACTUATORS_AI_DRIVEN)
 
     def _require(self, permission: Permission) -> None:
         """Lève PermissionError si `permission` n'est pas déclarée dans le

@@ -66,7 +66,7 @@ from typing import Optional, Dict, Any, Callable
 
 from axis_os.hal.core.types import (
     ActuatorCommand, ActuatorFeedback, ActuatorState, ControlMode, HALStatus,
-    IMUData, Vector3, Quaternion, JointGroup, infer_joint_group,
+    IMUData, Vector3, Quaternion, JointGroup, infer_joint_group, ORIGINE_IA,
 )
 from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
@@ -194,8 +194,12 @@ def _deserialize_feedback(jid: str, d: Dict[str, Any]) -> ActuatorFeedback:
 
 _VIDE = Objet({})
 _COMMANDE = Objet({"mode": UnParmi(*ControlMode.__members__)}, facultatifs={
-    champ: Nombre() for champ in
-    ("position", "velocity", "torque", "current", "stiffness", "damping")})
+    **{champ: Nombre() for champ in
+       ("position", "velocity", "torque", "current", "stiffness", "damping")},
+    # Marque d'une consigne venue d'un modèle d'IA (voir
+    # RobotContext._exiger_pilotage_ia).
+    "origine": UnParmi(ORIGINE_IA),
+})
 _COMMANDES = Objet({"commands": Dictionnaire(_COMMANDE, max_len=128)})
 
 SCHEMAS_ACTIONS: Dict[str, Objet] = {
@@ -580,6 +584,7 @@ class HALBridgeServer:
                 # externe, fait passer ces trois méthodes par le sandbox
                 # (voir CHANGELOG.md).
                 stiffness=c.get("stiffness"), damping=c.get("damping"),
+                origine=c.get("origine"),
             )
             for jid, c in raw.items()
         }
@@ -1135,6 +1140,6 @@ class HALBridgeClient:
             jid: {"mode": c.mode.name, "position": c.position,
                   "velocity": c.velocity, "torque": c.torque,
                   "current": c.current, "stiffness": c.stiffness,
-                  "damping": c.damping}
+                  "damping": c.damping, "origine": getattr(c, "origine", None)}
             for jid, c in commands.items()
         }

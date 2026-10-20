@@ -27,6 +27,7 @@ from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.services.memory.service import MemoryService
 from axis_os.services.speech.service import ISpeechRecognizer, SpeechService
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
 
 FAIL = 0
 
@@ -89,7 +90,8 @@ def monter(phrases, dossier_memoire):
         parole.start()
         memoire = MemoryService(storage_dir=Path(dossier_memoire))
         memoire.start()
-        rt = PlayStoreRuntime(robot, wd, speech_service=parole, memory_service=memoire, confirmer_permissions=accepter_tout_SIMULATION)
+        rt = PlayStoreRuntime(robot, wd, speech_service=parole, memory_service=memoire, confirmer_permissions=accepter_tout_SIMULATION,
+                              profil=Profil.SIMULATION)
     return rt, wd, hal
 
 
@@ -155,7 +157,8 @@ with contextlib.redirect_stdout(io.StringIO()) as sortie:
     h3.initialize_all()
     r3 = NormalizedRobotHAL(h3, build_g1_normalizer())
     wd3 = WatchdogSystem(h3, WatchdogConfig.simulation())
-    refus = not PlayStoreRuntime(r3, wd3, confirmer_permissions=accepter_tout_SIMULATION).install(AssistantIAApp())
+    refus = not PlayStoreRuntime(r3, wd3, confirmer_permissions=accepter_tout_SIMULATION,
+                                 profil=Profil.SIMULATION).install(AssistantIAApp())
 check("Robot SANS micro : installation REFUSÉE, avec la raison (SPEECH_IN)",
       refus and "SPEECH_IN" in sortie.getvalue())
 

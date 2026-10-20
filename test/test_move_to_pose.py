@@ -23,6 +23,7 @@ from axis_os.store.sdk.app_base import RobotContext
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, Permission
 from axis_os.store.runtime.hal_bridge import HALBridgeServer
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
 from axis_os.apps.package_sorting.app import PackageSortingApp
 
 FAIL = 0
@@ -106,7 +107,8 @@ for jid in ("left_elbow_joint", "right_elbow_joint"):
     robot4._hal._actuators[jid]._position = 1.2  # bras repliés au démarrage
 
 wd4 = WatchdogSystem(robot4)
-runtime4 = PlayStoreRuntime(robot4, wd4, confirmer_permissions=accepter_tout_SIMULATION)
+runtime4 = PlayStoreRuntime(robot4, wd4, confirmer_permissions=accepter_tout_SIMULATION,
+                            profil=Profil.SIMULATION)
 runtime4.install(PackageSortingApp())
 ready4 = runtime4.start_app("com.acme.package_sorting")
 check("package_sorting démarre malgré des bras repliés à 1.2 rad", ready4 is True)

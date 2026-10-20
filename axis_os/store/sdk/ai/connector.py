@@ -55,7 +55,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from axis_os.hal.core.types import ActuatorCommand, ControlMode
+from axis_os.hal.core.types import ActuatorCommand, ControlMode, ORIGINE_IA
 
 
 @dataclass
@@ -107,6 +107,7 @@ class VLAAction:
                 mode=ControlMode.POSITION,
                 position=angle,
                 velocity=velocity,
+                origine=ORIGINE_IA,
             )
             for joint_id, angle in self.target_angles.items()
         }
