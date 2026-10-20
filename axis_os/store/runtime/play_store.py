@@ -48,12 +48,14 @@ from axis_os.store.sdk.app_base import (
     RobotApp, RobotContext, MissionResult, PermissionError, EstopActiveError,
     _RuntimeSessionToken,
 )
-from axis_os.store.runtime.sandbox import SandboxRunner, SandboxState, SandboxErrorKind
-from axis_os.store.runtime.hal_bridge import (
-    HALBridgeServer, HALBridgeClient, HALCommand, HALResponse
+from axis_os.store.runtime.sandbox import (
+    SandboxRunner, SandboxResult, SandboxState, SandboxErrorKind,
+)
+from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
+from axis_os.store.runtime.processus_app import (
+    AppNonRechargeable, etat_json, spec_depuis_instance,
 )
 from axis_os.services.memory.service import MemoryService
-import multiprocessing as mp
 import threading
 
 
@@ -155,100 +157,6 @@ def _robot_reel(robot: Any) -> bool:
     return False
 
 
-def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
-                        command_queue: mp.Queue, response_queue: mp.Queue) -> MissionResult:
-    """
-    Exécutée dans le processus enfant de la sandbox (lancé par
-    SandboxRunner) pour un appel à run_mission().
-
-    Pourquoi un pont : le vrai HAL et le vrai WatchdogSystem (le chien de
-    garde qui déclenche l'e-stop, l'arrêt d'urgence, quand une condition
-    dangereuse est détectée) contiennent des threads et ne passent pas
-    par pickle (le format de Python qui transforme un objet en octets
-    pour le faire passer d'un processus à l'autre). La fonction ne reçoit
-    donc jamais ces objets : elle reçoit l'app elle-même (SandboxRunner
-    exige qu'elle passe par pickle) et construit un HALBridgeClient sur
-    les deux files mp.Queue déjà ouvertes. C'est le pont IPC
-    (communication entre processus) de hal_bridge.py : les commandes de
-    l'app partent par une file, le processus parent les exécute sur le
-    vrai HAL et répond par l'autre.
-
-    L'app appelle ctx.move_arms/move_legs/log/get_imu/get_mission_log
-    exactement comme avec un RobotContext normal (l'objet que le runtime
-    remet à une app pour commander le robot) : HALBridgeClient offre
-    la même interface, donc aucune app existante n'a besoin d'être
-    modifiée pour bénéficier de l'isolation.
-
-    PermissionError et EstopActiveError sont converties ici en
-    MissionResult d'échec plutôt que de remonter jusqu'à SandboxRunner,
-    qui les classerait en APPLICATION_ERROR générique : on garde ainsi la
-    distinction entre un refus de sécurité et un bug de l'app.
-
-    Limite connue : cette isolation protège d'une app buggée, pas encore
-    d'une app hostile (voir docs/isolation_apps.md).
-    """
-    bridge_ctx = HALBridgeClient(command_queue, response_queue)
-    try:
-        result = app.run_mission(bridge_ctx, params)
-        if result is not None:
-            result.log = bridge_ctx.get_mission_log()
-        return result
-    except PermissionError as exc:
-        return MissionResult(
-            success=False, mission_id="", app_id="",
-            duration_s=0.0, error_message=f"Permission refusée : {exc}",
-            log=bridge_ctx.get_mission_log(),
-        )
-    except EstopActiveError as exc:
-        return MissionResult(
-            success=False, mission_id="", app_id="",
-            duration_s=0.0, error_message=f"Mission interrompue par e-stop : {exc}",
-            log=bridge_ctx.get_mission_log(),
-        )
-
-
-def _run_start_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
-                               response_queue: mp.Queue):
-    """
-    Équivalent de _run_app_in_sandbox() pour le hook on_start() (la
-    méthode que l'app exécute à son démarrage).
-
-    Pourquoi : un audit de sécurité externe (2026-09-14, voir
-    docs/audit_externe_2026-09-14.md et CHANGELOG.md) a montré que
-    start_app() et stop_app() appelaient jusque-là entry.app.on_start()
-    et on_stop() directement dans le processus parent, avec un vrai
-    RobotContext : accès complet au HAL, sans quota, sans délai maximal,
-    sans isolation de la mémoire. C'était exactement le trou que
-    SandboxRunner et HALBridgeServer comblent pour run_mission(), mais ils
-    n'avaient jamais été branchés ici. Le risque
-    n'était pas théorique : axis_os/apps/package_sorting/app.py appelle
-    ctx.move_arms(...) dans son on_start(), donc le robot bougeait
-    physiquement pendant ce hook non isolé.
-
-    Renvoie un couple (bool, list[str]) plutôt qu'un simple bool : le
-    journal de mission tenu par le HALBridgeClient serait perdu s'il
-    n'était pas renvoyé explicitement d'un processus à l'autre.
-    """
-    bridge_ctx = HALBridgeClient(command_queue, response_queue)
-    try:
-        ready = app.on_start(bridge_ctx)
-        return ready, bridge_ctx.get_mission_log()
-    except (PermissionError, EstopActiveError) as exc:
-        return False, bridge_ctx.get_mission_log() + [f"on_start refusé : {exc}"]
-
-
-def _run_stop_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
-                              response_queue: mp.Queue):
-    """Équivalent de _run_start_hook_in_sandbox() pour le hook on_stop()
-    (exécuté à l'arrêt de l'app) : voir sa docstring pour le contexte."""
-    bridge_ctx = HALBridgeClient(command_queue, response_queue)
-    try:
-        app.on_stop(bridge_ctx)
-        return True, bridge_ctx.get_mission_log()
-    except (PermissionError, EstopActiveError) as exc:
-        return False, bridge_ctx.get_mission_log() + [f"on_stop refusé : {exc}"]
-
-
 @dataclass
 class InstalledApp:
     """Une app installée sur ce robot, avec son manifeste validé, ses
@@ -293,6 +201,12 @@ class InstalledApp:
     # rien dire.
     one_time_billed:              bool            = False
     last_subscription_bill_time_s: Optional[float] = None
+    # Comment le processus de l'app retrouve son code (voir
+    # processus_app.spec_depuis_instance), fixé à l'installation. None si
+    # l'app ne peut pas être rechargée ; spec_erreur dit alors pourquoi, et
+    # chacun de ses hooks échoue avec SandboxErrorKind.SANDBOX_ERROR.
+    spec:       Optional[Dict[str, Any]] = None
+    spec_erreur: Optional[str]           = None
 
     @property
     def commission_due(self) -> float:
@@ -536,6 +450,7 @@ class PlayStoreRuntime:
             )
             return False
 
+        source_verifiee: Optional[str] = None
         if manifest.code_signature is not None:
             from axis_os.store.sdk.signing import verify_app_signature, SignatureError
             import inspect
@@ -574,6 +489,9 @@ class PlayStoreRuntime:
                     "après signature, ou mauvaise clé)."
                 )
                 return False
+            # C'est ce texte précis, et non le fichier relu plus tard sur le
+            # disque, que le processus de l'app exécutera.
+            source_verifiee = source
 
         # Permissions de niveau ProtectionLevel.SIGNATURE, réservées aux
         # apps système (par exemple ACTUATORS_RAW, les commandes
@@ -705,8 +623,18 @@ class PlayStoreRuntime:
             last_subscription_bill_time_s = self._read_billing_flag(
                 app_id, "last_subscription_bill_time_s", None)
 
+        # Comment le processus de l'app retrouvera son code. Une app qui ne
+        # peut pas être rechargée (classe définie dans une fonction)
+        # s'installe quand même, comme avant, mais chacun de ses hooks
+        # échouera avec un message clair.
+        try:
+            spec, spec_erreur = spec_depuis_instance(app, source_verifiee), None
+        except (AppNonRechargeable, OSError, UnicodeDecodeError) as exc:
+            spec, spec_erreur = None, str(exc)
+            print(f"  [ATTENTION] {spec_erreur}")
+
         self._apps[app_id] = InstalledApp(
-            app=app, manifest=manifest,
+            app=app, manifest=manifest, spec=spec, spec_erreur=spec_erreur,
             one_time_billed=one_time_billed,
             last_subscription_bill_time_s=last_subscription_bill_time_s,
         )
@@ -721,41 +649,33 @@ class PlayStoreRuntime:
         entry = self._get(app_id)
         if entry is None: return False
 
-        # Exécuté dans la sandbox : la raison (correctif demandé par un
-        # audit de sécurité externe) est dans la docstring de
-        # _run_start_hook_in_sandbox(). Même pont
-        # HALBridgeServer/HALBridgeClient que run_mission(), même
-        # isolation par processus séparé, avec les quotas déclarés dans le
-        # manifeste de l'app.
-        command_queue: mp.Queue  = mp.Queue()
-        response_queue: mp.Queue = mp.Queue()
-        # Ce RobotContext reste dans le processus parent : il sert au
+        # Exécuté dans la sandbox. Pourquoi : un audit de sécurité externe
+        # (2026-09-14, voir docs/audit_externe_2026-09-14.md et
+        # CHANGELOG.md) a montré que start_app() et stop_app() appelaient
+        # on_start() et on_stop() directement dans le processus de l'OS,
+        # avec un vrai RobotContext : accès complet au HAL, sans quota ni
+        # délai. Le risque était réel : package_sorting appelle
+        # ctx.move_arms(...) dans son on_start(). Même pont et même
+        # isolation que run_mission() (voir _executer_hook).
+        #
+        # Ce RobotContext reste dans le processus de l'OS : il sert au
         # journal et au HALBridgeServer, qui exécute pour l'app les
         # commandes reçues par le pont. L'app ne le reçoit jamais.
         ctx = self._make_ctx(entry.manifest)
         ctx.log(f"Démarrage '{entry.manifest.name}'")
-        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
-        bridge_server.start()
-
         try:
-            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
-            sandbox_result = runner.run(
-                _run_start_hook_in_sandbox,
-                args=(entry.app, command_queue, response_queue),
-            )
-            if sandbox_result.success and sandbox_result.result is not None:
-                ready, _log = sandbox_result.result
+            sandbox_result, _ = self._executer_hook(entry, "on_start", ctx)
+            if sandbox_result.success:
+                ready = sandbox_result.result["pret"]
             else:
                 kind = sandbox_result.error_kind
                 reason = kind.name if kind else "INCONNU"
                 print(f"  [SANDBOX] on_start arrêté par l'isolation : "
-                      f"{sandbox_result.state.name} ({reason})")
+                      f"{sandbox_result.state.name} ({reason}) — {sandbox_result.error}")
                 ready = False
         except Exception as exc:
             print(f"  [ERREUR] on_start: {exc}")
             ready = False
-        finally:
-            bridge_server.stop()
 
         entry.is_started = ready
         ctx.log("Prête." if ready else "Échec initialisation.")
@@ -835,60 +755,54 @@ class PlayStoreRuntime:
 
         t_start = time.monotonic()
 
-        # Isolation par processus séparé. Pourquoi : jusqu'à ce correctif,
+        # Isolation par processus séparé. Pourquoi : à l'origine,
         # entry.app.run_mission(ctx, params) était appelé directement dans
-        # ce processus, sans aucune des protections déjà construites
-        # (SandboxRunner, quotas de CPU, de mémoire et de durée) que le
-        # reste du projet suppose actives pour toute app. Le pont
-        # HALBridgeServer/HALBridgeClient, déjà écrit mais jamais branché,
-        # permet à l'app isolée d'appeler move_arms/move_legs/log/get_imu
-        # exactement comme avant, sans qu'aucune app existante ait besoin
-        # d'être modifiée.
-        command_queue: mp.Queue  = mp.Queue()
-        response_queue: mp.Queue = mp.Queue()
-        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
-        bridge_server.start()
+        # ce processus, sans aucune des protections (quotas de CPU, de
+        # mémoire et de durée) que le reste du projet suppose actives pour
+        # toute app. Le pont HALBridgeServer/HALBridgeClient permet à
+        # l'app isolée d'appeler move_arms/move_legs/log/get_imu exactement
+        # comme avec un RobotContext, sans qu'aucune app ait à changer.
+        sandbox_result, bridge_server = self._executer_hook(
+            entry, "run_mission", ctx, params)
 
-        try:
-            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
-            sandbox_result = runner.run(
-                _run_app_in_sandbox,
-                args=(entry.app, params, command_queue, response_queue),
+        if sandbox_result.success and sandbox_result.result.get("mission") is not None:
+            # Reconstruit champ par champ à partir du JSON vérifié
+            # (processus_app.SCHEMA_MISSION) : aucun objet de l'app.
+            m = sandbox_result.result["mission"]
+            result = MissionResult(
+                success=m["success"], mission_id=mission_id, app_id=app_id,
+                duration_s=time.monotonic() - t_start,
+                items_processed=m["items_processed"] or 0,
+                error_message=m["error_message"],
+                metrics=m["metrics"] if isinstance(m["metrics"], dict) else {},
+                log=list(m["log"] or []),
             )
-
-            if sandbox_result.success and sandbox_result.result is not None:
-                result = sandbox_result.result
-            elif sandbox_result.success and sandbox_result.result is None:
-                # L'app a renvoyé None au lieu d'un MissionResult. Les
-                # PermissionError et EstopActiveError n'arrivent pas
-                # ici : _run_app_in_sandbox les convertit déjà en
-                # MissionResult d'échec, plutôt que de les laisser
-                # remonter jusqu'à SandboxRunner, qui les aurait classées
-                # en APPLICATION_ERROR générique en perdant la distinction
-                # entre refus de sécurité et bug de l'app.
-                result = MissionResult(
-                    success=False, mission_id=mission_id, app_id=app_id,
-                    duration_s=time.monotonic() - t_start,
-                    error_message="Mission sandboxée n'a retourné aucun résultat.",
-                )
-            else:
-                # La sandbox a signalé un échec : délai dépassé, quota
-                # dépassé, plantage du processus, fonction qui ne passe
-                # pas par pickle, ou exception levée par l'app
-                # (APPLICATION_ERROR). Le SandboxErrorKind indique
-                # précisément la cause, pour le diagnostic après coup.
-                kind = sandbox_result.error_kind
-                reason = kind.name if kind else "INCONNU"
-                print(f"  [SANDBOX] Mission arrêtée par l'isolation : "
-                      f"{sandbox_result.state.name} ({reason})")
-                result = MissionResult(
-                    success=False, mission_id=mission_id, app_id=app_id,
-                    duration_s=time.monotonic() - t_start,
-                    error_message=(f"Isolation sandbox : {sandbox_result.state.name} "
-                                   f"— {sandbox_result.error}"),
-                )
-        finally:
-            bridge_server.stop()
+        elif sandbox_result.success:
+            # L'app a renvoyé None au lieu d'un MissionResult. Une
+            # PermissionError ou une EstopActiveError n'arrive pas ici :
+            # le processus de l'app les convertit en MissionResult d'échec
+            # (hote_app._executer), pour garder la distinction entre refus
+            # de sécurité et bug de l'app.
+            result = MissionResult(
+                success=False, mission_id=mission_id, app_id=app_id,
+                duration_s=time.monotonic() - t_start,
+                error_message="Mission sandboxée n'a retourné aucun résultat.",
+            )
+        else:
+            # La sandbox a signalé un échec : délai ou quota dépassé,
+            # plantage, violation du protocole du pont, app impossible à
+            # recharger, ou exception levée par l'app (APPLICATION_ERROR).
+            # Le SandboxErrorKind indique précisément la cause.
+            kind = sandbox_result.error_kind
+            reason = kind.name if kind else "INCONNU"
+            print(f"  [SANDBOX] Mission arrêtée par l'isolation : "
+                  f"{sandbox_result.state.name} ({reason})")
+            result = MissionResult(
+                success=False, mission_id=mission_id, app_id=app_id,
+                duration_s=time.monotonic() - t_start,
+                error_message=(f"Isolation sandbox : {sandbox_result.state.name} "
+                               f"— {sandbox_result.error}"),
+            )
 
         if result:
             result.mission_id = mission_id
@@ -926,29 +840,17 @@ class PlayStoreRuntime:
         entry = self._get(app_id)
         if entry is None or not entry.is_started: return
 
-        # Exécuté dans la sandbox, pour la même raison que start_app()
-        # ci-dessus : voir _run_stop_hook_in_sandbox().
-        command_queue: mp.Queue  = mp.Queue()
-        response_queue: mp.Queue = mp.Queue()
+        # Exécuté dans la sandbox, pour la même raison que start_app().
         ctx = self._make_ctx(entry.manifest)
-        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
-        bridge_server.start()
-
         try:
-            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
-            sandbox_result = runner.run(
-                _run_stop_hook_in_sandbox,
-                args=(entry.app, command_queue, response_queue),
-            )
-            if not (sandbox_result.success and sandbox_result.result is not None):
+            sandbox_result, _ = self._executer_hook(entry, "on_stop", ctx)
+            if not sandbox_result.success:
                 kind = sandbox_result.error_kind
                 reason = kind.name if kind else "INCONNU"
                 print(f"  [SANDBOX] on_stop arrêté par l'isolation : "
-                      f"{sandbox_result.state.name} ({reason})")
+                      f"{sandbox_result.state.name} ({reason}) — {sandbox_result.error}")
         except Exception as exc:
             print(f"  [ERREUR] on_stop: {exc}")
-        finally:
-            bridge_server.stop()
 
         entry.is_started = False
 
@@ -1164,6 +1066,28 @@ class PlayStoreRuntime:
         if self._memory_service is not None:
             available.add(Capability.MEMORY_PERSISTENT)
         return available
+
+    def _executer_hook(self, entry: "InstalledApp", hook: str, ctx: RobotContext,
+                       params: Optional[Dict[str, Any]] = None):
+        """Exécute un hook de l'app dans son processus neuf et rend
+        (SandboxResult, HALBridgeServer). Le serveur garde, côté OS, le
+        compte des commandes motrices réussies (facturation)."""
+        bridge_server = HALBridgeServer(ctx)
+        if entry.spec is None:
+            return SandboxResult(
+                False, SandboxState.CRASHED,
+                error=f"App impossible à recharger dans son processus : {entry.spec_erreur}",
+                error_kind=SandboxErrorKind.SANDBOX_ERROR), bridge_server
+        runner = SandboxRunner(entry.manifest.app_id, entry.manifest.quota,
+                               clock=self._clock)
+        # L'état de l'instance est relu à chaque appel, comme le faisait
+        # pickle : un attribut changé par l'opérateur entre deux missions
+        # est vu par la suivante.
+        etat = etat_json(entry.app) if entry.app is not None else None
+        result = runner.run_app(entry.spec, hook, serveur=bridge_server,
+                                params=params, etat=etat,
+                                tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR)
+        return result, bridge_server
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
         """Construit le RobotContext d'une app (l'objet par lequel elle

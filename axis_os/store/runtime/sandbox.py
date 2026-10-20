@@ -1,67 +1,46 @@
 """
-AXIS-OS — Exécuteur de sandbox (SandboxRunner), version 2
+AXIS-OS — Exécuteur de sandbox (SandboxRunner), version 3
 ==========================================================
 Chaque app du Play Store (la boutique d'apps du robot) tourne dans un
 sandbox (un « bac à sable ») : un processus séparé, surveillé, avec des
 quotas de CPU, de mémoire et de durée. Ce module crée ce processus, le
 surveille et rapporte comment il s'est terminé.
 
-Pourquoi un processus séparé (multiprocessing) plutôt qu'un thread :
+Pourquoi un processus séparé plutôt qu'un thread :
   - un thread partage la mémoire de l'OS : un plantage de l'app peut
     emporter l'OS avec elle ;
   - un processus séparé a sa propre mémoire : un plantage de l'app
     n'affecte que l'app.
 
 Historique : la version 1 avait quatre défauts, corrigés dans la
-version 2 à la suite d'une revue extérieure du code :
-  - le thread de surveillance et le thread principal accédaient à la
-    même liste sans verrou ;
-  - pas de cycle de vie explicite (voir SandboxState) ;
-  - pas de classement des erreurs (voir SandboxErrorKind) ;
-  - un plantage silencieux quand la fonction à exécuter ne pouvait pas
-    passer par pickle (le format de Python qui transforme un objet en
-    octets et inversement). Le sandbox exige que la fonction et ses
-    arguments passent par pickle, et le résultat revient au processus
-    de l'OS sous cette forme.
+version 2 à la suite d'une revue extérieure du code (accès concurrent
+sans verrou, pas de cycle de vie explicite, pas de classement des
+erreurs, plantage silencieux sur un objet non sérialisable). La version 3
+change la façon de créer le processus et d'échanger avec lui :
 
-Portée actuelle :
-  - Isole des fonctions dont les arguments et le résultat passent par
-    pickle : calculs, logique métier, appels à un modèle d'IA tiers.
-  - N'isole pas encore, à lui seul, l'accès direct à la HAL (la couche
-    d'abstraction matérielle, qui donne accès aux moteurs et aux
-    capteurs) : RobotContext, l'objet par lequel une app commande le
-    robot, contient des threads et ne passe pas par pickle. Le pont IPC
-    (la communication entre deux processus) de hal_bridge.py comble ce
-    manque par un schéma commande/réponse : l'app envoie ses commandes
-    par une file, le processus de l'OS les exécute et répond par une
-    autre. PlayStoreRuntime (play_store.py) branche déjà ce pont autour
-    de chaque appel à une app ; son intégration automatique dans
-    SandboxRunner lui-même est prévue avec le Fleet Manager (le futur
-    gestionnaire de flotte, voir docs/fleet_manager_design.md).
+  - le processus est un interpréteur Python NEUF (hote_app.py, lancé par
+    processus_app.py), et non plus une copie du processus de l'OS (fork)
+    qui en héritait la mémoire, les objets HAL et les connexions ouvertes ;
+  - tout ce qui passe entre les deux est du JSON validé (canal_ipc.py), et
+    non plus des objets pickle, dont la lecture pouvait exécuter du code
+    dans l'OS.
 
-Limite connue : cette isolation protège contre une app buggée
-(plantage, boucle infinie, dépassement de quota), pas contre une app
-délibérément hostile. Le processus de l'app démarre comme une copie de
-celui de l'OS (fork), et le canal entre les deux transporte des objets
-pickle, pas de simples données. Le constat et le plan de correction sont
-dans docs/isolation_apps.md et dans SECURITY.md (« Limites connues »).
+Deux façons de s'en servir :
+  - run_app() : un hook d'app (manifest, on_start, run_mission, on_stop),
+    avec le pont vers le robot (hal_bridge.py). C'est ce qu'utilise
+    PlayStoreRuntime pour chaque appel à une app ;
+  - run() : une fonction de confiance de l'OS désignée par son nom, avec
+    des arguments et un résultat JSON, sans accès au robot.
+
+Limite connue : le processus de l'app ne détient plus rien de l'OS, mais
+il tourne encore sous le même utilisateur, avec le même accès au réseau et
+aux fichiers (étapes 2 à 4 de docs/isolation_apps.md, non faites ; voir
+aussi SECURITY.md, « Limites connues »).
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations
-import multiprocessing as mp
-# Ce sous-module est importé explicitement parce que run() teste
-# isinstance(a, mp.queues.Queue) et que `import multiprocessing` ne le
-# charge pas. En production, cela fonctionnait par hasard : les files du
-# pont HAL sont créées avant l'appel au sandbox, ce qui charge le
-# sous-module au passage. Dans tout autre contexte, chaque exécution
-# sandboxée échouait avec « Fonction ou arguments non picklables :
-# module 'multiprocessing' has no attribute 'queues' ». Le défaut a été
-# trouvé par le test de l'horloge du robot (test/test_robot_clock.py),
-# qui appelait le sandbox directement.
-import multiprocessing.queues  # noqa: F401
-import pickle
 import threading
 import time
 from dataclasses import dataclass
@@ -100,8 +79,8 @@ class SandboxErrorKind(Enum):
 
     APPLICATION_ERROR : l'app a levé une exception. CPU_QUOTA,
     MEMORY_QUOTA, TIMEOUT : un quota a été dépassé. SANDBOX_ERROR : le
-    sandbox n'a pas pu lancer l'app (fonction ou arguments qui ne passent
-    pas par pickle, échec de création du processus). PROCESS_CRASH : le
+    sandbox n'a pas pu lancer l'app (fonction, arguments ou app impossibles
+    à transmettre au processus neuf, échec de création du processus). PROCESS_CRASH : le
     processus s'est terminé sans renvoyer de résultat.
     """
     APPLICATION_ERROR = auto()
@@ -110,6 +89,10 @@ class SandboxErrorKind(Enum):
     TIMEOUT             = auto()
     SANDBOX_ERROR        = auto()
     PROCESS_CRASH        = auto()
+    # Le processus de l'app a envoyé par le pont un message que l'OS
+    # refuse (trame trop longue, JSON invalide, résultat hors schéma) : il
+    # est arrêté. Voir run_app().
+    PROTOCOL_VIOLATION   = auto()
 
 
 @dataclass
@@ -245,184 +228,227 @@ class SandboxRunner:
 
     def run(self, target_fn: Callable, args: tuple = (),
             kwargs: Optional[dict] = None) -> SandboxResult:
-        """Exécute target_fn(*args, **kwargs) dans un processus séparé et
+        """Exécute target_fn(*args, **kwargs) dans un processus neuf et
         attend sa fin, dans la limite de la durée maximale du quota.
 
-        Les échecs prévus (lancement impossible, exception de l'app, quota
-        dépassé, plantage) sont rapportés dans le SandboxResult renvoyé,
-        pas levés en exception."""
-        kwargs = kwargs or {}
+        Réservé à du code de confiance de l'OS (et aux essais) : une app
+        passe par run_app(). target_fn doit pouvoir être retrouvée par son
+        module et son nom (fonction de module, méthode intégrée comme
+        random.random ou time.sleep) ; args, kwargs et le résultat doivent
+        être des données JSON. Autrefois, la fonction et ses arguments
+        passaient par pickle vers un processus copié par fork ; ni l'un ni
+        l'autre n'existe plus (voir docs/isolation_apps.md).
+
+        Les échecs prévus (lancement impossible, exception, quota dépassé,
+        plantage) sont rapportés dans le SandboxResult renvoyé, pas levés
+        en exception."""
+        from axis_os.store.runtime.processus_app import (
+            NonTransmissible, encoder_donnee, reference_fonction,
+        )
+        t_start = self._clock()
+        try:
+            spec = reference_fonction(target_fn)
+            args_json = [encoder_donnee(a) for a in args]
+            kwargs_json = {str(k): encoder_donnee(v) for k, v in (kwargs or {}).items()}
+        except (NonTransmissible, OSError, UnicodeDecodeError) as exc:
+            # Même cause et même catégorie qu'au temps de pickle : la
+            # fonction ou ses arguments ne peuvent pas être transmis.
+            self._set_state(SandboxState.CRASHED)
+            return SandboxResult(
+                success=False, state=SandboxState.CRASHED,
+                error=(f"Fonction ou arguments non transmissibles (ni désignables par "
+                       f"leur nom, ni données JSON ; autrefois : non picklables) : {exc}"),
+                error_kind=SandboxErrorKind.SANDBOX_ERROR,
+                duration_s=self._clock() - t_start,
+            )
+        res = self.run_app(spec, "fonction", args=args_json, kwargs=kwargs_json)
+        if res.success:
+            res.result = res.result.get("valeur")
+        return res
+
+    # Au-delà de ce nombre de messages refusés, le processus de l'app est
+    # arrêté : une app honnête n'en envoie jamais un seul.
+    MAX_MESSAGES_REFUSES = 32
+    # Le contrôle CPU commence quand l'app est chargée, ou au plus tard
+    # après ce délai (temps du robot).
+    GRACE_CPU_S = 5.0
+
+    def run_app(self, spec: dict, hook: str, *, serveur=None, params=None,
+                etat: Optional[dict] = None, tolerance_lenteur: float = 60.0,
+                args: Optional[list] = None,
+                kwargs: Optional[dict] = None) -> SandboxResult:
+        """Exécute un hook d'app (manifest, on_start, run_mission, on_stop)
+        dans un processus NEUF (voir hote_app.py et processus_app.py), et
+        sert ses appels au robot par `serveur` (un HALBridgeServer).
+
+        Aucun fork, aucun pickle : le processus de l'app ne reçoit que le
+        pont, recharge l'app depuis `spec`, et tout ce qui en revient est du
+        JSON vérifié par schéma. Quotas, horloge et cycle de vie sont ceux
+        de la classe ; `result` est le dict vérifié rendu par le hook
+        (processus_app.SCHEMA_RESULTAT).
+        """
+        from axis_os.store.runtime.canal_ipc import (
+            CanalCorrompu, CanalFerme, MessageRefuse,
+        )
+        from axis_os.store.runtime.processus_app import (
+            ProcessusHote, SCHEMA_RESULTAT, message_depart,
+        )
+
         t_start = self._clock()
         self._set_state(SandboxState.STARTING)
-
-        # Contrôle préventif : vérifier dès maintenant que la fonction et
-        # ses arguments passent par pickle, pour renvoyer une erreur
-        # claire (SANDBOX_ERROR) au lieu du plantage silencieux de la
-        # version 1.
         try:
-            pickle.dumps(target_fn)
-            # Les files mp.Queue passées en arguments positionnels sont
-            # volontairement exclues de ce contrôle (celles passées dans
-            # kwargs ne le sont pas) : une file ne peut être transmise
-            # qu'au moment précis où elle est passée à Process(args=...),
-            # lors de la création du processus qui en hérite ; un
-            # pickle.dumps() isolé comme celui-ci la refuse (RuntimeError
-            # « Queue objects should only be shared through
-            # inheritance »). Bug réel, trouvé en branchant le pont HAL
-            # (HALBridgeServer/Client) dans PlayStoreRuntime : les files
-            # du pont faisaient échouer ce contrôle préventif, alors
-            # qu'elles fonctionnent normalement une fois transmises au
-            # vrai Process ci-dessous.
-            picklable_args = tuple(a for a in args if not isinstance(a, mp.queues.Queue))
-            pickle.dumps(picklable_args)
-            pickle.dumps(kwargs)
-        except (pickle.PicklingError, TypeError, AttributeError) as exc:
+            proc = ProcessusHote(self._app_id)
+        except Exception as exc:                 # noqa: BLE001
             self._set_state(SandboxState.CRASHED)
-            return SandboxResult(
-                success=False, state=SandboxState.CRASHED,
-                error=f"Fonction ou arguments non picklables : {exc}",
-                error_kind=SandboxErrorKind.SANDBOX_ERROR,
-                duration_s=self._clock() - t_start,
-            )
-
-        # Méthode de démarrage « fork » (le nouveau processus est une copie
-        # de celui-ci) imposée, quel que soit le défaut du système.
-        # Constaté sur un vrai serveur Ubuntu avec Python 3.14 : le défaut
-        # y est « forkserver » (un processus serveur, lancé à part, crée
-        # les nouveaux processus à la demande), qui exige que la fonction
-        # cible soit importable depuis un vrai module. Une fonction
-        # définie dans un script exécuté directement (ou par `python3 -c`)
-        # échoue alors en silence avec « AttributeError: module
-        # '__main__' has no attribute ... ». « fork » duplique le
-        # processus tel quel, la fonction est déjà en mémoire : cela
-        # marche dans tous les cas sous Linux (pas sous Windows,
-        # qu'AXIS-OS ne vise pas).
-        #
-        # Contrepartie connue : le processus de l'app hérite ainsi d'une
-        # copie de toute la mémoire de l'OS. C'est l'une des faiblesses
-        # d'isolation décrites dans docs/isolation_apps.md, dont le plan
-        # prévoit de passer à « spawn » (un interpréteur Python neuf).
-        ctx = mp.get_context("fork")
-        result_queue: mp.Queue = ctx.Queue()
-        proc = ctx.Process(
-            target=_sandbox_entrypoint,
-            args=(target_fn, args, kwargs, result_queue),
-            daemon=True,
-        )
-
+            return SandboxResult(False, SandboxState.CRASHED,
+                                 error=f"Échec démarrage process : {exc}",
+                                 error_kind=SandboxErrorKind.SANDBOX_ERROR,
+                                 duration_s=self._clock() - t_start)
         try:
-            proc.start()
-        except Exception as exc:
-            self._set_state(SandboxState.CRASHED)
-            return SandboxResult(
-                success=False, state=SandboxState.CRASHED,
-                error=f"Échec démarrage process : {exc}",
-                error_kind=SandboxErrorKind.SANDBOX_ERROR,
-                duration_s=self._clock() - t_start,
-            )
+            try:
+                proc.canal.envoyer(message_depart(hook, spec, params, etat,
+                                                  tolerance_lenteur, args, kwargs))
+            except (TypeError, ValueError) as exc:
+                self._set_state(SandboxState.CRASHED)
+                return SandboxResult(False, SandboxState.CRASHED,
+                                     error=f"Paramètres non transmissibles en JSON : {exc}",
+                                     error_kind=SandboxErrorKind.SANDBOX_ERROR,
+                                     duration_s=self._clock() - t_start)
+            except CanalFerme as exc:
+                self._set_state(SandboxState.CRASHED)
+                return SandboxResult(False, SandboxState.CRASHED,
+                                     error=f"Processus de l'app parti avant le départ : {exc}",
+                                     error_kind=SandboxErrorKind.PROCESS_CRASH,
+                                     duration_s=self._clock() - t_start)
 
-        self._set_state(SandboxState.RUNNING)
+            self._set_state(SandboxState.RUNNING)
+            cpu_actif = threading.Event()
+            monitor = threading.Thread(target=self._monitor_loop,
+                                       args=(proc, t_start, cpu_actif), daemon=True)
+            monitor.start()
 
-        monitor = threading.Thread(
-            target=self._monitor_loop, args=(proc, t_start), daemon=True
-        )
-        monitor.start()
+            fin, violation_protocole, refus = None, None, 0
+            limite = self._quota.max_runtime_s + 1.0
+            while self._clock() - t_start < limite:
+                if not cpu_actif.is_set() and self._clock() - t_start > self.GRACE_CPU_S:
+                    cpu_actif.set()
+                try:
+                    msg = proc.canal.recevoir(timeout=0.05)
+                except TimeoutError:
+                    continue
+                except CanalFerme:
+                    break
+                except CanalCorrompu as exc:
+                    violation_protocole = str(exc)
+                    break
+                except MessageRefuse as exc:
+                    refus += 1
+                    print(f"  [SECURITY] app '{self._app_id}' : message refusé par le "
+                          f"pont ({str(exc)[:200]})")
+                    if refus > self.MAX_MESSAGES_REFUSES:
+                        violation_protocole = f"plus de {self.MAX_MESSAGES_REFUSES} messages refusés"
+                        break
+                    continue
+                genre = msg.get("type")
+                if genre == "appel":
+                    cpu_actif.set()
+                    reponse = serveur.traiter(msg) if serveur is not None else {
+                        "request_id": msg.get("request_id"), "success": False, "data": None,
+                        "error": "aucun accès au robot pendant ce hook"}
+                    if reponse is None:
+                        continue
+                    reponse["type"] = "reponse"
+                    try:
+                        proc.canal.envoyer(reponse)
+                    except (TypeError, ValueError) as exc:
+                        proc.canal.envoyer({"type": "reponse",
+                                            "request_id": reponse.get("request_id"),
+                                            "success": False, "data": None,
+                                            "error": f"réponse non transmissible : {exc}"[:500]})
+                    except CanalFerme:
+                        break
+                elif genre == "fin":
+                    fin = msg
+                    break
+                else:
+                    refus += 1
+                    print(f"  [SECURITY] app '{self._app_id}' : message de type "
+                          f"inattendu refusé ({str(genre)[:40]!r})")
+                    if refus > self.MAX_MESSAGES_REFUSES:
+                        violation_protocole = f"plus de {self.MAX_MESSAGES_REFUSES} messages refusés"
+                        break
+            self._set_state(SandboxState.STOPPING)
 
-        # Attente bornée en temps du robot : join() ne connaît que le temps
-        # mural, on attend donc par petits pas (50 ms) en consultant
-        # l'horloge du robot.
-        while (proc.is_alive()
-               and self._clock() - t_start < self._quota.max_runtime_s + 1.0):
-            proc.join(timeout=0.05)
-        self._set_state(SandboxState.STOPPING)
-
-        try:
-            # Encore vivant après l'attente : la durée maximale (plus une
-            # marge d'une seconde) est dépassée. On demande l'arrêt
-            # (terminate), puis on force (kill) si le processus résiste.
-            if proc.is_alive():
+            # Le processus a fini son hook : il doit sortir de lui-même.
+            if fin is not None or violation_protocole is not None:
+                proc.join(timeout=0.5 if violation_protocole else 2.0)
+            encore_vivant = proc.is_alive()
+            if encore_vivant:
                 proc.terminate()
                 proc.join(timeout=2.0)
                 if proc.is_alive():
                     proc.kill()
                     proc.join(timeout=1.0)
 
-                violation = self._get_violation()
-                if violation is None:
-                    violation = SandboxViolation(
-                        app_id=self._app_id, rule="TIMEOUT",
-                        value=self._clock() - t_start,
-                        limit=self._quota.max_runtime_s
-                    )
-                self._set_state(SandboxState.TIMEOUT)
-                return SandboxResult(
-                    success=False, state=SandboxState.TIMEOUT,
-                    violation=violation, error="Timeout — processus tué.",
-                    error_kind=SandboxErrorKind.TIMEOUT,
-                    duration_s=self._clock() - t_start,
-                )
+            if violation_protocole is not None:
+                print(f"  [SECURITY] app '{self._app_id}' arrêtée : violation du "
+                      f"protocole du pont ({violation_protocole[:200]})")
+                self._set_state(SandboxState.CRASHED)
+                return SandboxResult(False, SandboxState.CRASHED,
+                                     error=f"Violation du protocole du pont : {violation_protocole}",
+                                     error_kind=SandboxErrorKind.PROTOCOL_VIOLATION,
+                                     duration_s=self._clock() - t_start)
 
-            # Processus terminé, de lui-même ou tué par _monitor_loop() :
-            # un quota enfreint l'emporte sur tout résultat renvoyé.
+            if fin is None and encore_vivant:
+                violation = self._get_violation() or SandboxViolation(
+                    app_id=self._app_id, rule="TIMEOUT",
+                    value=self._clock() - t_start, limit=self._quota.max_runtime_s)
+                self._set_state(SandboxState.TIMEOUT)
+                return SandboxResult(False, SandboxState.TIMEOUT, violation=violation,
+                                     error="Timeout — processus tué.",
+                                     error_kind=SandboxErrorKind.TIMEOUT,
+                                     duration_s=self._clock() - t_start)
+
             violation = self._get_violation()
             if violation is not None:
                 kind = (SandboxErrorKind.CPU_QUOTA if violation.rule == "CPU_QUOTA"
-                       else SandboxErrorKind.MEMORY_QUOTA if violation.rule == "MEMORY_QUOTA"
-                       else SandboxErrorKind.TIMEOUT)
+                        else SandboxErrorKind.MEMORY_QUOTA if violation.rule == "MEMORY_QUOTA"
+                        else SandboxErrorKind.TIMEOUT)
                 self._set_state(SandboxState.VIOLATED)
-                return SandboxResult(
-                    success=False, state=SandboxState.VIOLATED,
-                    violation=violation, error=f"Quota dépassé : {violation.rule}",
-                    error_kind=kind, duration_s=self._clock() - t_start,
-                )
+                return SandboxResult(False, SandboxState.VIOLATED, violation=violation,
+                                     error=f"Quota dépassé : {violation.rule}",
+                                     error_kind=kind, duration_s=self._clock() - t_start)
 
-            if result_queue.empty():
+            if fin is None:
                 self._set_state(SandboxState.CRASHED)
-                return SandboxResult(
-                    success=False, state=SandboxState.CRASHED,
-                    error="Processus terminé sans résultat (crash probable).",
-                    error_kind=SandboxErrorKind.PROCESS_CRASH,
-                    duration_s=self._clock() - t_start,
-                )
+                return SandboxResult(False, SandboxState.CRASHED,
+                                     error="Processus terminé sans résultat (crash probable).",
+                                     error_kind=SandboxErrorKind.PROCESS_CRASH,
+                                     duration_s=self._clock() - t_start)
 
-            payload = result_queue.get()
-            if payload.get("error"):
+            if fin.get("erreur"):
                 self._set_state(SandboxState.CRASHED)
-                return SandboxResult(
-                    success=False, state=SandboxState.CRASHED,
-                    error=payload["error"],
-                    error_kind=SandboxErrorKind.APPLICATION_ERROR,
-                    duration_s=self._clock() - t_start,
-                )
-
+                return SandboxResult(False, SandboxState.CRASHED,
+                                     error=str(fin["erreur"])[:2000],
+                                     error_kind=SandboxErrorKind.APPLICATION_ERROR,
+                                     duration_s=self._clock() - t_start)
+            try:
+                resultat = SCHEMA_RESULTAT[hook].verifier(fin.get("resultat"), "resultat")
+            except MessageRefuse as exc:
+                print(f"  [SECURITY] app '{self._app_id}' : résultat refusé ({str(exc)[:200]})")
+                self._set_state(SandboxState.CRASHED)
+                return SandboxResult(False, SandboxState.CRASHED,
+                                     error=f"Résultat refusé : {exc}",
+                                     error_kind=SandboxErrorKind.PROTOCOL_VIOLATION,
+                                     duration_s=self._clock() - t_start)
             self._set_state(SandboxState.STOPPED)
-            return SandboxResult(
-                success=True, state=SandboxState.STOPPED,
-                result=payload.get("result"),
-                duration_s=self._clock() - t_start,
-            )
-
+            return SandboxResult(True, SandboxState.STOPPED, result=resultat,
+                                 duration_s=self._clock() - t_start)
         finally:
-            self._cleanup(proc, result_queue)
+            proc.fermer()
 
-    def _cleanup(self, proc: mp.Process, result_queue: mp.Queue) -> None:
-        """Nettoyage final, toujours appelé à la fin de run() : tue le
-        processus s'il vit encore, puis ferme la file de résultat. Les
-        erreurs y sont ignorées : le résultat de run() est déjà établi à
-        ce stade."""
-        try:
-            if proc.is_alive():
-                proc.kill()
-            proc.join(timeout=1.0)
-        except Exception:
-            pass
-        try:
-            result_queue.close()
-            result_queue.cancel_join_thread()
-        except Exception:
-            pass
-
-    def _monitor_loop(self, proc: mp.Process, t_start: float) -> None:
+    def _monitor_loop(self, proc, t_start: float,
+                      cpu_actif: Optional[threading.Event] = None) -> None:
         """
         Surveille le CPU et la mémoire du processus de l'app, dans un
         thread à part, et le tue en cas de dépassement persistant ou de
@@ -466,7 +492,12 @@ class SandboxRunner:
                     proc.terminate()
                     return
 
-                if cpu > self._quota.max_cpu_percent * 2:
+                if cpu_actif is not None and not cpu_actif.is_set():
+                    # Démarrage de l'interpréteur et chargement de l'app
+                    # (voir run_app) : la durée et la mémoire sont
+                    # contrôlées, le CPU pas encore.
+                    consecutive_cpu_over = 0
+                elif cpu > self._quota.max_cpu_percent * 2:
                     consecutive_cpu_over += 1
                     if consecutive_cpu_over >= CONFIRM_THRESHOLD:
                         self._add_violation(SandboxViolation(
@@ -480,46 +511,3 @@ class SandboxRunner:
             except Exception:
                 pass
             time.sleep(0.05)
-
-
-def _reensemencer_alea() -> None:
-    """Donne au processus fils (celui de l'app) son propre aléa.
-
-    Le fils est créé par duplication du parent : il hérite de l'état de
-    tous les générateurs aléatoires tel qu'il était à cet instant, et ce
-    qu'il en consomme n'est jamais renvoyé au parent. Sans
-    réensemencement, chaque mission tirerait exactement les mêmes
-    nombres.
-
-    Constaté : une app qui simulait 30 % d'échecs de saisie échouait
-    soit 20 missions sur 20, soit 0 sur 20, selon un seul tirage fait à
-    sa création. Le test qui la couvrait passait ou échouait au hasard.
-
-    Ne couvre que les générateurs globaux (module random, et numpy s'il
-    est déjà chargé). Un générateur propre à l'app (un random.Random()
-    créé dans son __init__) reste figé : c'est à l'app de le recréer à
-    chaque mission, comme le fait WarehouseOpsApp
-    (axis_os/apps/warehouse_ops/app.py).
-    """
-    import os
-    import random
-    random.seed(int.from_bytes(os.urandom(8), "little"))
-    try:
-        import sys
-        if "numpy" in sys.modules:
-            import numpy as np
-            np.random.seed(int.from_bytes(os.urandom(4), "little"))
-    except Exception:                   # noqa: BLE001
-        pass
-
-
-def _sandbox_entrypoint(target_fn, args, kwargs, result_queue: mp.Queue) -> None:
-    """Point d'entrée du processus de l'app : réensemence l'aléa, appelle
-    la fonction, puis renvoie au parent par result_queue soit son
-    résultat, soit le type et le message de l'exception levée."""
-    try:
-        _reensemencer_alea()
-        result = target_fn(*args, **kwargs)
-        result_queue.put({"result": result, "error": None})
-    except Exception as exc:
-        result_queue.put({"result": None, "error": f"{type(exc).__name__}: {exc}"})

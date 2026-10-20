@@ -1,0 +1,99 @@
+"""
+AXIS-OS — Profils d'exécution du Play Store
+============================================
+Un PlayStoreRuntime tourne toujours sous un profil donné EXPLICITEMENT
+par celui qui le crée ; le profil n'est jamais deviné (ni d'après le
+robot, ni d'après une variable d'environnement), et aucune app ni aucun
+manifeste ne peut le changer.
+
+  SIMULATION     robot simulé, tests. Tout ce qui est permis aujourd'hui
+                 reste permis (apps non signées, accepter_tout_SIMULATION),
+                 mais chaque facilité est signalée dans le journal.
+                 Refusé si le runtime pilote un robot réel connu.
+  DEVELOPPEMENT  poste de développement, éventuellement un vrai robot sur
+                 un banc. Mêmes facilités que la simulation, signalées de
+                 même, sauf accepter_tout_SIMULATION sur un robot réel.
+  PRODUCTION     un vrai robot près de vraies personnes. Signature
+                 obligatoire et non désactivable ; la clé du développeur
+                 doit figurer dans le fichier local des clés approuvées ;
+                 accepter_tout_SIMULATION interdit ; permissions DANGEROUS
+                 toujours soumises à confirmation ; quotas CPU/mémoire
+                 exigés (psutil) ; le code d'une app n'est jamais exécuté
+                 dans le processus de l'OS (installation depuis la source
+                 signée uniquement).
+
+Fichier des clés approuvées
+---------------------------
+Fichier texte UTF-8 local, lu au démarrage du runtime ; jamais pris dans
+le paquet d'une app. Une clé par ligne :
+
+    # commentaire, ligne ignorée
+    <clé publique Ed25519 en base64>  <nom du développeur, facultatif>
+
+La clé est celle que produit generate_developer_keypair()
+(axis_os/store/sdk/signing.py), soit 44 caractères base64 pour 32 octets.
+Une ligne illisible fait refuser tout le fichier : une erreur de saisie
+ne doit pas faire accepter ou ignorer une clé en silence. Le fichier ne
+doit être modifiable ni par le groupe ni par les autres utilisateurs
+(même règle que ~/.ssh/authorized_keys pour sshd).
+
+Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import os
+import stat
+from enum import Enum
+from pathlib import Path
+from typing import Dict, Union
+
+
+class Profil(Enum):
+    SIMULATION = "simulation"
+    DEVELOPPEMENT = "developpement"
+    PRODUCTION = "production"
+
+
+class ClesApprouveesInvalides(ValueError):
+    """Le fichier des clés approuvées est absent, mal formé ou trop
+    ouvert en écriture."""
+
+
+def lire_cles_approuvees(chemin: Union[str, os.PathLike]) -> Dict[str, str]:
+    """Lit le fichier des clés approuvées (format en tête de module) et
+    rend {clé publique base64: nom du développeur}."""
+    p = Path(chemin)
+    try:
+        infos = p.stat()
+    except OSError as exc:
+        raise ClesApprouveesInvalides(f"fichier des clés approuvées illisible : {exc}") from None
+    if not stat.S_ISREG(infos.st_mode):
+        raise ClesApprouveesInvalides(f"{p} n'est pas un fichier ordinaire")
+    if infos.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ClesApprouveesInvalides(
+            f"{p} est modifiable par le groupe ou par les autres utilisateurs "
+            f"(droits {stat.filemode(infos.st_mode)}) : n'importe qui pourrait y "
+            f"ajouter sa clé. Corriger par : chmod go-w {p}")
+    cles: Dict[str, str] = {}
+    try:
+        lignes = p.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ClesApprouveesInvalides(f"fichier des clés approuvées illisible : {exc}") from None
+    for numero, ligne in enumerate(lignes, start=1):
+        ligne = ligne.strip()
+        if not ligne or ligne.startswith("#"):
+            continue
+        cle, _, nom = ligne.partition(" ")
+        try:
+            brut = base64.b64decode(cle, validate=True)
+        except (binascii.Error, ValueError):
+            brut = b""
+        if len(brut) != 32:
+            raise ClesApprouveesInvalides(
+                f"{p}, ligne {numero} : clé publique Ed25519 base64 attendue "
+                f"(32 octets), lu {cle[:16]!r}")
+        cles[cle] = nom.strip()
+    return cles

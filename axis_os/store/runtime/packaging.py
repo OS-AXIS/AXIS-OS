@@ -148,6 +148,10 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
     module_name = module_name.replace(".", "_").replace("/", "_")
     module = types.ModuleType(module_name)
     module.__dict__["__name__"] = module_name
+    # Gardée pour que le processus de l'app réexécute exactement ce texte
+    # vérifié (voir processus_app.spec_depuis_instance) : il ne peut pas
+    # réimporter ce module, qui n'existe pas sur le disque.
+    module.__dict__["__axis_source__"] = source_code
     _sys.modules[module_name] = module
 
     try:

@@ -37,16 +37,20 @@ JSON (le format texte standard d'échange de données : dicts, listes,
 nombres, chaînes), jamais un objet HAL vivant : c'est le même principe
 que les messages ROS2 (.msg).
 
-Limite connue : le transport, lui, ne garantit pas que les messages
-s'en tiennent à des données simples. multiprocessing.Queue sérialise
-chaque message avec pickle, et désérialiser un pickle peut exécuter du
-code dans le processus qui le lit, ici celui de l'OS. Ce pont protège
-donc contre une app boguée, pas contre une app malveillante. La
-correction prévue remplace pickle par des octets JSON validés par un
-schéma strict pour chaque action : c'est l'étape 0 de
-docs/isolation_apps.md, qui décrit aussi les autres limites de
-l'isolation et leur plan de correction (voir aussi SECURITY.md,
-« Limites connues »).
+Le transport : entre deux processus, le pont passe par canal_ipc.py,
+qui n'échange que des octets JSON (trames de taille bornée, JSON strict).
+Autrefois multiprocessing.Queue sérialisait chaque message avec pickle,
+et désérialiser un pickle peut exécuter du code dans le processus qui le
+lit, ici celui de l'OS : une app malveillante pouvait ainsi faire
+tourner son propre code dans l'OS (étape 0 de docs/isolation_apps.md,
+désormais faite). Chaque commande reçue est en outre vérifiée par le
+schéma de son action (SCHEMAS_ACTIONS) avant d'être exécutée : champ
+inconnu, absent ou du mauvais type, nombre non fini -> refus.
+
+Le mode historique par deux files (command_queue, response_queue) reste
+accepté pour les essais dans un même processus. Il ne doit jamais relier
+deux processus : multiprocessing.Queue désérialise ce qu'elle reçoit avec
+pickle avant toute vérification.
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
@@ -68,6 +72,10 @@ from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
 )
 from axis_os.store.sdk.manifest import Permission
+from axis_os.store.runtime.canal_ipc import (
+    Canal, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste, MessageRefuse,
+    Nombre, Objet, UnParmi,
+)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -180,6 +188,52 @@ def _deserialize_feedback(jid: str, d: Dict[str, Any]) -> ActuatorFeedback:
     )
 
 
+# ─────────────────────────────────────────────────────────────────
+#  SCHÉMAS — ce que chaque action accepte, et rien d'autre
+# ─────────────────────────────────────────────────────────────────
+
+_VIDE = Objet({})
+_COMMANDE = Objet({"mode": UnParmi(*ControlMode.__members__)}, facultatifs={
+    champ: Nombre() for champ in
+    ("position", "velocity", "torque", "current", "stiffness", "damping")})
+_COMMANDES = Objet({"commands": Dictionnaire(_COMMANDE, max_len=128)})
+
+SCHEMAS_ACTIONS: Dict[str, Objet] = {
+    "now": _VIDE,
+    "remember": Objet({"key": Chaine(256)}, facultatifs={"value": JsonLibre()}),
+    "recall": Objet({"key": Chaine(256)}, facultatifs={"default": JsonLibre()}),
+    "listen": Objet({}, facultatifs={"duration_s": Nombre(0, 3600)}),
+    "declare_intent": Objet({"name": Chaine(128),
+                             "keywords": Liste(Liste(Chaine(128), 64), 64)},
+                            facultatifs={"params": JsonLibre(), "description": Chaine(2048)}),
+    "look_for": Objet({}, facultatifs={"query": Chaine(512), "frame": Chaine(64)}),
+    "describe_scene": _VIDE,
+    "walk": Objet({}, facultatifs={"vx": Nombre(), "vy": Nombre(), "wz": Nombre()}),
+    "stop_walking": _VIDE,
+    "get_joint_groups": _VIDE,
+    "move_arms": _COMMANDES,
+    "move_legs": _COMMANDES,
+    "move_all": _COMMANDES,
+    "get_full_state": _VIDE,
+    "get_joint_state": Objet({"joint_id": Chaine(128)}),
+    "get_imu": _VIDE,
+    "log": Objet({}, facultatifs={"message": Chaine(16384)}),
+    "emergency_stop": _VIDE,
+    "get_recent_alerts": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
+}
+
+_ENVELOPPE = Objet({"action": Chaine(64), "payload": Dictionnaire(JsonLibre(), 64),
+                    "request_id": Entier(0, 2 ** 53)},
+                   facultatifs={"type": UnParmi("appel")})
+
+
+def _sans_controle(texte: str) -> str:
+    """Remplace les caractères de contrôle (séquences d'échappement du
+    terminal, sauts de ligne) par « ? » : une ligne de journal venue d'une
+    app ne doit pas pouvoir réécrire ce qu'affiche le terminal de l'OS."""
+    return "".join(c if c.isprintable() else "?" for c in texte)
+
+
 class HALBridgeServer:
     """
     Tourne dans le processus PARENT. Écoute les commandes du processus
@@ -198,7 +252,11 @@ class HALBridgeServer:
     """
 
     def __init__(self, ctx: RobotContext,
-                 command_queue: mp.Queue, response_queue: mp.Queue):
+                 command_queue: Optional[mp.Queue] = None,
+                 response_queue: Optional[mp.Queue] = None):
+        """Sans files, le serveur ne fait que traiter() les commandes que
+        lui passe SandboxRunner.run_app() (cas normal) ; avec deux files,
+        start() lance aussi la boucle historique (voir l'en-tête)."""
         self._ctx     = ctx
         self._cmd_q   = command_queue
         self._resp_q  = response_queue
@@ -243,32 +301,41 @@ class HALBridgeServer:
             if raw is None:  # signal d'arrêt (« poison pill »)
                 break
 
-            # Pourquoi ce try : raw vient du processus enfant, le côté
-            # non fiable de la frontière de sécurité (une app peut-être
-            # boguée ou malveillante). Un audit de sécurité a montré
-            # qu'un message malformé (clé manquante ou en trop) levait
-            # ici un TypeError non rattrapé, qui tuait ce thread sans
-            # bruit : plus aucune commande n'était servie, l'app ne
-            # voyait que des TimeoutError sans en connaître la cause, et
-            # aucune alerte ne remontait. Désormais, le message est
-            # signalé sur la console (étiquette [SECURITY]) puis ignoré,
-            # le thread reste vivant, et l'app reçoit une erreur
-            # MALFORMED_COMMAND si son message portait un request_id.
-            try:
-                cmd = HALCommand(**raw)
-            except TypeError as exc:
-                print(f"  [SECURITY] Message HAL bridge malformé ignoré "
-                      f"(thread reste vivant) : {exc} | raw={raw!r}")
-                request_id = raw.get("request_id") if isinstance(raw, dict) else None
-                if request_id is not None:
-                    self._resp_q.put(asdict(HALResponse(
-                        request_id, False,
-                        error=f"MALFORMED_COMMAND: {exc}",
-                    )))
-                continue
+            reponse = self.traiter(raw)
+            if reponse is not None:
+                self._resp_q.put(reponse)
 
-            response = self._handle(cmd)
-            self._resp_q.put(asdict(response))
+    def traiter(self, raw: Any) -> Optional[Dict[str, Any]]:
+        """Une commande reçue de l'app (déjà décodée) -> la réponse à lui
+        renvoyer, ou None si le message ne permet même pas de répondre
+        (aucun request_id lisible).
+
+        raw vient du côté non fiable de la frontière de sécurité (une app
+        peut-être boguée ou malveillante). L'enveloppe puis le contenu
+        sont vérifiés par schéma (SCHEMAS_ACTIONS) ; un message refusé est
+        signalé sur la console (étiquette [SECURITY]) et l'app reçoit une
+        erreur MALFORMED_COMMAND. Historique : un audit de sécurité avait
+        montré qu'un message malformé (clé manquante ou en trop) levait un
+        TypeError non rattrapé, qui tuait le thread du serveur sans bruit ;
+        plus aucune commande n'était servie et aucune alerte ne remontait.
+        """
+        request_id = raw.get("request_id") if isinstance(raw, dict) else None
+        if isinstance(request_id, bool) or not isinstance(request_id, int):
+            request_id = None
+        try:
+            enveloppe = _ENVELOPPE.verifier(raw, "commande")
+            schema = SCHEMAS_ACTIONS.get(enveloppe["action"])
+            if schema is not None:
+                schema.verifier(raw["payload"], f"commande.payload[{enveloppe['action']}]")
+        except MessageRefuse as exc:
+            print(f"  [SECURITY] Message HAL bridge refusé (le pont continue) : "
+                  f"{_sans_controle(str(exc))[:300]}")
+            if request_id is None:
+                return None
+            return asdict(HALResponse(request_id, False, error=f"MALFORMED_COMMAND: {exc}"))
+        cmd = HALCommand(action=raw["action"], payload=raw["payload"],
+                         request_id=raw["request_id"])
+        return asdict(self._handle(cmd))
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
         try:
@@ -430,7 +497,7 @@ class HALBridgeServer:
                 })
 
             elif cmd.action == "log":
-                self._ctx.log(cmd.payload.get("message", ""))
+                self._ctx.log(_sans_controle(cmd.payload.get("message") or ""))
                 return HALResponse(cmd.request_id, True)
 
             elif cmd.action == "emergency_stop":
@@ -567,10 +634,26 @@ class HALBridgeClient:
     divergent pas.
     """
 
-    def __init__(self, command_queue: mp.Queue, response_queue: mp.Queue,
-                 timeout_s: float = 5.0, alert_poll_interval_s: float = 0.5):
+    def __init__(self, command_queue: Optional[mp.Queue] = None,
+                 response_queue: Optional[mp.Queue] = None,
+                 timeout_s: float = 5.0, alert_poll_interval_s: float = 0.5,
+                 *, canal: Optional[Canal] = None,
+                 tolerance_lenteur: Optional[float] = None):
+        """`canal` : le pont JSON vers l'OS (cas normal, dans le processus
+        d'une app, voir hote_app.py). À défaut, les deux files
+        command_queue et response_queue (essais dans un même processus
+        seulement, voir l'en-tête du module)."""
+        if canal is None and (command_queue is None or response_queue is None):
+            raise ValueError("HALBridgeClient : un canal ou deux files sont nécessaires")
+        self._canal    = canal
         self._cmd_q    = command_queue
         self._resp_q   = response_queue
+        # Un seul appel à la fois sur le canal : le thread d'abonnement aux
+        # alertes et celui de la mission ne doivent pas lire la réponse
+        # l'un de l'autre.
+        self._verrou_appel = threading.Lock()
+        if tolerance_lenteur is not None:
+            self.TOLERANCE_LENTEUR = float(tolerance_lenteur)
         self._timeout  = timeout_s
         self._req_id   = 0
         self._local_log: list = []
@@ -854,7 +937,10 @@ class HALBridgeClient:
 
     def log(self, message: str) -> None:
         self._local_log.append(message)
-        self._call("log", {"message": message})
+        # Le pont refuse une ligne de plus de 16 384 caractères : la fin
+        # d'une ligne trop longue est coupée ici plutôt que de faire
+        # échouer l'app.
+        self._call("log", {"message": str(message)[:16384]})
 
     def subscribe_alerts(self, callback) -> None:
         """
@@ -976,11 +1062,59 @@ class HALBridgeClient:
 
     def _call(self, action: str, payload: Dict[str, Any],
               duree_nominale_s: float = 0.0) -> Any:
-        self._req_id += 1
-        req_id = self._req_id
+        with self._verrou_appel:
+            self._req_id += 1
+            req_id = self._req_id
+            delai = self._delai(duree_nominale_s)
+            if self._canal is not None:
+                resp = self._appel_canal(action, payload, req_id, delai)
+            else:
+                resp = self._appel_files(action, payload, req_id, delai)
+        if not resp.success:
+            if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
+                raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
+            if resp.error and resp.error.startswith("PERMISSION_DENIED:"):
+                # Même exception qu'en direct : une app écrite pour
+                # RobotContext se comporte de la même façon, sandboxée
+                # ou non.
+                raise SandboxPermissionError(
+                    resp.error[len("PERMISSION_DENIED:"):])
+            raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
+        return resp.data
+
+    def _appel_canal(self, action: str, payload: Dict[str, Any],
+                     req_id: int, delai: float) -> HALResponse:
+        try:
+            self._canal.envoyer({"type": "appel", "action": action,
+                                 "payload": payload, "request_id": req_id})
+        except (TypeError, ValueError) as exc:
+            # Seules des données JSON passent le pont : un objet Python
+            # (une instance, un ensemble, un tableau numpy) est refusé ici,
+            # avant même de partir.
+            raise RuntimeError(f"HAL bridge erreur [{action}]: valeur non "
+                               f"transmissible en JSON : {exc}") from None
+        except CanalFerme as exc:
+            raise TimeoutError(f"HAL bridge fermé pendant '{action}' : {exc}") from None
+        deadline = time.monotonic() + delai
+        while True:
+            reste = deadline - time.monotonic()
+            if reste <= 0:
+                raise TimeoutError(f"HAL bridge timeout sur '{action}' (> {delai:.1f}s)")
+            try:
+                msg = self._canal.recevoir(timeout=reste)
+            except TimeoutError:
+                continue
+            except CanalFerme as exc:
+                raise TimeoutError(f"HAL bridge fermé pendant '{action}' : {exc}") from None
+            if msg.get("type") != "reponse" or msg.get("request_id") != req_id:
+                continue
+            return HALResponse(request_id=req_id, success=msg.get("success") is True,
+                               data=msg.get("data"), error=msg.get("error"))
+
+    def _appel_files(self, action: str, payload: Dict[str, Any],
+                     req_id: int, delai: float) -> HALResponse:
         self._cmd_q.put(asdict(HALCommand(action=action, payload=payload,
                                           request_id=req_id)))
-        delai = self._delai(duree_nominale_s)
         deadline = time.monotonic() + delai
         while time.monotonic() < deadline:
             try:
@@ -992,17 +1126,7 @@ class HALBridgeClient:
                 # Réponse destinée à un autre appel : elle est écartée,
                 # au mieux et sans garantie (« best-effort »).
                 continue
-            if not resp.success:
-                if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
-                    raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
-                if resp.error and resp.error.startswith("PERMISSION_DENIED:"):
-                    # Même exception qu'en direct : une app écrite pour
-                    # RobotContext se comporte de la même façon, sandboxée
-                    # ou non.
-                    raise SandboxPermissionError(
-                        resp.error[len("PERMISSION_DENIED:"):])
-                raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
-            return resp.data
+            return resp
         raise TimeoutError(f"HAL bridge timeout sur '{action}' (> {delai:.1f}s)")
 
     @staticmethod
