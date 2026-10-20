@@ -1,6 +1,7 @@
 # AXIS-OS — Campagne de validation en simulation
 
-Écrit à partir du code au commit `e0c02cb` et de
+Écrit à partir du code du 2026-09-18, tel qu'il était après la validation
+des 23 articulations contre l'URDF officiel dans Isaac Sim, et de
 `docs/isaac_lab_unitree_sim_status.md`.
 
 **Point de départ acquis :** `JointSafetyGuard` validé contre un G1 physiquement

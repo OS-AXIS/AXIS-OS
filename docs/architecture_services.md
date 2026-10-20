@@ -1,8 +1,15 @@
 # AXIS-OS — Architecture des services système
 
-Document de conception. Écrit à partir du code au commit `63d23f4`, avec les
-chemins et les noms de classes réels du dépôt. Tout ce qui est marqué
-**[existe]** est déjà dans le code ; **[à écrire]** ne l'est pas.
+> **Note de conception conservée telle quelle.** Elle a été écrite à partir
+> du code du 2026-09-15, quand les services système n'existaient pas
+> encore, et ajoutée au dépôt le 2026-09-19. Elle s'adresse à l'auteur du
+> projet, qu'elle tutoie, et son « aujourd'hui » désigne septembre 2026.
+> L'architecture actuelle est décrite dans la section « Architecture » du
+> [README](../README.fr.md).
+
+Les chemins et les noms de classes sont ceux du dépôt à cette date. Tout ce
+qui est marqué **[existe]** était alors dans le code ; **[à écrire]** ne
+l'était pas.
 
 ---
 

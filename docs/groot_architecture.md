@@ -1,6 +1,7 @@
 # GR00T dans AXIS-OS — note d'architecture
 
-Écrit à partir du code au commit `3fb7589`. Chemins et noms de classes
+Écrit à partir du code du 2026-09-19, tel qu'il était après la validation
+des trois apps de référence contre Isaac Sim. Chemins et noms de classes
 réels du dépôt.
 
 Ce document est la version de référence. Si un résumé de cette analyse
