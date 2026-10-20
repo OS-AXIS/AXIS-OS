@@ -2,61 +2,79 @@
 Suite S5.1 — pile complète : PlayStoreRuntime -> sandbox -> HALBridgeServer
 -> HAL -> Isaac Sim, avec une VRAIE app AXIS-OS.
 
-Corrigé par rapport au squelette initial (signatures réelles vérifiées
-dans le dépôt, pas supposées) :
-  - PlayStoreRuntime(robot, watchdog) — pas PlayStoreRuntime(hal) seul,
-    il faut un NormalizedRobotHAL + un WatchdogSystem autour du hal
-    que bridge.build_hal() retourne.
-  - app.manifest() est une MÉTHODE (pas un attribut) sur RobotApp —
-    app.manifest().app_id, pas app.manifest.app_id.
+Dans docs/campagne_validation_isaac.md, la suite S5.1 fait passer les trois
+apps de référence de bout en bout. Ce script couvre PackageSortingApp (tri
+de colis) ; test_s5_security_patrol.py et test_s5_warehouse_ops.py couvrent
+les deux autres.
 
-Quota mémoire relevé à 8192 Mo via une VRAIE sous-classe (jamais un
-patch de méthode d'instance) — deux problèmes réels rencontrés en
-exécution avant d'arriver à cette version :
-  1. Le quota par défaut (256 Mo, ResourceQuota) déclenche
-     systématiquement VIOLATED (MEMORY_QUOTA) dans ce contexte précis
-     — psutil mesure memory_info().rss du sous-process, qui HÉRITE
-     par fork() de toute la mémoire déjà chargée par Isaac Sim dans
-     le process parent (plusieurs Go). Ce n'est pas un vrai
-     dépassement causé par l'app elle-même, un artefact de mesure
-     propre à ce contexte de test — 2048 Mo restait insuffisant,
-     8192 Mo suffit.
-  2. Un patch de méthode d'instance (app.manifest = lambda: ...)
-     rend l'instance NON PICKLABLE — SandboxRunner sérialise l'app
-     pour la transmettre au sous-process, et ce patch fait échouer
-     silencieusement cette sérialisation (CRASHED/SANDBOX_ERROR,
-     sans message clair). Une sous-classe normale, définie au niveau
-     module (voir PackageSortingAppBigQuota ci-dessous), reste
-     parfaitement picklable — même famille de problème que celle déjà
-     rencontrée dans axis_os/store/runtime/packaging.py (classe créée
-     par exec() dans un namespace transitoire).
+Construction de la pile, telle que l'attend le code du dépôt :
+  - PlayStoreRuntime(robot, watchdog) reçoit un NormalizedRobotHAL et un
+    WatchdogSystem, construits autour du HAL que rend bridge.build_hal(),
+    et non ce HAL seul ;
+  - app.manifest() est une méthode de RobotApp, pas un attribut : on écrit
+    app.manifest().app_id, et non app.manifest.app_id.
 
-STRUCTURE DE THREADS (le point critique de ce script) :
+Pourquoi le quota mémoire est relevé à 8192 Mo, et par une vraie
+sous-classe (PackageSortingAppBigQuota, plus bas) plutôt qu'en remplaçant
+une méthode sur l'instance : deux problèmes rencontrés à l'exécution.
+  1. Avec le quota par défaut (256 Mo, voir ResourceQuota), le sandbox
+     signalait à chaque essai un dépassement (état VIOLATED, erreur
+     MEMORY_QUOTA). psutil mesure la mémoire résidente
+     (memory_info().rss) du sous-processus de l'app. Or ce sous-processus
+     est créé par fork() : il hérite de toute la mémoire qu'Isaac Sim a
+     déjà chargée dans le processus parent (plusieurs Go). Ce n'est donc
+     pas l'app qui consomme trop, mais un artefact de mesure propre à ce
+     test. 2048 Mo ne suffisaient pas ; 8192 Mo suffisent.
+  2. Remplacer une méthode sur l'instance (app.manifest = lambda: …)
+     empêche pickle (le format de Python qui transforme un objet en
+     octets) de sérialiser l'app. Or SandboxRunner sérialise l'app pour
+     la transmettre au sous-processus : la mission échouait alors (état
+     CRASHED, erreur SANDBOX_ERROR) sans message clair. Depuis,
+     SandboxRunner vérifie la sérialisation avant de lancer l'app et
+     renvoie une erreur claire (voir axis_os/store/runtime/sandbox.py).
+     Une sous-classe ordinaire, définie au niveau du module, se
+     sérialise sans problème. C'est la
+     même famille de problème que dans axis_os/store/runtime/packaging.py,
+     où la classe créée par exec() vivait dans un espace de noms
+     temporaire que pickle ne savait pas retrouver.
 
-  thread principal  : MainThreadSimPump.run_forever()
-                      seul endroit où world.step()/apply_action() sont
-                      appelés. Isaac Sim bloque dans du C SANS relâcher
-                      le GIL — appelé ailleurs, il gèle le process entier.
+Répartition des threads (le point critique de ce script) :
 
-  thread "mission"  : PlayStoreRuntime.start_app() / run_mission()
-                      lancé via run_mission_in_thread(). Le thread
-                      principal NE DOIT PAS entrer là-dedans, sinon il
-                      ne peut plus vider la queue de la pompe.
+  thread principal  : MainThreadSimPump.run_forever(), seul endroit où
+                      world.step() et apply_action() sont appelés. Isaac
+                      Sim bloque dans du code C SANS relâcher le GIL (le
+                      verrou global de l'interpréteur Python) : appelé
+                      depuis un autre thread, il gèle tout le processus.
+
+  thread "mission"  : PlayStoreRuntime.start_app() puis run_mission(),
+                      lancés par run_mission_in_thread(). Le thread
+                      principal NE DOIT PAS exécuter ce code, sinon il ne
+                      peut plus vider la file d'attente de la pompe.
 
   thread du pont    : HALBridgeServer._loop() (créé par AXIS-OS)
-                      -> send_joint_commands patché -> pump.submit()
-                      dépose et attend. Ne touche jamais Isaac Sim.
+                      -> send_joint_commands(), remplacé par le pont
+                      (voir IsaacSimBridge.build_hal()) -> pump.submit(),
+                      qui dépose les commandes et attend. Ce thread ne
+                      touche jamais Isaac Sim.
 
-  sous-process      : l'app sandboxée. Inchangée, elle ne sait rien de
-                      tout ça.
+  sous-processus    : l'app, dans son sandbox. Elle n'est pas modifiée
+                      et ne sait rien de tout cela.
 
 RÉSULTAT CONFIRMÉ (2026-09-19) : mission réussie de bout en bout,
-5/5 colis triés, 3 vraies violations POSITION_DELTA_LIMIT détectées
-par JointSafetyGuard EN COURS DE MISSION (mission continue malgré la
-violation, comportement voulu — voir docs/isaac_lab_unitree_sim_status.md),
-facturation calculée correctement. Premier test de bout en bout d'une
-vraie app AXIS-OS, à travers tout le sandboxing réel, contre un G1
-physiquement simulé.
+5/5 colis triés, facturation calculée correctement. Premier test de bout
+en bout d'une vraie app AXIS-OS, à travers tout le sandboxing réel,
+contre un G1 physiquement simulé.
+
+Lors de ce premier essai, JointSafetyGuard a aussi détecté en cours de
+mission 3 vraies violations POSITION_DELTA_LIMIT : des sauts de bras de
+PackageSortingApp qui dépassaient, en un seul appel, l'écart permis
+(position_delta_max, 0.625 rad pour les bras). Le garde-fou a refusé ces
+commandes et la mission a continué malgré elles, comme voulu. L'app a été
+corrigée depuis : ses mouvements de travail passent par move_to_pose(),
+qui avance par petits pas (voir CHANGELOG.md, « fix(package_sorting) »,
+et docs/isaac_lab_unitree_sim_status.md, « Point 1 »). Ce même document
+annonce depuis les trois apps de référence sans aucune violation de
+sécurité (« Point 2 »).
 """
 import sys
 sys.path.insert(0, "/isaac-sim")
@@ -71,13 +89,13 @@ from axis_os.apps.package_sorting.app import PackageSortingApp
 
 
 class PackageSortingAppBigQuota(PackageSortingApp):
-    """Même app, quota mémoire relevé pour ce test précis — voir la
-    docstring de module pour la justification complète (artefact de
-    mesure lié au fork() d'un sous-process depuis un process Isaac Sim
-    déjà lourd, pas un vrai comportement gourmand de l'app). Définie
-    au niveau module pour rester picklable — jamais un patch de
-    méthode d'instance. Jamais utilisée en dehors de cette suite de
-    validation."""
+    """Même app, quota mémoire relevé pour ce test précis. La docstring du
+    module donne la justification complète : un artefact de mesure, dû
+    au fork() du sous-processus de l'app depuis un processus Isaac Sim
+    déjà lourd, et non une app gourmande. Définie au niveau du module
+    pour que pickle puisse la sérialiser, ce que ne permet pas une
+    méthode remplacée sur l'instance. Jamais utilisée en dehors de cette
+    suite de validation."""
 
     def manifest(self):
         m = super().manifest()
@@ -89,7 +107,10 @@ def main():
     simulation_app = start_simulation_app(headless=True)
 
     bridge = IsaacSimBridge()
-    bridge.setup(fix_base=False)  # dynamique corps entier, comme S4/S5
+    # Base libre (non épinglée au monde) : dynamique du corps entier,
+    # comme pour les suites S4 (arrêt d'urgence) et S5 (pile complète et
+    # endurance) de docs/campagne_validation_isaac.md.
+    bridge.setup(fix_base=False)
     bridge.set_holding_gains()
     hal = bridge.build_hal()
     hal.initialize_all()

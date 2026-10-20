@@ -4,9 +4,10 @@ After=network.target
 
 [Service]
 Type=notify
-# WatchdogSec=2s : chien de garde de systemd, deuxième des cinq
+# WatchdogSec=2s : chien de garde de systemd, l'une des cinq
 # recommandations de renforcement du second audit externe (voir
-# CHANGELOG.md). AXIS-OS doit envoyer WATCHDOG=1 au moins une fois
+# CHANGELOG.md, section « 5 recommandations externes de renforcement »,
+# du 2026-09-15). AXIS-OS doit envoyer WATCHDOG=1 au moins une fois
 # toutes les 2 secondes, par sd_notify (voir _sd_notify_watchdog() dans
 # axis_os/hal/watchdog/system.py, appelée après chaque cycle de
 # WatchdogSystem._monitor_loop() qui se termine sans exception).

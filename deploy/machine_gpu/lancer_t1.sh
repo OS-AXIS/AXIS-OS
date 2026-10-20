@@ -14,7 +14,7 @@
 # Internet). Reprends la commande SSH que donne Vast.ai (le service de
 # location de machines GPU) en ajoutant « -L 8080:localhost:8080 », par
 # exemple (port et adresse fictifs, à remplacer par ceux de ta machine)
-#     ssh -p 12345 root@1.2.3.4 -L 8080:localhost:8080
+#     ssh -p 12345 root@203.0.113.10 -L 8080:localhost:8080
 # puis ouvre http://localhost:8080 : image en direct, journal, bouton
 # « Arrêter proprement » (la vidéo et le bilan sont quand même écrits).
 set -euo pipefail

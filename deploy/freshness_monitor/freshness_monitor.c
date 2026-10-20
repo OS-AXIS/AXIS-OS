@@ -4,9 +4,10 @@
  * Pourquoi ce démon existe : si le processus principal d'AXIS-OS meurt
  * en plein mouvement, les moteurs du robot gardent la dernière consigne
  * reçue, qui peut être dangereuse. Ce moniteur s'en aperçoit et relâche
- * le robot en douceur. C'est la première des cinq recommandations de
- * renforcement formulées après le second audit externe du code
- * (2026-09-15, voir CHANGELOG.md).
+ * le robot en douceur. C'est l'une des cinq recommandations de
+ * renforcement formulées après le second audit externe du code (voir
+ * CHANGELOG.md, section « 5 recommandations externes de renforcement »,
+ * du 2026-09-15).
  *
  * Pourquoi en C, dans un démon séparé : il doit survivre à la mort de
  * l'interpréteur Python lui-même (blocage, plantage, ou « OOM killer »,
@@ -73,7 +74,7 @@ typedef struct {
     long timeout_ms;
     double damping_kd;
     long poll_interval_ms;
-    bool robot_active;       /* mis à jour par dds_subscribe_lowcmd() */
+    bool robot_active;       /* mis à jour par dds_poll_lowcmd() */
     long last_message_ms;    /* horodatage monotone du dernier message vu */
 } monitor_state_t;
 

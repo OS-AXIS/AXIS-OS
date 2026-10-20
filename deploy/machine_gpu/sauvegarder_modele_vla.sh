@@ -4,9 +4,11 @@
 # « vision-langage-action ») est ici GR00T N1.7 de NVIDIA, affiné par
 # entrainer_vla.sh pour la prise de cartons par l'humanoïde G1 d'Unitree.
 # La sauvegarde est une « release » (fichiers publiés à côté du code du
-# dépôt) nommée « vla-modele », à l'état de BROUILLON, dans le dépôt privé :
-# visible des seuls membres du dépôt. gh est l'outil en ligne de commande
-# de GitHub.
+# dépôt) nommée « vla-modele », à l'état de BROUILLON, dans le dépôt
+# OS-AXIS/AXIS-OS. Ce dépôt est public : seul l'état de brouillon réserve la
+# release aux personnes qui ont un accès en écriture. Ne jamais la publier :
+# les poids sont dérivés de GR00T N1.7, sous licence NVIDIA (THIRD_PARTY.md).
+# gh est l'outil en ligne de commande de GitHub.
 # Seuls les POIDS et la configuration sont gardés, pas l'état de
 # l'optimiseur : il est plusieurs fois plus gros, et inutile pour se servir
 # du modèle.

@@ -1,7 +1,13 @@
 """
-Suite S5.2 — pile complète contre SecurityPatrolApp, même architecture
-que test_s5_full_stack.py (MainThreadSimPump) — voir ce fichier pour
-la documentation complète de l'architecture de threads.
+Suite S5.1 (suite) — pile complète contre SecurityPatrolApp, même
+architecture que test_s5_full_stack.py (MainThreadSimPump) : voir ce
+fichier pour la documentation complète de la répartition des threads.
+
+Numérotation : dans docs/campagne_validation_isaac.md, la suite S5.1 fait
+passer les trois apps de référence de bout en bout, et ce script en couvre
+la deuxième. Le libellé « S5.2 » que ce script affiche à l'exécution ne
+suit pas cette numérotation : dans ce document, S5.2 désigne la latence
+du pont sous charge.
 
 Testé en Python pur (sans Isaac Sim) sur 50 graines différentes
 avant ce test : aucune violation POSITION_DELTA_LIMIT trouvée — les
@@ -29,9 +35,11 @@ from axis_os.apps.security_patrol.app import SecurityPatrolApp
 
 
 class SecurityPatrolAppBigQuota(SecurityPatrolApp):
-    """Même app, quota mémoire relevé — voir la docstring de
-    test_s5_full_stack.py::PackageSortingAppBigQuota pour le contexte
-    complet (artefact de mesure fork() + Isaac Sim déjà chargé)."""
+    """Même app, quota mémoire relevé. Le contexte complet est dans
+    test_s5_full_stack.py (docstring du module et de
+    PackageSortingAppBigQuota) : un artefact de mesure, car le
+    sous-processus de l'app, créé par fork(), hérite de la mémoire
+    qu'Isaac Sim a déjà chargée."""
 
     def manifest(self):
         m = super().manifest()

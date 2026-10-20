@@ -2,9 +2,10 @@
 
 Démon en C, séparé du processus principal d'AXIS-OS : si ce processus
 meurt en plein mouvement, le moniteur relâche les moteurs du robot en
-douceur au lieu de les laisser sur la dernière consigne reçue. C'est la
-première des cinq recommandations de renforcement du second audit
-externe (voir `CHANGELOG.md`). Le commentaire en tête de
+douceur au lieu de les laisser sur la dernière consigne reçue. C'est
+l'une des cinq recommandations de renforcement du second audit externe
+(voir `CHANGELOG.md`, section « 5 recommandations externes de
+renforcement », du 2026-09-15). Le commentaire en tête de
 `freshness_monitor.c` donne la justification complète.
 
 ## Statut (mis à jour 2026-09-15)

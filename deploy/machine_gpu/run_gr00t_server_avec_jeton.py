@@ -26,7 +26,14 @@ arrête le serveur par « pgrep -f run_gr00t_server » et
 Usage, dans ~/Isaac-GR00T (l'environnement Python de GR00T), avec les mêmes
 options que run_gr00t_server.py :
 
-    GR00T_API_TOKEN=<jeton> uv run python <ce fichier> --model-path … --port 5555
+    GR00T_API_TOKEN=<jeton> uv run python <ce fichier> --model-path … --host 127.0.0.1 --port 5555
+
+Garder --host 127.0.0.1, comme evaluer_vla.sh : le serveur n'écoute alors
+que sur l'adresse interne de la machine. Sans cette option, l'adresse
+d'écoute est celle que choisit par défaut le code de NVIDIA, et rien dans ce
+dépôt ne garantit qu'elle se limite à la machine. La règle de installer.sh
+s'applique : ne jamais lancer un serveur sur 0.0.0.0, c'est-à-dire sur
+toutes les interfaces réseau, interface publique comprise.
 
 Limite connue : le lanceur dépend de noms internes au code de NVIDIA
 (PolicyServer, importé dans le module run_gr00t_server, son paramètre

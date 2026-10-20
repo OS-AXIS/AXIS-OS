@@ -5,8 +5,9 @@
 # Pourquoi : une machine Vast.ai (le service de location de machines GPU)
 # détruite, ou à court de crédit, efface tout ; GitHub, non.
 # La sauvegarde est une « release » (fichiers publiés à côté du code du
-# dépôt) à l'état de BROUILLON, dans le dépôt privé OS-AXIS/AXIS-OS : elle
-# n'est visible que par les membres du dépôt. L'archive des épisodes y est
+# dépôt) à l'état de BROUILLON, dans le dépôt OS-AXIS/AXIS-OS. Ce dépôt est
+# public : seul l'état de brouillon réserve la release aux personnes qui ont
+# un accès en écriture. Ne jamais la publier. L'archive des épisodes y est
 # en pièce jointe. gh est l'outil en ligne de commande de GitHub.
 #
 #   bash sauvegarder_vla.sh            sauvegarde (peut tourner PENDANT la collecte)

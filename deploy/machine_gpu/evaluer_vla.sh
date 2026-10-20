@@ -30,10 +30,13 @@
 # 3. Affiche le bilan dans le terminal ; le détail essai par essai est copié
 #    dans ~/videos/eval_vla.json.
 #
-# Sécurité : le VLA ne fait que PROPOSER des mouvements. Ils passent par les
-# mêmes protections que ceux des réflexes : vitesse du bras plafonnée à
-# 1 rad/s, butées articulaires, JointSafetyGuard (le garde-fou de chaque
-# articulation, qui refuse toute commande hors limites) et gardien de
+# Sécurité : le VLA ne fait que PROPOSER des mouvements. La vitesse des bras
+# qu'il commande est plafonnée à 1,5 rad/s : 0,03 rad au plus par pas de
+# 20 ms, réglé dans sim/validation/test_isaac_t1_tri_usine.py (à titre de
+# comparaison, les réflexes referment les bras sur le carton à 1,44 rad/s au
+# plus). Ses mouvements passent ensuite par les mêmes protections que ceux
+# des réflexes : butées articulaires, JointSafetyGuard (le garde-fou de
+# chaque articulation, qui refuse toute commande hors limites) et gardien de
 # proximité (qui ralentit puis arrête le robot devant un obstacle). Les
 # refus sont comptés pour chaque essai.
 #
