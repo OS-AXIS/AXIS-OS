@@ -1,13 +1,17 @@
 # AXIS-OS — Dependencies
 # Core : stdlib Python uniquement (aucune dépendance externe pour la HAL)
 
-# Simulation (optionnel selon le backend)
-# pybullet>=3.2.5        # si vous utilisez PyBullet
-# isaacsim==4.2.0        # si vous utilisez Isaac Sim
+# Simulation : Isaac Sim 6.1, fourni par le conteneur NVIDIA, pas par pip
+# (voir sim/README.md).
 
-# IA (optionnel)
-# anthropic>=0.25.0      # Claude API backend
-# llama-cpp-python       # Llama local backend
+# IA (facultatif)
+# anthropic>=0.25.0      # superviseur de tri en langage naturel, par l'API
+#                        # Claude (axis_os/apps/tri_colis/superviseur.py) ;
+#                        # l'interpréteur à règles du même fichier, lui,
+#                        # fonctionne sans ce paquet, hors ligne
+
+# Quotas CPU et mémoire du bac à sable des apps
+# (axis_os/store/runtime/sandbox.py) : sans psutil, ils ne s'appliquent pas.
 psutil>=5.9.0
 
 # Signature des apps (axis_os/store/sdk/signing.py) — requis
@@ -58,9 +62,10 @@ protobuf>=4.25.0
 # Toute montée de version se valide d'abord en simulation, jamais en
 # production.
 #
-# torch n'est pas listé : il est fourni par le conteneur Isaac Sim, et sur
-# Jetson par l'image NVIDIA — sa version dépend du matériel (CUDA), pas de
-# ce fichier.
+# torch n'est pas listé : sa version dépend du matériel (CUDA), pas de ce
+# fichier. Sur la machine GPU, deploy/machine_gpu/installer.sh l'installe
+# dans le Python d'Isaac Sim (l'image 6.1 ne le fournit pas) ; sur Jetson,
+# il vient de l'image NVIDIA.
 transformers==5.17.0
 pillow>=10.0.0
 

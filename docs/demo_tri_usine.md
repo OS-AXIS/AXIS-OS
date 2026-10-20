@@ -8,8 +8,11 @@ donnée : il trouve les colis, les identifie, les porte au bon poste et les y
 dépose. Quand un humain s'approche, **c'est l'OS qui ralentit puis arrête le
 robot** — pas l'app.
 
-Ce dernier point est le cœur du pitch : il montre ce qu'aucun concurrent ne
-montre, une sécurité garantie **au-dessous** des apps et de l'IA.
+Ce dernier point est le cœur du pitch : la sécurité est placée
+**au-dessous** des apps et de l'IA, au lieu d'être confiée à chacune
+d'elles. Elle vaut pour les apps qui passent par l'API : l'isolation
+contre une app hostile n'est pas encore terminée (voir
+[SECURITY.md](../SECURITY.md#limites-connues), limite connue n° 1).
 
 ## Critères de réussite, mesurés et affichés à l'écran
 
@@ -53,7 +56,9 @@ est **dans l'app**, pas dans l'IA : c'est de la connaissance métier.
 Des personnes circulent dans l'entrepôt. Le robot les détecte ; **le service
 de locomotion d'AXIS-OS plafonne sa vitesse** près d'un humain et l'arrête en
 dessous d'une distance fixée. L'app ne peut ni désactiver ni contourner ce
-plafond.
+plafond par l'API ; l'isolation contre une app hostile n'est pas encore
+terminée ([SECURITY.md](../SECURITY.md#limites-connues), limite connue
+n° 1).
 *À vérifier : disponibilité des personnages animés d'Isaac Sim 6.1 ; à
 défaut, des silhouettes déplacées par script.*
 **Démo : un humain traverse, le robot ralentit, s'arrête, puis reprend.**

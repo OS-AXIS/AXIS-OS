@@ -21,7 +21,7 @@ n'existe pas encore est dit explicitement (§ 12).
 6. [Ce que l'app peut faire : le contexte `ctx`](#6-ce-que-lapp-peut-faire--le-contexte-ctx)
 7. [Les règles d'or (apprises à nos dépens)](#7-les-règles-dor-apprises-à-nos-dépens)
 8. [Exemple complet : brancher SON IA, sans faire bouger le robot](#8-exemple-complet--brancher-son-ia-sans-faire-bouger-le-robot)
-9. [« J'ai créé une IA pour que le robot parle mieux » : où la brancher ?](#9--jai-créé-une-ia-pour-que-le-robot-parle-mieux--où-la-brancher-)
+9. [« J'ai créé une IA pour que le robot parle mieux » : où la brancher ?](#9--jai-créé-une-ia-pour-que-le-robot-parle-mieux---où-la-brancher-)
 10. [Exemple : une app de tri de colis](#10-exemple--une-app-de-tri-de-colis)
 11. [Tester, puis publier](#11-tester-puis-publier)
 12. [Ce qui n'existe pas encore](#12-ce-qui-nexiste-pas-encore)
@@ -37,7 +37,7 @@ Le même principe qu'une app Android sur un téléphone :
 |---|---|
 | Android gère l'écran, le réseau, la batterie | AXIS-OS gère les moteurs, l'équilibre, la sécurité |
 | Une app demande « accès à l'appareil photo » | Une app demande `SENSORS_CAMERA`, `LOCOMOTION_WALK`… |
-| L'app ne peut pas faire exploser la batterie | L'app ne peut pas faire tomber le robot ni blesser quelqu'un |
+| L'app ne peut pas faire exploser la batterie | Par `ctx`, l'app ne commande aucun moteur sans le contrôle de l'OS : permissions, garde-fou (voir la limite plus bas) |
 | Google Play | le Play Store AXIS-OS |
 
 L'idée centrale : **l'app décide QUOI faire, l'OS décide si c'est sûr et
@@ -49,15 +49,24 @@ votre app  ──>  RobotContext (ctx)  ──>  services de l'OS  ──>  gard
              à CHAQUE appel             parole, mémoire       gardien de proximité
 ```
 
-Chaque app tourne dans un **bac à sable** (un processus isolé, avec des
+Chaque app tourne dans un **bac à sable** (un processus séparé, avec des
 limites de mémoire, de processeur et de durée). Si elle plante ou se fige,
 le robot reste debout et les autres apps continuent.
+
+> **Limite actuelle.** Ce bac à sable protège le robot d'une app buggée,
+> pas encore d'une app malveillante. Les garanties de ce guide valent pour
+> une app qui passe par `ctx`. Une app délibérément hostile peut
+> aujourd'hui sortir de ce cadre et agir hors de la HAL, donc hors du
+> garde-fou : voir [SECURITY.md](../SECURITY.md#limites-connues) (limite
+> connue n° 1). La correction est planifiée dans
+> [isolation_apps.md](isolation_apps.md). En attendant, n'installez sur un
+> vrai robot que des apps dont vous avez relu le code.
 
 ---
 
 ## 2. Ce qu'il faut sur son ordinateur
 
-- Python **3.11** ou plus récent ;
+- Python **3.12** ou plus récent (la version que teste la CI) ;
 - le dépôt AXIS-OS, et ses dépendances de base :
 
 ```bash
@@ -92,10 +101,11 @@ Résultat attendu :
 ✓ Simulation réussie
 ```
 
-`simulate` installe l'app sur un **robot virtuel** (un G1 sans physique),
-la démarre dans son bac à sable et lui fait exécuter une mission. Votre
-app a tourné exactement comme elle tournera sur un vrai robot, à ceci près
-qu'aucun moteur n'existe.
+`simulate` installe l'app sur un **robot virtuel** (un G1 sans simulateur
+3D, dont chaque articulation suit une physique simplifiée), la démarre
+dans son bac à sable et lui fait exécuter une mission. Votre app a tourné
+exactement comme elle tournera sur un vrai robot, à ceci près qu'aucun
+moteur n'existe.
 
 Fichiers générés :
 
@@ -229,7 +239,9 @@ app parle à Internet.
 
 Tout passe par l'objet `ctx`, reçu dans `on_start`, `run_mission` et
 `on_stop`. **Chaque appel vérifie la permission** : sans elle, l'appel
-lève `PermissionError`, même si l'app essaie de le contourner.
+lève `PermissionError`. Aucun appel de `ctx` ne permet d'éviter ce
+contrôle ; une app hostile qui sort de `ctx` relève de la limite décrite
+au § 1.
 
 | Appel | Permission | Ce que ça fait |
 |---|---|---|
@@ -239,7 +251,7 @@ lève `PermissionError`, même si l'app essaie de le contourner.
 | `ctx.describe_scene()` | caméra | ce que le robot voit, en clair |
 | `ctx.declare_intent(nom, mots_cles)` | micro | ajoute du vocabulaire au robot |
 | `ctx.listen(duree_s)` | micro | une **intention** reconnue (`.name`, `.params`, `.utterance` = la phrase), ou `None` |
-| `ctx.remember(cle, valeur)`, `ctx.recall(cle)` | stockage | mémoire qui survit au redémarrage, cloisonnée par app |
+| `ctx.remember(cle, valeur)`, `ctx.recall(cle)` | stockage | mémoire qui survit au redémarrage, cloisonnée par app (un cloisonnement logique : voir la FAQ) |
 | `ctx.walk(vx, vy, wz)`, `ctx.stop_walking()` | marche | déplacement ; la consigne doit être **renouvelée** |
 | `ctx.move_to_pose({articulation: angle}, duree_s)` | bras / jambes | mouvement progressif, depuis la position réelle |
 | `ctx.move_arms(...)`, `ctx.move_legs(...)` | bras / jambes | consignes articulaires, vérifiées par le garde-fou |
@@ -274,13 +286,13 @@ référence.
    s'arrête de lui-même, en équilibre. C'est voulu.
 5. **Définissez votre classe au niveau du module**, jamais à l'intérieur
    d'une fonction, et ne modifiez pas une instance après coup. Le bac à
-   sable transmet l'app au processus isolé en la sérialisant ; une classe
-   locale ne se sérialise pas, et l'app plante au démarrage sans
+   sable transmet l'app à son processus séparé en la sérialisant ; une
+   classe locale ne se sérialise pas, et l'app plante au démarrage sans
    explication claire.
 6. **Le garde-fou peut refuser vos consignes**, et il a raison : trop
    rapide, trop loin, hors des butées. `move_arms()` rend le statut de
-   chaque articulation ; lisez-le. Il n'existe aucun moyen de le
-   contourner, et il n'en existera pas.
+   chaque articulation ; lisez-le. Aucun appel de `ctx` ne permet de le
+   contourner, et l'API n'en offrira pas.
 7. **Une intention vocale ne commande jamais un moteur.** `listen()` rend
    une intention ; c'est **votre code** qui décide ce qu'elle déclenche.
    Une phrase qu'aucune app n'a déclarée ne produit rien.
@@ -479,7 +491,8 @@ class FacadeCtx:
     # prendre / poser : ctx.move_to_pose({...}) avec les postures de bras
     # bloque_par_securite : l'état du gardien de proximité n'est pas
     #   encore exposé aux apps (§ 12) ; en attendant, rendre False et
-    #   laisser l'OS arrêter le robot, ce qu'il fait de toute façon
+    #   laisser l'OS arrêter le robot : si un gardien de proximité est
+    #   branché sur la marche (voir la FAQ), il le fait de lui-même
     ...
 
 
@@ -544,6 +557,13 @@ du Play Store n'est pas encore connecté.
 
 Dit franchement, pour ne pas vous faire perdre de temps :
 
+- **Isolation contre une app malveillante** : pas encore. Une app hostile
+  peut aujourd'hui agir hors de la HAL
+  ([SECURITY.md](../SECURITY.md#limites-connues), limite connue n° 1), et
+  le cloisonnement des données par `app_id` n'est pas imposé par le
+  système (constat 3 d'[isolation_apps.md](isolation_apps.md), qui donne
+  aussi le plan de correction). N'installez que des apps dont vous avez
+  relu le code.
 - **Faire parler le robot** : pas de `ctx.speak()`. La synthèse vocale est
   la prochaine brique naturelle.
 - **Navigation, manipulation et état de sécurité pour les apps** : les
@@ -553,6 +573,8 @@ Dit franchement, pour ne pas vous faire perdre de temps :
 - **Filtrage réseau du bac à sable** : les permissions `NETWORK_*` sont
   déclaratives pour l'instant.
 - **Registre en ligne du Play Store** : `publish` valide, sans envoyer.
+- **Paiement** : la répartition 70/30 est calculée et affichée à chaque
+  mission facturée, mais aucun paiement réel n'est encore branché.
 - **Installation par `pip`** : pas encore de paquet ; on utilise
   `PYTHONPATH` (§ 2).
 - **Communication entre robots** : conçue (`docs/fleet_manager_design.md`),
@@ -572,13 +594,27 @@ localement de gros modèles d'IA. Une app qui appelle une IA en ligne n'en
 a pas besoin.
 
 **Mon app peut-elle faire tomber le robot ?**
-Non. L'équilibre est tenu par l'OS ; chaque consigne passe par le
-garde-fou articulaire ; le gardien de proximité ralentit puis arrête le
-robot près d'un humain, quoi que demande l'app. Si l'app plante ou se
-fige, le robot s'arrête en équilibre.
+Pas en marchant par `ctx.walk()` : l'équilibre est alors tenu par la
+politique de marche de l'OS, et si l'app plante ou se fige, le robot
+s'arrête en équilibre. En revanche, la permission dangereuse
+`ACTUATORS_WRITE_LEGS` (que `walk()` exige aussi) permet de commander
+directement les articulations des jambes, par `move_legs()` ou
+`move_to_pose()` ; `ACTUATORS_WRITE_ALL` le permet aussi, par
+`move_all()`. Le garde-fou vérifie alors les limites de chaque
+articulation, pas l'équilibre : une consigne mal choisie peut faire
+tomber le robot. Si le robot a un gardien de proximité (branché par
+l'intégrateur, avec un lidar ; aujourd'hui dans la démo de tri
+seulement), il ralentit puis arrête la marche près de tout obstacle
+inexpliqué, humain ou non (les obstacles fixes de la carte du site ne
+comptent pas), quoi que demande l'app.
+Enfin, une app délibérément hostile peut aujourd'hui sortir de ce cadre
+(limite décrite au § 1).
 
 **Mon app peut-elle lire les données d'une autre app ?**
-Non. La mémoire est cloisonnée par `app_id`, que l'app ne choisit pas.
+Pas par `ctx.recall()` : la mémoire est cloisonnée par `app_id`, que
+l'app ne choisit pas. Mais ce cloisonnement n'est pas encore imposé par le
+système : une app malveillante peut lire les fichiers des autres apps
+([isolation_apps.md](isolation_apps.md), constat 3).
 
 **Deux apps peuvent-elles tourner en même temps ?**
 Plusieurs apps peuvent être installées et démarrées. Une seule mission à la
@@ -600,8 +636,10 @@ Non. Avec le contrat HTTP du § 8, elle peut être écrite dans n'importe quel
 langage et tourner n'importe où.
 
 **Combien je gagne ?**
-Vous fixez `base_price_eur` : c'est ce que vous touchez. Le Play Store
-ajoute sa commission de 30 % au prix payé par le client.
+Vous fixez `base_price_eur` : c'est votre part. Le client paie
+`base_price_eur` divisé par 0,7, arrondi au centime (1,40 € → 2,00 €),
+dont 30 % pour le Play Store. Aucun paiement réel n'est encore branché
+(§ 12).
 
 **Mon app marchera-t-elle sur un autre robot que le G1 ?**
 Si elle ne demande que des capacités (`WALK`, `CAMERA_RGB`, `SPEECH_IN`…)

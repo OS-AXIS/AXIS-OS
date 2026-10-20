@@ -239,6 +239,12 @@ docker compose -p isim ps   # vérifier "healthy" sur les deux services
 # Accès web : http://<IP_PUBLIQUE_INSTANCE>:8210/
 # (l'IP publique change à chaque redémarrage d'instance AWS sans IP
 # élastique fixe — vérifier l'IP courante avant de se connecter)
+# Procédure historique du 2026-09-18. Ne jamais ouvrir ce port à tout
+# Internet : restreindre l'accès à sa propre adresse IP (groupe de
+# sécurité AWS), ou passer par un VPN ou un tunnel SSH. Même règle que
+# dans deploy/machine_gpu/installer.sh, où nos serveurs n'écoutent que sur
+# 127.0.0.1, jamais sur 0.0.0.0 (toutes les interfaces, y compris
+# l'interface publique).
 ```
 
 Dans l'interface web : `Window > Robot Examples > Unitree > G1_23dof`

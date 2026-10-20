@@ -15,7 +15,7 @@ de bord, robot debout du début à la fin.
 | Scène | Ce qui est tenté | Réponse du système |
 |---|---|---|
 | 1. Catalogue | Installer trois apps | Installées, permissions affichées, niveau DANGEREUX signalé |
-| 2. Matériel | App exigeant deux mains | **Refusée à l'installation** — le G1 23 DOF n'en a pas |
+| 2. Matériel | App exigeant une préhension à deux mains (capacité `GRASP_DUAL`) | **Refusée à l'installation** — le Play Store n'offre pas `GRASP_DUAL` sur ce robot : il ne la déduit pas de ses bras (elle demande deux bras coordonnés), et le seul service qui déclare cette capacité, celui de manipulation, ne lui est pas transmis |
 | 3. Permission | App « caméra » qui tente de marcher | **PermissionError**, robot immobile (0.043 m) |
 | 4. Concurrence | Deux missions simultanées | **Refus en 0.00 s**, motif : verrou de mission |
 | 5. Commande | Genou à 4.88 rad (butée 2.88) | **ERROR_LIMIT**, violation journalisée |
@@ -27,11 +27,13 @@ de bord, robot debout du début à la fin.
 Aucune scène n'est spectaculaire isolément. Ensemble, elles montrent ce
 qu'un robot livré avec son logiciel ne peut pas offrir : **plusieurs
 applications tierces sur une même machine, sans qu'aucune puisse
-dépasser ce qu'on lui a accordé.**
+dépasser, par l'API, ce qu'on lui a accordé.** Contre une app
+malveillante, l'isolation n'est pas encore terminée : voir
+[SECURITY.md](../SECURITY.md#limites-connues), limite connue n° 1.
 
 Chaque refus a une cause **différente** et un niveau **différent** :
 
-- à l'**installation** (capacité matérielle absente) ;
+- à l'**installation** (capacité non offerte sur ce robot) ;
 - à l'**appel** (permission non déclarée) ;
 - à l'**exécution** (robot déjà occupé) ;
 - à la **commande** (consigne hors butée).

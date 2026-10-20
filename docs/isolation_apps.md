@@ -28,8 +28,8 @@ doivent tourner sur un vrai robot** (voir « En attendant »).
 | 2 | Sur un vrai G1 (`backend="dds"`), cette copie détient les **mêmes connexions DDS ouvertes** vers le robot : une commande moteur envoyée depuis l'app partirait vers les moteurs sans passer par `JointSafetyGuard`. | Conséquence directe de (1) : `fork` duplique aussi les connexions ouvertes. Non essayé sur matériel. |
 | 3 | L'app tourne sous le **même utilisateur** que l'OS : elle peut charger les mêmes bibliothèques que lui, ouvrir ses propres connexions réseau vers le robot, et lire les fichiers de l'OS et des autres apps (le cloisonnement des données par `app_id` est logique, pas imposé par le système). | Lecture du code (`sandbox.py`, `memory/service.py`). |
 | 4 | Le réseau n'est pas filtré : `NETWORK_CLOUD` / `NETWORK_LOCAL` sont déclarées mais non appliquées (déjà documenté dans `manifest.py`). | Lecture du code. |
-| 6 | **Le pont IPC transporte des objets PICKLE** (`HALBridgeServer` lit les commandes de l'app, `SandboxRunner` lit son résultat). Or désérialiser un pickle peut exécuter du code : un objet fabriqué par l'app ferait tourner du code de son choix DANS LE PROCESSUS DE L'OS, avec tous ses droits (modifier ses propres permissions après la confirmation, appeler la HAL directement). | Essai lors de la revue de l'audit : du code venu d'une mission s'est exécuté dans le processus de l'OS. |
 | 5 | Ce qui tient déjà (contre une app buggée ; contre une app hostile, voir 6) : les hooks `on_start` / `run_mission` / `on_stop` passent tous par `SandboxRunner` + `HALBridgeServer` ; un `RobotContext` ne peut pas être fabriqué hors du runtime (jeton de session) ; les permissions SIGNATURE exigent la clé plateforme ; les quotas CPU/RAM/temps s'appliquent (si `psutil` est installé). | Tests existants (`test_context_lockdown.py`, `test_playstore_sandbox_isolation.py`, …). |
+| 6 | **Le pont IPC transporte des objets PICKLE** (`HALBridgeServer` lit les commandes de l'app, `SandboxRunner` lit son résultat). Or désérialiser un pickle peut exécuter du code : un objet fabriqué par l'app ferait tourner du code de son choix DANS LE PROCESSUS DE L'OS, avec tous ses droits (modifier ses propres permissions après la confirmation, appeler la HAL directement). | Essai lors de la revue de l'audit : du code venu d'une mission s'est exécuté dans le processus de l'OS. |
 
 ## Le plan, dans l'ordre
 
@@ -56,7 +56,8 @@ pas relu le code**.
 
 - Démarrer l'app dans un interpréteur NEUF (`mp.get_context("spawn")`, ou
   mieux un processus dédié `python -I -m axis_os.store.runtime.hote_app`
-  lancé avec `close_fds=True`), qui ne reçoit QUE les deux files du pont IPC.
+  lancé avec `close_fds=True`), qui ne reçoit QUE les extrémités du pont IPC
+  (le canal de l'étape 0).
 - Le code de l'app y est rechargé depuis sa source signée
   (`packaging.py` sait déjà le faire par `exec`).
 - Ferme : constats 1 et 2 (plus d'objet HAL ni de socket DDS hérités).
@@ -104,7 +105,7 @@ pas relu le code**.
 
 - gVisor ou Firecracker, comme décrit dans
   `docs/sandboxing_hardening_notes.md`. À ne considérer qu'après les étapes
-  1 à 4, et sur décision explicite.
+  0 à 4, et sur décision explicite.
 
 ### En parallèle, côté robot
 
@@ -117,8 +118,9 @@ pas relu le code**.
 
 ## En attendant (règles d'exploitation, sans code)
 
-1. Sur un vrai robot : `PlayStoreRuntime(require_signed_apps=True,
-   platform_public_key=..., confirmer_permissions=confirmer_au_terminal)`,
+1. Sur un vrai robot : `PlayStoreRuntime(robot, watchdog,
+   require_signed_apps=True, platform_public_key=...,
+   confirmer_permissions=confirmer_au_terminal)`,
    et n'installer que des apps signées dont le code a été relu.
 2. `psutil` installé (sinon les quotas CPU/RAM ne s'appliquent pas — le
    runtime le signale au démarrage).

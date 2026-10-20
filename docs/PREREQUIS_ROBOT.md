@@ -13,16 +13,18 @@ précédent.
 
 ## Niveau 1 — Robot actionné
 
-*Un bras fixe, une plateforme de recherche. AXIS-OS peut y installer et
-isoler des apps, et vérifier chaque commande.*
+*Un bras fixe, une plateforme de recherche. AXIS-OS peut y installer des
+apps dans un bac à sable (qui protège d'une app buggée, pas encore d'une
+app malveillante : voir [SECURITY.md](../SECURITY.md#limites-connues)) et
+vérifier chaque commande.*
 
 ### Ordinateur
 
 | | Exigence | Pourquoi |
 |---|---|---|
-| Système | **Linux** | Le sandbox isole chaque app dans un processus créé par duplication (`fork`), indisponible sous Windows |
+| Système | **Linux** | Le sandbox place chaque app dans un processus créé par duplication (`fork`), indisponible sous Windows |
 | Architecture | x86_64 ou ARM64 | |
-| Python | 3.10 ou plus récent (développé en 3.12) | |
+| Python | 3.12 ou plus récent (la version que teste la CI) | |
 | Dépendances | `psutil` (quotas des apps), `cryptography` (signature des apps) | Le cœur du HAL n'utilise que la bibliothèque standard |
 
 ### Actionneurs
@@ -133,7 +135,9 @@ pas à pas.*
 - **Des drivers pour d'autres robots que le Unitree G1.** L'architecture est
   prête ; chaque nouveau robot demande un driver et une table de
   conventions vérifiée.
-- **La navigation et la cartographie** (SLAM) : en cours.
+- **La localisation et la cartographie par capteurs** (SLAM) : pas
+  encore. La navigation existe, sur une carte déclarée, avec une position
+  lue dans le simulateur.
 - **Une politique de locomotion universelle** : elle reste propre à chaque
   robot, comme un pilote de carte graphique.
 - **Une validation sur robot physique** : tout ce qui est décrit ici est

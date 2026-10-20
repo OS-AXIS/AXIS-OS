@@ -9,6 +9,14 @@ réutilisable entre `UnitreeG1HAL` et Isaac Sim, et
 diagnostics (VariantSet Physics, gains PD absents, thread-safety
 PhysX).
 
+Le dossier contient trois scripts, un par app de référence :
+
+| Script | App testée de bout en bout |
+|--------|----------------------------|
+| `test_s5_full_stack.py` | `PackageSortingApp` (tri de colis) |
+| `test_s5_security_patrol.py` | `SecurityPatrolApp` (ronde de sécurité) |
+| `test_s5_warehouse_ops.py` | `WarehouseOpsApp` (opérations d'entrepôt) |
+
 ## Prérequis
 
 ```bash
@@ -48,3 +56,25 @@ que la mission AXIS-OS tourne dans un thread annexe
 Surveiller l'apparition de `ERROR_COMM` dans les statuts retournés —
 signe qu'un `submit()` a dépassé son timeout de 5s (la pompe ne tourne
 pas assez vite ou s'est arrêtée), pas un bug du pont lui-même.
+
+## test_s5_security_patrol.py et test_s5_warehouse_ops.py
+
+Même architecture que `test_s5_full_stack.py` (`MainThreadSimPump`, voir
+la section précédente), contre les deux autres apps de référence :
+`SecurityPatrolApp` et `WarehouseOpsApp`. Les mêmes prérequis valent ; on
+copie en plus les deux scripts, puis on les lance de la même façon :
+
+```bash
+docker cp ~/AXIS-OS/deploy/isaac_sim_validation/test_s5_security_patrol.py \
+    isim-isaac-sim-1:/isaac-sim/test_s5_security_patrol.py
+docker cp ~/AXIS-OS/deploy/isaac_sim_validation/test_s5_warehouse_ops.py \
+    isim-isaac-sim-1:/isaac-sim/test_s5_warehouse_ops.py
+docker exec -it isim-isaac-sim-1 timeout 200 /isaac-sim/python.sh /isaac-sim/test_s5_security_patrol.py
+docker exec -it isim-isaac-sim-1 timeout 200 /isaac-sim/python.sh /isaac-sim/test_s5_warehouse_ops.py
+```
+
+Résultats obtenus le 2026-09-19 (détail dans
+`docs/isaac_lab_unitree_sim_status.md`, session 4) : `SecurityPatrolApp`
+visite ses 7 points de passage et traite deux détections de personne,
+`WarehouseOpsApp` scanne et manipule deux objets ; aucune violation de
+sécurité dans les deux cas.
