@@ -48,13 +48,16 @@ deliberately malicious app is not finished: see
 ## Architecture
 
 ```mermaid
-%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+---
+config:
+  layout: dagre
+  flowchart:
+    wrappingWidth: 320
+---
 flowchart TB
     PS["<b>Play Store</b><br/>✓ signature · permissions<br/>✓ user confirms DANGEROUS ones"]
 
-    subgraph APP["App process · sandbox with CPU, memory and time quotas"]
-        A["<b>Third-party app</b><br/>RobotApp"]
-    end
+    A["<b>Third-party app</b> · RobotApp<br/>separate process, sandboxed<br/>CPU, memory and time quotas"]
 
     subgraph OS["AXIS-OS process"]
         CTX["<b>RobotContext</b><br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap"]
@@ -95,7 +98,6 @@ flowchart TB
     class W,SU,IM watch
     class SV,D plain
     class R motor
-    style APP fill:#eff6ff,stroke:#93c5fd,color:#0f172a
     style OS fill:#f8fafc,stroke:#94a3b8,color:#0f172a
     style MON fill:#fff7ed,stroke:#fdba74,color:#0f172a
 ```

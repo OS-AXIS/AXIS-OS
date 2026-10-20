@@ -51,13 +51,16 @@ contre une app délibérément malveillante n'est pas terminée : voir
 ## Architecture
 
 ```mermaid
-%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+---
+config:
+  layout: dagre
+  flowchart:
+    wrappingWidth: 320
+---
 flowchart TB
     PS["<b>Play Store</b><br/>✓ signature · permissions<br/>✓ confirmation des permissions DANGEROUS"]
 
-    subgraph APP["Processus de l'app · sandbox avec quotas de CPU, de mémoire et de temps"]
-        A["<b>App tierce</b><br/>RobotApp"]
-    end
+    A["<b>App tierce</b> · RobotApp<br/>processus à part, en sandbox<br/>quotas de CPU, de mémoire et de temps"]
 
     subgraph OS["Processus d'AXIS-OS"]
         CTX["<b>RobotContext</b><br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse"]
@@ -98,7 +101,6 @@ flowchart TB
     class W,SU,IM watch
     class SV,D plain
     class R motor
-    style APP fill:#eff6ff,stroke:#93c5fd,color:#0f172a
     style OS fill:#f8fafc,stroke:#94a3b8,color:#0f172a
     style MON fill:#fff7ed,stroke:#fdba74,color:#0f172a
 ```
