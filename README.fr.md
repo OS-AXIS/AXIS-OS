@@ -57,7 +57,7 @@ config:
   fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif"
   flowchart:
     wrappingWidth: 320
-  themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; }"
+  themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; } .edge-animation-fast { stroke: #007aff; stroke-dasharray: 0 20 !important; stroke-width: 5px; } @media (prefers-reduced-motion: reduce) { .edge-animation-fast { animation: none; } }"
 ---
 flowchart TB
     PS("<b>Play Store</b><br/>✓ signature · permissions<br/>✓ confirmation des permissions DANGEROUS")
@@ -80,19 +80,29 @@ flowchart TB
 
     R(["<b>Moteurs du robot</b>"])
 
-    PS -->|installe| A
-    A -->|"pont IPC"| CTX
-    CTX --> SV
-    CTX --> N
-    SV -->|marche| G
-    G --> N
-    SV --> N
-    N --> D
-    D --> J
-    J --> R
+    PS e1@-->|installe| A
+    A e2@-->|"pont IPC"| CTX
+    CTX e3@--> SV
+    CTX e4@--> N
+    SV e5@-->|marche| G
+    G e6@--> N
+    SV e7@--> N
+    N e8@--> D
+    D e9@--> J
+    J e10@--> R
     SU -.->|surveille| W
     D -.-|"lisent les retours, peuvent tout arrêter"| MON
 
+    e1@{ animate: true }
+    e2@{ animate: true }
+    e3@{ animate: true }
+    e4@{ animate: true }
+    e5@{ animate: true }
+    e6@{ animate: true }
+    e7@{ animate: true }
+    e8@{ animate: true }
+    e9@{ animate: true }
+    e10@{ animate: true }
     classDef app fill:#eaf3ff,stroke:#007aff,stroke-width:1.5px,color:#1d1d1f
     classDef check fill:#eafaf0,stroke:#34c759,stroke-width:1.5px,color:#1d1d1f
     classDef watch fill:#fff5e6,stroke:#ff9500,stroke-width:1.5px,color:#1d1d1f
