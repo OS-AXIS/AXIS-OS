@@ -161,6 +161,7 @@ Sim : voir [sim/README.md](sim/README.md) et `deploy/machine_gpu/`.
 - [Ce qu'un robot doit avoir pour faire tourner AXIS-OS](docs/PREREQUIS_ROBOT.md)
 - [Intégration de GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
 - [Isolation des apps : constat et plan](docs/isolation_apps.md)
+- [Glossaire français-anglais des termes du code](docs/GLOSSARY.md)
 
 ## Licence
 

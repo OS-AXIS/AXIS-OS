@@ -153,6 +153,7 @@ container: see [sim/README.md](sim/README.md) and `deploy/machine_gpu/`.
 - [What a robot needs to run AXIS-OS](docs/PREREQUIS_ROBOT.md)
 - [Integration of GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
 - [App isolation: findings and plan](docs/isolation_apps.md)
+- [Glossary of the French terms used in the code](docs/GLOSSARY.md)
 
 ## License
 

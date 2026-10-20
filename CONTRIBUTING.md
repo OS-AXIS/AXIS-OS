@@ -4,7 +4,8 @@
 
 Thank you for your interest. Issues and pull requests are welcome in
 English or French. The code, its comments and the documents in `docs/` are
-written in French.
+written in French; the [glossary](docs/GLOSSARY.md) gives the English for
+the French terms you will meet most often.
 
 ## Before you open a pull request
 
@@ -49,7 +50,8 @@ Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 Merci de votre intérêt. Issues et pull requests sont bienvenues en français
 ou en anglais. Le code, ses commentaires et les documents de `docs/` sont
-écrits en français.
+écrits en français ; le [glossaire](docs/GLOSSARY.md) donne l'anglais des
+termes français les plus fréquents.
 
 ## Avant d'ouvrir une pull request
 
