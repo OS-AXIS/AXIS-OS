@@ -52,41 +52,59 @@ contre une app délibérément malveillante n'est pas terminée : voir
 
 ```mermaid
 flowchart TB
-    PS["Play Store install()<br/>✓ signature · permissions<br/>✓ confirmation des permissions DANGEROUS"]
-    subgraph APP["Processus de l'app (sandbox : quotas de CPU, de mémoire et de temps)"]
-        A["App tierce<br/>(RobotApp)"]
+    PS["1 - Installation par le Play Store"]
+    subgraph APP["Processus de l'app - sandbox"]
+        A["App tierce"]
         C["HALBridgeClient"]
     end
     subgraph OS["Processus d'AXIS-OS"]
         S["HALBridgeServer"]
-        CTX["RobotContext<br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse"]
-        SV["Services système<br/>locomotion · navigation · perception<br/>manipulation · parole · mémoire · VLA"]
-        G["Gardien de proximité (lidar, facultatif)<br/>✓ ralentit, puis arrête la marche"]
-        N["NormalizedRobotHAL<br/>✓ refuse les angles NaN ou infinis"]
-        D["Driver du robot (IRobotHAL)<br/>Unitree G1 · Isaac Sim"]
-        J["JointSafetyGuard, par articulation<br/>✓ position · vitesse · couple<br/>✓ accélération · taille du pas"]
-        W["Watchdog<br/>✓ seuil fatal → arrêt d'urgence"]
-        SU["Superviseur<br/>✓ watchdog figé → arrêt d'urgence"]
-        IM["Moniteur indépendant<br/>✓ ses propres limites → arrêt d'urgence"]
+        CTX["2 - RobotContext"]
+        SV["Services système"]
+        G["3 - Gardien de proximité"]
+        N["4 - NormalizedRobotHAL"]
+        D["Driver du robot - IRobotHAL"]
+        J["5 - JointSafetyGuard"]
+        W["6 - Watchdog"]
+        SU["7 - Superviseur"]
+        IM["8 - Moniteur indépendant"]
     end
-    R[("Moteurs du robot")]
-
+    R["Moteurs du robot"]
     PS -->|installe| A
-    A --> C -->|IPC| S --> CTX
+    A --> C
+    C -->|IPC| S
+    S --> CTX
     CTX --> SV
     CTX --> N
-    SV -->|marche| G --> N
+    SV -->|marche| G
+    G --> N
     SV --> N
-    N --> D --> J --> R
-    W -. lit les retours, arrête .-> D
-    SU -. surveille .-> W
-    SU -. arrête .-> D
-    IM -. lit les retours bruts, arrête .-> D
+    N --> D
+    D --> J
+    J --> R
+    W -.->|lit les retours, arrête| D
+    SU -.->|surveille| W
+    SU -.->|arrête| D
+    IM -.->|lit les retours bruts, arrête| D
 ```
 
-Chaque ✓ est un contrôle que ni les apps ni les modèles ne commandent. Les
-flèches en pointillé tournent en parallèle des commandes. Le sandbox protège
-d'une app buggée, pas encore d'une app malveillante : voir [Statut et limites](#statut-et-limites).
+Les boîtes numérotées sont les contrôles de sécurité ; ni les apps ni les
+modèles d'IA ne les commandent. Les flèches en pointillé tournent en
+parallèle des commandes.
+
+| # | Contrôle |
+|---|----------|
+| 1 | Play Store : la signature (quand l'app en déclare une, ou toujours avec `require_signed_apps=True`), les permissions, et la confirmation par l'utilisateur des permissions DANGEROUS |
+| 2 | RobotContext : permission de chaque appel, refus pendant un arrêt d'urgence, plafond de vitesse |
+| 3 | Gardien de proximité (facultatif, avec un lidar) : ralentit, puis arrête la marche près d'un obstacle inexpliqué |
+| 4 | NormalizedRobotHAL : refuse les angles NaN ou infinis |
+| 5 | JointSafetyGuard, pour chaque commande d'articulation : position, vitesse, couple, accélération et taille du pas |
+| 6 | Watchdog : une articulation qui franchit un seuil fatal déclenche un arrêt d'urgence |
+| 7 | Superviseur : arrête le robot si le watchdog lui-même cesse de tourner |
+| 8 | Moniteur indépendant : ses propres contrôles de limites sur les retours bruts, puis un arrêt d'urgence |
+
+Le sandbox protège d'une app buggée, pas encore d'une app malveillante :
+voir [Statut et limites](#statut-et-limites).
 
 Un service, c'est ce dont deux apps de métiers différents auraient toutes
 les deux besoin (marcher, voir, saisir) ; ce qui est propre à un métier est

@@ -49,41 +49,58 @@ deliberately malicious app is not finished: see
 
 ```mermaid
 flowchart TB
-    PS["Play Store install()<br/>✓ signature · permissions<br/>✓ user confirms DANGEROUS ones"]
-    subgraph APP["App process (sandbox: CPU, memory and time quotas)"]
-        A["Third-party app<br/>(RobotApp)"]
+    PS["1 - Play Store install"]
+    subgraph APP["App process - sandbox"]
+        A["Third-party app"]
         C["HALBridgeClient"]
     end
     subgraph OS["AXIS-OS process"]
         S["HALBridgeServer"]
-        CTX["RobotContext<br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap"]
-        SV["System services<br/>locomotion · navigation · perception<br/>manipulation · speech · memory · VLA"]
-        G["Proximity guard (lidar, optional)<br/>✓ slows, then stops the walk"]
-        N["NormalizedRobotHAL<br/>✓ rejects NaN and infinite angles"]
-        D["Robot driver (IRobotHAL)<br/>Unitree G1 · Isaac Sim"]
-        J["JointSafetyGuard, per joint<br/>✓ position · velocity · torque<br/>✓ acceleration · step size"]
-        W["Watchdog<br/>✓ fatal threshold → e-stop"]
-        SU["Supervisor<br/>✓ watchdog frozen → e-stop"]
-        IM["Independent monitor<br/>✓ own limit checks → e-stop"]
+        CTX["2 - RobotContext"]
+        SV["System services"]
+        G["3 - Proximity guard"]
+        N["4 - NormalizedRobotHAL"]
+        D["Robot driver - IRobotHAL"]
+        J["5 - JointSafetyGuard"]
+        W["6 - Watchdog"]
+        SU["7 - Supervisor"]
+        IM["8 - Independent monitor"]
     end
-    R[("Robot motors")]
-
+    R["Robot motors"]
     PS -->|installs| A
-    A --> C -->|IPC| S --> CTX
+    A --> C
+    C -->|IPC| S
+    S --> CTX
     CTX --> SV
     CTX --> N
-    SV -->|walk| G --> N
+    SV -->|walk| G
+    G --> N
     SV --> N
-    N --> D --> J --> R
-    W -. reads feedback, stops .-> D
-    SU -. watches .-> W
-    SU -. stops .-> D
-    IM -. reads raw feedback, stops .-> D
+    N --> D
+    D --> J
+    J --> R
+    W -.->|reads feedback, stops| D
+    SU -.->|watches| W
+    SU -.->|stops| D
+    IM -.->|reads raw feedback, stops| D
 ```
 
-Each ✓ is a check the apps and the models do not control. Dotted arrows
-run in parallel with the commands. The sandbox protects against a buggy
-app, not yet against a malicious one: see [Status and limits](#status-and-limits).
+The numbered boxes are the safety checks; neither the apps nor the AI
+models control them. Dotted arrows run in parallel with the commands.
+
+| # | Check |
+|---|-------|
+| 1 | Play Store: the signature (when the app declares one, or always with `require_signed_apps=True`), the permissions, and the user's confirmation for DANGEROUS ones |
+| 2 | RobotContext: the permission of each call, a refusal during an emergency stop, the velocity cap |
+| 3 | Proximity guard (optional, with a lidar): slows, then stops the walk near an unexplained obstacle |
+| 4 | NormalizedRobotHAL: rejects NaN and infinite angles |
+| 5 | JointSafetyGuard, for every joint command: position, velocity, torque, acceleration and step size |
+| 6 | Watchdog: a joint crossing a fatal threshold triggers an emergency stop |
+| 7 | Supervisor: stops the robot if the watchdog itself stops running |
+| 8 | Independent monitor: its own limit checks on the raw feedback, then an emergency stop |
+
+The sandbox protects against a buggy app, not yet against a malicious one:
+see [Status and limits](#status-and-limits).
 
 A service is something two apps from different trades would both need
 (walking, seeing, grasping); anything specific to one trade is an app. The
