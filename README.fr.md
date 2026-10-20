@@ -13,8 +13,6 @@ applications tournent sur des robots de fabricants différents. Aujourd'hui,
 il pilote un Unitree G1 **en simulation seulement** (NVIDIA Isaac Sim) : il
 n'a encore jamais commandé un robot réel.
 
-Vidéo de démonstration : [lien vidéo]
-
 ## Le principe : l'IA propose, le code décide, l'OS protège
 
 Les modèles d'IA sont bons pour percevoir et suggérer, et ils peuvent se
@@ -38,12 +36,13 @@ sortie d'un modèle atteindre directement un moteur.
    valeurs invalides (NaN, infini) et tout dépassement des limites de
    position, de vitesse, de couple ou d'accélération de chaque
    articulation, sans jamais « corriger » une commande en silence ; le
-   gardien de proximité ralentit puis arrête le robot dès que son lidar
-   voit un obstacle inexpliqué à proximité, qu'un modèle l'ait reconnu ou
-   non comme une personne ; le watchdog déclenche un arrêt d'urgence quand
-   une articulation franchit un seuil critique, et un superviseur distinct
-   arrête le robot si le watchdog lui-même cesse de tourner ; les
-   permissions limitent ce que chaque app a le droit de faire.
+   gardien de proximité, quand un lidar lui est branché (facultatif ;
+   aujourd'hui dans la démo de tri seulement), ralentit puis arrête le robot
+   dès que ce lidar voit un obstacle inexpliqué à proximité, qu'un modèle
+   l'ait reconnu ou non comme une personne ; le watchdog déclenche un arrêt
+   d'urgence quand une articulation franchit un seuil critique, et un
+   superviseur distinct arrête le robot si le watchdog lui-même cesse de
+   tourner ; les permissions limitent ce que chaque app a le droit de faire.
 
 Ce dernier point vaut pour les apps qui respectent les règles. L'isolation
 contre une app délibérément malveillante n'est pas terminée : voir
@@ -102,7 +101,7 @@ avec un Unitree G1. Chaque résultat, échecs compris, est décrit dans
 | Détection d'objets à vocabulaire ouvert (OWL-ViT) ; distance à la face visible d'un carton mesurée au centimètre | [validation_perception.md](docs/validation_perception.md) |
 | Commande vocale ; les phrases hors sujet ne déclenchent rien | [validation_voix.md](docs/validation_voix.md) |
 | Plusieurs apps tierces sur un même robot, arbitrées par l'OS | [validation_multiapp.md](docs/validation_multiapp.md) |
-| Prendre un carton d'un kilo sur une table et l'emporter, sans une seule commande refusée par le garde-fou ; puis le trouver sans qu'on lui dise où il est | [validation_port_carton.md](docs/validation_port_carton.md) |
+| Prendre un carton d'un kilo sur une table et l'emporter, sans une seule commande refusée par le garde-fou ; puis le trouver sans qu'on lui dise où il est (chacun montré par un déroulé réussi d'un script de test, pas encore dans une app ; le carton glisse lentement, 8 cm en 11 s) | [validation_port_carton.md](docs/validation_port_carton.md) |
 | Une séance de tri de colis de 30 minutes avec des personnes qui circulent, répétée sur une simulation cinématique sans GPU : le robot ne s'est jamais approché d'une personne à moins de 0,75 m | [demo_tri_usine.md](docs/demo_tri_usine.md), `test/test_tri_pile_logicielle.py` |
 
 Dans ces démonstrations, l'IA perçoit et tient l'équilibre ; les gestes des
@@ -147,9 +146,10 @@ pip install --require-hashes -r requirements-ci.txt
 pytest test/
 ```
 
-Python 3.12 ou plus récent (essayé avec 3.12 et 3.13). Chaque fichier de
-`test/` est aussi un script autonome : `python3 test/test_safety_v2.py` en
-lance un et affiche chaque vérification. La même suite tourne à chaque push
+Python 3.12 ou plus récent (la CI teste 3.12 ; essayé aussi en local avec
+3.13). Chaque fichier de `test/` est aussi un script autonome :
+`python3 test/test_safety_v2.py` en lance un et affiche chaque
+vérification. La même suite tourne à chaque push
 (`.github/workflows/tests.yml`).
 
 Les scripts de simulation demandent un GPU NVIDIA et le conteneur Isaac

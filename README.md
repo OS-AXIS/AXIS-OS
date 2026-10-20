@@ -12,8 +12,6 @@ robot (a hardware driver), so that the same apps can one day run on robots
 from different makers. Today it runs a Unitree G1 **in simulation only**
 (NVIDIA Isaac Sim): it has never driven a physical robot.
 
-Demo video: [lien vidéo]
-
 ## The principle: AI proposes, code decides, the OS protects
 
 AI models are good at perceiving and suggesting, and they can be wrong in
@@ -35,12 +33,13 @@ directly.
    apps and the models do not control: `JointSafetyGuard` rejects invalid
    values (NaN, infinity) and anything beyond the position, velocity, torque
    or acceleration limits of each joint, and never silently "corrects" a
-   command; the proximity guard slows the robot down, then stops it, as soon
-   as its lidar sees an unexplained obstacle nearby, whether or not anything
-   recognised it as a person; the watchdog triggers an emergency stop when a
-   joint crosses a fatal threshold, and a separate supervisor stops the
-   robot if the watchdog itself stops running; permissions limit what each
-   app may do.
+   command; the proximity guard, when a lidar is wired to it (optional;
+   today only in the parcel-sorting demo), slows the robot down, then stops
+   it, as soon as the lidar sees an unexplained obstacle nearby, whether or
+   not anything recognised it as a person; the watchdog triggers an
+   emergency stop when a joint crosses a fatal threshold, and a separate
+   supervisor stops the robot if the watchdog itself stops running;
+   permissions limit what each app may do.
 
 The last point holds for apps that play by the rules. Isolation against a
 deliberately malicious app is not finished: see
@@ -97,7 +96,7 @@ with a Unitree G1. Each result, failures included, is written up in `docs/`
 | Open-vocabulary object detection (OWL-ViT); distance to the visible face of a box measured to the centimetre | [validation_perception.md](docs/validation_perception.md) |
 | Voice commands; off-topic sentences trigger nothing | [validation_voix.md](docs/validation_voix.md) |
 | Several third-party apps on one robot, arbitrated by the OS | [validation_multiapp.md](docs/validation_multiapp.md) |
-| Picking up a 1 kg box from a table and carrying it, with zero command refused by the safety guard; then finding the box without being told where it is | [validation_port_carton.md](docs/validation_port_carton.md) |
+| Picking up a 1 kg box from a table and carrying it, with zero command refused by the safety guard; then finding the box without being told where it is (each shown in one successful run of a test script, not yet in an app; the box slowly slips, 8 cm in 11 s) | [validation_port_carton.md](docs/validation_port_carton.md) |
 | A 30-minute parcel-sorting shift with people walking around, rehearsed on a CPU-only kinematic simulation: the robot never came closer than 0.75 m to a person | [demo_tri_usine.md](docs/demo_tri_usine.md), `test/test_tri_pile_logicielle.py` |
 
 In these demos, AI does the perception and the balance; the arm movements
@@ -140,10 +139,10 @@ pip install --require-hashes -r requirements-ci.txt
 pytest test/
 ```
 
-Python 3.12 or newer (tested with 3.12 and 3.13). Each file in `test/` is
-also a standalone script: `python3 test/test_safety_v2.py` runs one of
-them and prints each check. The same suite runs on every push
-(`.github/workflows/tests.yml`).
+Python 3.12 or newer (the CI tests 3.12; also tried locally with 3.13).
+Each file in `test/` is also a standalone script:
+`python3 test/test_safety_v2.py` runs one of them and prints each check.
+The same suite runs on every push (`.github/workflows/tests.yml`).
 
 Running the simulation scripts needs an NVIDIA GPU and the Isaac Sim
 container: see [sim/README.md](sim/README.md) and `deploy/machine_gpu/`.

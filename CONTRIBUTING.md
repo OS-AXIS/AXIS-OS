@@ -22,7 +22,9 @@ written in French.
 and a moving robot. A change to their behaviour needs a dedicated test and
 an explanation of the risk. A change that only rewrites comments or
 docstrings must leave the code identical: check it with
-`python3 outils/verifier_code_inchange.py`.
+`python3 outils/verifier_code_inchange.py origin/main HEAD`, which compares
+the whole branch with `main`. Without arguments, the tool only checks the
+last commit.
 
 To report a vulnerability, do not open an issue: see [SECURITY.md](SECURITY.md).
 
@@ -66,7 +68,10 @@ watchdog, `VLAService` et les permissions du Play Store sont ce qui se tient
 entre un bug et un robot qui bouge. Un changement de leur comportement
 demande un test dédié et une explication du risque. Un changement qui ne
 réécrit que des commentaires ou des docstrings doit laisser le code
-identique : vérifiez-le avec `python3 outils/verifier_code_inchange.py`.
+identique : vérifiez-le avec
+`python3 outils/verifier_code_inchange.py origin/main HEAD`, qui compare
+toute la branche à `main`. Sans argument, l'outil ne vérifie que le
+dernier commit.
 
 Pour signaler une faille, n'ouvrez pas d'issue : voir [SECURITY.md](SECURITY.md).
 

@@ -10,6 +10,146 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Changements cassants — permissions DANGEROUS confirmées à l'installation (2026-10-10)
+
+Le niveau DANGEROUS promettait une confirmation humaine qu'`install()` ne
+demandait jamais : une app qui déclarait `ACTUATORS_WRITE_ALL` ou
+`ACTUATORS_AI_DRIVEN` s'installait sans que personne ait accepté qu'elle
+fasse bouger le robot.
+
+- `PlayStoreRuntime.install()`, et donc `update_app()`, refuse toute app
+  qui déclare une permission DANGEROUS si le runtime n'a pas reçu de
+  fonction `confirmer_permissions`, ou si cette fonction ne rend pas
+  exactement `True`. Deux fonctions sont fournies : `confirmer_au_terminal`,
+  qui pose la question à l'opérateur, et `accepter_tout_SIMULATION`, qui
+  accepte tout, pour la simulation et les tests ; le constructeur refuse
+  cette dernière avec un robot réel reconnu (aujourd'hui, le G1 en DDS).
+- `AppManifest.validate()` refuse un manifeste qui exige
+  `Capability.AI_POLICY` sans déclarer `ACTUATORS_AI_DRIVEN`. Il exige
+  aussi que `permissions` et `capabilities_required` soient des listes de
+  `Permission` et de `Capability`, rien d'autre, et refuse tout caractère
+  de contrôle dans `app_id`, `name` et `author`, qui sont affichés au
+  moment de la confirmation.
+
+Test : `test/test_permissions_dangereuses.py`.
+
+### Corrections — entrées non fiables refusées, après un audit de sécurité (2026-10-10)
+
+- `LocomotionService` : une consigne de vitesse non finie (NaN ou infinie)
+  est refusée et remet la consigne à zéro. Le bornage transformait NaN en
+  vitesse maximale (`test/test_locomotion_non_finie.py`).
+- `GardienProximite` : une pose, un horodatage ou un balayage invalide
+  donne un arrêt.
+- `SetpointFollower` : une cible non finie est ignorée, et une consigne
+  horodatée dans le futur, ou avec un horodatage invalide, est tenue pour
+  périmée.
+- `VLACppConnector` : une action qui contient NaN ou inf est rejetée, et
+  l'action est horodatée avant l'envoi de la requête plutôt qu'à la
+  réception.
+- `GR00TConnector` : taille des messages bornée (`taille_max_octets`,
+  8 Mio par défaut) ; jeton d'accès facultatif (`api_token`). Changement
+  cassant : seul un serveur sur la machine elle-même est accepté, sauf
+  `autoriser_distant=True`, parce que ZeroMQ circule en clair ; pour un
+  serveur distant, la voie prévue est un tunnel SSH.
+- Détecteur OWL-ViT : poids épinglés par défaut (révision fixée, format
+  safetensors). Changement cassant : sans hash de commit complet, le
+  chargement est refusé, sauf `autoriser_non_epingle_SIMULATION=True`.
+
+### Ajouts — connecteur GR00T N1.7 et VLAService (2026-10-06)
+
+- `GR00TConnector` (`axis_os/store/sdk/ai/gr00t_connector.py`) : un
+  connecteur VLA (interface `IVLAConnector`) vers le serveur de NVIDIA qui
+  fait tourner un modèle GR00T N1.7, par ZeroMQ et msgpack-numpy.
+- `VLAService` (`axis_os/services/policy/vla_service.py`) : fait tourner une
+  politique VLA en mission sans jamais toucher un actionneur directement.
+  Les bras passent par l'adaptateur et `JointSafetyGuard`, la base par
+  `LocomotionService`.
+
+### Ajouts — navigation, manipulation, gardien de proximité, G1 29 DOF (2026-09-25)
+
+- `NavigationService` : chemin planifié par A* sur une carte déclarée, puis
+  suivi par poursuite pure ; la position du robot vient d'une source
+  injectée (en simulation, la pose lue dans la scène).
+- `ManipulationService` : prendre et poser un objet, sans que l'app ait à
+  connaître les angles des bras.
+- `GardienProximite` (`axis_os/services/locomotion/proximite.py`) : passé
+  à `LocomotionService` (paramètre `gardien`, facultatif), il plafonne
+  chaque consigne de marche selon la distance aux obstacles vus par un
+  lidar, jusqu'à l'arrêt.
+- `UnitreeG1HAL(variante="29dof")` : la variante 29 DOF du G1, lue dans
+  l'URDF officiel ; `"23dof"` reste la valeur par défaut. Pour cette
+  variante, un adaptateur de marche GR00T Whole-Body Control
+  (`GR00TWBCAdapter`).
+
+### Ajouts — horloge du robot dans RobotContext (2026-09-24)
+
+- `ctx.now()` et `ctx.sleep()` : l'heure du robot, simulée en simulation et
+  réelle sur le robot. Une app les utilise à la place de `time.monotonic()`
+  et de `time.sleep()`, pour se comporter de la même façon quand la
+  simulation est ralentie.
+- Correction : à travers le sandbox, une permission manquante lève
+  désormais `PermissionError`, comme en direct. Elle devenait une erreur
+  générique, que `walk()` avalait en rendant `False` : l'app ne pouvait pas
+  savoir pourquoi elle avait été refusée.
+
+### Ajouts — perception, marche et parole dans RobotContext (2026-09-23)
+
+- `ctx.look_for()` et `ctx.describe_scene()`, qui exigent `SENSORS_CAMERA`,
+  désormais appliquée.
+- `ctx.walk()` et `ctx.stop_walking()`. `walk()` déclare une consigne de
+  vitesse que l'OS fait appliquer par `LocomotionService` ; il exige la
+  nouvelle permission `LOCOMOTION_WALK` (DANGEROUS) en plus
+  d'`ACTUATORS_WRITE_LEGS`.
+- `ctx.listen()` et `ctx.declare_intent()`, servis par le nouveau
+  `SpeechService`, qui exigent `SENSORS_MICROPHONE`, désormais appliquée.
+  Le G1 déclare son micro et son haut-parleur (`RobotCapability.MICROPHONE`
+  et `SPEAKER`).
+- Correction : `Capability.MEMORY_PERSISTENT` est disponible si et
+  seulement si un service de mémoire est présent. Une app qui l'exigeait
+  était jusque-là toujours refusée à l'installation.
+
+### Ajouts — services de perception et de locomotion (2026-09-20 et 2026-09-22)
+
+- `PerceptionService` (2026-09-20), avec l'interface `IObjectDetector` et un
+  premier détecteur réel à vocabulaire ouvert, OWL-ViT.
+- `LocomotionService` (2026-09-22) : une app pilote la marche par consigne
+  de vitesse, sans connaître le robot ; le service délègue à un
+  `ILocomotionAdapter` fourni pour chaque robot. Une consigne non
+  rafraîchie à temps revient à zéro, et après une chute le service n'envoie
+  plus aucune consigne.
+- Changement cassant (2026-09-22) : `IMUData.angular_velocity` est exprimée
+  dans le repère du capteur, et `G1LocomotionPolicy.build_observation()` et
+  `step()` exigent `ang_vel_frame` (`"world"` ou `"body"`), sans valeur par
+  défaut.
+
+### Ajouts — HAL : groupes d'articulations, repères, caméra du G1 (2026-09-20)
+
+- `JointGroup` (MANIPULATION, LOCOMOTION, OTHER) et `JointDefinition.group` :
+  le driver déclare le groupe de chaque articulation, que le SDK devinait
+  jusque-là à partir de mots-clés anglais. `infer_joint_group()` reste un
+  repli pour un driver qui ne le déclare pas encore. Sur le G1, le torse est
+  déclaré OTHER et reste accessible par `move_all()`.
+- `axis_os/hal/core/frames.py` : arbre de repères et transformations
+  rigides, sur la convention de TF (ROS), pour relier ce que voit la caméra
+  au repère du robot.
+- `G1RealSenseCamera` : driver de la caméra RealSense du G1 (interface
+  `ICamera`).
+
+### Ajouts — pilotage par une politique apprise (2026-09-19)
+
+- `VLAAction.timestamp_ns` : l'instant où la politique a produit l'action
+  (0 si elle n'est pas horodatée).
+- `Permission.ACTUATORS_AI_DRIVEN` (DANGEROUS) et `Capability.AI_POLICY`.
+  La permission n'est pas encore vérifiée à l'exécution (SECURITY.md,
+  limite connue n° 2) ; depuis le 2026-10-10, elle est confirmée à
+  l'installation (voir plus haut).
+- `SetpointFollower` (`axis_os/services/policy/setpoint_follower.py`) :
+  avance par petits pas vers la consigne d'une politique lente, avec une
+  échéance de fraîcheur, et passe par les mêmes commandes que les apps,
+  donc par `JointSafetyGuard`.
+- Correction : à travers le sandbox, `get_full_state()` rend de vrais
+  `ActuatorFeedback`, comme en direct, et non des dictionnaires.
+
 ### Documentation — les 3 apps de référence validées contre Isaac Sim (2026-09-19, session 4)
 
 Complète `docs/isaac_lab_unitree_sim_status.md`. `SecurityPatrolApp`

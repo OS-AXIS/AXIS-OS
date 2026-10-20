@@ -21,7 +21,9 @@ under its own license:
    axis_os/hal/drivers/unitree_g1/urdf/meshes/README.md.
 
 2. VLA serving protocol definition
-   File:    axis_os/store/sdk/ai/proto/vla.proto (copied unchanged)
+   Files:   axis_os/store/sdk/ai/proto/vla.proto (copied unchanged), and
+            axis_os/store/sdk/ai/proto/vla_pb2.py, generated from it by the
+            protocol buffer compiler (protoc)
    Source:  https://github.com/VinRobotics/vla.cpp (src/serving/vla.proto)
    License: Apache License, Version 2.0
 
@@ -36,7 +38,8 @@ under its own license:
    Files:   deploy/freshness_monitor/idl/*.idl, reconstructed from the
             message definitions of unitree_sdk2 and unitree_sdk2_python
             (BSD 3-Clause, Unitree Robotics); deploy/freshness_monitor/idl/*.h
-            generated from them by the Eclipse Cyclone DDS IDL compiler.
+            and *.c generated from them by the Eclipse Cyclone DDS IDL
+            compiler.
 
 No model weights are included in this repository. Models used by AXIS-OS
 (OWL-ViT, Whisper, GR00T, Unitree locomotion policy, ...) are downloaded by

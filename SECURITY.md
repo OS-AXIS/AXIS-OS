@@ -15,10 +15,10 @@ check that the problem still exists there.
 
 **Please do not open a public issue.** Instead, either:
 
-- use GitHub's private reporting: tab **Security**, then
-  **Report a vulnerability**; or
 - write to **axis.project.dev@gmail.com**, with `[SECURITY]` at the start of
-  the subject.
+  the subject; or
+- use GitHub's private reporting, once it is enabled on this repository:
+  tab **Security**, then **Report a vulnerability**.
 
 Please include what you did, what happened, what you expected, the commit
 you tested, and, if you can, a script or test that shows the problem. A
@@ -74,17 +74,32 @@ reason AXIS-OS is **not ready for a real robot**.
    explicit confirmation. But the OS cannot yet tell whether a given command
    comes from a model or from fixed code: an app that runs a model without
    declaring the permission is not stopped.
-3. **Some model weights and libraries are not pinned.** OWL-ViT is loaded at
-   a fixed revision and in the safetensors format. Whisper is loaded at the
-   latest revision unless one is given, and `torch` and `onnxruntime-gpu`
-   are installed in their current version on the GPU machine, because the
-   right version depends on its CUDA driver. A change, or a compromise, of
+3. **Some model weights, libraries and installers are not pinned.** OWL-ViT
+   is loaded at a fixed revision and in the safetensors format. Whisper is
+   loaded at the latest revision unless one is given, and `torch` (with
+   `torchvision`) and `onnxruntime-gpu` are installed in their current
+   version on the GPU machine, because the right version depends on its
+   CUDA driver. On the same machine, Docker is installed with its official
+   get.docker.com script, which publishes no checksum to check it against
+   (`deploy/machine_gpu/installer.sh`). The NVIDIA Isaac-GR00T code, which
+   fine-tunes the vision-language-action model and serves it during
+   evaluation, is cloned at its latest commit, and no revision is fixed for
+   the GR00T-N1.7-3B and Cosmos-Reason2-2B weights
+   (`deploy/machine_gpu/entrainer_vla.sh`). A change, or a compromise, of
    those upstream files would be picked up without notice.
 4. **`accepter_tout_SIMULATION` only recognises one real robot.** This
    helper grants every DANGEROUS permission without asking, for simulation
    and tests. The Play Store refuses to use it with a real robot, but the
    only real robot it recognises today is the Unitree G1 driven over DDS. A
    driver for another physical robot would not be detected.
+5. **Some permissions are declared but not enforced yet.** An app can
+   declare `NETWORK_CLOUD`, `NETWORK_LOCAL`, `SENSORS_FORCE_TORQUE` and
+   `FLEET_BROADCAST`, but no check depends on them at run time. The sandbox
+   does not filter the network, so an app can open a network connection
+   without `NETWORK_CLOUD` or `NETWORK_LOCAL`; `SENSORS_FORCE_TORQUE` and
+   `FLEET_BROADCAST` relate to functions that `RobotContext` does not offer
+   yet. Filtering the network is step 3 of
+   [docs/isolation_apps.md](docs/isolation_apps.md).
 
 ---
 
@@ -103,10 +118,10 @@ maintenue : vérifiez que le problème y existe toujours.
 
 **N'ouvrez pas d'issue publique.** À la place :
 
-- utilisez le signalement privé de GitHub : onglet **Security**, puis
-  **Report a vulnerability** ;
-- ou écrivez à **axis.project.dev@gmail.com**, avec `[SECURITY]` au début
-  de l'objet.
+- écrivez à **axis.project.dev@gmail.com**, avec `[SECURITY]` au début de
+  l'objet ;
+- ou utilisez le signalement privé de GitHub, une fois activé sur ce
+  dépôt : onglet **Security**, puis **Report a vulnerability**.
 
 Indiquez ce que vous avez fait, ce qui s'est passé, ce que vous attendiez,
 le commit essayé et, si possible, un script ou un test qui montre le
@@ -166,16 +181,30 @@ réel**.
    dire si une commande donnée vient d'un modèle ou de code fixe : une app
    qui fait tourner un modèle sans déclarer la permission n'est pas
    arrêtée.
-3. **Certains poids et bibliothèques ne sont pas épinglés.** OWL-ViT est
-   chargé à une révision fixe et au format safetensors. Whisper est chargé
-   à sa dernière révision si on n'en donne pas, et `torch` et
-   `onnxruntime-gpu` sont installés dans leur version du jour sur la
-   machine GPU, parce que la bonne version dépend de son pilote CUDA. Une
-   modification, ou une compromission, de ces fichiers en amont serait
-   prise sans prévenir.
+3. **Certains poids, bibliothèques et installeurs ne sont pas épinglés.**
+   OWL-ViT est chargé à une révision fixe et au format safetensors. Whisper
+   est chargé à sa dernière révision si on n'en donne pas, et `torch` (avec
+   `torchvision`) et `onnxruntime-gpu` sont installés dans leur version du
+   jour sur la machine GPU, parce que la bonne version dépend de son pilote
+   CUDA. Sur la même machine, Docker est installé par son script officiel
+   get.docker.com, qui ne publie aucune empreinte permettant de le vérifier
+   (`deploy/machine_gpu/installer.sh`). Le code Isaac-GR00T de NVIDIA, qui
+   affine le modèle vision-langage-action et le sert pendant l'évaluation,
+   est cloné à son dernier commit, et aucune révision n'est fixée pour les
+   poids GR00T-N1.7-3B et Cosmos-Reason2-2B
+   (`deploy/machine_gpu/entrainer_vla.sh`). Une modification, ou une
+   compromission, de ces fichiers en amont serait prise sans prévenir.
 4. **`accepter_tout_SIMULATION` ne reconnaît qu'un seul robot réel.** Cette
    fonction accorde toutes les permissions DANGEROUS sans rien demander,
    pour la simulation et les tests. Le Play Store refuse de l'utiliser avec
    un robot réel, mais le seul robot réel qu'il reconnaît aujourd'hui est
    le Unitree G1 piloté en DDS. Le driver d'un autre robot physique ne
    serait pas détecté.
+5. **Certaines permissions sont déclarées mais pas encore appliquées.** Une
+   app peut déclarer `NETWORK_CLOUD`, `NETWORK_LOCAL`,
+   `SENSORS_FORCE_TORQUE` et `FLEET_BROADCAST`, mais aucun contrôle n'en
+   dépend à l'exécution. Le sandbox ne filtre pas le réseau : une app peut
+   donc ouvrir une connexion réseau sans `NETWORK_CLOUD` ni
+   `NETWORK_LOCAL` ; `SENSORS_FORCE_TORQUE` et `FLEET_BROADCAST` concernent
+   des fonctions que `RobotContext` n'offre pas encore. Le filtrage du
+   réseau est l'étape 3 de [docs/isolation_apps.md](docs/isolation_apps.md).
