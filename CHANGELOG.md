@@ -10,6 +10,79 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Sécurité, changements cassants — isolation des apps et profils d'exécution (2026-10-20)
+
+Étapes 0 et 1 de `docs/isolation_apps.md`, et limites n° 1, 2 et 4 de
+`SECURITY.md` (les parties qui restent ouvertes y sont décrites).
+
+- **Pont IPC sans pickle.** Les échanges entre une app et l'OS sont des
+  trames JSON (1 Mio au plus, JSON strict : ni NaN, ni infini, ni clé en
+  double, ni entier démesuré, profondeur bornée), et chaque commande est
+  vérifiée par le schéma de son action avant d'être exécutée : champ
+  inconnu, absent ou du mauvais type -> `MALFORMED_COMMAND`. Une trame
+  trop longue ou un flot de messages invalides arrête l'app
+  (`SandboxErrorKind.PROTOCOL_VIOLATION`, nouveau).
+- **Processus de l'app neuf, plus de fork.** Chaque hook (`manifest`,
+  `on_start`, `run_mission`, `on_stop`) tourne dans `python -I` lancé avec
+  `close_fds`, un environnement réduit à PATH et à la langue, et sa propre
+  session ; il ne reçoit que le pont, recharge l'app depuis sa source
+  (le texte vérifié pour une app signée), meurt avec l'OS, et tout son
+  groupe de processus est tué à la fin de l'appel. `SandboxRunner.run()`
+  passe aussi par ce processus.
+- **Profil explicite obligatoire.** `PlayStoreRuntime(..., profil=Profil.X)`
+  (`axis_os/store/runtime/profil.py`), jamais deviné. En `PRODUCTION` :
+  signature obligatoire (`require_signed_apps=False` refusé), fichier local
+  des clés de développeur approuvées obligatoire (`cles_approuvees`),
+  `accepter_tout_SIMULATION` refusée, psutil exigé, et installation par
+  `install_source()` seulement : le code d'une app n'est jamais exécuté
+  dans le processus de l'OS. `SIMULATION` est refusé sur un robot réel.
+- **`ACTUATORS_AI_DRIVEN` vérifiée à l'exécution** pour les consignes des
+  actions d'IA du SDK (`ActuatorCommand.origine == "ia"`), aussi à travers
+  `SetpointFollower.set_target(..., origine=ORIGINE_IA)`.
+- **Correctifs de la revue du bac à sable** : la sortie d'une app est
+  relayée par morceaux bornés (une ligne énorme ne fait plus grossir la
+  mémoire de l'OS) et son relais s'arrête même si un processus lancé par
+  l'app garde le tube ; le groupe de processus de l'app est tué avant
+  d'être récolté ; le processus de l'OS n'est plus inspectable par ceux des
+  apps (`prctl(PR_SET_DUMPABLE, 0)`, exigé en production) ; une écoute ne
+  dure jamais plus que ce qui reste au hook ; le message de fin d'une app
+  est vérifié et son texte d'erreur neutralisé ; l'état de facturation est
+  relu avec son type ; `decrypt_verified_app_source()` donne aux apps
+  chiffrées un chemin sans exécution vers `install_source()` ; le fichier
+  des clés approuvées est lu sans suivre de lien symbolique et doit
+  appartenir à root ou à l'utilisateur de l'OS.
+
+Ce qui casse pour un appelant :
+
+- `PlayStoreRuntime` exige l'argument nommé `profil` ; `require_signed_apps`
+  vaut désormais `None` par défaut (lu comme False hors production).
+- Les paramètres de mission, l'état d'une instance d'app (attributs) et
+  le résultat d'une mission (`metrics`) doivent être des données JSON :
+  None, bool, nombres finis, chaînes, listes, dicts à clés textuelles (et
+  énumérations, pour l'état). Un attribut qui n'en est pas une est recréé
+  par le constructeur de l'app dans son processus ; un paramètre ou un
+  résultat qui n'en est pas un fait échouer l'appel proprement.
+- Une app définie dans un script lancé directement est rechargée sans le
+  code de niveau module de ce script (seuls imports, définitions et
+  constantes littérales sont repris) ; une classe définie dans une
+  fonction ne peut plus tourner dans le bac à sable.
+- `SandboxRunner.run()` n'accepte qu'une fonction désignée par son module
+  et son nom (fonction de module, `time.sleep`, `random.random`), avec des
+  arguments et un résultat JSON.
+- En production, `install(objet)` et donc `update_app()` sont refusés ;
+  `install_source()` refuse une app déjà installée (mise à jour depuis la
+  source non prise en charge).
+- Un `app_id` ne peut plus contenir « : » (réservé aux espaces internes de
+  l'OS) ; par le pont, `listen()` est limité à 120 s et `get_joint_groups`
+  exige `ACTUATORS_READ` (comme `get_full_state`, que `move_to_pose`
+  appelle déjà) ; le journal de mission tenu par l'OS est plafonné à
+  10 000 lignes ; le processus de l'OS ne produit plus de vidage mémoire
+  (core dump).
+
+Tests : `test/test_profils_production.py` et
+`test/test_isolation_durcissements.py` (nouveaux) ; la suite existante
+passe, avec un profil ajouté à chaque construction de runtime.
+
 ### Sécurité, changement cassant — apps chiffrées : signature vérifiée avant toute exécution (2026-10-20)
 
 Le chargeur d'apps chiffrées exécutait le code de niveau module de l'app

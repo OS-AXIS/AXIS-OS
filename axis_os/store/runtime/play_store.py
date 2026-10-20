@@ -32,6 +32,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, Any, List, Union
+import math
 import os
 import time
 import uuid
@@ -55,7 +56,7 @@ from axis_os.store.runtime.sandbox import (
 from axis_os.store.runtime.profil import Profil, lire_cles_approuvees
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
 from axis_os.store.runtime.processus_app import (
-    AppNonRechargeable, etat_json, spec_depuis_instance,
+    AppNonRechargeable, etat_json, rendre_os_non_inspectable, spec_depuis_instance,
 )
 from axis_os.services.memory.service import MemoryService
 import threading
@@ -381,6 +382,11 @@ class PlayStoreRuntime:
                 raise RuntimeError(
                     "Profil PRODUCTION : psutil est requis pour appliquer les quotas "
                     "CPU et mémoire des apps.")
+            if not rendre_os_non_inspectable():
+                raise RuntimeError(
+                    "Profil PRODUCTION : impossible d'interdire l'inspection du "
+                    "processus de l'OS (prctl PR_SET_DUMPABLE) ; une app pourrait lire "
+                    "son environnement ou sa mémoire.")
         self._profil = profil
         self._cles_approuvees: Optional[Dict[str, str]] = (
             None if cles_approuvees is None else lire_cles_approuvees(cles_approuvees))
@@ -1104,6 +1110,14 @@ class PlayStoreRuntime:
         l'ancienne reste installée, mais arrêtée si elle tournait.
         Essais : test/test_app_update.py.
         """
+        if self._profil is Profil.PRODUCTION:
+            # Refusé avant tout appel à l'objet (manifest() tournerait dans
+            # l'OS) et avant d'arrêter l'ancienne version, qui reste en
+            # service.
+            print("  [ERREUR] update_app() : refusé en profil PRODUCTION, où une app "
+                  "s'installe depuis sa source signée ; la mise à jour depuis la "
+                  "source n'est pas encore prise en charge.")
+            return False
         new_manifest = new_app.manifest()
         app_id = new_manifest.app_id
 
@@ -1319,8 +1333,23 @@ class PlayStoreRuntime:
         comme neuve pour cet app_id précis, ce qui n'est jamais pire que
         le comportement sans memory_service.
         """
-        result = self._memory_service.app_load(f"billing::{app_id}", key)
-        return result.value if result.ok else default
+        try:
+            result = self._memory_service.app_load(f"billing::{app_id}", key)
+        except Exception:                 # noqa: BLE001 — voir la docstring
+            return default
+        if not result.ok:
+            return default
+        valeur = result.value
+        # Type attendu vérifié : une valeur d'un autre type (fichier abîmé,
+        # écrit par autre chose que _write_billing_flag) ne doit ni faire
+        # lever _bill() ni fausser la facturation.
+        if key == "one_time_billed":
+            return valeur if isinstance(valeur, bool) else default
+        if key == "last_subscription_bill_time_s":
+            ok = (isinstance(valeur, (int, float)) and not isinstance(valeur, bool)
+                  and math.isfinite(valeur) and 0 <= valeur <= time.time() + 60)
+            return float(valeur) if ok else default
+        return default
 
     def _write_billing_flag(self, app_id: str, key: str, value) -> None:
         """Écrit un indicateur de facturation dans MemoryService ; ne fait
@@ -1331,7 +1360,10 @@ class PlayStoreRuntime:
         prochain redémarrage serait perdue, pas la session actuelle."""
         if self._memory_service is None:
             return
-        self._memory_service.app_store(f"billing::{app_id}", key, value)
+        try:
+            self._memory_service.app_store(f"billing::{app_id}", key, value)
+        except Exception as exc:          # noqa: BLE001 — voir la docstring
+            print(f"  [ATTENTION] état de facturation non enregistré ({exc!r:.120})")
 
     def _bill(self, entry: InstalledApp, mission_id: str) -> Optional[BillingReport]:
         """

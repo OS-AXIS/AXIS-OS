@@ -4,7 +4,7 @@ AXIS-OS — Hôte d'app : le programme du processus d'une app
 Chaque appel à une app (manifest, on_start, run_mission, on_stop) tourne
 dans un interpréteur Python NEUF, lancé par processus_app.py avec
 
-    python -I hote_app.py <descripteur du pont> <racine d'AXIS-OS>
+    python -I hote_app.py <descripteur du pont> <racine d'AXIS-OS> <pid de l'OS>
 
 Pourquoi un interpréteur neuf plutôt qu'une copie du processus de l'OS
 (fork) : une copie hérite de toute sa mémoire (objets HAL, clés) et de
@@ -246,8 +246,25 @@ def _executer(app, depart, client):
     return {"mission": _resultat_mission(resultat, client.get_mission_log())}
 
 
+def _mourir_avec_l_os(pid_os: int) -> None:
+    """Demande au noyau de tuer ce processus si celui de l'OS meurt
+    (prctl PR_SET_PDEATHSIG, Linux). Sans cela, une app qui ne parle plus
+    au pont continuerait de tourner après un arrêt brutal de l'OS."""
+    import ctypes
+    import os
+    import signal
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(1, int(signal.SIGKILL), 0, 0, 0)     # 1 = PR_SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+    if os.getppid() != pid_os:      # l'OS est mort avant le prctl
+        os._exit(1)
+
+
 def main(argv) -> int:
     fd, racine = int(argv[1]), argv[2]
+    _mourir_avec_l_os(int(argv[3]))
     sys.path.insert(0, racine)
     from axis_os.store.runtime.canal_ipc import Canal
     from axis_os.store.runtime.processus_app import SCHEMA_DEPART

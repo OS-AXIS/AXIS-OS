@@ -1,35 +1,35 @@
 # AXIS-OS — Isolation des apps : constat et plan
 
-**Statut : CONSTAT ÉTABLI, CORRECTION NON CODÉE.** Rédigé à l'audit de
-sécurité du 2026-10-10 (point I2). Complète
+**Statut : ÉTAPES 0 ET 1 FAITES (2026-10-20), ÉTAPES 2 À 4 À FAIRE.**
+Rédigé à l'audit de sécurité du 2026-10-10 (point I2). Complète
 `docs/sandboxing_hardening_notes.md` (pistes techniques générales) par un
-constat vérifié sur le code actuel et un plan ordonné.
+constat vérifié sur le code et un plan ordonné.
 
 Ce document décrit les faiblesses et leur correction, volontairement sans
 mode opératoire : les essais qui les ont établies ne sont pas publiés.
 
 ## Le constat, en une phrase
 
-**Aujourd'hui, une app malveillante PEUT commander un actionneur sans passer
-par la HAL.** Le Play Store, les permissions et le pont IPC (`hal_bridge.py`)
-protègent contre une app *buggée* ou *maladroite*, pas contre une app qui
-cherche à les contourner.
-
-La règle « aucune app ne commande un actionneur hors de la HAL » est donc
-vraie pour le code coopératif, et fausse pour le code hostile. Tant que ce
-plan n'est pas réalisé, **seules des apps dont on connaît et relit le code
-doivent tourner sur un vrai robot** (voir « En attendant »).
+**Avant le 2026-10-20, une app malveillante POUVAIT commander un
+actionneur sans passer par la HAL** : son processus était une copie de
+celui de l'OS (fork), et le pont IPC transportait des objets pickle. Les
+étapes 0 et 1 ci-dessous ont fermé ces deux voies. Restent ouverts le
+même utilisateur Unix, le réseau et les appels système (étapes 2 à 4) :
+une app hostile peut encore lire les fichiers de l'OS et, sur un vrai G1,
+ouvrir sa propre connexion DDS. Tant que ces étapes ne sont pas faites,
+**seules des apps dont on connaît et relit le code doivent tourner sur un
+vrai robot**, en profil PRODUCTION (voir « En attendant »).
 
 ## Ce qui a été vérifié
 
 | # | Constat | Vérifié comment |
 |---|---------|-----------------|
-| 1 | Le processus de l'app est créé par `fork` (`sandbox.py`) : il hérite d'une COPIE de toute la mémoire du processus principal, objets HAL compris. | Essai : depuis une mission sandboxée, les objets HAL du processus principal sont accessibles. |
-| 2 | Sur un vrai G1 (`backend="dds"`), cette copie détient les **mêmes connexions DDS ouvertes** vers le robot : une commande moteur envoyée depuis l'app partirait vers les moteurs sans passer par `JointSafetyGuard`. | Conséquence directe de (1) : `fork` duplique aussi les connexions ouvertes. Non essayé sur matériel. |
+| 1 | *(Corrigé, étape 1.)* Le processus de l'app était créé par `fork` (`sandbox.py`) : il héritait d'une COPIE de toute la mémoire du processus principal, objets HAL compris. | Essai : depuis une mission sandboxée, les objets HAL du processus principal sont accessibles. |
+| 2 | *(Corrigé, étape 1, pour les connexions héritées ; une connexion NEUVE reste possible tant que l'étape 3 n'est pas faite.)* Sur un vrai G1 (`backend="dds"`), cette copie détenait les **mêmes connexions DDS ouvertes** vers le robot : une commande moteur envoyée depuis l'app partirait vers les moteurs sans passer par `JointSafetyGuard`. | Conséquence directe de (1) : `fork` duplique aussi les connexions ouvertes. Non essayé sur matériel. |
 | 3 | L'app tourne sous le **même utilisateur** que l'OS : elle peut charger les mêmes bibliothèques que lui, ouvrir ses propres connexions réseau vers le robot, et lire les fichiers de l'OS et des autres apps (le cloisonnement des données par `app_id` est logique, pas imposé par le système). | Lecture du code (`sandbox.py`, `memory/service.py`). |
 | 4 | Le réseau n'est pas filtré : `NETWORK_CLOUD` / `NETWORK_LOCAL` sont déclarées mais non appliquées (déjà documenté dans `manifest.py`). | Lecture du code. |
 | 5 | Ce qui tient déjà (contre une app buggée ; contre une app hostile, voir 6) : les hooks `on_start` / `run_mission` / `on_stop` passent tous par `SandboxRunner` + `HALBridgeServer` ; un `RobotContext` ne peut pas être fabriqué hors du runtime (jeton de session) ; les permissions SIGNATURE exigent la clé plateforme ; les quotas CPU/RAM/temps s'appliquent (si `psutil` est installé). | Tests existants (`test_context_lockdown.py`, `test_playstore_sandbox_isolation.py`, …). |
-| 6 | **Le pont IPC transporte des objets PICKLE** (`HALBridgeServer` lit les commandes de l'app, `SandboxRunner` lit son résultat). Or désérialiser un pickle peut exécuter du code : un objet fabriqué par l'app ferait tourner du code de son choix DANS LE PROCESSUS DE L'OS, avec tous ses droits (modifier ses propres permissions après la confirmation, appeler la HAL directement). | Essai lors de la revue de l'audit : du code venu d'une mission s'est exécuté dans le processus de l'OS. |
+| 6 | *(Corrigé, étape 0.)* **Le pont IPC transportait des objets PICKLE** (`HALBridgeServer` lit les commandes de l'app, `SandboxRunner` lit son résultat). Or désérialiser un pickle peut exécuter du code : un objet fabriqué par l'app ferait tourner du code de son choix DANS LE PROCESSUS DE L'OS, avec tous ses droits (modifier ses propres permissions après la confirmation, appeler la HAL directement). | Essai lors de la revue de l'audit : du code venu d'une mission s'est exécuté dans le processus de l'OS. |
 
 ## Le plan, dans l'ordre
 
@@ -38,7 +38,13 @@ Chaque étape ferme une voie de contournement précise et vient avec son test
 à 3 sont le **minimum avant d'installer sur un vrai robot une app dont on n'a
 pas relu le code**.
 
-### Étape 0 — Un pont qui ne désérialise que des DONNÉES
+### Étape 0 — Un pont qui ne désérialise que des DONNÉES (FAIT)
+
+Fait le 2026-10-20 : `canal_ipc.py` (trames de 1 Mio au plus, JSON
+strict, schémas), `hal_bridge.py` (un schéma par action, refus de tout
+champ inattendu), `sandbox.py` (le résultat d'un hook est un JSON
+revérifié, reconstruit champ par champ). Le plan d'origine :
+
 
 - Remplacer le transport par pickle (`mp.Queue`) par des octets JSON avec
   un schéma strict par action (`mp.Pipe`, `send_bytes` / `recv_bytes` avec
@@ -52,7 +58,18 @@ pas relu le code**.
   désérialisation -> rien ne s'exécute dans le parent, la commande est
   refusée.
 
-### Étape 1 — Ne plus hériter de la mémoire : `spawn` au lieu de `fork`
+### Étape 1 — Ne plus hériter de la mémoire : `spawn` au lieu de `fork` (FAIT)
+
+Fait le 2026-10-20 : `processus_app.py` lance
+`python -I hote_app.py` par `subprocess.Popen(close_fds=True,
+pass_fds=(pont,), start_new_session=True)`, avec un environnement réduit
+à PATH et à la langue ; `hote_app.py` recharge l'app depuis sa source
+vérifiée. Le processus de l'app meurt avec l'OS (PR_SET_PDEATHSIG), et
+tout son groupe de processus est tué à la fin de chaque appel. En profil
+PRODUCTION, `PlayStoreRuntime.install_source()` lit même le manifeste
+dans ce processus : le code d'une app ne s'exécute jamais dans celui de
+l'OS. Le plan d'origine :
+
 
 - Démarrer l'app dans un interpréteur NEUF (`mp.get_context("spawn")`, ou
   mieux un processus dédié `python -I -m axis_os.store.runtime.hote_app`
@@ -116,15 +133,15 @@ pas relu le code**.
   dernière barrière, indépendante de tout logiciel (voir
   `docs/hardware_estop_notes.md`).
 
-## En attendant (règles d'exploitation, sans code)
+## En attendant (règles d'exploitation)
 
 1. Sur un vrai robot : `PlayStoreRuntime(robot, watchdog,
-   require_signed_apps=True, platform_public_key=...,
-   confirmer_permissions=confirmer_au_terminal)`,
-   et n'installer que des apps signées dont le code a été relu.
-2. `psutil` installé (sinon les quotas CPU/RAM ne s'appliquent pas — le
-   runtime le signale au démarrage).
-3. Les permissions DANGEROUS (dont `ACTUATORS_AI_DRIVEN`) exigent une
+   profil=Profil.PRODUCTION, cles_approuvees="/chemin/cles_approuvees.txt",
+   platform_public_key=..., confirmer_permissions=confirmer_au_terminal)`,
+   puis `install_source(...)` d'apps signées dont le code a été relu. Le
+   profil PRODUCTION impose la signature, une clé approuvée, la
+   confirmation humaine des permissions DANGEROUS et psutil.
+2. Les permissions DANGEROUS (dont `ACTUATORS_AI_DRIVEN`) exigent une
    confirmation explicite à l'installation (audit I1) : elle ne protège pas
    contre une app hostile, mais rend visible ce qu'une app honnête fera.
 
@@ -133,9 +150,9 @@ pas relu le code**.
 | Étape | Statut |
 |-------|--------|
 | Constat vérifié | fait (2026-10-10 ; constat 6 à la revue) |
-| 0 — pont sans pickle | à faire |
-| 1 — spawn, pas de mémoire héritée | à faire |
-| 2 — utilisateur dédié | à faire |
-| 3 — espace de noms réseau vide, NETWORK_* appliquées | à faire |
+| 0 — pont sans pickle | fait (2026-10-20) |
+| 1 — spawn, pas de mémoire héritée | fait (2026-10-20) |
+| 2 — utilisateur dédié | à faire : demande un assistant privilégié lancé par systemd, hors de portée d'un changement de code seul |
+| 3 — espace de noms réseau vide, NETWORK_* appliquées | à faire : même raison ; casse aussi les apps qui joignent un service local (assistant IA) |
 | 4 — seccomp, rlimits, cgroups | à faire |
 | 5 — gVisor / Firecracker | sur décision |

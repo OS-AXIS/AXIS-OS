@@ -57,9 +57,9 @@ config:
   themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; } .edge-animation-fast { stroke: #007aff; stroke-dasharray: 0 20 !important; stroke-width: 5px; } @media (prefers-reduced-motion: reduce) { .edge-animation-fast { animation: none; } }"
 ---
 flowchart TB
-    PS("<b>Play Store</b><br/>signature (optional outside production, see SECURITY.md)<br/>✓ permissions<br/>✓ user confirms DANGEROUS ones")
+    PS("<b>Play Store</b><br/>✓ signature, mandatory in production<br/>✓ permissions<br/>✓ user confirms DANGEROUS ones")
 
-    A("<b>Third-party app</b> · RobotApp<br/>separate process, sandboxed<br/>CPU, memory and time quotas<br/>⚠ isolation incomplete, see SECURITY.md")
+    A("<b>Third-party app</b> · RobotApp<br/>fresh process, sandboxed<br/>CPU, memory and time quotas<br/>⚠ isolation incomplete, see SECURITY.md")
 
     subgraph OS["AXIS-OS process"]
         CTX("<b>RobotContext</b><br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap")
@@ -78,7 +78,7 @@ flowchart TB
     R(["<b>Robot motors</b>"])
 
     PS e1@-->|installs| A
-    A e2@-->|"IPC bridge · pickle, to be replaced"| CTX
+    A e2@-->|"IPC bridge · checked JSON"| CTX
     CTX e3@--> SV
     CTX e4@--> N
     SV e5@-->|walk| G
@@ -116,8 +116,9 @@ flowchart TB
 
 In green, the safety checks (each ✓): neither the apps nor the AI models
 control them. In orange, what watches the robot in parallel and can stop
-it at any time. The sandbox protects against a buggy app, not yet against
-a malicious one: see [Status and limits](#status-and-limits).
+it at any time. The app process inherits nothing from the OS and only
+exchanges checked JSON with it; against a malicious app, isolation is still
+incomplete (files, network): see [Status and limits](#status-and-limits).
 
 A service is something two apps from different trades would both need
 (walking, seeing, grasping); anything specific to one trade is an app. The
@@ -162,11 +163,14 @@ AXIS-OS is research software. Please read this before using it.
   speaks the robot's real protocol (DDS), but it has never been connected
   to a physical robot. Behaviour that is safe in simulation is not
   automatically safe on hardware.
-- **App isolation is not finished.** The sandbox protects the robot from a
-  buggy app, not from a malicious one: a hostile app can today act outside
-  the HAL. **Only install trusted apps whose code you have reviewed.** The
-  plan to fix this is in [docs/isolation_apps.md](docs/isolation_apps.md);
-  the details are in [SECURITY.md](SECURITY.md).
+- **App isolation is not finished.** Each app runs in a fresh process
+  that inherits nothing from the OS and talks to it only through checked
+  JSON. But that process still runs as the same user and has network
+  access: a hostile app could read the OS files, and on a real G1 open its
+  own DDS connection to the motors. **On a real robot, use the PRODUCTION
+  profile and only install trusted apps whose code you have reviewed.**
+  The plan is in [docs/isolation_apps.md](docs/isolation_apps.md); the
+  details are in [SECURITY.md](SECURITY.md).
 - **Grasping driven by a vision-language-action model is work in progress.**
   A GR00T N1.7 model fine-tuned on simulated demonstrations is being
   evaluated against the programmed reflexes; it is not reliable yet.

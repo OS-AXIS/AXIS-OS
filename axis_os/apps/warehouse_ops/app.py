@@ -194,12 +194,12 @@ class WarehouseOpsApp(RobotApp):
 
     def run_mission(self, ctx: RobotContext, params: Dict[str, Any]) -> MissionResult:
         # Générateur RECRÉÉ à chaque mission. Pourquoi : chaque mission
-        # s'exécute dans un processus fils (la sandbox) qui repart de
-        # l'état de l'app tel qu'il était à sa création. Un générateur
-        # créé une seule fois dans __init__ y était donc figé, et toutes
-        # les missions tiraient exactement les mêmes nombres : 20 échecs
-        # sur 20, ou 0 sur 20, au lieu d'environ 30 %. Une graine (seed)
-        # peut être fournie pour rendre une mission reproductible.
+        # s'exécute dans un processus à part (la sandbox), qui repartait
+        # autrefois d'une copie figée de l'app ; un générateur créé une
+        # seule fois dans __init__ tirait alors les mêmes nombres à chaque
+        # mission (20 échecs sur 20, ou 0 sur 20, au lieu d'environ 30 %).
+        # Le recréer ici garde chaque mission indépendante, et une graine
+        # (seed) peut la rendre reproductible.
         self._rng = random.Random(params.get("seed"))
         t_start = time.monotonic()
         mission_id = str(uuid.uuid4())[:8].upper()

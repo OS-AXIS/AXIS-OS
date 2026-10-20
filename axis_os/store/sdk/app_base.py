@@ -719,12 +719,22 @@ class RobotContext:
         self._require(Permission.WATCHDOG_READ)
         self._watchdog.subscribe(callback)
 
+    MAX_LIGNES_JOURNAL = 10_000
+
     def log(self, message: str) -> None:
         """Ajoute une ligne au journal de mission et l'affiche.
 
         La ligne est préfixée par le temps réel écoulé depuis la création
         de ce contexte et par l'identifiant de l'app. Aucune permission
         requise."""
+        # Le journal vit dans le processus de l'OS pendant tout le hook : une
+        # app qui écrirait sans fin ferait grossir la mémoire de l'OS, hors
+        # de ses propres quotas. Au-delà de MAX_LIGNES_JOURNAL, une seule
+        # ligne le signale et la suite est ignorée.
+        if len(self._log_entries) >= self.MAX_LIGNES_JOURNAL:
+            if len(self._log_entries) == self.MAX_LIGNES_JOURNAL:
+                self._log_entries.append(f"[{self._manifest.app_id}] … journal tronqué")
+            return
         elapsed = time.monotonic() - self._t0
         entry   = f"[T+{elapsed:06.2f}s] [{self._manifest.app_id}] {message}"
         self._log_entries.append(entry)
@@ -873,11 +883,12 @@ class RobotApp(ABC):
     robot.
 
     Définir la classe de l'app au niveau du module, jamais à l'intérieur
-    d'une fonction : le sandbox transmet l'app au processus isolé en la
-    sérialisant avec pickle (le format de Python qui transforme un objet
-    en octets pour le faire passer d'un processus à l'autre), et une
-    classe locale ne se sérialise pas : l'app plante alors au démarrage
-    sans explication claire (voir docs/CREER_UNE_APP.md).
+    d'une fonction : chaque hook tourne dans un processus Python neuf, qui
+    recharge l'app depuis son module ou sa source (voir
+    store/runtime/hote_app.py) et ne peut pas retrouver une classe locale.
+    Le constructeur doit pouvoir être appelé sans argument : seuls les
+    attributs qui sont des données (nombres, chaînes, listes, dicts,
+    énumérations) sont recopiés depuis l'instance installée.
     """
 
     @abstractmethod

@@ -153,14 +153,12 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     spec = importlib.util.spec_from_file_location("local_app", app_file)
     module = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(Path.cwd()))
-    # Le module doit être enregistré dans sys.modules avant d'être exécuté.
-    # Raison : le sandbox (bac à sable, le processus séparé où l'app tourne
-    # isolée du reste d'AXIS-OS) reçoit l'app par sérialisation pickle (le
-    # format Python qui transforme un objet en octets), et pickle retrouve
-    # la classe par le nom de son module dans sys.modules. Sans cette
-    # ligne, toute app générée par `axis-os init` plantait dès
-    # `axis-os simulate` (on_start : CRASHED / SANDBOX_ERROR, sans autre
-    # explication). Constaté en rédigeant docs/CREER_UNE_APP.md.
+    # Le module est enregistré dans sys.modules avant d'être exécuté :
+    # c'est par ce nom et son fichier que le processus neuf de l'app (le
+    # sandbox, voir store/runtime/hote_app.py) la recharge. Historique :
+    # quand l'app passait par pickle, son absence de sys.modules faisait
+    # planter `axis-os simulate` dès on_start (constaté en rédigeant
+    # docs/CREER_UNE_APP.md).
     sys.modules["local_app"] = module
     spec.loader.exec_module(module)
 

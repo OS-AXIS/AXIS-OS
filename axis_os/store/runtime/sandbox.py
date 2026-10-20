@@ -291,7 +291,7 @@ class SandboxRunner:
             CanalCorrompu, CanalFerme, MessageRefuse,
         )
         from axis_os.store.runtime.processus_app import (
-            ProcessusHote, SCHEMA_RESULTAT, message_depart,
+            ProcessusHote, SCHEMA_FIN, SCHEMA_RESULTAT, _affichable, message_depart,
         )
 
         t_start = self._clock()
@@ -352,7 +352,11 @@ class SandboxRunner:
                 genre = msg.get("type")
                 if genre == "appel":
                     cpu_actif.set()
-                    reponse = serveur.traiter(msg) if serveur is not None else {
+                    # Le serveur reçoit le temps qui reste au hook : une action
+                    # qui bloque par nature (listen) ne doit pas retenir le
+                    # thread de l'OS au-delà du quota.
+                    reste = max(0.0, limite - 1.0 - (self._clock() - t_start))
+                    reponse = serveur.traiter(msg, reste_s=reste) if serveur is not None else {
                         "request_id": msg.get("request_id"), "success": False, "data": None,
                         "error": "aucun accès au robot pendant ce hook"}
                     if reponse is None:
@@ -368,7 +372,10 @@ class SandboxRunner:
                     except CanalFerme:
                         break
                 elif genre == "fin":
-                    fin = msg
+                    try:
+                        fin = SCHEMA_FIN.verifier(msg, "fin")
+                    except MessageRefuse as exc:
+                        violation_protocole = f"message de fin refusé : {exc}"
                     break
                 else:
                     refus += 1
@@ -428,8 +435,9 @@ class SandboxRunner:
 
             if fin.get("erreur"):
                 self._set_state(SandboxState.CRASHED)
+                # Texte choisi par l'app, affiché ensuite par l'OS : neutralisé.
                 return SandboxResult(False, SandboxState.CRASHED,
-                                     error=str(fin["erreur"])[:2000],
+                                     error=_affichable(fin["erreur"], 2000),
                                      error_kind=SandboxErrorKind.APPLICATION_ERROR,
                                      duration_s=self._clock() - t_start)
             try:

@@ -77,10 +77,13 @@ suiveur de consigne, qui rejoint la cible par petits pas et fige le robot
 si la consigne devient trop ancienne), puis par JointSafetyGuard (le garde
 qui vérifie chaque commande d'articulation et refuse celles qui sortent
 de ses limites), comme ceux
-de n'importe quelle autre source de commandes. Les vitesses de base
+de n'importe quelle autre source de commandes. Les passer au suiveur avec
+`set_target(..., origine=ORIGINE_IA)` : le contexte de l'app exige alors
+la permission ACTUATORS_AI_DRIVEN pour chaque pas. Les vitesses de base
 (`base_velocity`) ne sont PAS des angles : c'est à l'appelant de les
 transmettre au service de locomotion, qui les borne et les fait valider
-lui-même.
+lui-même ; ce chemin-là ne porte pas la marque d'origine (voir
+SECURITY.md, limite n° 2).
 
 La réponse du serveur est une donnée non fiable
 -----------------------------------------------

@@ -209,7 +209,7 @@ sera, à juste titre, refusée par l'utilisateur.
 | `ACTUATORS_WRITE_ARMS` / `_LEGS` / `_ALL` | commander les bras, les jambes, tout | **dangereux** |
 | `LOCOMOTION_WALK` | faire se déplacer le robot | **dangereux** |
 | `EMERGENCY_STOP` | déclencher l'arrêt d'urgence | **dangereux** |
-| `ACTUATORS_AI_DRIVEN` | mouvements décidés par une IA (et non un script) — confirmée à l'installation, mais pas encore vérifiée à l'exécution | **dangereux** |
+| `ACTUATORS_AI_DRIVEN` | mouvements décidés par une IA (et non un script) — confirmée à l'installation, et exigée à l'exécution pour les consignes des actions d'IA du SDK | **dangereux** |
 | `ACTUATORS_RAW` | commandes moteur brutes | **réservé** aux apps signées par AXIS-OS |
 | `FLEET_BROADCAST` | parler aux autres robots | **réservé** |
 
@@ -218,12 +218,13 @@ l'installation : sans elle, l'app est refusée. Le robot fournit cette
 confirmation par `PlayStoreRuntime(confirmer_permissions=...)` —
 `confirmer_au_terminal` sur un vrai robot (seul « o » ou « oui »
 accorde), `accepter_tout_SIMULATION` en simulation et dans les tests
-(refusé sur un robot réel). Une app qui exige `Capability.AI_POLICY` doit
+(refusé sur un robot réel et en profil `PRODUCTION`). Une app qui exige `Capability.AI_POLICY` doit
 déclarer `ACTUATORS_AI_DRIVEN`, sinon son manifest est invalide (le
 runtime ne fournit pas encore `AI_POLICY` : cette règle vaudra pour le
 futur service VLA). Déclarez `ACTUATORS_AI_DRIVEN` dès qu'une IA décide
-des mouvements : rien ne vous y force encore à l'exécution, mais
-l'utilisateur doit le savoir avant d'accepter. Les
+des mouvements : les consignes produites par `VLAAction`, `GR00TAction`
+ou `LocomotionAction` (`to_commands()`) sont refusées à l'exécution sans
+elle, et l'utilisateur doit le savoir avant d'accepter. Les
 permissions **réservées** sont, elles, refusées à toute app qui n'est pas
 signée par la clé de la plateforme.
 
@@ -285,10 +286,12 @@ référence.
    Renouvelez la consigne régulièrement ; si l'app se tait, le robot
    s'arrête de lui-même, en équilibre. C'est voulu.
 5. **Définissez votre classe au niveau du module**, jamais à l'intérieur
-   d'une fonction, et ne modifiez pas une instance après coup. Le bac à
-   sable transmet l'app à son processus séparé en la sérialisant ; une
-   classe locale ne se sérialise pas, et l'app plante au démarrage sans
-   explication claire.
+   d'une fonction, avec un constructeur sans argument. Chaque appel à
+   votre app tourne dans un processus Python neuf qui la recharge depuis
+   son module ; il ne retrouve pas une classe locale, et ne recopie de
+   l'instance installée que les attributs qui sont de simples données.
+   Paramètres de mission et `metrics` doivent eux aussi être des données
+   JSON (nombres, chaînes, listes, dicts).
 6. **Le garde-fou peut refuser vos consignes**, et il a raison : trop
    rapide, trop loin, hors des butées. `move_arms()` rend le statut de
    chaque articulation ; lisez-le. Aucun appel de `ctx` ne permet de le
@@ -622,8 +625,8 @@ fois commande le robot : une seconde demande est refusée, avec la raison.
 
 **Pourquoi mon app plante au démarrage avec `SANDBOX_ERROR` ?**
 Presque toujours la règle d'or n° 5 : une classe définie dans une fonction,
-ou une instance modifiée après création. Définissez tout au niveau du
-module.
+un constructeur qui exige des arguments, ou des paramètres qui ne sont pas
+des données JSON. Définissez tout au niveau du module.
 
 **Pourquoi `listen()` rend-il presque toujours `None` ?**
 Parce que la phrase ne contient pas tous les groupes de mots-clés d'une

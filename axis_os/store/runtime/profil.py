@@ -33,9 +33,14 @@ le paquet d'une app. Une clé par ligne :
 La clé est celle que produit generate_developer_keypair()
 (axis_os/store/sdk/signing.py), soit 44 caractères base64 pour 32 octets.
 Une ligne illisible fait refuser tout le fichier : une erreur de saisie
-ne doit pas faire accepter ou ignorer une clé en silence. Le fichier ne
-doit être modifiable ni par le groupe ni par les autres utilisateurs
-(même règle que ~/.ssh/authorized_keys pour sshd).
+ne doit pas faire accepter ou ignorer une clé en silence. Le fichier doit
+être un fichier ordinaire (pas un lien symbolique), appartenir à root ou à
+l'utilisateur de l'OS, et n'être modifiable ni par le groupe ni par les
+autres. Ses dossiers parents ne sont pas vérifiés : à protéger par
+l'administrateur (sshd, lui, les vérifie). Tant que les apps tournent sous
+le même utilisateur que l'OS (étape 2 de docs/isolation_apps.md), un
+fichier qui lui appartient reste modifiable par une app : le placer hors
+de sa portée, par exemple propriété de root.
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
@@ -66,21 +71,32 @@ def lire_cles_approuvees(chemin: Union[str, os.PathLike]) -> Dict[str, str]:
     """Lit le fichier des clés approuvées (format en tête de module) et
     rend {clé publique base64: nom du développeur}."""
     p = Path(chemin)
+    # Ouvert sans suivre de lien symbolique, puis contrôlé et lu par le même
+    # descripteur : le fichier vérifié est bien celui qui est lu.
     try:
-        infos = p.stat()
+        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
-        raise ClesApprouveesInvalides(f"fichier des clés approuvées illisible : {exc}") from None
-    if not stat.S_ISREG(infos.st_mode):
-        raise ClesApprouveesInvalides(f"{p} n'est pas un fichier ordinaire")
-    if infos.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise ClesApprouveesInvalides(
-            f"{p} est modifiable par le groupe ou par les autres utilisateurs "
-            f"(droits {stat.filemode(infos.st_mode)}) : n'importe qui pourrait y "
-            f"ajouter sa clé. Corriger par : chmod go-w {p}")
+            f"fichier des clés approuvées illisible (ou lien symbolique) : {exc}") from None
+    with os.fdopen(fd, "rb") as f:
+        infos = os.fstat(f.fileno())
+        if not stat.S_ISREG(infos.st_mode):
+            raise ClesApprouveesInvalides(f"{p} n'est pas un fichier ordinaire")
+        if infos.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise ClesApprouveesInvalides(
+                f"{p} est modifiable par le groupe ou par les autres utilisateurs "
+                f"(droits {stat.filemode(infos.st_mode)}) : n'importe qui pourrait y "
+                f"ajouter sa clé. Corriger par : chmod go-w {p}")
+        if infos.st_uid not in (0, os.geteuid()):
+            raise ClesApprouveesInvalides(
+                f"{p} appartient à un autre utilisateur (uid {infos.st_uid}), qui "
+                f"pourrait y ajouter sa clé : il doit appartenir à root ou à "
+                f"l'utilisateur de l'OS.")
+        brut = f.read(1 << 20)
     cles: Dict[str, str] = {}
     try:
-        lignes = p.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
+        lignes = brut.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
         raise ClesApprouveesInvalides(f"fichier des clés approuvées illisible : {exc}") from None
     for numero, ligne in enumerate(lignes, start=1):
         ligne = ligne.strip()

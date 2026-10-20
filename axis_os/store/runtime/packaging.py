@@ -148,10 +148,6 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
     module_name = module_name.replace(".", "_").replace("/", "_")
     module = types.ModuleType(module_name)
     module.__dict__["__name__"] = module_name
-    # Gardée pour que le processus de l'app réexécute exactement ce texte
-    # vérifié (voir processus_app.spec_depuis_instance) : il ne peut pas
-    # réimporter ce module, qui n'existe pas sur le disque.
-    module.__dict__["__axis_source__"] = source_code
     _sys.modules[module_name] = module
 
     try:
@@ -184,6 +180,13 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
             f"{names}."
         )
 
+    # Gardée pour que le processus de l'app réexécute ce texte (voir
+    # processus_app.spec_depuis_instance) : il ne peut pas réimporter ce
+    # module, qui n'existe pas sur le disque. Posée après l'exécution, pour
+    # que le code de niveau module ne la remplace pas ; du code de l'app qui
+    # tournerait encore dans ce processus le pourrait, d'où le chemin sans
+    # exécution, decrypt_verified_app_source(), pour la production.
+    module.__dict__["__axis_source__"] = source_code
     app_class = candidates[0]
     try:
         return app_class()
@@ -192,6 +195,47 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
         raise AppLoadError(
             f"Échec de l'instanciation de {app_class.__name__} "
             f"({origin_label}) : {type(e).__name__}: {e}"
+        ) from e
+
+
+def decrypt_verified_app_source(
+    encrypted_data: bytes, platform_private_key_b64: str, *,
+    code_signature: str, developer_public_key: str, origin_label: str = "app",
+) -> str:
+    """
+    Déchiffre `encrypted_data` et vérifie la signature du développeur, puis
+    rend le code source en clair, SANS l'exécuter.
+
+    C'est le chemin d'une app chiffrée en profil PRODUCTION : le texte rendu
+    se passe à PlayStoreRuntime.install_source() avec la même signature et
+    la même clé, qui revérifie la signature, contrôle que la clé est
+    approuvée et ne lit le manifeste que dans le processus de l'app.
+    load_app_from_encrypted_bytes(), qui exécute le code dans le processus
+    appelant pour en rendre un objet app, ne sert qu'en simulation et en
+    développement.
+
+    Mêmes paramètres et mêmes exceptions que load_app_from_encrypted_bytes().
+    """
+    encrypted_app = EncryptedApp.from_bytes(encrypted_data)
+    plaintext_bytes = decrypt_app_code(encrypted_app, platform_private_key_b64)
+    try:
+        signature_valide = verify_app_signature(
+            plaintext_bytes, code_signature, developer_public_key,
+        )
+    except SignatureError as e:
+        raise AppLoadError(
+            f"Signature ou clé malformée ({origin_label}) : {e}"
+        ) from e
+    if not signature_valide:
+        raise AppLoadError(
+            f"Signature invalide ({origin_label}) : le code ne correspond pas "
+            f"à la signature du développeur attendu ; il n'est pas exécuté."
+        )
+    try:
+        return plaintext_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise AppLoadError(
+            f"Code déchiffré n'est pas de l'UTF-8 valide ({origin_label}) : {e}"
         ) from e
 
 
@@ -228,27 +272,10 @@ def load_app_from_encrypted_bytes(
     déchiffrement échoue, et AppLoadError si la signature est invalide ou
     malformée, ou si le contenu n'est pas une app valide.
     """
-    encrypted_app = EncryptedApp.from_bytes(encrypted_data)
-    plaintext_bytes = decrypt_app_code(encrypted_app, platform_private_key_b64)
-    try:
-        signature_valide = verify_app_signature(
-            plaintext_bytes, code_signature, developer_public_key,
-        )
-    except SignatureError as e:
-        raise AppLoadError(
-            f"Signature ou clé malformée ({origin_label}) : {e}"
-        ) from e
-    if not signature_valide:
-        raise AppLoadError(
-            f"Signature invalide ({origin_label}) : le code ne correspond pas "
-            f"à la signature du développeur attendu ; il n'est pas exécuté."
-        )
-    try:
-        source_code = plaintext_bytes.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise AppLoadError(
-            f"Code déchiffré n'est pas de l'UTF-8 valide ({origin_label}) : {e}"
-        ) from e
+    source_code = decrypt_verified_app_source(
+        encrypted_data, platform_private_key_b64, code_signature=code_signature,
+        developer_public_key=developer_public_key, origin_label=origin_label,
+    )
     return _load_app_instance_from_source(source_code, origin_label=origin_label)
 
 

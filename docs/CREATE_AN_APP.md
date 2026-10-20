@@ -209,7 +209,7 @@ user.
 | `ACTUATORS_WRITE_ARMS` / `_LEGS` / `_ALL` | command the arms, the legs, everything | **dangerous** |
 | `LOCOMOTION_WALK` | make the robot move around | **dangerous** |
 | `EMERGENCY_STOP` | trigger the emergency stop | **dangerous** |
-| `ACTUATORS_AI_DRIVEN` | movements decided by an AI (not a script) — confirmed at installation, but not yet checked at run time | **dangerous** |
+| `ACTUATORS_AI_DRIVEN` | movements decided by an AI (not a script) — confirmed at installation, and required at run time for the commands of the SDK's AI actions | **dangerous** |
 | `ACTUATORS_RAW` | raw motor commands | **reserved** for apps signed by AXIS-OS |
 | `FLEET_BROADCAST` | talk to other robots | **reserved** |
 
@@ -218,12 +218,13 @@ without it, the app is refused. The robot provides this confirmation
 through `PlayStoreRuntime(confirmer_permissions=...)` —
 `confirmer_au_terminal` on a real robot (only "o" or "oui" grants),
 `accepter_tout_SIMULATION` in simulation and in tests (refused on a real
-robot). An app that requires `Capability.AI_POLICY` must declare
+robot and under the `PRODUCTION` profile). An app that requires `Capability.AI_POLICY` must declare
 `ACTUATORS_AI_DRIVEN`, otherwise its manifest is invalid (the runtime
 does not provide `AI_POLICY` yet: this rule will apply to the future VLA
 service). Declare `ACTUATORS_AI_DRIVEN` as soon as an AI decides the
-movements: nothing forces you to at run time yet, but the user must know
-before accepting. **Reserved** permissions, for their part, are refused
+movements: the commands produced by `VLAAction`, `GR00TAction` or
+`LocomotionAction` (`to_commands()`) are refused at run time without it,
+and the user must know before accepting. **Reserved** permissions, for their part, are refused
 to any app that is not signed with the platform key.
 
 To be honest about the current state: `NETWORK_CLOUD`, `NETWORK_LOCAL`,
@@ -282,9 +283,11 @@ Each one comes from a real bug, met while developing the reference apps.
    regularly; if the app goes silent, the robot stops on its own, balanced.
    This is intended.
 5. **Define your class at module level**, never inside a function, and
-   do not modify an instance afterwards. The sandbox passes the app to its
-   separate process by serializing it; a local class cannot be serialized,
-   and the app crashes at startup without a clear explanation.
+   give it a constructor without arguments. Each call to your app runs in a
+   fresh Python process that reloads it from its module; it cannot find a
+   local class, and it only copies the attributes of the installed instance
+   that are plain data. Mission parameters and `metrics` must be JSON data
+   too (numbers, strings, lists, dicts).
 6. **The safety guard may refuse your commands**, and it is right to: too
    fast, too far, beyond the joint limits. `move_arms()` returns the status
    of each joint; read it. No `ctx` call lets you bypass it, and the API
@@ -612,8 +615,9 @@ Several apps can be installed and started. Only one mission at a time
 commands the robot: a second request is refused, with the reason.
 
 **Why does my app crash at startup with `SANDBOX_ERROR`?**
-Almost always golden rule no. 5: a class defined inside a function, or
-an instance modified after creation. Define everything at module level.
+Almost always golden rule no. 5: a class defined inside a function, a
+constructor that requires arguments, or parameters that are not JSON data.
+Define everything at module level.
 
 **Why does `listen()` almost always return `None`?**
 Because the sentence does not contain all the keyword groups of a

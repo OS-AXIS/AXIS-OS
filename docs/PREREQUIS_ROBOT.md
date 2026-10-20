@@ -22,7 +22,7 @@ vérifier chaque commande.*
 
 | | Exigence | Pourquoi |
 |---|---|---|
-| Système | **Linux** | Le sandbox place chaque app dans un processus créé par duplication (`fork`), indisponible sous Windows |
+| Système | **Linux** | Le sandbox place chaque app dans un processus neuf relié à l'OS par une socket Unix, et s'appuie sur des fonctions propres à Linux (groupe de processus, arrêt avec le parent) |
 | Architecture | x86_64 ou ARM64 | |
 | Python | 3.12 ou plus récent (la version que teste la CI) | |
 | Dépendances | `psutil` (quotas des apps), `cryptography` (signature des apps) | Le cœur du HAL n'utilise que la bibliothèque standard |

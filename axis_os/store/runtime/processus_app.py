@@ -22,6 +22,7 @@ Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -233,24 +234,60 @@ def environnement_minimal() -> Dict[str, str]:
 
 
 def _affichable(texte: str, n: int = 500) -> str:
-    t = "".join(c if c.isprintable() else "?" for c in texte)
-    return t if len(t) <= n else t[:n - 1] + "…"
+    """Texte venu de l'app, rendu sûr pour le terminal de l'OS : tronqué
+    AVANT d'être parcouru (une ligne énorme ne doit rien coûter), puis
+    caractères de contrôle remplacés par « ? »."""
+    coupe = len(texte) > n
+    t = "".join(c if c.isprintable() else "?" for c in texte[:n])
+    return t[:n - 1] + "…" if coupe else t
+
+
+_PROCESSUS_NON_INSPECTABLE: Optional[bool] = None
+
+
+def rendre_os_non_inspectable() -> bool:
+    """Interdit aux processus du même utilisateur, donc à ceux des apps,
+    d'inspecter le processus de l'OS : lecture de son environnement et de
+    sa mémoire par /proc, attachement par ptrace (prctl PR_SET_DUMPABLE à
+    0, Linux). Effet de bord : plus de vidage mémoire (core dump) de l'OS.
+    Fait une fois par processus ; rend True si le réglage est en place.
+
+    Le processus d'une app, lui, reste inspectable par l'OS : le réglage
+    n'est pas transmis à un programme lancé par exec."""
+    global _PROCESSUS_NON_INSPECTABLE
+    if _PROCESSUS_NON_INSPECTABLE is None:
+        import ctypes
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.prctl(4, 0, 0, 0, 0)               # 4 = PR_SET_DUMPABLE
+            _PROCESSUS_NON_INSPECTABLE = libc.prctl(3, 0, 0, 0, 0) == 0   # 3 = PR_GET_DUMPABLE
+        except (OSError, AttributeError):
+            _PROCESSUS_NON_INSPECTABLE = False
+    return _PROCESSUS_NON_INSPECTABLE
 
 
 class ProcessusHote:
     """Le processus d'une app, vu par l'OS. Offre is_alive / join /
     terminate / kill / pid, comme multiprocessing.Process, pour que la
-    surveillance des quotas de SandboxRunner s'applique telle quelle."""
+    surveillance des quotas de SandboxRunner s'applique telle quelle.
+
+    Le processus n'est récolté (wait) qu'à la toute fin, dans fermer() :
+    tant qu'il ne l'est pas, son numéro reste réservé, et le signal envoyé
+    à son groupe ne peut pas atteindre un autre groupe qui aurait reçu le
+    même numéro."""
 
     MAX_LIGNES_RELAYEES = 5000
+    MAX_OCTETS_RELAYES = 1 << 20      # par appel ; au-delà, lu et jeté
+    MAX_LIGNE = 2000                  # octets gardés d'une ligne
 
     def __init__(self, app_id: str):
         self.app_id = app_id
+        rendre_os_non_inspectable()
         parent, enfant = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             fd = enfant.fileno()
             self._popen = subprocess.Popen(
-                [sys.executable, "-I", HOTE, str(fd), RACINE],
+                [sys.executable, "-I", HOTE, str(fd), RACINE, str(os.getpid())],
                 pass_fds=(fd,), close_fds=True, start_new_session=True,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 env=environnement_minimal(), cwd=os.getcwd(),
@@ -261,58 +298,127 @@ class ProcessusHote:
         finally:
             enfant.close()
         self.canal = Canal(parent)
+        self._sortie = self._popen.stdout.fileno()
+        self._arret_relais = threading.Event()
+        self._eof_vu = False
         self._relais = threading.Thread(target=self._relayer, daemon=True,
                                         name=f"sortie-app-{app_id}")
         self._relais.start()
 
+    # ── Sortie de l'app ──────────────────────────────────────────────
+
+    def _afficher(self, octets: bytes) -> None:
+        ligne = octets[:self.MAX_LIGNE].decode("utf-8", "replace").rstrip("\r")
+        print(f"    [app {_affichable(self.app_id, 80)}] {_affichable(ligne)}")
+
     def _relayer(self) -> None:
-        """Réaffiche la sortie de l'app, ligne par ligne, neutralisée (pas
-        de séquence d'échappement vers le terminal de l'OS) et bornée."""
-        n = 0
-        for brut in self._popen.stdout:
-            n += 1
-            if n <= self.MAX_LIGNES_RELAYEES:
-                ligne = brut.decode("utf-8", "replace").rstrip("\n")
-                print(f"    [app {_affichable(self.app_id, 80)}] {_affichable(ligne)}")
-            elif n == self.MAX_LIGNES_RELAYEES + 1:
-                print(f"    [app {_affichable(self.app_id, 80)}] … sortie tronquée")
+        """Réaffiche la sortie de l'app, ligne par ligne, neutralisée et
+        bornée : au plus MAX_LIGNE octets gardés par ligne, MAX_LIGNES et
+        MAX_OCTETS par appel, le reste est lu et jeté. Lecture par morceaux
+        sur le descripteur brut, avec un délai : le thread s'arrête sur
+        ordre (fermer) même si un processus lancé par l'app garde le tube
+        ouvert."""
+        import select
+        tampon, lignes, total, ignorer = b"", 0, 0, False
+        while not self._arret_relais.is_set():
+            try:
+                prets, _, _ = select.select([self._sortie], [], [], 0.1)
+                if not prets:
+                    continue
+                bloc = os.read(self._sortie, 65536)
+            except (OSError, ValueError):
+                break
+            if not bloc:
+                self._eof_vu = True
+                break
+            total += len(bloc)
+            if total > self.MAX_OCTETS_RELAYES or lignes > self.MAX_LIGNES_RELAYEES:
+                if tampon is not None:
+                    print(f"    [app {_affichable(self.app_id, 80)}] … sortie tronquée")
+                    tampon = None
+                continue
+            tampon += bloc
+            while b"\n" in tampon:
+                ligne, _, tampon = tampon.partition(b"\n")
+                if not ignorer:
+                    self._afficher(ligne)
+                    lignes += 1
+                ignorer = False
+            if len(tampon) > self.MAX_LIGNE:
+                # Ligne trop longue : son début est affiché, la suite
+                # ignorée jusqu'au prochain saut de ligne.
+                if not ignorer:
+                    self._afficher(tampon)
+                    lignes += 1
+                tampon, ignorer = b"", True
+        if tampon and not ignorer:
+            self._afficher(tampon)
+
+    # ── Cycle de vie ─────────────────────────────────────────────────
 
     @property
     def pid(self) -> int:
         return self._popen.pid
 
     def is_alive(self) -> bool:
-        return self._popen.poll() is None
+        """Vrai tant que l'hôte n'est pas terminé, SANS le récolter (WNOWAIT) :
+        voir la docstring de la classe."""
+        if self._popen.returncode is not None:
+            return False
+        try:
+            info = os.waitid(os.P_PID, self._popen.pid,
+                             os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return False
+        return info is None
 
     def join(self, timeout: Optional[float] = None) -> None:
+        import time
+        fin = None if timeout is None else time.monotonic() + timeout
+        while self.is_alive() and (fin is None or time.monotonic() < fin):
+            time.sleep(0.01)
+
+    def _signal_groupe(self, sig: int) -> None:
+        """Envoie `sig` au groupe de processus de l'app (l'hôte est chef de
+        son groupe, start_new_session) : un processus que l'app aurait lancé
+        sans changer de groupe est arrêté avec elle. Un processus qui a
+        quitté le groupe (setsid) n'est pas atteint : voir fermer()."""
+        if self._popen.returncode is not None:
+            return                    # déjà récolté : numéro peut-être réutilisé
         try:
-            self._popen.wait(timeout)
-        except subprocess.TimeoutExpired:
+            os.killpg(self._popen.pid, sig)
+        except (ProcessLookupError, PermissionError):
             pass
 
     def terminate(self) -> None:
-        try:
-            self._popen.terminate()
-        except ProcessLookupError:
-            pass
+        self._signal_groupe(signal.SIGTERM)
 
     def kill(self) -> None:
-        try:
-            self._popen.kill()
-        except ProcessLookupError:
-            pass
+        self._signal_groupe(signal.SIGKILL)
 
     def fermer(self) -> None:
-        """Tue le processus s'il vit encore, ferme le pont et le tube."""
-        if self.is_alive():
-            self.kill()
-        self.join(2.0)
-        self.canal.fermer()
-        self._relais.join(timeout=2.0)
+        """Tue l'hôte et son groupe, puis seulement le récolte ; ferme le
+        pont ; arrête le relais de sortie et ferme le tube. Ne bloque
+        jamais plus de quelques secondes, même si un processus lancé par
+        l'app a quitté le groupe et garde le tube ouvert."""
+        self.kill()
         try:
-            self._popen.stdout.close()
-        except OSError:
+            self._popen.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
             pass
+        self.canal.fermer()
+        self._relais.join(timeout=1.0)
+        self._arret_relais.set()
+        self._relais.join(timeout=1.0)
+        if not self._eof_vu:
+            print(f"  [SECURITY] app '{_affichable(self.app_id, 80)}' : un processus "
+                  f"qu'elle a lancé a quitté son groupe et garde sa sortie ouverte ; "
+                  f"il n'a pas pu être arrêté (voir docs/isolation_apps.md, étape 4).")
+        if not self._relais.is_alive():
+            try:
+                self._popen.stdout.close()
+            except OSError:
+                pass
 
 
 def message_depart(hook: str, spec: Dict[str, Any], params: Any = None,
@@ -345,3 +451,6 @@ SCHEMA_RESULTAT = {
     "run_mission": Objet({}, facultatifs={"mission": SCHEMA_MISSION}),
     "fonction": Objet({}, facultatifs={"valeur": JsonLibre()}),
 }
+
+SCHEMA_FIN = Objet({"type": UnParmi("fin")},
+                   facultatifs={"resultat": JsonLibre(), "erreur": Chaine(4000)})

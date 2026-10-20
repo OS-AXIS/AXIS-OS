@@ -206,7 +206,7 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "now": _VIDE,
     "remember": Objet({"key": Chaine(256)}, facultatifs={"value": JsonLibre()}),
     "recall": Objet({"key": Chaine(256)}, facultatifs={"default": JsonLibre()}),
-    "listen": Objet({}, facultatifs={"duration_s": Nombre(0, 3600)}),
+    "listen": Objet({}, facultatifs={"duration_s": Nombre(0, 120)}),
     "declare_intent": Objet({"name": Chaine(128),
                              "keywords": Liste(Liste(Chaine(128), 64), 64)},
                             facultatifs={"params": JsonLibre(), "description": Chaine(2048)}),
@@ -309,7 +309,7 @@ class HALBridgeServer:
             if reponse is not None:
                 self._resp_q.put(reponse)
 
-    def traiter(self, raw: Any) -> Optional[Dict[str, Any]]:
+    def traiter(self, raw: Any, reste_s: Optional[float] = None) -> Optional[Dict[str, Any]]:
         """Une commande reçue de l'app (déjà décodée) -> la réponse à lui
         renvoyer, ou None si le message ne permet même pas de répondre
         (aucun request_id lisible).
@@ -337,7 +337,15 @@ class HALBridgeServer:
             if request_id is None:
                 return None
             return asdict(HALResponse(request_id, False, error=f"MALFORMED_COMMAND: {exc}"))
-        cmd = HALCommand(action=raw["action"], payload=raw["payload"],
+        payload = raw["payload"]
+        if raw["action"] == "listen" and reste_s is not None:
+            # Une écoute ne dure jamais plus que ce qui reste au hook (voir
+            # SandboxRunner.run_app) : ce thread de l'OS doit rendre la main
+            # avant l'échéance du quota.
+            duree = payload.get("duration_s")
+            duree = 3.0 if duree is None else duree
+            payload = dict(payload, duration_s=max(0.0, min(duree, reste_s - 0.5)))
+        cmd = HALCommand(action=raw["action"], payload=payload,
                          request_id=raw["request_id"])
         return asdict(self._handle(cmd))
 
@@ -405,6 +413,9 @@ class HALBridgeServer:
                 # dépendre de mots-clés anglais devinés côté client, et
                 # JointGroup ne traverse pas le pont tel quel sans obliger
                 # le processus enfant à l'importer.
+                # Même permission que get_full_state, que move_to_pose
+                # appelle de toute façon juste avant.
+                self._ctx._require(Permission.ACTUATORS_READ)
                 out = {}
                 try:
                     for jdef in self._ctx._robot.get_joint_definitions():
@@ -527,7 +538,7 @@ class HALBridgeServer:
                 # du même genre, écrite en copiant les autres, n'oublie
                 # pas ce contrôle. Contexte complet : docstring de
                 # WatchdogSystem.get_recent_alerts().
-                if Permission.WATCHDOG_READ not in self._ctx._manifest.permissions:
+                if not self._ctx._manifest.has_permission(Permission.WATCHDOG_READ):
                     return HALResponse(cmd.request_id, False,
                                        error="Permission refusée : WATCHDOG_READ "
                                              "non déclarée")

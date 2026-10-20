@@ -61,8 +61,8 @@ class Permission(Enum):
 
     Les deux permissions NETWORK_* sont les plus importantes à ce titre :
     rien n'empêche aujourd'hui une app d'ouvrir elle-même une connexion
-    réseau, car la sandbox (le processus séparé dans lequel tourne une app,
-    créé avec le module multiprocessing de Python) ne filtre pas le réseau.
+    réseau, car la sandbox (le processus séparé dans lequel tourne une app)
+    ne filtre pas le réseau.
     C'est une faiblesse connue, plus large que ces deux permissions, de
     l'isolation des apps. docs/isolation_apps.md la décrit avec le plan
     prévu pour la fermer ; docs/sandboxing_hardening_notes.md la recense
@@ -494,6 +494,12 @@ class AppManifest:
                 errors.append(f"{champ} doit être un texte sans caractère de contrôle")
         if not self.app_id or "." not in self.app_id:
             errors.append("app_id doit être en format 'com.author.name'")
+        # « : » est réservé aux espaces internes de l'OS, comme « billing:: »
+        # où le Play Store range l'état de facturation : sans cette règle,
+        # une app d'app_id « billing::com.x.y » lisait et réécrivait par
+        # remember() la facturation de com.x.y.
+        if isinstance(self.app_id, str) and ":" in self.app_id:
+            errors.append("app_id ne doit pas contenir « : » (réservé à l'OS)")
         if self.base_price_eur < 0:
             errors.append("base_price_eur ne peut pas être négatif")
         if self.pricing_model != PricingModel.FREE and self.base_price_eur == 0:
