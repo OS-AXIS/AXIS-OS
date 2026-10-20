@@ -50,26 +50,43 @@ contre une app délibérément malveillante n'est pas terminée : voir
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    PS["Play Store install()<br/>✓ signature · permissions<br/>✓ confirmation des permissions DANGEROUS"]
+    subgraph APP["Processus de l'app (sandbox : quotas de CPU, de mémoire et de temps)"]
+        A["App tierce<br/>(RobotApp)"]
+        C["HALBridgeClient"]
+    end
+    subgraph OS["Processus d'AXIS-OS"]
+        S["HALBridgeServer"]
+        CTX["RobotContext<br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse"]
+        SV["Services système<br/>locomotion · navigation · perception<br/>manipulation · parole · mémoire · VLA"]
+        G["Gardien de proximité (lidar, facultatif)<br/>✓ ralentit, puis arrête la marche"]
+        N["NormalizedRobotHAL<br/>✓ refuse les angles NaN ou infinis"]
+        D["Driver du robot (IRobotHAL)<br/>Unitree G1 · Isaac Sim"]
+        J["JointSafetyGuard, par articulation<br/>✓ position · vitesse · couple<br/>✓ accélération · taille du pas"]
+        W["Watchdog<br/>✓ seuil fatal → arrêt d'urgence"]
+        SU["Superviseur<br/>✓ watchdog figé → arrêt d'urgence"]
+        IM["Moniteur indépendant<br/>✓ ses propres limites → arrêt d'urgence"]
+    end
+    R[("Moteurs du robot")]
+
+    PS -->|installe| A
+    A --> C -->|IPC| S --> CTX
+    CTX --> SV
+    CTX --> N
+    SV -->|marche| G --> N
+    SV --> N
+    N --> D --> J --> R
+    W -. lit les retours, arrête .-> D
+    SU -. surveille .-> W
+    SU -. arrête .-> D
+    IM -. lit les retours bruts, arrête .-> D
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Apps (Play Store)   tierces, chacune dans son processus,    │
-│                      avec des permissions déclarées          │
-├──────────────────────────────────────────────────────────────┤
-│  SDK                 RobotApp, RobotContext                  │
-├──────────────────────────────────────────────────────────────┤
-│  Services système    locomotion · navigation · perception ·  │
-│                      manipulation · parole · mémoire · VLA   │
-├──────────────────────────────────────────────────────────────┤
-│  Sécurité            JointSafetyGuard · gardien de           │
-│                      proximité · watchdog et arrêt           │
-│                      d'urgence · superviseur · moniteur      │
-│                      indépendant                             │
-├──────────────────────────────────────────────────────────────┤
-│  HAL                 IRobotHAL : un driver par modèle        │
-├───────────────────────────────┬──────────────────────────────┤
-│  Driver Unitree G1 (DDS)      │  G1 simulé (Isaac Sim)       │
-└───────────────────────────────┴──────────────────────────────┘
-```
+
+Chaque ✓ est un contrôle que ni les apps ni les modèles ne commandent. Les
+flèches en pointillé tournent en parallèle des commandes. Le sandbox protège
+d'une app buggée, pas encore d'une app malveillante : voir [Statut et limites](#statut-et-limites).
 
 Un service, c'est ce dont deux apps de métiers différents auraient toutes
 les deux besoin (marcher, voir, saisir) ; ce qui est propre à un métier est

@@ -47,25 +47,43 @@ deliberately malicious app is not finished: see
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    PS["Play Store install()<br/>✓ signature · permissions<br/>✓ user confirms DANGEROUS ones"]
+    subgraph APP["App process (sandbox: CPU, memory and time quotas)"]
+        A["Third-party app<br/>(RobotApp)"]
+        C["HALBridgeClient"]
+    end
+    subgraph OS["AXIS-OS process"]
+        S["HALBridgeServer"]
+        CTX["RobotContext<br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap"]
+        SV["System services<br/>locomotion · navigation · perception<br/>manipulation · speech · memory · VLA"]
+        G["Proximity guard (lidar, optional)<br/>✓ slows, then stops the walk"]
+        N["NormalizedRobotHAL<br/>✓ rejects NaN and infinite angles"]
+        D["Robot driver (IRobotHAL)<br/>Unitree G1 · Isaac Sim"]
+        J["JointSafetyGuard, per joint<br/>✓ position · velocity · torque<br/>✓ acceleration · step size"]
+        W["Watchdog<br/>✓ fatal threshold → e-stop"]
+        SU["Supervisor<br/>✓ watchdog frozen → e-stop"]
+        IM["Independent monitor<br/>✓ own limit checks → e-stop"]
+    end
+    R[("Robot motors")]
+
+    PS -->|installs| A
+    A --> C -->|IPC| S --> CTX
+    CTX --> SV
+    CTX --> N
+    SV -->|walk| G --> N
+    SV --> N
+    N --> D --> J --> R
+    W -. reads feedback, stops .-> D
+    SU -. watches .-> W
+    SU -. stops .-> D
+    IM -. reads raw feedback, stops .-> D
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Apps (Play Store)   third-party, each in its own process,   │
-│                      with declared permissions               │
-├──────────────────────────────────────────────────────────────┤
-│  SDK                 RobotApp, RobotContext                  │
-├──────────────────────────────────────────────────────────────┤
-│  System services     locomotion · navigation · perception ·  │
-│                      manipulation · speech · memory · VLA    │
-├──────────────────────────────────────────────────────────────┤
-│  Safety              JointSafetyGuard · proximity guard ·    │
-│                      watchdog and e-stop · supervisor ·      │
-│                      independent monitor                     │
-├──────────────────────────────────────────────────────────────┤
-│  HAL                 IRobotHAL: one driver per robot model   │
-├───────────────────────────────┬──────────────────────────────┤
-│  Unitree G1 driver (DDS)      │  Simulated G1 (Isaac Sim)    │
-└───────────────────────────────┴──────────────────────────────┘
-```
+
+Each ✓ is a check the apps and the models do not control. Dotted arrows
+run in parallel with the commands. The sandbox protects against a buggy
+app, not yet against a malicious one: see [Status and limits](#status-and-limits).
 
 A service is something two apps from different trades would both need
 (walking, seeing, grasping); anything specific to one trade is an app. The
