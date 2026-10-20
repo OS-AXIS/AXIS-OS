@@ -48,29 +48,32 @@ deliberately malicious app is not finished: see
 ## Architecture
 
 ```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
 flowchart TB
-    PS["1 - Play Store install"]
-    subgraph APP["App process - sandbox"]
-        A["Third-party app"]
-        C["HALBridgeClient"]
+    PS["<b>Play Store</b><br/>✓ signature · permissions<br/>✓ user confirms DANGEROUS ones"]
+
+    subgraph APP["App process · sandbox with CPU, memory and time quotas"]
+        A["<b>Third-party app</b><br/>RobotApp"]
     end
+
     subgraph OS["AXIS-OS process"]
-        S["HALBridgeServer"]
-        CTX["2 - RobotContext"]
-        SV["System services"]
-        G["3 - Proximity guard"]
-        N["4 - NormalizedRobotHAL"]
-        D["Robot driver - IRobotHAL"]
-        J["5 - JointSafetyGuard"]
-        W["6 - Watchdog"]
-        SU["7 - Supervisor"]
-        IM["8 - Independent monitor"]
+        CTX["<b>RobotContext</b><br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap"]
+        SV["<b>System services</b><br/>locomotion · navigation · perception<br/>manipulation · speech · memory · VLA"]
+        G["<b>Proximity guard</b> · optional lidar<br/>✓ slows, then stops the walk"]
+        N["<b>NormalizedRobotHAL</b><br/>✓ rejects NaN and infinite angles"]
+        D["<b>Robot driver</b> · IRobotHAL<br/>Unitree G1 · Isaac Sim"]
+        J["<b>JointSafetyGuard</b> · every joint<br/>✓ position · velocity · torque<br/>✓ acceleration · step size"]
+        subgraph MON["Watching in parallel"]
+            W["<b>Watchdog</b><br/>✓ fatal threshold → e-stop"]
+            SU["<b>Supervisor</b><br/>✓ watchdog frozen → e-stop"]
+            IM["<b>Independent monitor</b><br/>✓ own limit checks → e-stop"]
+        end
     end
-    R["Robot motors"]
+
+    R(["<b>Robot motors</b>"])
+
     PS -->|installs| A
-    A --> C
-    C -->|IPC| S
-    S --> CTX
+    A -->|"IPC bridge"| CTX
     CTX --> SV
     CTX --> N
     SV -->|walk| G
@@ -79,28 +82,28 @@ flowchart TB
     N --> D
     D --> J
     J --> R
-    W -.->|reads feedback, stops| D
     SU -.->|watches| W
-    SU -.->|stops| D
-    IM -.->|reads raw feedback, stops| D
+    D -.-|"read feedback, can stop everything"| MON
+
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef check fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef watch fill:#ffedd5,stroke:#ea580c,color:#0f172a
+    classDef plain fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    classDef motor fill:#334155,stroke:#0f172a,color:#ffffff
+    class A app
+    class PS,CTX,G,N,J check
+    class W,SU,IM watch
+    class SV,D plain
+    class R motor
+    style APP fill:#eff6ff,stroke:#93c5fd,color:#0f172a
+    style OS fill:#f8fafc,stroke:#94a3b8,color:#0f172a
+    style MON fill:#fff7ed,stroke:#fdba74,color:#0f172a
 ```
 
-The numbered boxes are the safety checks; neither the apps nor the AI
-models control them. Dotted arrows run in parallel with the commands.
-
-| # | Check |
-|---|-------|
-| 1 | Play Store: the signature (when the app declares one, or always with `require_signed_apps=True`), the permissions, and the user's confirmation for DANGEROUS ones |
-| 2 | RobotContext: the permission of each call, a refusal during an emergency stop, the velocity cap |
-| 3 | Proximity guard (optional, with a lidar): slows, then stops the walk near an unexplained obstacle |
-| 4 | NormalizedRobotHAL: rejects NaN and infinite angles |
-| 5 | JointSafetyGuard, for every joint command: position, velocity, torque, acceleration and step size |
-| 6 | Watchdog: a joint crossing a fatal threshold triggers an emergency stop |
-| 7 | Supervisor: stops the robot if the watchdog itself stops running |
-| 8 | Independent monitor: its own limit checks on the raw feedback, then an emergency stop |
-
-The sandbox protects against a buggy app, not yet against a malicious one:
-see [Status and limits](#status-and-limits).
+In green, the safety checks (each ✓): neither the apps nor the AI models
+control them. In orange, what watches the robot in parallel and can stop
+it at any time. The sandbox protects against a buggy app, not yet against
+a malicious one: see [Status and limits](#status-and-limits).
 
 A service is something two apps from different trades would both need
 (walking, seeing, grasping); anything specific to one trade is an app. The

@@ -51,29 +51,32 @@ contre une app délibérément malveillante n'est pas terminée : voir
 ## Architecture
 
 ```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
 flowchart TB
-    PS["1 - Installation par le Play Store"]
-    subgraph APP["Processus de l'app - sandbox"]
-        A["App tierce"]
-        C["HALBridgeClient"]
+    PS["<b>Play Store</b><br/>✓ signature · permissions<br/>✓ confirmation des permissions DANGEROUS"]
+
+    subgraph APP["Processus de l'app · sandbox avec quotas de CPU, de mémoire et de temps"]
+        A["<b>App tierce</b><br/>RobotApp"]
     end
+
     subgraph OS["Processus d'AXIS-OS"]
-        S["HALBridgeServer"]
-        CTX["2 - RobotContext"]
-        SV["Services système"]
-        G["3 - Gardien de proximité"]
-        N["4 - NormalizedRobotHAL"]
-        D["Driver du robot - IRobotHAL"]
-        J["5 - JointSafetyGuard"]
-        W["6 - Watchdog"]
-        SU["7 - Superviseur"]
-        IM["8 - Moniteur indépendant"]
+        CTX["<b>RobotContext</b><br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse"]
+        SV["<b>Services système</b><br/>locomotion · navigation · perception<br/>manipulation · parole · mémoire · VLA"]
+        G["<b>Gardien de proximité</b> · lidar facultatif<br/>✓ ralentit, puis arrête la marche"]
+        N["<b>NormalizedRobotHAL</b><br/>✓ refuse les angles NaN ou infinis"]
+        D["<b>Driver du robot</b> · IRobotHAL<br/>Unitree G1 · Isaac Sim"]
+        J["<b>JointSafetyGuard</b> · chaque articulation<br/>✓ position · vitesse · couple<br/>✓ accélération · taille du pas"]
+        subgraph MON["Surveillance en parallèle"]
+            W["<b>Watchdog</b><br/>✓ seuil fatal → arrêt d'urgence"]
+            SU["<b>Superviseur</b><br/>✓ watchdog figé → arrêt d'urgence"]
+            IM["<b>Moniteur indépendant</b><br/>✓ ses propres limites → arrêt d'urgence"]
+        end
     end
-    R["Moteurs du robot"]
+
+    R(["<b>Moteurs du robot</b>"])
+
     PS -->|installe| A
-    A --> C
-    C -->|IPC| S
-    S --> CTX
+    A -->|"pont IPC"| CTX
     CTX --> SV
     CTX --> N
     SV -->|marche| G
@@ -82,29 +85,28 @@ flowchart TB
     N --> D
     D --> J
     J --> R
-    W -.->|lit les retours, arrête| D
     SU -.->|surveille| W
-    SU -.->|arrête| D
-    IM -.->|lit les retours bruts, arrête| D
+    D -.-|"lisent les retours, peuvent tout arrêter"| MON
+
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef check fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef watch fill:#ffedd5,stroke:#ea580c,color:#0f172a
+    classDef plain fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    classDef motor fill:#334155,stroke:#0f172a,color:#ffffff
+    class A app
+    class PS,CTX,G,N,J check
+    class W,SU,IM watch
+    class SV,D plain
+    class R motor
+    style APP fill:#eff6ff,stroke:#93c5fd,color:#0f172a
+    style OS fill:#f8fafc,stroke:#94a3b8,color:#0f172a
+    style MON fill:#fff7ed,stroke:#fdba74,color:#0f172a
 ```
 
-Les boîtes numérotées sont les contrôles de sécurité ; ni les apps ni les
-modèles d'IA ne les commandent. Les flèches en pointillé tournent en
-parallèle des commandes.
-
-| # | Contrôle |
-|---|----------|
-| 1 | Play Store : la signature (quand l'app en déclare une, ou toujours avec `require_signed_apps=True`), les permissions, et la confirmation par l'utilisateur des permissions DANGEROUS |
-| 2 | RobotContext : permission de chaque appel, refus pendant un arrêt d'urgence, plafond de vitesse |
-| 3 | Gardien de proximité (facultatif, avec un lidar) : ralentit, puis arrête la marche près d'un obstacle inexpliqué |
-| 4 | NormalizedRobotHAL : refuse les angles NaN ou infinis |
-| 5 | JointSafetyGuard, pour chaque commande d'articulation : position, vitesse, couple, accélération et taille du pas |
-| 6 | Watchdog : une articulation qui franchit un seuil fatal déclenche un arrêt d'urgence |
-| 7 | Superviseur : arrête le robot si le watchdog lui-même cesse de tourner |
-| 8 | Moniteur indépendant : ses propres contrôles de limites sur les retours bruts, puis un arrêt d'urgence |
-
-Le sandbox protège d'une app buggée, pas encore d'une app malveillante :
-voir [Statut et limites](#statut-et-limites).
+En vert, les contrôles de sécurité (chaque ✓) : ni les apps ni les
+modèles d'IA ne les commandent. En orange, ce qui surveille le robot en
+parallèle et peut l'arrêter à tout moment. Le sandbox protège d'une app
+buggée, pas encore d'une app malveillante : voir [Statut et limites](#statut-et-limites).
 
 Un service, c'est ce dont deux apps de métiers différents auraient toutes
 les deux besoin (marcher, voir, saisir) ; ce qui est propre à un métier est
