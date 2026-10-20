@@ -50,9 +50,43 @@ contre une app délibérément malveillante n'est pas terminée : voir
 
 ## Architecture
 
-<img src="docs/images/architecture_fr.png" alt="Chemin d'une commande, d'une app jusqu'aux moteurs du robot, avec les contrôles de sécurité numérotés de 1 à 8 (détaillés dans le tableau ci-dessous)" width="640">
-
-*Source du schéma : [docs/images/architecture_fr.mmd](docs/images/architecture_fr.mmd) (Mermaid).*
+```mermaid
+flowchart TB
+    PS["1 - Installation par le Play Store"]
+    subgraph APP["Processus de l'app - sandbox"]
+        A["App tierce"]
+        C["HALBridgeClient"]
+    end
+    subgraph OS["Processus d'AXIS-OS"]
+        S["HALBridgeServer"]
+        CTX["2 - RobotContext"]
+        SV["Services système"]
+        G["3 - Gardien de proximité"]
+        N["4 - NormalizedRobotHAL"]
+        D["Driver du robot - IRobotHAL"]
+        J["5 - JointSafetyGuard"]
+        W["6 - Watchdog"]
+        SU["7 - Superviseur"]
+        IM["8 - Moniteur indépendant"]
+    end
+    R["Moteurs du robot"]
+    PS -->|installe| A
+    A --> C
+    C -->|IPC| S
+    S --> CTX
+    CTX --> SV
+    CTX --> N
+    SV -->|marche| G
+    G --> N
+    SV --> N
+    N --> D
+    D --> J
+    J --> R
+    W -.->|lit les retours, arrête| D
+    SU -.->|surveille| W
+    SU -.->|arrête| D
+    IM -.->|lit les retours bruts, arrête| D
+```
 
 Les boîtes numérotées sont les contrôles de sécurité ; ni les apps ni les
 modèles d'IA ne les commandent. Les flèches en pointillé tournent en

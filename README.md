@@ -47,9 +47,43 @@ deliberately malicious app is not finished: see
 
 ## Architecture
 
-<img src="docs/images/architecture_en.png" alt="Path of a command, from an app to the robot motors, with the safety checks numbered 1 to 8 (detailed in the table below)" width="640">
-
-*Source of the diagram: [docs/images/architecture_en.mmd](docs/images/architecture_en.mmd) (Mermaid).*
+```mermaid
+flowchart TB
+    PS["1 - Play Store install"]
+    subgraph APP["App process - sandbox"]
+        A["Third-party app"]
+        C["HALBridgeClient"]
+    end
+    subgraph OS["AXIS-OS process"]
+        S["HALBridgeServer"]
+        CTX["2 - RobotContext"]
+        SV["System services"]
+        G["3 - Proximity guard"]
+        N["4 - NormalizedRobotHAL"]
+        D["Robot driver - IRobotHAL"]
+        J["5 - JointSafetyGuard"]
+        W["6 - Watchdog"]
+        SU["7 - Supervisor"]
+        IM["8 - Independent monitor"]
+    end
+    R["Robot motors"]
+    PS -->|installs| A
+    A --> C
+    C -->|IPC| S
+    S --> CTX
+    CTX --> SV
+    CTX --> N
+    SV -->|walk| G
+    G --> N
+    SV --> N
+    N --> D
+    D --> J
+    J --> R
+    W -.->|reads feedback, stops| D
+    SU -.->|watches| W
+    SU -.->|stops| D
+    IM -.->|reads raw feedback, stops| D
+```
 
 The numbered boxes are the safety checks; neither the apps nor the AI
 models control them. Dotted arrows run in parallel with the commands.
