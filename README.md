@@ -51,25 +51,27 @@ deliberately malicious app is not finished: see
 ---
 config:
   layout: dagre
+  fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif"
   flowchart:
     wrappingWidth: 320
+  themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; }"
 ---
 flowchart TB
-    PS["<b>Play Store</b><br/>✓ signature · permissions<br/>✓ user confirms DANGEROUS ones"]
+    PS("<b>Play Store</b><br/>✓ signature · permissions<br/>✓ user confirms DANGEROUS ones")
 
-    A["<b>Third-party app</b> · RobotApp<br/>separate process, sandboxed<br/>CPU, memory and time quotas"]
+    A("<b>Third-party app</b> · RobotApp<br/>separate process, sandboxed<br/>CPU, memory and time quotas")
 
     subgraph OS["AXIS-OS process"]
-        CTX["<b>RobotContext</b><br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap"]
-        SV["<b>System services</b><br/>locomotion · navigation · perception<br/>manipulation · speech · memory · VLA"]
-        G["<b>Proximity guard</b> · optional lidar<br/>✓ slows, then stops the walk"]
-        N["<b>NormalizedRobotHAL</b><br/>✓ rejects NaN and infinite angles"]
-        D["<b>Robot driver</b> · IRobotHAL<br/>Unitree G1 · Isaac Sim"]
-        J["<b>JointSafetyGuard</b> · every joint<br/>✓ position · velocity · torque<br/>✓ acceleration · step size"]
+        CTX("<b>RobotContext</b><br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap")
+        SV("<b>System services</b><br/>locomotion · navigation · perception<br/>manipulation · speech · memory · VLA")
+        G("<b>Proximity guard</b> · optional lidar<br/>✓ slows, then stops the walk")
+        N("<b>NormalizedRobotHAL</b><br/>✓ rejects NaN and infinite angles")
+        D("<b>Robot driver</b> · IRobotHAL<br/>Unitree G1 · Isaac Sim")
+        J("<b>JointSafetyGuard</b> · every joint<br/>✓ position · velocity · torque<br/>✓ acceleration · step size")
         subgraph MON["Watching in parallel"]
-            W["<b>Watchdog</b><br/>✓ fatal threshold → e-stop"]
-            SU["<b>Supervisor</b><br/>✓ watchdog frozen → e-stop"]
-            IM["<b>Independent monitor</b><br/>✓ own limit checks → e-stop"]
+            W("<b>Watchdog</b><br/>✓ fatal threshold → e-stop")
+            SU("<b>Supervisor</b><br/>✓ watchdog frozen → e-stop")
+            IM("<b>Independent monitor</b><br/>✓ own limit checks → e-stop")
         end
     end
 
@@ -88,18 +90,18 @@ flowchart TB
     SU -.->|watches| W
     D -.-|"read feedback, can stop everything"| MON
 
-    classDef app fill:#dbeafe,stroke:#2563eb,color:#0f172a
-    classDef check fill:#dcfce7,stroke:#16a34a,color:#0f172a
-    classDef watch fill:#ffedd5,stroke:#ea580c,color:#0f172a
-    classDef plain fill:#f1f5f9,stroke:#64748b,color:#0f172a
-    classDef motor fill:#334155,stroke:#0f172a,color:#ffffff
+    classDef app fill:#eaf3ff,stroke:#007aff,stroke-width:1.5px,color:#1d1d1f
+    classDef check fill:#eafaf0,stroke:#34c759,stroke-width:1.5px,color:#1d1d1f
+    classDef watch fill:#fff5e6,stroke:#ff9500,stroke-width:1.5px,color:#1d1d1f
+    classDef plain fill:#ffffff,stroke:#c7c7cc,stroke-width:1.5px,color:#1d1d1f
+    classDef motor fill:#1d1d1f,stroke:#1d1d1f,color:#ffffff
     class A app
     class PS,CTX,G,N,J check
     class W,SU,IM watch
     class SV,D plain
     class R motor
-    style OS fill:#f8fafc,stroke:#94a3b8,color:#0f172a
-    style MON fill:#fff7ed,stroke:#fdba74,color:#0f172a
+    style OS fill:#f5f5f7,stroke:#d2d2d7,color:#1d1d1f
+    style MON fill:#fffaf2,stroke:#ffd59e,color:#1d1d1f
 ```
 
 In green, the safety checks (each ✓): neither the apps nor the AI models

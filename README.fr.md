@@ -54,25 +54,27 @@ contre une app délibérément malveillante n'est pas terminée : voir
 ---
 config:
   layout: dagre
+  fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif"
   flowchart:
     wrappingWidth: 320
+  themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; }"
 ---
 flowchart TB
-    PS["<b>Play Store</b><br/>✓ signature · permissions<br/>✓ confirmation des permissions DANGEROUS"]
+    PS("<b>Play Store</b><br/>✓ signature · permissions<br/>✓ confirmation des permissions DANGEROUS")
 
-    A["<b>App tierce</b> · RobotApp<br/>processus à part, en sandbox<br/>quotas de CPU, de mémoire et de temps"]
+    A("<b>App tierce</b> · RobotApp<br/>processus à part, en sandbox<br/>quotas de CPU, de mémoire et de temps")
 
     subgraph OS["Processus d'AXIS-OS"]
-        CTX["<b>RobotContext</b><br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse"]
-        SV["<b>Services système</b><br/>locomotion · navigation · perception<br/>manipulation · parole · mémoire · VLA"]
-        G["<b>Gardien de proximité</b> · lidar facultatif<br/>✓ ralentit, puis arrête la marche"]
-        N["<b>NormalizedRobotHAL</b><br/>✓ refuse les angles NaN ou infinis"]
-        D["<b>Driver du robot</b> · IRobotHAL<br/>Unitree G1 · Isaac Sim"]
-        J["<b>JointSafetyGuard</b> · chaque articulation<br/>✓ position · vitesse · couple<br/>✓ accélération · taille du pas"]
+        CTX("<b>RobotContext</b><br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse")
+        SV("<b>Services système</b><br/>locomotion · navigation · perception<br/>manipulation · parole · mémoire · VLA")
+        G("<b>Gardien de proximité</b> · lidar facultatif<br/>✓ ralentit, puis arrête la marche")
+        N("<b>NormalizedRobotHAL</b><br/>✓ refuse les angles NaN ou infinis")
+        D("<b>Driver du robot</b> · IRobotHAL<br/>Unitree G1 · Isaac Sim")
+        J("<b>JointSafetyGuard</b> · chaque articulation<br/>✓ position · vitesse · couple<br/>✓ accélération · taille du pas")
         subgraph MON["Surveillance en parallèle"]
-            W["<b>Watchdog</b><br/>✓ seuil fatal → arrêt d'urgence"]
-            SU["<b>Superviseur</b><br/>✓ watchdog figé → arrêt d'urgence"]
-            IM["<b>Moniteur indépendant</b><br/>✓ ses propres limites → arrêt d'urgence"]
+            W("<b>Watchdog</b><br/>✓ seuil fatal → arrêt d'urgence")
+            SU("<b>Superviseur</b><br/>✓ watchdog figé → arrêt d'urgence")
+            IM("<b>Moniteur indépendant</b><br/>✓ ses propres limites → arrêt d'urgence")
         end
     end
 
@@ -91,18 +93,18 @@ flowchart TB
     SU -.->|surveille| W
     D -.-|"lisent les retours, peuvent tout arrêter"| MON
 
-    classDef app fill:#dbeafe,stroke:#2563eb,color:#0f172a
-    classDef check fill:#dcfce7,stroke:#16a34a,color:#0f172a
-    classDef watch fill:#ffedd5,stroke:#ea580c,color:#0f172a
-    classDef plain fill:#f1f5f9,stroke:#64748b,color:#0f172a
-    classDef motor fill:#334155,stroke:#0f172a,color:#ffffff
+    classDef app fill:#eaf3ff,stroke:#007aff,stroke-width:1.5px,color:#1d1d1f
+    classDef check fill:#eafaf0,stroke:#34c759,stroke-width:1.5px,color:#1d1d1f
+    classDef watch fill:#fff5e6,stroke:#ff9500,stroke-width:1.5px,color:#1d1d1f
+    classDef plain fill:#ffffff,stroke:#c7c7cc,stroke-width:1.5px,color:#1d1d1f
+    classDef motor fill:#1d1d1f,stroke:#1d1d1f,color:#ffffff
     class A app
     class PS,CTX,G,N,J check
     class W,SU,IM watch
     class SV,D plain
     class R motor
-    style OS fill:#f8fafc,stroke:#94a3b8,color:#0f172a
-    style MON fill:#fff7ed,stroke:#fdba74,color:#0f172a
+    style OS fill:#f5f5f7,stroke:#d2d2d7,color:#1d1d1f
+    style MON fill:#fffaf2,stroke:#ffd59e,color:#1d1d1f
 ```
 
 En vert, les contrôles de sécurité (chaque ✓) : ni les apps ni les
