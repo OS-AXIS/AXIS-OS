@@ -80,9 +80,16 @@ Ce qui casse pour un appelant :
   à 8 192 Mo restent installables hors production seulement.
 - `SemVer.parse()` est strict : chiffres ASCII, sans zéro en tête, espace,
   signe ni « _ » (« 1_0.0.0 » était lu 10.0.0).
+- Un `app_id` s'écrit en minuscules ASCII, chiffres et « _ », en segments
+  séparés par des points (`com.auteur.nom`) : un sosie (espace final,
+  majuscules, lettre d'un autre alphabet) aurait été une autre identité.
+- Avec un registre des apps, `install()` et `update_app()` (hors
+  production) l'appliquent aussi ; une app non signée ne peut pas prendre
+  un `app_id` déjà lié.
 - `remember()` rend False au-delà du quota de l'app.
-- Un e-stop pendant `run_mission` arrête le processus de l'app ; une app
-  qui avalait `EstopActiveError` pour continuer est tuée 0,5 s après.
+- Un e-stop pendant `run_mission` ou `on_start` arrête le processus de
+  l'app ; une app qui avalait `EstopActiveError` pour continuer est tuée
+  0,5 s après.
 - `IntentRegistry.register(decl, app_id=None)`, `match(texte, app_id=None)`
   et `SpeechService.listen(duree, app_id=None)` prennent l'espace de
   l'app ; sans `app_id`, c'est l'espace de l'OS, qui ne voit plus les
