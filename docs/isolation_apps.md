@@ -65,10 +65,11 @@ Fait le 2026-10-20 : `processus_app.py` lance
 pass_fds=(pont,), start_new_session=True)`, avec un environnement réduit
 à PATH et à la langue ; `hote_app.py` recharge l'app depuis sa source
 vérifiée. Le processus de l'app meurt avec l'OS (PR_SET_PDEATHSIG), et
-tout son groupe de processus est tué à la fin de chaque appel. En profil
-PRODUCTION, `PlayStoreRuntime.install_source()` lit même le manifeste
-dans ce processus : le code d'une app ne s'exécute jamais dans celui de
-l'OS. Le plan d'origine :
+tout son groupe de processus est tué à la fin de chaque appel, ou dès un
+arrêt d'urgence pendant une mission. En profil PRODUCTION, le code d'une
+app ne s'exécute jamais dans le processus de l'OS, ni nulle part avant
+l'accord de l'humain : `PlayStoreRuntime.install_source()` lit le
+manifeste déclaré à côté du code et signé avec lui. Le plan d'origine :
 
 
 - Démarrer l'app dans un interpréteur NEUF (`mp.get_context("spawn")`, ou
@@ -137,10 +138,14 @@ l'OS. Le plan d'origine :
 
 1. Sur un vrai robot : `PlayStoreRuntime(robot, watchdog,
    profil=Profil.PRODUCTION, cles_approuvees="/chemin/cles_approuvees.txt",
-   platform_public_key=..., confirmer_permissions=confirmer_au_terminal)`,
-   puis `install_source(...)` d'apps signées dont le code a été relu. Le
-   profil PRODUCTION impose la signature, une clé approuvée, la
-   confirmation humaine des permissions DANGEROUS et psutil.
+   registre_apps="/chemin/registre_apps.json", platform_public_key=...,
+   confirmer_permissions=confirmer_au_terminal)`, puis
+   `install_source(source, manifeste=..., ...)` d'apps signées dont le code
+   a été relu (le registre se crée une fois par `creer_registre_apps`). Le
+   profil PRODUCTION impose la signature du paquet (manifeste et code), une
+   clé approuvée, un `app_id` lié à sa clé, la confirmation humaine des
+   permissions DANGEROUS (clé signataire et quotas montrés), des quotas
+   sous les plafonds de l'OS et psutil.
 2. Les permissions DANGEROUS (dont `ACTUATORS_AI_DRIVEN`) exigent une
    confirmation explicite à l'installation (audit I1) : elle ne protège pas
    contre une app hostile, mais rend visible ce qu'une app honnête fera.
