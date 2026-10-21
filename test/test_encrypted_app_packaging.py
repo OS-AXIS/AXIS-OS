@@ -109,7 +109,7 @@ check("Le manifest de l'app chargée est correct",
 # ══════════════════════════════════════════════════════════════════
 
 section("2 — CRITIQUE : l'app chargée survit au sandboxing complet "
-        "(pickle via multiprocessing)")
+        "(processus neuf, pont JSON)")
 
 runtime2 = make_runtime()
 source2 = VALID_APP_SOURCE.format(app_id="com.developer.secretapp_w2")
@@ -296,7 +296,7 @@ print("=" * 66)
 
 if FAIL == 0:
     print("\n  ✓ Une app chargée depuis du code déchiffré survit au")
-    print("    sandboxing complet (pickle via multiprocessing)")
+    print("    sandboxing complet (processus neuf, pont JSON)")
     print("  ✓ Aucune fuite de module fantôme après un chargement échoué")
     print("  ✓ Deux apps chargées séparément n'interfèrent jamais entre")
     print("    elles, même en même temps dans le même process")

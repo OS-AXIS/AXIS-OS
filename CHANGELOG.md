@@ -79,6 +79,12 @@ Ce qui casse pour un appelant :
 - `SandboxRunner.run()` n'accepte qu'une fonction désignée par son module
   et son nom (fonction de module, `time.sleep`, `random.random`), avec des
   arguments et un résultat JSON.
+- `HALBridgeServer` et `HALBridgeClient` n'acceptent plus de files
+  (`command_queue`, `response_queue`) : seul le pont JSON existe.
+  `HALBridgeClient(canal)` ; `HALBridgeServer(ctx, canal=...)` puis
+  `start()` sert un canal, ou `traiter()` est appelé par
+  `SandboxRunner.run_app()`. Pour un essai dans un même processus, relier
+  les deux par `socket.socketpair()` et `Canal`.
 - En production, `install(objet)` et donc `update_app()` sont refusés ;
   `install_source()` refuse une app déjà installée (mise à jour depuis la
   source non prise en charge).

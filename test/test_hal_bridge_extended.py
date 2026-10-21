@@ -14,7 +14,7 @@ vérification ne compterait pour rien.
 """
 
 import sys
-import multiprocessing as mp
+import socket
 import time
 sys.path.insert(0, ".")
 
@@ -25,6 +25,7 @@ from axis_os.hal.watchdog.system import WatchdogSystem, WatchdogConfig
 from axis_os.hal.core.types import ActuatorCommand, ControlMode, HALStatus
 from axis_os.store.sdk.app_base import RobotContext
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, Permission
+from axis_os.store.runtime.canal_ipc import Canal
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
 
 FAIL = 0
@@ -53,10 +54,11 @@ def make_bridge(permissions):
         permissions=permissions,
     )
     ctx = RobotContext.for_testing(robot, wd, manifest)
-    cq, rq = mp.Queue(), mp.Queue()
-    server = HALBridgeServer(ctx, cq, rq)
+    # Les deux extrémités du pont JSON, dans ce même processus.
+    sock_os, sock_app = socket.socketpair()
+    server = HALBridgeServer(ctx, canal=Canal(sock_os))
     server.start()
-    client = HALBridgeClient(cq, rq)
+    client = HALBridgeClient(canal=Canal(sock_app))
     return robot, wd, server, client
 
 
@@ -132,10 +134,10 @@ manifest4 = AppManifest(
     permissions=[Permission.WATCHDOG_READ],
 )
 ctx4 = RobotContext.for_testing(robot4, wd4, manifest4)
-cq4, rq4 = mp.Queue(), mp.Queue()
-server4 = HALBridgeServer(ctx4, cq4, rq4)
+sock_os4, sock_app4 = socket.socketpair()
+server4 = HALBridgeServer(ctx4, canal=Canal(sock_os4))
 server4.start()
-client4 = HALBridgeClient(cq4, rq4, alert_poll_interval_s=0.05)
+client4 = HALBridgeClient(canal=Canal(sock_app4), alert_poll_interval_s=0.05)
 
 received = []
 client4.subscribe_alerts(lambda a: received.append(a))

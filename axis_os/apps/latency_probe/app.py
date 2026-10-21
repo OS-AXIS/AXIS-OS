@@ -7,9 +7,11 @@ sim/validation/test_isaac_follower_latency.py : ce test mesurait en
 moyenne 5.41 ms par cycle sur le chemin direct (thread principal, sans
 sandbox). Il reste à savoir ce que coûtent, par-dessus :
 
-  - les deux multiprocessing.Queue (files d'attente entre processus de
-    Python) qui relient le sous-processus de l'app au processus de l'OS ;
-  - le thread HALBridgeServer qui les consomme, c'est-à-dire le pont qui
+  - le pont JSON (une socket Unix, chaque message encodé puis vérifié)
+    qui relie le processus de l'app à celui de l'OS ; les chiffres de
+    docs/latence_chemin_commande.md datent de l'ancien pont, deux files
+    de multiprocessing sérialisées par pickle ;
+  - le serveur HALBridgeServer qui le sert, c'est-à-dire le pont qui
     reçoit les commandes de l'app et les transmet à la HAL (la couche
     d'abstraction matérielle, qui parle au robot) ;
   - l'attente du thread principal via MainThreadSimPump.submit() : Isaac

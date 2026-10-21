@@ -24,11 +24,12 @@ from axis_os.hal.watchdog.system import WatchdogSystem, WatchdogConfig
 from axis_os.hal.watchdog.events import AlertKind
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
 from axis_os.store.runtime.profil import Profil
+from axis_os.store.runtime.canal_ipc import Canal
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALCommand
 from axis_os.store.sdk.app_base import RobotContext, PermissionError, MissionResult, RobotApp
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, PricingModel, Permission
 from axis_os.apps.package_sorting.app import PackageSortingApp
-import multiprocessing as mp
+import socket
 from dataclasses import asdict
 
 FAIL = 0
@@ -100,17 +101,20 @@ wd_e8 = WatchdogSystem(robot_e8)
 manifest_e8 = PackageSortingApp().manifest()
 ctx_e8 = RobotContext.for_testing(robot_e8, wd_e8, manifest_e8)
 
-cq, rq = mp.Queue(), mp.Queue()
-server_e8 = HALBridgeServer(ctx_e8, cq, rq)
+# Les deux extrémités du pont JSON, dans ce même processus ; côté app, on
+# écrit directement sur le canal pour envoyer un message malformé.
+sock_os, sock_app = socket.socketpair()
+server_e8 = HALBridgeServer(ctx_e8, canal=Canal(sock_os))
 server_e8.start()
+cote_app = Canal(sock_app)
 
-cq.put({"foo": 1})  # message malformé
+cote_app.envoyer({"foo": 1})  # message malformé
 time.sleep(0.3)
 check("Thread serveur survit à un message malformé", server_e8._thread.is_alive())
 
-cq.put({"action": "get_imu", "payload": {}, "request_id": 1})
+cote_app.envoyer({"type": "appel", "action": "get_imu", "payload": {}, "request_id": 1})
 time.sleep(0.3)
-resp = rq.get(timeout=1.0)
+resp = cote_app.recevoir(timeout=1.0)
 check("Le serveur répond toujours à une vraie requête après le message malformé",
       resp["success"] is True)
 server_e8.stop()

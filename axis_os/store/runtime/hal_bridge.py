@@ -15,20 +15,20 @@ RobotContext, l'objet par lequel une app commande le robot et qui
 vérifie ses permissions, ne se sérialise pas avec pickle (le format
 Python qui sérialise des objets), car il contient des threads.
 
-La solution : le processus enfant envoie des commandes sérialisables
-(des dicts) dans une file. Le processus parent, seul à détenir le vrai
-HAL, les exécute et renvoie le résultat par une seconde file. Cet
-échange forme l'IPC (la communication entre deux processus) de l'app.
+La solution : le processus enfant envoie des commandes faites de
+simples données (des dicts) sur le pont. Le processus parent, seul à
+détenir le vrai HAL, les exécute et renvoie le résultat par le même pont.
+Cet échange forme l'IPC (la communication entre deux processus) de l'app.
 
                 Processus ENFANT (app isolée)
                         │
-                command_queue.put({"action": "move_arms", ...})
+                canal.envoyer({"type": "appel", "action": "move_arms", ...})
                         │
                 Processus PARENT (vrai HAL)
                         │
                 exécute la commande sur RobotContext
                         │
-                response_queue.put({"status": "ok", ...})
+                canal.envoyer({"type": "reponse", "success": True, ...})
                         │
                 Processus ENFANT reçoit le résultat
 
@@ -37,27 +37,20 @@ JSON (le format texte standard d'échange de données : dicts, listes,
 nombres, chaînes), jamais un objet HAL vivant : c'est le même principe
 que les messages ROS2 (.msg).
 
-Le transport : entre deux processus, le pont passe par canal_ipc.py,
-qui n'échange que des octets JSON (trames de taille bornée, JSON strict).
-Autrefois multiprocessing.Queue sérialisait chaque message avec pickle,
-et désérialiser un pickle peut exécuter du code dans le processus qui le
-lit, ici celui de l'OS : une app malveillante pouvait ainsi faire
-tourner son propre code dans l'OS (étape 0 de docs/isolation_apps.md,
-désormais faite). Chaque commande reçue est en outre vérifiée par le
-schéma de son action (SCHEMAS_ACTIONS) avant d'être exécutée : champ
-inconnu, absent ou du mauvais type, nombre non fini -> refus.
-
-Le mode historique par deux files (command_queue, response_queue) reste
-accepté pour les essais dans un même processus. Il ne doit jamais relier
-deux processus : multiprocessing.Queue désérialise ce qu'elle reçoit avec
-pickle avant toute vérification.
+Le transport : le pont passe uniquement par canal_ipc.py, qui n'échange
+que des octets JSON (trames de taille bornée, JSON strict). Autrefois, des
+files de multiprocessing sérialisaient chaque message avec pickle, et
+désérialiser un pickle peut exécuter du code dans le processus qui le lit,
+ici celui de l'OS : une app malveillante pouvait ainsi faire tourner son
+propre code dans l'OS (étape 0 de docs/isolation_apps.md). Ce transport a
+été retiré, essais compris. Chaque commande reçue est en outre vérifiée
+par le schéma de son action (SCHEMAS_ACTIONS) avant d'être exécutée :
+champ inconnu, absent ou du mauvais type, nombre non fini -> refus.
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations
-import multiprocessing as mp
-import queue
 import os
 import threading
 import time
@@ -73,7 +66,7 @@ from axis_os.store.sdk.app_base import (
 )
 from axis_os.store.sdk.manifest import Permission
 from axis_os.store.runtime.canal_ipc import (
-    Canal, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste, MessageRefuse,
+    Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste, MessageRefuse,
     Nombre, Objet, UnParmi,
 )
 
@@ -144,7 +137,7 @@ def _deserialize_detection(d: Dict[str, Any]):
 def _serialize_feedback(fb: ActuatorFeedback) -> Dict[str, Any]:
     """ActuatorFeedback (l'état mesuré d'un moteur : position, vitesse,
     couple, courant, température, tension, code d'erreur) -> dict
-    transportable par multiprocessing.Queue."""
+    transportable par le pont."""
     return {
         "joint_id": fb.joint_id, "state": fb.state.name,
         "position": fb.position, "velocity": fb.velocity,
@@ -251,22 +244,19 @@ class HALBridgeServer:
     fiable. Cela arrête une app boguée ; face à une app malveillante,
     voir la limite connue décrite en tête de ce fichier.
 
-    Usage :
-        server = HALBridgeServer(ctx, command_queue, response_queue)
-        server.start()          # lance un thread d'écoute
-        # ... le processus enfant tourne ...
+    Usage normal : SandboxRunner.run_app() lit les trames de l'app et
+    appelle traiter() pour chacune. Avec un `canal` (essais, ou tout autre
+    appelant qui tient lui-même une extrémité du pont) :
+        server = HALBridgeServer(ctx, canal=Canal(sock))
+        server.start()          # lance un thread qui sert le canal
         server.stop()
     """
 
-    def __init__(self, ctx: RobotContext,
-                 command_queue: Optional[mp.Queue] = None,
-                 response_queue: Optional[mp.Queue] = None):
-        """Sans files, le serveur ne fait que traiter() les commandes que
-        lui passe SandboxRunner.run_app() (cas normal) ; avec deux files,
-        start() lance aussi la boucle historique (voir l'en-tête)."""
+    def __init__(self, ctx: RobotContext, canal: Optional[Canal] = None):
+        """`canal` : extrémité OS du pont JSON, servie par start() ; None
+        quand SandboxRunner.run_app() appelle traiter() lui-même."""
         self._ctx     = ctx
-        self._cmd_q   = command_queue
-        self._resp_q  = response_queue
+        self._canal   = canal
         self._running = False
         self._thread: Optional[Any] = None
         # Pourquoi ce compteur : un audit de sécurité a montré que la
@@ -288,7 +278,8 @@ class HALBridgeServer:
         return self.successful_motor_commands > 0
 
     def start(self) -> None:
-        import threading
+        if self._canal is None:
+            raise ValueError("HALBridgeServer.start() : aucun canal à servir")
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True,
                                         name="hal_bridge_server")
@@ -300,17 +291,36 @@ class HALBridgeServer:
             self._thread.join(timeout=2.0)
 
     def _loop(self) -> None:
+        """Sert le canal : chaque appel reçoit sa réponse ; un message
+        refusé (JSON invalide, type inattendu) est signalé et ignoré, et le
+        thread reste vivant. Un canal fermé ou corrompu arrête la boucle."""
         while self._running:
             try:
-                raw = self._cmd_q.get(timeout=0.1)
-            except queue.Empty:
+                msg = self._canal.recevoir(timeout=0.1)
+            except TimeoutError:
                 continue
-            if raw is None:  # signal d'arrêt (« poison pill »)
+            except MessageRefuse as exc:
+                print(f"  [SECURITY] Message HAL bridge refusé (le pont continue) : "
+                      f"{_sans_controle(str(exc))[:300]}")
+                continue
+            except (CanalFerme, CanalCorrompu):
                 break
-
-            reponse = self.traiter(raw)
-            if reponse is not None:
-                self._resp_q.put(reponse)
+            if msg.get("type") != "appel":
+                print(f"  [SECURITY] Message HAL bridge de type inattendu refusé "
+                      f"(le pont continue) : {str(msg.get('type'))[:40]!r}")
+                continue
+            reponse = self.traiter(msg)
+            if reponse is None:
+                continue
+            reponse["type"] = "reponse"
+            try:
+                self._canal.envoyer(reponse)
+            except (TypeError, ValueError) as exc:
+                self._canal.envoyer({"type": "reponse", "request_id": reponse.get("request_id"),
+                                     "success": False, "data": None,
+                                     "error": f"réponse non transmissible : {exc}"[:500]})
+            except CanalFerme:
+                break
 
     def traiter(self, raw: Any, reste_s: Optional[float] = None) -> Optional[Dict[str, Any]]:
         """Une commande reçue de l'app (déjà décodée) -> la réponse à lui
@@ -657,20 +667,14 @@ class HALBridgeClient:
     divergent pas.
     """
 
-    def __init__(self, command_queue: Optional[mp.Queue] = None,
-                 response_queue: Optional[mp.Queue] = None,
-                 timeout_s: float = 5.0, alert_poll_interval_s: float = 0.5,
-                 *, canal: Optional[Canal] = None,
+    def __init__(self, canal: Canal, timeout_s: float = 5.0,
+                 alert_poll_interval_s: float = 0.5, *,
                  tolerance_lenteur: Optional[float] = None):
-        """`canal` : le pont JSON vers l'OS (cas normal, dans le processus
-        d'une app, voir hote_app.py). À défaut, les deux files
-        command_queue et response_queue (essais dans un même processus
-        seulement, voir l'en-tête du module)."""
-        if canal is None and (command_queue is None or response_queue is None):
-            raise ValueError("HALBridgeClient : un canal ou deux files sont nécessaires")
+        """`canal` : le pont JSON vers l'OS (dans le processus d'une app,
+        voir hote_app.py)."""
+        if canal is None:
+            raise ValueError("HALBridgeClient : un canal est nécessaire")
         self._canal    = canal
-        self._cmd_q    = command_queue
-        self._resp_q   = response_queue
         # Un seul appel à la fois sur le canal : le thread d'abonnement aux
         # alertes et celui de la mission ne doivent pas lire la réponse
         # l'un de l'autre.
@@ -815,9 +819,8 @@ class HALBridgeClient:
         """Groupes d'articulations déclarés par le HAL, demandés une seule
         fois au serveur puis gardés en cache.
 
-        Ils arrivent sous forme de noms (des chaînes) : JointGroup ne
-        traverse pas multiprocessing.Queue tel quel sans imposer son
-        import côté enfant.
+        Ils arrivent sous forme de noms (des chaînes) : seules des données
+        JSON traversent le pont, et JointGroup n'en est pas une.
         """
         if self.__groups_cache is None:
             try:
@@ -971,8 +974,8 @@ class HALBridgeClient:
         après qu'un audit externe a relevé son absence.
 
         L'adaptation n'est pas triviale. Une fonction Python (le callback)
-        ne peut pas traverser une multiprocessing.Queue, car elle n'est
-        pas sérialisable. Le processus enfant ne peut donc pas recevoir un
+        ne peut pas traverser le pont, où ne passent que des données JSON.
+        Le processus enfant ne peut donc pas recevoir un
         vrai callback synchrone du Watchdog, comme le fait RobotContext
         en déléguant à WatchdogSystem.subscribe() dans le même processus.
         Ici, un thread d'arrière-plan interroge périodiquement le serveur
@@ -1018,16 +1021,13 @@ class HALBridgeClient:
                 # permission WATCHDOG_READ : arrêt propre du thread.
                 break
             except (OSError, EOFError, BrokenPipeError):
-                # Les files ont été détruites sous ce thread, par le
-                # processus parent ou par le processus courant en fin de
-                # script. Constaté en testant ce mécanisme : un script qui
-                # se termine pendant qu'un abonnement est actif ferme ses
-                # multiprocessing.Queue avant que ce thread « daemon »
+                # Le pont a été fermé sous ce thread, par le processus
+                # parent ou par le processus courant en fin de script : un
+                # script qui se termine pendant qu'un abonnement est actif
+                # libère ses ressources avant que ce thread « daemon »
                 # (arrêté d'office avec le processus) ne s'arrête
-                # proprement. On s'arrête alors sans bruit plutôt que
-                # d'afficher une trace d'erreur en fin de processus : ce
-                # n'est pas une erreur applicative, seulement l'ordre
-                # normal de libération des ressources.
+                # proprement. On s'arrête alors sans bruit : ce n'est pas
+                # une erreur applicative.
                 break
             for alert_dict in raw["alerts"]:
                 try:
@@ -1089,10 +1089,7 @@ class HALBridgeClient:
             self._req_id += 1
             req_id = self._req_id
             delai = self._delai(duree_nominale_s)
-            if self._canal is not None:
-                resp = self._appel_canal(action, payload, req_id, delai)
-            else:
-                resp = self._appel_files(action, payload, req_id, delai)
+            resp = self._appel_canal(action, payload, req_id, delai)
         if not resp.success:
             if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
                 raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
@@ -1133,24 +1130,6 @@ class HALBridgeClient:
                 continue
             return HALResponse(request_id=req_id, success=msg.get("success") is True,
                                data=msg.get("data"), error=msg.get("error"))
-
-    def _appel_files(self, action: str, payload: Dict[str, Any],
-                     req_id: int, delai: float) -> HALResponse:
-        self._cmd_q.put(asdict(HALCommand(action=action, payload=payload,
-                                          request_id=req_id)))
-        deadline = time.monotonic() + delai
-        while time.monotonic() < deadline:
-            try:
-                raw = self._resp_q.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            resp = HALResponse(**raw)
-            if resp.request_id != req_id:
-                # Réponse destinée à un autre appel : elle est écartée,
-                # au mieux et sans garantie (« best-effort »).
-                continue
-            return resp
-        raise TimeoutError(f"HAL bridge timeout sur '{action}' (> {delai:.1f}s)")
 
     @staticmethod
     def _serialize(commands: Dict[str, ActuatorCommand]) -> Dict[str, dict]:
