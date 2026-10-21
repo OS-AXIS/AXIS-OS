@@ -299,12 +299,12 @@ Each one comes from a real bug, met while developing the reference apps.
    intent; it is **your code** that decides what it triggers. A sentence
    that no app has declared produces nothing, and your app only receives
    the intents it declared itself.
-9. **An emergency stop ends your mission.** As soon as it happens, every
+8. **An emergency stop ends your mission.** As soon as it happens, every
    `ctx` call raises `EstopActiveError`; you have half a second to return
    your result, then your process is stopped. The mission is recorded as
    "interrupted by emergency stop" and is never billed. Do not count on
    that delay to finish a job.
-8. **Fail and say so.** A clear `MissionResult(success=False,
+9. **Fail and say so.** A clear `MissionResult(success=False,
    error_message="…")` is better than an app that makes up a plausible
    result.
 

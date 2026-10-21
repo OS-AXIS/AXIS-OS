@@ -313,6 +313,29 @@ check(f"on_start interrompu en moins de {BORNE_S:g} s", res.get("fin", float("in
 check("… et l'app n'est pas démarrée", res.get("pret") is False
       and not rt._apps["com.test.demarrage"].is_started)
 
+class AppQuiDemarreVite(RobotApp):
+    """on_start immédiat : il répond avant la fin du délai de grâce."""
+    def manifest(self):
+        return manifeste("com.test.demarre_vite", [])
+
+    def on_start(self, ctx):
+        ctx.log("prête")
+        return True
+
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
+
+
+robot, rt = pile(AppQuiDemarreVite())
+rt._apps["com.test.demarre_vite"].is_started = False
+with contextlib.redirect_stdout(io.StringIO()):
+    robot.emergency_stop_all()
+    pret = rt.start_app("com.test.demarre_vite")
+check("Sous e-stop, une app qui répond vite à on_start n'est pas démarrée non plus",
+      pret is False and not rt._apps["com.test.demarre_vite"].is_started)
+
 section("7. SandboxRunner seul")
 spec = reference_fonction(time.sleep)
 t0 = time.monotonic()

@@ -58,8 +58,8 @@ SCHEMA_MANIFESTE = Objet({
 }, facultatifs={
     "icon_url": Chaine(2048), "website_url": Chaine(2048), "support_email": Chaine(256),
     "sdk_version_min": Chaine(64),
-    # Renvoyés pour information seulement : l'OS ne les reprend jamais
-    # (voir manifeste_depuis_json).
+    # Acceptés dans le texte, jamais repris : l'OS y met la signature et la
+    # clé qu'il a lui-même vérifiées (voir manifeste_depuis_json).
     "code_signature": Chaine(512), "developer_public_key": Chaine(512),
 })
 
@@ -93,8 +93,8 @@ def manifeste_vers_json(m: AppManifest) -> Dict[str, Any]:
 
 
 def manifeste_depuis_json(d: Any) -> AppManifest:
-    """dict JSON reçu d'un processus d'app -> AppManifest. Lève
-    MessageRefuse si le dict ne suit pas SCHEMA_MANIFESTE.
+    """dict JSON du manifeste déclaré (voir manifeste_depuis_texte) ->
+    AppManifest. Lève MessageRefuse si le dict ne suit pas SCHEMA_MANIFESTE.
 
     code_signature et developer_public_key ne sont jamais repris du JSON :
     l'appelant y met les valeurs qu'il a lui-même vérifiées, pour qu'une

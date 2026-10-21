@@ -303,13 +303,13 @@ référence.
    une intention ; c'est **votre code** qui décide ce qu'elle déclenche.
    Une phrase qu'aucune app n'a déclarée ne produit rien, et votre app ne
    reçoit que les intentions qu'elle a déclarées elle-même.
-9. **Un arrêt d'urgence met fin à votre mission.** Dès qu'il survient,
+8. **Un arrêt d'urgence met fin à votre mission.** Dès qu'il survient,
    tout appel à `ctx` lève `EstopActiveError` ; vous avez une
    demi-seconde pour rendre votre résultat, puis votre processus est
    arrêté. La mission est notée « interrompue par arrêt d'urgence » et
    n'est jamais facturée. Ne comptez pas sur ce délai pour finir un
    travail.
-8. **Échouez en le disant.** Un `MissionResult(success=False,
+9. **Échouez en le disant.** Un `MissionResult(success=False,
    error_message="…")` clair vaut mieux qu'une app qui invente un résultat
    plausible.
 

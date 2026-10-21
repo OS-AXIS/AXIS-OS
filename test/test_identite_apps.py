@@ -398,6 +398,49 @@ ok, sortie = silencieux(dev.install, AppNonSignee())
 check("Hors production, avec registre : une app non signée ne prend pas un app_id lié",
       ok is False and "com.test.identite" not in dev._apps, sortie[-200:])
 
+class AppVersion(RobotApp):
+    VERSION = "2.0.0"
+
+    def manifest(self):
+        return AppManifest(app_id="com.test.version", name="Version", version=self.VERSION,
+                           author="T", author_email="t@t.com", description="d",
+                           category=AppCategory.UTILITIES)
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
+
+
+AppVersion.VERSION = "2.0.0"
+silencieux(dev.install, AppVersion())
+silencieux(dev.start_app, "com.test.version")
+AppVersion.VERSION = "1.0.0"
+ok, sortie = silencieux(dev.update_app, AppVersion(), allow_downgrade=True)
+entree = dev._apps["com.test.version"]
+check("Avec registre, update_app(allow_downgrade=True) vers une version plus ancienne : refusé "
+      "avant d'arrêter l'app", ok is False and entree.manifest.version == "2.0.0"
+      and entree.is_started is True and "allow_downgrade" in sortie, sortie[-300:])
+
+import argparse  # noqa: E402
+from axis_os.cli.main import cmd_init  # noqa: E402
+from axis_os.store.sdk.manifest import _APP_ID  # noqa: E402
+cwd = os.getcwd()
+os.chdir(tempfile.mkdtemp(prefix="axis_init_"))
+try:
+    code, sortie = silencieux(cmd_init, argparse.Namespace(name="Mon App", author="李雷",
+                                                           email="d@d.d"))
+    genere = Path("mon_app/app.py").read_text(encoding="utf-8") if code == 0 else ""
+    check("axis-os init, auteur sans lettre latine : un app_id valide est généré",
+          code == 0 and 'app_id="com.anonymous.mon_app"' in genere, sortie[-200:])
+    code, sortie = silencieux(cmd_init, argparse.Namespace(name="Робот", author="Dev",
+                                                           email="d@d.d"))
+    check("axis-os init, nom sans lettre latine : refus clair, rien de créé",
+          code == 1 and "app_id" in sortie, sortie[-200:])
+finally:
+    os.chdir(cwd)
+
 section("10. Deux installations simultanées du même app_id")
 REG = nouveau_registre()
 rt = runtime(REG, Operateur(attente_s=0.3))

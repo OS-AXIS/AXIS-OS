@@ -84,10 +84,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     d'écraser un dossier existant. Renvoie le code de sortie du
     processus : 0 en cas de succès, 1 sinon.
     """
+    from axis_os.store.sdk.manifest import _APP_ID
     app_name  = args.name
-    app_id    = f"com.{_slugify(args.author)}.{_slugify(app_name)}"
+    # Un auteur sans lettre latine donnerait un segment vide, refusé par
+    # AppManifest.validate() : « anonymous » le remplace.
+    app_id    = f"com.{_slugify(args.author) or 'anonymous'}.{_slugify(app_name)}"
     class_nm  = _class_name(app_name)
     slug      = _slugify(app_name)
+    if not _APP_ID.fullmatch(app_id):
+        print(f"[ERREUR] Nom d'app inutilisable dans un app_id ({app_id!r}) : il faut au "
+              f"moins une lettre ou un chiffre latin.")
+        return 1
 
     target = Path(slug)
     if target.exists():

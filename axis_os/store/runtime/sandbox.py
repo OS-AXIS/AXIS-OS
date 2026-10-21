@@ -305,7 +305,8 @@ class SandboxRunner:
         (processus_app.SCHEMA_RESULTAT).
 
         `arret` : fonction sans argument qui rend True dès qu'un arrêt
-        d'urgence est actif (PlayStoreRuntime la passe pour run_mission).
+        d'urgence est actif (PlayStoreRuntime la passe pour run_mission et
+        on_start).
         Elle est consultée toutes les 20 ms par un thread à part, que le
         hook soit en plein calcul ou en attente d'un appel au robot. Dès
         qu'elle répond True : les appels de l'app reçoivent ESTOP_ACTIVE

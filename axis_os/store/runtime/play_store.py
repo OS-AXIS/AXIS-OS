@@ -698,10 +698,12 @@ class PlayStoreRuntime:
                                spec_erreur: Optional[str],
                                avant_enregistrement: Optional[Callable[[], bool]] = None
                                ) -> bool:
-        """Contrôles communs à install() et install_source(), une fois le
-        manifeste obtenu et la signature vérifiée : permissions SIGNATURE,
-        capacités, matériel, confirmation des permissions DANGEROUS, puis
-        enregistrement."""
+        """Contrôles communs à install(), install_source() et
+        update_source(), une fois le manifeste obtenu et la signature
+        vérifiée : plafonds des quotas, permissions SIGNATURE, capacités,
+        matériel, confirmation des permissions DANGEROUS, puis
+        `avant_enregistrement` (l'écriture du registre des apps) et
+        l'enregistrement."""
         app_id = manifest.app_id
         # Plafonds de l'OS (profil.PLAFONDS_QUOTAS), vérifiés avant tout le
         # reste, et avant l'humain : un quota trop grand n'est jamais ramené
@@ -1091,7 +1093,9 @@ class PlayStoreRuntime:
         mission est en cours, ancienne version arrêtée, état de facturation
         conservé, toutes les vérifications et la confirmation d'une
         installation neuve. Si elles échouent, l'ancienne version reste
-        installée, arrêtée. L'app n'est pas redémarrée d'office.
+        installée, arrêtée. L'app n'est pas redémarrée d'office. Les
+        missions sont refusées pendant toute la mise à jour, confirmation
+        humaine comprise.
         """
         if not self._verrou_installation.acquire(blocking=False):
             print("  [ERREUR] Une autre installation est en cours sur ce robot : refusé.")
@@ -1202,6 +1206,9 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] on_start: {exc}")
             ready = False
 
+        # Comme pour une mission : un e-stop survenu pendant on_start, même
+        # si l'app a eu le temps de répondre, la laisse non démarrée.
+        ready = ready and not self._estop_actif()
         entry.is_started = ready
         ctx.log("Prête." if ready else "Échec initialisation.")
         return ready
@@ -1248,14 +1255,15 @@ class PlayStoreRuntime:
         # silence derrière une mission déjà en cours.
         if not self._mission_lock.acquire(blocking=False):
             mission_id = str(uuid.uuid4())[:8].upper()
-            print(f"  [SECURITY] Mission {mission_id} refusée : "
-                  f"une autre mission est déjà en cours sur ce robot — {app_id}")
+            print(f"  [SECURITY] Mission {mission_id} refusée : une autre mission, ou la "
+                  f"mise à jour d'une app, est déjà en cours sur ce robot — {app_id}")
             return MissionResult(
                 success=False, mission_id=mission_id, app_id=app_id,
                 duration_s=0.0,
                 error_message=(
-                    "Une autre mission est déjà en cours d'exécution sur "
-                    "ce robot — un seul robot ne peut exécuter qu'une "
+                    "Une autre mission, ou la mise à jour d'une app "
+                    "(update_source, confirmation comprise), est déjà en cours "
+                    "sur ce robot — un seul robot ne peut exécuter qu'une "
                     "mission à la fois, quelle que soit l'app."
                 ),
             )
@@ -1426,7 +1434,8 @@ class PlayStoreRuntime:
              `allow_downgrade=True` lève ce refus explicitement (comme
              l'option `-d` de `adb install`, l'outil Android
              d'installation en ligne de commande) ; ce n'est jamais le
-             comportement par défaut.
+             comportement par défaut, et c'est sans effet quand le
+             runtime tient un registre des apps (registre_apps).
           2. La mise à jour est refusée si une mission est en cours sur
              ce robot (self._mission_lock déjà pris), quelle que soit
              l'app concernée. C'est le principe déjà appliqué à
@@ -1487,6 +1496,13 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] update_app() : version invalide — {e}")
             return False
 
+        if new_version < old_version and self._registre is not None:
+            # Avec un registre des apps, aucun retour en arrière (même
+            # allow_downgrade) : refusé ici, avant d'arrêter l'ancienne version.
+            print(f"  [ERREUR] update_app() : v{new_version} est antérieure à la version "
+                  f"installée (v{old_version}) et ce robot tient un registre des apps : "
+                  f"retour en arrière refusé, allow_downgrade est sans effet.")
+            return False
         if new_version < old_version and not allow_downgrade:
             print(
                 f"  [ERREUR] update_app() : la nouvelle version "
