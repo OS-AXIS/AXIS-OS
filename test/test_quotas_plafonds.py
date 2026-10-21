@@ -35,13 +35,14 @@ from axis_os.store.runtime.hal_bridge import HALBridgeServer  # noqa: E402
 from axis_os.store.runtime.play_store import (  # noqa: E402
     PlayStoreRuntime, accepter_tout_SIMULATION, confirmer_au_terminal,
 )
-from axis_os.store.runtime.profil import PLAFONDS_QUOTAS, Profil  # noqa: E402
+from axis_os.store.runtime.manifeste_json import manifeste_texte  # noqa: E402
+from axis_os.store.runtime.profil import PLAFONDS_QUOTAS, Profil, creer_registre_apps  # noqa: E402
 from axis_os.store.sdk.app_base import MissionResult, RobotApp, RobotContext  # noqa: E402
 from axis_os.store.sdk.manifest import (  # noqa: E402
     AppCategory, AppManifest, Permission, ResourceQuota,
 )
 from axis_os.store.sdk.signing import (  # noqa: E402
-    generate_developer_keypair, public_key_fingerprint, sign_app_code,
+    generate_developer_keypair, public_key_fingerprint, sign_app_package,
 )
 
 FAIL = 0
@@ -175,13 +176,21 @@ class AppSource(RobotApp):
 
 def installer_source(rt, memoire):
     texte = SOURCE.replace("MEMOIRE", str(memoire))
-    return silencieux(rt.install_source, texte, code_signature=sign_app_code(texte, CLE.private_key_b64),
+    manifeste = manifeste_texte(AppManifest(
+        app_id="com.test.quota_source", name="Source", version="1.0.0",
+        author="Quelqu'un d'autre", author_email="t@t.com", description="d",
+        category=AppCategory.UTILITIES, permissions=[Permission.ACTUATORS_WRITE_ARMS],
+        quota=ResourceQuota(max_memory_mb=memoire)))
+    return silencieux(rt.install_source, texte, manifeste=manifeste,
+                      code_signature=sign_app_package(manifeste, texte, CLE.private_key_b64),
                       developer_public_key=CLE.public_key_b64, origine="quota")
 
 
+REGISTRE = DOSSIER / "registre_apps.json"
+creer_registre_apps(REGISTRE)
 espion_prod = Espion()
 prod, _ = silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.PRODUCTION, cles_approuvees=CLES,
-                     confirmer_permissions=espion_prod)
+                     confirmer_permissions=espion_prod, registre_apps=REGISTRE)
 ok, sortie = installer_source(prod, 2048)
 check("PRODUCTION, max_memory_mb = 2048 : refusé", ok is False and "PRODUCTION" in sortie
       and "max_memory_mb" in sortie, sortie[-300:])
@@ -221,7 +230,7 @@ check("… et la question reste la même", accord is True
       and "Accorder ACTUATORS_WRITE_ARMS à com.test.affichage ?" in ecran)
 try:
     silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.PRODUCTION, cles_approuvees=CLES,
-               confirmer_permissions=lambda manifest, permissions: True)
+               confirmer_permissions=lambda manifest, permissions: True, registre_apps=REGISTRE)
     check("PRODUCTION : confirmateur sans les détails : refusé", False)
 except ValueError:
     check("PRODUCTION : confirmateur sans les détails : refusé", True)

@@ -38,8 +38,10 @@ RACINE = str(Path(__file__).resolve().parents[3])
 HOTE = str(Path(__file__).resolve().with_name("hote_app.py"))
 
 # Les hooks d'une app, plus « fonction » : une fonction de confiance de
-# l'OS exécutée sous quotas par SandboxRunner.run().
-HOOKS = ("manifest", "on_start", "run_mission", "on_stop", "fonction")
+# l'OS exécutée sous quotas par SandboxRunner.run(). Pas de « manifest » :
+# l'OS lit le manifeste déclaré et signé à côté du code, sans l'exécuter
+# (PlayStoreRuntime.install_source).
+HOOKS = ("on_start", "run_mission", "on_stop", "fonction")
 
 SCHEMA_APP = Objet({
     "genre": UnParmi("module", "source", "script"),
@@ -453,7 +455,6 @@ SCHEMA_MISSION = Objet({"success": Booleen()}, facultatifs={
 })
 
 SCHEMA_RESULTAT = {
-    "manifest": Objet({"manifeste": JsonLibre()}),
     "on_start": Objet({"pret": Booleen(), "log": _JOURNAL}),
     "on_stop": Objet({"ok": Booleen(), "log": _JOURNAL}),
     "run_mission": Objet({}, facultatifs={"mission": SCHEMA_MISSION}),

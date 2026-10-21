@@ -199,6 +199,44 @@ def verify_app_signature(
         return False
 
 
+# ── Paquet signé : manifeste déclaré + code (format 2) ─────────────
+#
+# Pourquoi : pour lire le manifeste d'une app (identité, permissions,
+# quotas) avant de demander quoi que ce soit à l'humain, l'OS exécutait son
+# code. Avec un manifeste déclaré à côté du code et couvert par la MÊME
+# signature, l'OS lit le manifeste sans rien exécuter. Une seule signature
+# pour les deux : avec deux signatures séparées, on pourrait associer le
+# manifeste d'une version au code d'une autre, signés par la même clé.
+
+_DOMAINE_PAQUET = b"AXIS-OS-APP-V2\x00"
+
+
+def message_paquet(manifeste: str, source: str) -> bytes:
+    """Les octets exacts que signe sign_app_package(). Le préfixe contient
+    un octet nul, qu'aucun code source Python ne peut contenir : une
+    signature de paquet n'est jamais valable comme signature d'un code seul
+    (format 1, sign_app_code), ni l'inverse. La longueur du manifeste fixe
+    sans ambiguïté sa frontière avec le code."""
+    m = manifeste.encode("utf-8")
+    return _DOMAINE_PAQUET + len(m).to_bytes(8, "big") + m + source.encode("utf-8")
+
+
+def sign_app_package(manifeste: str, source: str, private_key_b64: str) -> str:
+    """Signe ensemble le manifeste déclaré (texte JSON, voir
+    manifeste_json.manifeste_texte) et le code source d'une app. C'est la
+    signature qu'exige PlayStoreRuntime.install_source()."""
+    return sign_app_code(message_paquet(manifeste, source), private_key_b64)
+
+
+def verify_app_package(manifeste: str, source: str, signature_b64: str,
+                       public_key_b64: str) -> bool:
+    """Vérifie une signature de sign_app_package() ; mêmes règles que
+    verify_app_signature() (False si elle ne correspond pas, SignatureError
+    si une donnée est malformée)."""
+    return verify_app_signature(message_paquet(manifeste, source), signature_b64,
+                                public_key_b64)
+
+
 def public_key_fingerprint(public_key_b64: str) -> str:
     """Empreinte courte d'une clé publique, à montrer à un humain :
     « SHA256:» suivi des 16 premiers chiffres hexadécimaux du SHA-256 des 32

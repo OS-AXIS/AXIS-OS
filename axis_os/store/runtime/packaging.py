@@ -49,7 +49,7 @@ from axis_os.store.sdk.encryption import (
     decrypt_app_file_to_bytes, decrypt_app_code, EncryptedApp,
     EncryptionError, DecryptionError,
 )
-from axis_os.store.sdk.signing import verify_app_signature, SignatureError
+from axis_os.store.sdk.signing import verify_app_package, verify_app_signature, SignatureError
 
 
 class AppLoadError(Exception):
@@ -201,15 +201,20 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
 def decrypt_verified_app_source(
     encrypted_data: bytes, platform_private_key_b64: str, *,
     code_signature: str, developer_public_key: str, origin_label: str = "app",
+    manifeste: Optional[str] = None,
 ) -> str:
     """
     Déchiffre `encrypted_data` et vérifie la signature du développeur, puis
     rend le code source en clair, SANS l'exécuter.
 
-    C'est le chemin d'une app chiffrée en profil PRODUCTION : le texte rendu
-    se passe à PlayStoreRuntime.install_source() avec la même signature et
-    la même clé, qui revérifie la signature, contrôle que la clé est
-    approuvée et ne lit le manifeste que dans le processus de l'app.
+    C'est le chemin d'une app chiffrée en profil PRODUCTION : avec son
+    `manifeste` déclaré (en clair à côté du paquet : il n'a rien de secret,
+    il est montré à l'humain), la signature vérifiée est celle du paquet
+    (signing.sign_app_package), et le texte rendu se passe à
+    PlayStoreRuntime.install_source() avec ce manifeste, la même signature
+    et la même clé ; aucun code de l'app n'est exécuté pour lire son
+    manifeste. Sans `manifeste`, la signature attendue est celle du code
+    seul (sign_app_code), pour load_app_from_encrypted_bytes().
     load_app_from_encrypted_bytes(), qui exécute le code dans le processus
     appelant pour en rendre un objet app, ne sert qu'en simulation et en
     développement.
@@ -219,9 +224,19 @@ def decrypt_verified_app_source(
     encrypted_app = EncryptedApp.from_bytes(encrypted_data)
     plaintext_bytes = decrypt_app_code(encrypted_app, platform_private_key_b64)
     try:
-        signature_valide = verify_app_signature(
-            plaintext_bytes, code_signature, developer_public_key,
-        )
+        if manifeste is None:
+            signature_valide = verify_app_signature(
+                plaintext_bytes, code_signature, developer_public_key,
+            )
+        else:
+            signature_valide = verify_app_package(
+                manifeste, plaintext_bytes.decode("utf-8"), code_signature,
+                developer_public_key,
+            )
+    except UnicodeDecodeError as e:
+        raise AppLoadError(
+            f"Code déchiffré n'est pas de l'UTF-8 valide ({origin_label}) : {e}"
+        ) from e
     except SignatureError as e:
         raise AppLoadError(
             f"Signature ou clé malformée ({origin_label}) : {e}"

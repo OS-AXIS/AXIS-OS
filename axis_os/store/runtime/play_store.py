@@ -53,7 +53,9 @@ from axis_os.store.sdk.app_base import (
 from axis_os.store.runtime.sandbox import (
     SandboxRunner, SandboxResult, SandboxState, SandboxErrorKind, _try_import_psutil,
 )
-from axis_os.store.runtime.profil import PLAFONDS_QUOTAS, Profil, lire_cles_approuvees
+from axis_os.store.runtime.profil import (
+    PLAFONDS_QUOTAS, Profil, ecrire_registre_apps, lire_cles_approuvees, lire_registre_apps,
+)
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
 from axis_os.store.runtime.processus_app import (
     AppNonRechargeable, etat_json, rendre_os_non_inspectable, spec_depuis_instance,
@@ -100,6 +102,7 @@ class DetailsConfirmation:
     signataire:     Optional[str]   # empreinte de la clé vérifiée ; None si non signée
     nom_signataire: Optional[str]   # nom inscrit dans le fichier des clés approuvées
     fichier_cles:   Optional[str]   # chemin de ce fichier, s'il y en a un
+    liaison:        Optional[str] = None  # ce que dit le registre des apps de cet app_id
 
 
 MOTIF_ARRET_URGENCE = "Mission interrompue par arrêt d'urgence (e-stop)"
@@ -188,6 +191,8 @@ def confirmer_au_terminal(manifest: AppManifest, permissions: List[Permission],
     for p in permissions:
         print(f"    - {p.name}")
     print(f"  Signée par : {decrire_signataire(details)}")
+    if details is not None and details.liaison:
+        print(f"  Registre   : {details.liaison}")
     print("  Ressources maximales :")
     for ligne in decrire_quotas(manifest.quota):
         print(f"    - {ligne}")
@@ -325,6 +330,7 @@ class PlayStoreRuntime:
         *,
         profil: Profil,
         cles_approuvees: Optional[Union[str, os.PathLike]] = None,
+        registre_apps: Optional[Union[str, os.PathLike]] = None,
     ):
         """
         `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
@@ -341,6 +347,13 @@ class PlayStoreRuntime:
         `cles_approuvees` : chemin du fichier des clés publiques de
         développeur approuvées (format dans profil.py). Fourni hors
         production, il est appliqué de même.
+
+        `registre_apps` : chemin du registre persistant des apps (format
+        dans profil.py), obligatoire en PRODUCTION : chaque app_id y est lié
+        à la clé qui l'a installé la première fois, avec la version la plus
+        récente installée. install_source() et update_source() le
+        consultent et le tiennent à jour ; fourni hors production, il est
+        appliqué de même.
 
         `robot` : le HAL du robot, vu à travers NormalizedRobotHAL, la
         façade qui présente aux apps les positions et vitesses dans une
@@ -455,6 +468,13 @@ class PlayStoreRuntime:
         self._cles_approuvees: Optional[Dict[str, str]] = (
             None if cles_approuvees is None else lire_cles_approuvees(cles_approuvees))
         self._fichier_cles = None if cles_approuvees is None else os.fspath(cles_approuvees)
+        if profil is Profil.PRODUCTION and registre_apps is None:
+            raise ValueError(
+                "Profil PRODUCTION : registre des apps requis (paramètre registre_apps, "
+                "format dans profil.py ; le créer une fois par creer_registre_apps).")
+        self._chemin_registre = None if registre_apps is None else os.fspath(registre_apps)
+        self._registre: Optional[Dict[str, Dict[str, str]]] = (
+            None if registre_apps is None else lire_registre_apps(registre_apps))
         self._confirmer_permissions = confirmer_permissions
         self._robot   = robot
         self._watchdog = watchdog
@@ -519,6 +539,10 @@ class PlayStoreRuntime:
         # sa mission en cours alors qu'elle attend indéfiniment derrière
         # une autre.
         self._mission_lock = threading.Lock()
+        # Une installation ou mise à jour depuis la source à la fois : sans
+        # lui, deux installations du même app_id par deux clés passeraient
+        # toutes deux le contrôle du registre.
+        self._verrou_installation = threading.Lock()
         print(f"\n[PlayStore] Runtime démarré | id={self._id} | robot={robot.robot_id}")
 
     # ── Installation ──────────────────────────────────────────────
@@ -646,7 +670,9 @@ class PlayStoreRuntime:
 
     def _terminer_installation(self, manifest: AppManifest, app: Optional[RobotApp],
                                spec: Optional[Dict[str, Any]],
-                               spec_erreur: Optional[str]) -> bool:
+                               spec_erreur: Optional[str],
+                               avant_enregistrement: Optional[Callable[[], bool]] = None
+                               ) -> bool:
         """Contrôles communs à install() et install_source(), une fois le
         manifeste obtenu et la signature vérifiée : permissions SIGNATURE,
         capacités, matériel, confirmation des permissions DANGEROUS, puis
@@ -806,6 +832,11 @@ class PlayStoreRuntime:
             last_subscription_bill_time_s = self._read_billing_flag(
                 app_id, "last_subscription_bill_time_s", None)
 
+        # Dernier contrôle, après l'humain : l'écriture du registre des apps.
+        # Si elle échoue, rien n'est installé (une liaison perdue au
+        # redémarrage laisserait une autre clé reprendre l'app_id).
+        if avant_enregistrement is not None and not avant_enregistrement():
+            return False
         self._apps[app_id] = InstalledApp(
             app=app, manifest=manifest, spec=spec, spec_erreur=spec_erreur,
             one_time_billed=one_time_billed,
@@ -820,15 +851,66 @@ class PlayStoreRuntime:
     def _details_confirmation(self, manifest: AppManifest) -> DetailsConfirmation:
         """Signataire vérifié d'un manifeste (voir DetailsConfirmation)."""
         cle = manifest.developer_public_key if manifest.code_signature is not None else None
+        liaison = None
+        if self._registre is not None:
+            lien = self._registre.get(manifest.app_id)
+            liaison = ("première installation de cet app_id sur ce robot : il sera lié à "
+                       "cette clé" if lien is None else
+                       f"app_id déjà lié à cette clé, version la plus récente installée "
+                       f"{lien['version']}")
         if cle is None:
-            return DetailsConfirmation(self._profil.name, None, None, self._fichier_cles)
+            return DetailsConfirmation(self._profil.name, None, None, self._fichier_cles, liaison)
         empreinte = public_key_fingerprint(cle)
         if self._cles_approuvees is not None and cle in self._cles_approuvees:
             return DetailsConfirmation(self._profil.name, empreinte,
-                                       self._cles_approuvees[cle], self._fichier_cles)
+                                       self._cles_approuvees[cle], self._fichier_cles, liaison)
         if cle == self._platform_public_key:
-            return DetailsConfirmation(self._profil.name, empreinte, "clé plateforme", None)
-        return DetailsConfirmation(self._profil.name, empreinte, None, self._fichier_cles)
+            return DetailsConfirmation(self._profil.name, empreinte, "clé plateforme", None,
+                                       liaison)
+        return DetailsConfirmation(self._profil.name, empreinte, None, self._fichier_cles,
+                                   liaison)
+
+    def _verifier_registre(self, manifest: AppManifest, version: SemVer) -> bool:
+        """Règles du registre des apps, avant l'humain : un app_id lié à une
+        clé ne s'installe qu'avec elle, et jamais dans une version antérieure
+        à la plus récente déjà installée (une version égale est une
+        réinstallation, après un redémarrage par exemple)."""
+        if self._registre is None:
+            return True
+        lien = self._registre.get(manifest.app_id)
+        if lien is None:
+            return True
+        app_id = _affichable(manifest.app_id)
+        if lien["cle"] != manifest.developer_public_key:
+            print(f"  [ERREUR] '{app_id}' est lié sur ce robot à la clé "
+                  f"{public_key_fingerprint(lien['cle'])}, qui l'a installé la première fois ; "
+                  f"ce paquet est signé par {public_key_fingerprint(manifest.developer_public_key)}. "
+                  f"Une autre clé ne peut pas reprendre un app_id : refusé.")
+            return False
+        if version < SemVer.parse(lien["version"]):
+            print(f"  [ERREUR] '{app_id}' v{version} : antérieure à la version la plus récente "
+                  f"déjà installée sur ce robot (v{lien['version']}) : refusé.")
+            return False
+        return True
+
+    def _lier(self, manifest: AppManifest, version: SemVer) -> bool:
+        """Inscrit au registre des apps (sur disque) la liaison app_id -> clé et
+        la version la plus récente installée. False si l'écriture échoue."""
+        if self._registre is None:
+            return True
+        ancien = self._registre.get(manifest.app_id)
+        plus_recente = version if ancien is None else max(version, SemVer.parse(ancien["version"]))
+        nouveau = dict(self._registre)
+        nouveau[manifest.app_id] = {"cle": manifest.developer_public_key,
+                                    "version": str(plus_recente)}
+        try:
+            ecrire_registre_apps(self._chemin_registre, nouveau)
+        except OSError as exc:
+            print(f"  [ERREUR] Registre des apps non enregistré ({exc!r:.120}) : "
+                  f"installation refusée.")
+            return False
+        self._registre = nouveau
+        return True
 
     def _sdk_compatible(self, manifest: AppManifest) -> bool:
         """Compatibilité du SDK, dont la version est celle d'AXIS-OS (voir
@@ -859,82 +941,192 @@ class PlayStoreRuntime:
         if cle is not None and (cle in self._cles_approuvees
                                 or cle == self._platform_public_key):
             return True
-        print(f"  [ERREUR] Clé de développeur non approuvée sur ce robot "
-              f"({_affichable(cle or '', 20)}…) : absente du fichier des clés "
-              f"approuvées.")
+        try:
+            qui = public_key_fingerprint(cle)
+        except Exception:                 # noqa: BLE001 — clé malformée : rien à montrer
+            qui = "clé illisible"
+        print(f"  [ERREUR] Clé de développeur non approuvée sur ce robot ({qui}) : "
+              f"absente du fichier des clés approuvées.")
         return False
 
-    def install_source(self, source: str, *, code_signature: str,
-                       developer_public_key: str, origine: str = "app") -> bool:
-        """Installe une app à partir de son code source et de sa signature,
-        sans jamais exécuter ce code dans le processus de l'OS.
-
-        C'est le seul chemin d'installation en profil PRODUCTION. Ordre :
-          1. la signature est vérifiée sur le texte (de simples octets) et
-             la clé doit être approuvée (voir _cle_approuvee) ;
-          2. le processus neuf de l'app exécute ce texte et appelle
-             manifest() ; le manifeste revient en JSON et est revérifié
-             champ par champ (manifeste_json.py) ;
-          3. ce manifeste passe ensuite par les mêmes contrôles
-             qu'install() : validate(), SDK, permissions SIGNATURE,
-             capacités, matériel, confirmation des permissions DANGEROUS.
-
-        code_signature et developer_public_key du manifeste sont ceux
-        vérifiés ici, jamais ceux que le code de l'app annonce. Une app déjà
-        installée sous le même app_id est refusée : sa mise à jour depuis la
-        source n'est pas encore prise en charge (update_app() ne connaît
-        que les objets app).
-        """
-        from axis_os.store.sdk.signing import verify_app_signature, SignatureError
-        from axis_os.store.runtime.manifeste_json import manifeste_depuis_json, MessageRefuse
+    def _lire_paquet(self, source: Any, manifeste: Any, code_signature: str,
+                     developer_public_key: str, origine: str):
+        """Étapes communes à install_source() et update_source(), sans rien
+        exécuter de l'app : signature du paquet (manifeste déclaré + code),
+        clé approuvée, manifeste relu et validé, version stricte, SDK. Rend
+        (manifeste, spec, version), ou None une fois la raison affichée."""
+        from axis_os.store.sdk.signing import verify_app_package, SignatureError
+        from axis_os.store.runtime.manifeste_json import manifeste_depuis_texte, MessageRefuse
 
         etiquette = "".join(c if c.isalnum() else "_" for c in origine)[:64] or "app"
-        print(f"\n[PlayStore] Installation depuis la source ({_affichable(origine)})")
-        if not isinstance(source, str):
-            print("  [ERREUR] Source de l'app attendue sous forme de texte.")
-            return False
+        if not isinstance(source, str) or not isinstance(manifeste, str):
+            print("  [ERREUR] Source et manifeste déclaré de l'app attendus sous forme de "
+                  "texte.")
+            return None
         try:
-            valide = verify_app_signature(source, code_signature, developer_public_key)
+            valide = verify_app_package(manifeste, source, code_signature, developer_public_key)
         except SignatureError as exc:
             print(f"  [ERREUR] Signature ou clé malformée : {exc}")
-            return False
+            return None
         if not valide:
-            print("  [ERREUR] Signature invalide — le code ne correspond pas à sa "
-                  "signature (code modifié après signature, ou mauvaise clé).")
-            return False
+            print("  [ERREUR] Signature invalide — le manifeste déclaré ou le code ne "
+                  "correspond pas à sa signature (modifié après signature, mauvaise clé, ou "
+                  "code signé seul : signer le paquet avec sign_app_package).")
+            return None
         if not self._cle_approuvee(developer_public_key):
-            return False
-
-        spec = {"genre": "source", "module": f"axis_app_{etiquette}", "classe": None,
-                "source": source, "fichier": f"<{etiquette}>", "paquet": None}
-        runner = SandboxRunner(etiquette, None, clock=self._clock,
-                               strict=self._profil is Profil.PRODUCTION)
-        res = runner.run_app(spec, "manifest", serveur=None,
-                             tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR)
-        if not res.success:
-            print(f"  [ERREUR] Manifeste illisible : {res.state.name} — {res.error}")
-            return False
+            return None
         try:
-            manifest = manifeste_depuis_json(res.result["manifeste"])
+            manifest = manifeste_depuis_texte(manifeste)
         except (MessageRefuse, KeyError, ValueError) as exc:
-            print(f"  [ERREUR] Manifeste refusé : {exc}")
-            return False
+            print(f"  [ERREUR] Manifeste déclaré refusé : {_affichable(exc, 300)}")
+            return None
         manifest.code_signature = code_signature
         manifest.developer_public_key = developer_public_key
 
-        print(f"  App       : '{_affichable(manifest.name)}' v{_affichable(manifest.version)}")
-        print(f"  Auteur    : {_affichable(manifest.author)}")
+        print(f"  App       : '{_affichable(manifest.name)}' v{_affichable(manifest.version)} "
+              f"({_affichable(manifest.app_id)})")
+        print(f"  Auteur déclaré : {_affichable(manifest.author)}")
         errors = manifest.validate()
         if errors:
             for e in errors:
                 print(f"  [ERREUR] {_affichable(e, 300)}")
-            return False
-        if manifest.app_id in self._apps:
-            print(f"  [ERREUR] '{_affichable(manifest.app_id)}' est déjà installée.")
-            return False
+            return None
+        try:
+            version = SemVer.parse(manifest.version)
+        except ValueError as exc:
+            print(f"  [ERREUR] {_affichable(exc, 300)}")
+            return None
         if not self._sdk_compatible(manifest):
+            return None
+        spec = {"genre": "source", "module": f"axis_app_{etiquette}", "classe": None,
+                "source": source, "fichier": f"<{etiquette}>", "paquet": None}
+        return manifest, spec, version
+
+    def install_source(self, source: str, *, manifeste: str, code_signature: str,
+                       developer_public_key: str, origine: str = "app") -> bool:
+        """Installe une app à partir de son code source, de son manifeste
+        déclaré et de leur signature commune (signing.sign_app_package), sans
+        jamais exécuter son code avant que l'humain ait accepté.
+
+        C'est le seul chemin d'installation en profil PRODUCTION. Ordre :
+          1. la signature est vérifiée sur le manifeste et le code (de
+             simples octets), et la clé doit être approuvée ;
+          2. le manifeste déclaré (texte JSON, manifeste_json.manifeste_texte)
+             est relu champ par champ ; aucune ligne de l'app ne tourne pour
+             cela, ni dans l'OS ni dans un processus d'app ;
+          3. validate(), version SemVer stricte, SDK, puis le registre des
+             apps : un app_id lié à une autre clé, ou une version antérieure
+             à la plus récente déjà installée, est refusé ;
+          4. les contrôles d'install() (plafonds des quotas, permissions
+             SIGNATURE, capacités, matériel), la confirmation des permissions
+             DANGEROUS, puis l'inscription au registre.
+
+        L'OS applique ce manifeste-là ; ce que renvoie la méthode manifest()
+        du code n'est jamais consulté. code_signature et developer_public_key
+        sont ceux vérifiés ici. Une app déjà installée sous le même app_id se
+        met à jour par update_source().
+        """
+        if not self._verrou_installation.acquire(blocking=False):
+            print("  [ERREUR] Une autre installation est en cours sur ce robot : refusé.")
             return False
-        return self._terminer_installation(manifest, None, spec, None)
+        try:
+            print(f"\n[PlayStore] Installation depuis la source ({_affichable(origine)})")
+            lu = self._lire_paquet(source, manifeste, code_signature, developer_public_key,
+                                   origine)
+            if lu is None:
+                return False
+            manifest, spec, version = lu
+            if manifest.app_id in self._apps:
+                print(f"  [ERREUR] '{_affichable(manifest.app_id)}' est déjà installée : "
+                      f"la mettre à jour par update_source().")
+                return False
+            if not self._verifier_registre(manifest, version):
+                return False
+            return self._terminer_installation(
+                manifest, None, spec, None,
+                avant_enregistrement=lambda: self._lier(manifest, version))
+        finally:
+            self._verrou_installation.release()
+
+    def update_source(self, source: str, *, manifeste: str, code_signature: str,
+                      developer_public_key: str, origine: str = "app") -> bool:
+        """Met à jour une app installée, depuis son paquet signé : le chemin
+        des mises à jour en PRODUCTION, où update_app() n'est pas permis.
+
+        Mêmes vérifications qu'install_source(), sans exécution avant
+        l'humain, et en plus : la clé doit être celle de la version installée
+        et celle à laquelle l'app_id est lié, et la version STRICTEMENT plus
+        récente que la version installée (pas de retour en arrière, pas
+        d'allow_downgrade). Ensuite, comme update_app() : refus si une
+        mission est en cours, ancienne version arrêtée, état de facturation
+        conservé, toutes les vérifications et la confirmation d'une
+        installation neuve. Si elles échouent, l'ancienne version reste
+        installée, arrêtée. L'app n'est pas redémarrée d'office.
+        """
+        if not self._verrou_installation.acquire(blocking=False):
+            print("  [ERREUR] Une autre installation est en cours sur ce robot : refusé.")
+            return False
+        try:
+            print(f"\n[PlayStore] Mise à jour depuis la source ({_affichable(origine)})")
+            lu = self._lire_paquet(source, manifeste, code_signature, developer_public_key,
+                                   origine)
+            if lu is None:
+                return False
+            manifest, spec, version = lu
+            app_id = manifest.app_id
+            entree = self._apps.get(app_id)
+            if entree is None:
+                print(f"  [ERREUR] '{_affichable(app_id)}' n'est pas installée : "
+                      f"install_source() pour une première installation.")
+                return False
+            ancienne = entree.manifest
+            if ancienne.code_signature is None or ancienne.developer_public_key != developer_public_key:
+                avant = ("aucune (app non signée)" if ancienne.code_signature is None
+                         else public_key_fingerprint(ancienne.developer_public_key))
+                print(f"  [ERREUR] Mise à jour signée par "
+                      f"{public_key_fingerprint(developer_public_key)}, version installée "
+                      f"signée par {avant} : seule la même clé peut mettre à jour une app.")
+                return False
+            try:
+                installee = SemVer.parse(ancienne.version)
+            except ValueError:
+                print(f"  [ERREUR] Version installée illisible ({_affichable(ancienne.version)}) : "
+                      f"mise à jour refusée.")
+                return False
+            if not version > installee:
+                print(f"  [ERREUR] v{version} n'est pas strictement plus récente que la version "
+                      f"installée (v{installee}) : mise à jour refusée.")
+                return False
+            if not self._verifier_registre(manifest, version):
+                return False
+            # Tenu pendant toute la mise à jour : aucune mission ne démarre
+            # pendant qu'on remplace le code de l'app.
+            if not self._mission_lock.acquire(blocking=False):
+                print(f"  [ERREUR] Une mission est en cours sur ce robot : mise à jour de "
+                      f"'{_affichable(app_id)}' refusée.")
+                return False
+            try:
+                if entree.is_started:
+                    print(f"  [PlayStore] Arrêt de v{installee} avant mise à jour...")
+                    self.stop_app(app_id)
+                facture_une_fois = entree.one_time_billed
+                derniere_facture = entree.last_subscription_bill_time_s
+                print(f"  [PlayStore] Mise à jour de '{_affichable(app_id)}' : "
+                      f"v{installee} → v{version}")
+                if not self._terminer_installation(
+                        manifest, None, spec, None,
+                        avant_enregistrement=lambda: self._lier(manifest, version)):
+                    print(f"  [ERREUR] La nouvelle version a échoué aux vérifications : "
+                          f"l'ANCIENNE (v{installee}) reste installée, arrêtée.")
+                    return False
+                nouvelle = self._apps[app_id]
+                nouvelle.one_time_billed = facture_une_fois
+                nouvelle.last_subscription_bill_time_s = derniere_facture
+                return True
+            finally:
+                self._mission_lock.release()
+        finally:
+            self._verrou_installation.release()
 
     # ── Cycle de vie ──────────────────────────────────────────────
 
@@ -1237,8 +1429,8 @@ class PlayStoreRuntime:
             # l'OS) et avant d'arrêter l'ancienne version, qui reste en
             # service.
             print("  [ERREUR] update_app() : refusé en profil PRODUCTION, où une app "
-                  "s'installe depuis sa source signée ; la mise à jour depuis la "
-                  "source n'est pas encore prise en charge.")
+                  "s'installe et se met à jour depuis son paquet signé : utiliser "
+                  "update_source().")
             return False
         new_manifest = new_app.manifest()
         app_id = new_manifest.app_id

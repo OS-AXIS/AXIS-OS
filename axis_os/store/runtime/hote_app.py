@@ -1,7 +1,7 @@
 """
 AXIS-OS — Hôte d'app : le programme du processus d'une app
 ===========================================================
-Chaque appel à une app (manifest, on_start, run_mission, on_stop) tourne
+Chaque appel à une app (on_start, run_mission, on_stop) tourne
 dans un interpréteur Python NEUF, lancé par processus_app.py avec
 
     python -I hote_app.py <descripteur du pont> <racine d'AXIS-OS> <pid de l'OS>
@@ -216,10 +216,6 @@ def _executer(app, depart, client):
     from axis_os.store.sdk.app_base import PermissionError, EstopActiveError, MissionResult
 
     hook = depart["hook"]
-    if hook == "manifest":
-        from axis_os.store.runtime.manifeste_json import manifeste_vers_json
-        return {"manifeste": manifeste_vers_json(app.manifest())}
-
     if hook == "on_start":
         try:
             pret = app.on_start(client)

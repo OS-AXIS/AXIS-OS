@@ -26,7 +26,7 @@ change la façon de créer le processus et d'échanger avec lui :
     dans l'OS.
 
 Deux façons de s'en servir :
-  - run_app() : un hook d'app (manifest, on_start, run_mission, on_stop),
+  - run_app() : un hook d'app (on_start, run_mission, on_stop),
     avec le pont vers le robot (hal_bridge.py). C'est ce qu'utilise
     PlayStoreRuntime pour chaque appel à une app ;
   - run() : une fonction de confiance de l'OS désignée par son nom, avec
@@ -290,7 +290,7 @@ class SandboxRunner:
                 args: Optional[list] = None,
                 kwargs: Optional[dict] = None,
                 arret: Optional[Callable[[], bool]] = None) -> SandboxResult:
-        """Exécute un hook d'app (manifest, on_start, run_mission, on_stop)
+        """Exécute un hook d'app (on_start, run_mission, on_stop)
         dans un processus NEUF (voir hote_app.py et processus_app.py), et
         sert ses appels au robot par `serveur` (un HALBridgeServer).
 
