@@ -208,7 +208,8 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
                                          "description": Chaine(1024)}),
     "look_for": Objet({}, facultatifs={"query": Chaine(512), "frame": Chaine(64)}),
     "describe_scene": _VIDE,
-    "walk": Objet({}, facultatifs={"vx": Nombre(), "vy": Nombre(), "wz": Nombre()}),
+    "walk": Objet({}, facultatifs={"vx": Nombre(), "vy": Nombre(), "wz": Nombre(),
+                                   "origine": UnParmi(ORIGINE_IA)}),
     "stop_walking": _VIDE,
     "get_joint_groups": _VIDE,
     "move_arms": _COMMANDES,
@@ -413,7 +414,8 @@ class HALBridgeServer:
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.walk(p.get("vx", 0.0),
                                                        p.get("vy", 0.0),
-                                                       p.get("wz", 0.0)))
+                                                       p.get("wz", 0.0),
+                                                       origine=p.get("origine")))
 
             if cmd.action == "stop_walking":
                 return HALResponse(cmd.request_id, True,
@@ -802,9 +804,11 @@ class HALBridgeClient:
         except RuntimeError as exc:
             return f"perception indisponible : {exc}"
 
-    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> bool:
+    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
+             origine: Optional[str] = None) -> bool:
         try:
-            return bool(self._call("walk", {"vx": vx, "vy": vy, "wz": wz}))
+            return bool(self._call("walk", {"vx": vx, "vy": vy, "wz": wz,
+                                            "origine": origine}))
         except RuntimeError as exc:
             self.log(f"walk refusé : {exc}")
             return False
@@ -864,6 +868,8 @@ class HALBridgeClient:
         target: Dict[str, float],
         duration_s: float = 2.0,
         step_s: float = 0.05,
+        *,
+        origine: Optional[str] = None,
     ) -> bool:
         """
         Équivalent de RobotContext.move_to_pose(), dont la docstring donne
@@ -902,8 +908,10 @@ class HALBridgeClient:
             step_commands: Dict[str, ActuatorCommand] = {}
             for jid, target_pos in target.items():
                 interpolated = current[jid] + (target_pos - current[jid]) * fraction
+                # La marque d'origine part avec chaque pas : l'OS exige
+                # ACTUATORS_AI_DRIVEN dès le premier (move_arms/move_legs).
                 step_commands[jid] = ActuatorCommand(
-                    mode=ControlMode.POSITION, position=interpolated,
+                    mode=ControlMode.POSITION, position=interpolated, origine=origine,
                 )
 
             # Même routage par groupe DÉCLARÉ que RobotContext, sans

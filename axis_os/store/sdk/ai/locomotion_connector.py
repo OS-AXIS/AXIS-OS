@@ -84,7 +84,7 @@ Licence : Apache 2.0 (SDK public)
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from axis_os.hal.core.types import ActuatorCommand, ControlMode, ORIGINE_IA
 
@@ -125,8 +125,33 @@ class LocomotionAction:
     target_positions : dictionnaire {joint_id: angle cible}, au même format
                        que VLAAction.target_angles (l'action des modèles
                        VLA), par cohérence avec le reste du SDK.
+    base_velocity    : vitesse de déplacement (vx, vy, wz) quand la
+                       politique en propose une plutôt que des angles
+                       (navigation) ; None sinon. Voir walk().
+
+    Toute consigne tirée de cette action porte la marque ORIGINE_IA :
+    to_commands(), move_to_pose() et walk() la posent, et l'OS exige alors
+    ACTUATORS_AI_DRIVEN. Une app qui recopie les nombres à la main pour
+    appeler ctx.walk() ou ctx.move_to_pose() sans la marque n'est pas
+    détectée (SECURITY.md, limite n° 2).
     """
     target_positions: Dict[str, float] = field(default_factory=dict)
+    base_velocity:    Optional[Tuple[float, float, float]] = None
+
+    def move_to_pose(self, ctx, duration_s: float = 2.0, step_s: float = 0.05) -> bool:
+        """Rejoint target_positions par ctx.move_to_pose(), marque IA
+        comprise (ACTUATORS_AI_DRIVEN exigée)."""
+        return ctx.move_to_pose(dict(self.target_positions), duration_s, step_s,
+                                origine=ORIGINE_IA)
+
+    def walk(self, ctx) -> bool:
+        """Transmet base_velocity par ctx.walk(), marque IA comprise
+        (ACTUATORS_AI_DRIVEN exigée). ValueError si l'action ne porte pas
+        de vitesse."""
+        if self.base_velocity is None:
+            raise ValueError("cette action ne porte pas de vitesse (base_velocity)")
+        vx, vy, wz = self.base_velocity
+        return ctx.walk(vx, vy, wz, origine=ORIGINE_IA)
 
     def to_commands(self, velocity: float = 1.0) -> Dict[str, ActuatorCommand]:
         """

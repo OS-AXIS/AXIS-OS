@@ -476,7 +476,8 @@ class RobotContext:
         r = self._perception.describe_scene()
         return r.value if r.ok else f"perception indisponible : {r.reason}"
 
-    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> bool:
+    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
+             origine: Optional[str] = None) -> bool:
         """Déclare une vitesse de déplacement. NON BLOQUANT.
 
         Pourquoi l'app ne pilote pas la marche pas à pas : une app
@@ -498,6 +499,10 @@ class RobotContext:
         le faire, le service la ramène à zéro et le robot s'arrête en
         gardant l'équilibre : la sécurité ne dépend pas de l'app.
 
+        `origine` : ORIGINE_IA quand la vitesse vient d'un modèle d'IA ;
+        c'est ce que pose LocomotionAction.walk() du SDK. Elle exige alors
+        ACTUATORS_AI_DRIVEN (voir _exiger_origine).
+
         Rend False si le service refuse (robot à terre, service arrêté,
         consigne non finie) ou si le robot ne sait pas se déplacer.
         Permissions : LOCOMOTION_WALK et ACTUATORS_WRITE_LEGS. Lève
@@ -505,6 +510,7 @@ class RobotContext:
         """
         self._require(Permission.LOCOMOTION_WALK)
         self._require(Permission.ACTUATORS_WRITE_LEGS)
+        self._exiger_origine(origine)
         self._require_no_estop()
         if self._locomotion is None:
             self.log("walk : ce robot ne sait pas se déplacer.")
@@ -588,6 +594,8 @@ class RobotContext:
         target: Dict[str, float],
         duration_s: float = 2.0,
         step_s: float = 0.05,
+        *,
+        origine: Optional[str] = None,
     ) -> bool:
         """
         Déplace progressivement les articulations vers `target` (dict
@@ -641,10 +649,15 @@ class RobotContext:
         déjà actif au début d'un pas lève EstopActiveError, comme
         `move_arms()`. L'attente entre deux pas se fait en temps réel
         (time.sleep), pas sur l'heure du robot de `sleep()`.
+
+        `origine` : ORIGINE_IA quand la cible vient d'un modèle d'IA (c'est
+        ce que posent VLAAction.move_to_pose() et LocomotionAction.move_to_pose()
+        du SDK) ; ACTUATORS_AI_DRIVEN est alors exigée avant tout
+        mouvement, et chaque pas porte la marque.
         """
-        import math as _math
         import time as _time
 
+        self._exiger_origine(origine)
         state = self.get_full_state()
         current: Dict[str, float] = {}
         for jid in target:
@@ -661,7 +674,7 @@ class RobotContext:
             for jid, target_pos in target.items():
                 interpolated = current[jid] + (target_pos - current[jid]) * fraction
                 step_commands[jid] = ActuatorCommand(
-                    mode=ControlMode.POSITION, position=interpolated,
+                    mode=ControlMode.POSITION, position=interpolated, origine=origine,
                 )
 
             arm_cmds = self._route(step_commands, JointGroup.MANIPULATION)
@@ -775,6 +788,16 @@ class RobotContext:
         calculé par un modèle d'un nombre écrit en dur."""
         if any(getattr(c, "origine", None) == ORIGINE_IA for c in commands.values()):
             self._require(Permission.ACTUATORS_AI_DRIVEN)
+
+    def _exiger_origine(self, origine: Optional[str]) -> None:
+        """Même règle que _exiger_pilotage_ia pour walk() et move_to_pose(),
+        qui reçoivent une vitesse ou une cible plutôt que des commandes.
+        Une origine inconnue est refusée plutôt qu'ignorée."""
+        if origine is None:
+            return
+        if origine != ORIGINE_IA:
+            raise ValueError(f"origine inconnue : {str(origine)[:40]!r}")
+        self._require(Permission.ACTUATORS_AI_DRIVEN)
 
     def _require(self, permission: Permission) -> None:
         """Lève PermissionError si `permission` n'est pas déclarée dans le
