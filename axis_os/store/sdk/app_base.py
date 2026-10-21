@@ -76,9 +76,10 @@ class EstopActiveError(Exception):
     plus une seule fois, au lancement de la mission par
     PlayStoreRuntime.run_mission(). Test : test/test_estop_interrupt.py.
 
-    Depuis, l'arrêt d'urgence interrompt aussi la mission elle-même : dans
-    le processus de l'app, tout appel au robot (sauf log, stop_walking,
-    emergency_stop et get_recent_alerts) lève alors cette exception,
+    Depuis, l'arrêt d'urgence interrompt aussi la mission elle-même, et un
+    on_start en cours : dans le processus de l'app, tout appel au robot
+    (sauf log, stop_walking, emergency_stop et get_recent_alerts) lève
+    alors cette exception,
     l'app a une demi-seconde pour rendre son résultat, puis son processus
     est arrêté (voir `arret` dans SandboxRunner.run_app, et
     test/test_arret_urgence_mission.py).

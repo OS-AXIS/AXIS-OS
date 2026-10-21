@@ -11,7 +11,9 @@ Vérifié ici, avec deux apps qui partagent le même service de parole :
      n'empêche pas une autre de déclarer ;
   4. depuis le processus de l'app (pont JSON), même cloisonnement ;
   5. le vocabulaire d'une app arrêtée est retiré, et redéclaré au
-     redémarrage.
+     redémarrage ;
+  6. il ne survit pas non plus à un démarrage répété ni à une nouvelle
+     installation sous le même app_id.
 """
 import contextlib
 import io
@@ -205,6 +207,15 @@ check("A arrêtée : plus aucune de ses intentions dans le registre",
       not svc.registry.match("va vers le carton", "com.test.voix_a"))
 check("A redémarre : elle redéclare son intention sans conflit",
       silencieux(rt.start_app, "com.test.voix_a"))
+
+section("6. Démarrage répété, nouvelle installation")
+check("start_app une seconde fois sans arrêt : l'intention est redéclarée sans conflit",
+      silencieux(rt.start_app, "com.test.voix_a"))
+silencieux(rt.stop_app, "com.test.voix_a")
+silencieux(rt.start_app, "com.test.voix_a")
+silencieux(rt.install, AppA())       # nouvelle installation, app démarrée ou non
+check("Nouvelle installation sous le même app_id : l'ancien vocabulaire est retiré",
+      not svc.registry.match("va vers le carton", "com.test.voix_a"))
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

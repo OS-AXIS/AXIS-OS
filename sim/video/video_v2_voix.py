@@ -314,7 +314,7 @@ def main():
             _ti, texte = journal[etat["vus"]]
             etat["vus"] += 1
             etat["entendu"] = texte
-            it = speech.registry.match(texte)
+            it = speech.registry.match(texte, app.manifest().app_id)
             if it is None:
                 etat["intention"] = "aucune — phrase ignorée"
                 rec.evenement(f"« {texte} » — ignorée, aucune action", t,

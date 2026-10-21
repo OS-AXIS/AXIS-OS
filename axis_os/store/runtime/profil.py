@@ -74,6 +74,7 @@ import binascii
 import json
 import os
 import stat
+import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Union
@@ -209,8 +210,9 @@ def ecrire_registre_apps(chemin: Union[str, os.PathLike],
     p = Path(chemin)
     corps = json.dumps({"format": 1, "apps": apps}, ensure_ascii=False, sort_keys=True,
                        indent=1).encode("utf-8")
-    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    # Nom aléatoire (mkstemp : O_EXCL, droits 0600) : un fichier temporaire
+    # resté d'une coupure ne bloque pas l'écriture suivante.
+    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(corps)

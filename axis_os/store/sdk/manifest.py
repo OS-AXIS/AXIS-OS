@@ -25,12 +25,16 @@ Licence : Apache 2.0 (open-source — SDK public)
 
 from __future__ import annotations
 import math
+import re
 from dataclasses import dataclass, field, fields
 from enum import Enum, auto
 from typing import Optional
 
 from axis_os.hal.core.capabilities import RobotCapability
 
+
+
+_APP_ID = re.compile(r"[a-z][a-z0-9_]*(\.[a-z0-9_]+)+")
 
 class Permission(Enum):
     """
@@ -499,8 +503,13 @@ class AppManifest:
             v = getattr(self, champ)
             if not isinstance(v, str) or any(not c.isprintable() for c in v):
                 errors.append(f"{champ} doit être un texte sans caractère de contrôle")
-        if not self.app_id or "." not in self.app_id:
-            errors.append("app_id doit être en format 'com.author.name'")
+        # Minuscules ASCII, chiffres et « _ », en segments séparés par des
+        # points : deux app_id que l'humain lirait pareil (espace final,
+        # majuscules, lettre cyrillique, accent combinant) seraient sinon deux
+        # identités distinctes, chacune liée à sa propre clé.
+        if not isinstance(self.app_id, str) or not _APP_ID.fullmatch(self.app_id):
+            errors.append("app_id doit être en format 'com.auteur.nom' : minuscules ASCII, "
+                          "chiffres et « _ », segments séparés par des points")
         # « : » est réservé aux espaces internes de l'OS, comme « billing:: »
         # où le Play Store range l'état de facturation : sans cette règle,
         # une app d'app_id « billing::com.x.y » lisait et réécrivait par

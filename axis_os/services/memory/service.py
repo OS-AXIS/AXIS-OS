@@ -276,7 +276,8 @@ class MemoryService(IService):
     @staticmethod
     def _octets(cle_stockee: str, valeur: Any) -> int:
         """Taille comptée par le quota : clé stockée et valeur en JSON
-        compact UTF-8 (le fichier, indenté, pèse un peu plus)."""
+        compact UTF-8, l'encodage même du fichier app_store.json (voir
+        _write_category)."""
         return len(cle_stockee.encode("utf-8")) + len(
             json.dumps(valeur, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
@@ -338,7 +339,13 @@ class MemoryService(IService):
         with self._lock:
             tmp_path = path.with_suffix(".json.tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                if category == "app_store":
+                    # Compact, comme le mesure le quota (_octets) : indenté, une
+                    # valeur très imbriquée pèserait des dizaines de fois plus.
+                    # dumps() d'un coup passe par l'encodeur C, dump() non.
+                    f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+                else:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
             # Écriture dans un fichier temporaire puis renommage
             # atomique : si le processus est interrompu en pleine
             # écriture (coupure d'alimentation, kill -9, c'est-à-dire

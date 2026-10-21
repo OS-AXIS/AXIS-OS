@@ -624,6 +624,13 @@ class HALBridgeServer:
 #  CÔTÉ ENFANT — le substitut de RobotContext utilisé par l'app
 # ─────────────────────────────────────────────────────────────────
 
+def _origine_connue(origine: Optional[str]) -> None:
+    """Même refus qu'en direct (RobotContext._exiger_origine) : une origine
+    inconnue lève ValueError avant tout appel, sandboxé ou non."""
+    if origine is not None and origine != ORIGINE_IA:
+        raise ValueError(f"origine inconnue : {str(origine)[:40]!r}")
+
+
 class _IMUProxy:
     """
     Objet local renvoyé par HALBridgeClient.get_imu(). Il respecte le
@@ -806,6 +813,7 @@ class HALBridgeClient:
 
     def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
              origine: Optional[str] = None) -> bool:
+        _origine_connue(origine)
         try:
             return bool(self._call("walk", {"vx": vx, "vy": vy, "wz": wz,
                                             "origine": origine}))
@@ -893,6 +901,7 @@ class HALBridgeClient:
         """
         import time as _time
 
+        _origine_connue(origine)
         state = self.get_full_state()
         current: Dict[str, float] = {}
         for jid in target:

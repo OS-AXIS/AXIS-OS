@@ -32,8 +32,9 @@ from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL  # noqa: E402
 from axis_os.hal.watchdog.system import WatchdogSystem  # noqa: E402
 from axis_os.services.memory.service import MemoryService  # noqa: E402
 from axis_os.store.runtime.hal_bridge import HALBridgeServer  # noqa: E402
+import axis_os.store.runtime.play_store as play_store  # noqa: E402
 from axis_os.store.runtime.play_store import (  # noqa: E402
-    PlayStoreRuntime, accepter_tout_SIMULATION, confirmer_au_terminal,
+    PlayStoreRuntime, accepter_tout_SIMULATION, confirmer_au_terminal, decrire_quotas,
 )
 from axis_os.store.runtime.manifeste_json import manifeste_texte  # noqa: E402
 from axis_os.store.runtime.profil import PLAFONDS_QUOTAS, Profil, creer_registre_apps  # noqa: E402
@@ -228,6 +229,14 @@ check("Au terminal : empreinte de la clé, nom et fichier des clés approuvées"
       details.signataire in ecran and "Atelier Dupont" in ecran and str(CLES) in ecran, ecran)
 check("… et la question reste la même", accord is True
       and "Accorder ACTUATORS_WRITE_ARMS à com.test.affichage ?" in ecran)
+vrai_psutil = play_store._try_import_psutil
+play_store._try_import_psutil = lambda: None
+try:
+    sans_psutil = decrire_quotas(ResourceQuota())
+finally:
+    play_store._try_import_psutil = vrai_psutil
+check("Sans psutil (hors production), l'humain lit que CPU et mémoire ne sont pas appliqués",
+      sum("NON appliqué" in ligne for ligne in sans_psutil) == 2, str(sans_psutil))
 try:
     silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.PRODUCTION, cles_approuvees=CLES,
                confirmer_permissions=lambda manifest, permissions: True, registre_apps=REGISTRE)
@@ -268,6 +277,19 @@ check("… mais pas les faire grossir", svc.app_store("com.a.app", "petit", "xxx
 r = svc.app_store("com.a.app", "ensemble", {1, 2})
 check("Valeur non JSON : refusée proprement, sans fichier temporaire laissé",
       r.ok is False and not list(svc._storage_dir.glob("*.tmp")), str(r))
+
+disque = MemoryService(storage_dir=Path(tempfile.mkdtemp(prefix="axis_quota_disque_")))
+disque.start()
+# Une valeur très imbriquée : indenté, chacun de ses éléments coûterait une
+# soixantaine d'octets sur le disque, contre deux comptés par le quota.
+imbrique = [0] * 20000
+for _ in range(28):
+    imbrique = [imbrique]
+ecrites = sum(disque.app_store("com.a.app", f"i{i}", imbrique).ok for i in range(20))
+check("Valeurs imbriquées acceptées sous le quota", ecrites == 20, str(ecrites))
+taille = (disque._storage_dir / "app_store.json").stat().st_size
+check("Sur le disque, l'espace d'une app pèse ce que compte le quota (pas 30 fois plus)",
+      taille <= 1.2 * MemoryService.MAX_OCTETS_PAR_APP, f"{taille} octets")
 
 svc2 = MemoryService(storage_dir=Path(tempfile.mkdtemp(prefix="axis_quota_pont_")))
 svc2.start()

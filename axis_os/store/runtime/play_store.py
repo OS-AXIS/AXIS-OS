@@ -111,10 +111,14 @@ _UNITES = {"max_cpu_percent": "% d'un cœur", "max_memory_mb": "Mo", "max_runtim
 
 
 def decrire_quotas(q: Any) -> List[str]:
-    """Les quotas d'une app, en clair, tels que la sandbox les applique."""
+    """Les quotas d'une app, en clair, tels que la sandbox les applique :
+    sans psutil (permis hors production), CPU et mémoire vive ne le sont
+    pas, et l'humain doit le lire avant d'accepter."""
+    absent = "" if _try_import_psutil() is not None else " — NON appliqué : psutil absent"
     return [
-        f"CPU : {q.max_cpu_percent:g} % d'un cœur (arrêt au-delà du double, sur trois mesures)",
-        f"Mémoire vive : {q.max_memory_mb:g} Mo",
+        f"CPU : {q.max_cpu_percent:g} % d'un cœur (arrêt au-delà du double, sur trois "
+        f"mesures){absent}",
+        f"Mémoire vive : {q.max_memory_mb:g} Mo{absent}",
         f"Durée : {q.max_runtime_s:g} s par appel (on_start, mission, on_stop)",
         f"Mémoire persistante : {MemoryService.MAX_CLES_PAR_APP} clés et "
         f"{MemoryService.MAX_OCTETS_PAR_APP // 1024} Kio au plus (fixé par l'OS)",
@@ -351,9 +355,10 @@ class PlayStoreRuntime:
         `registre_apps` : chemin du registre persistant des apps (format
         dans profil.py), obligatoire en PRODUCTION : chaque app_id y est lié
         à la clé qui l'a installé la première fois, avec la version la plus
-        récente installée. install_source() et update_source() le
-        consultent et le tiennent à jour ; fourni hors production, il est
-        appliqué de même.
+        récente installée. Tout chemin d'installation le consulte et le
+        tient à jour (install_source, update_source, et hors production
+        install et update_app) ; une app non signée ne peut pas prendre un
+        app_id déjà lié.
 
         `robot` : le HAL du robot, vu à travers NormalizedRobotHAL, la
         façade qui présente aux apps les positions et vitesses dans une
@@ -666,7 +671,27 @@ class PlayStoreRuntime:
         except (AppNonRechargeable, OSError, UnicodeDecodeError) as exc:
             spec, spec_erreur = None, str(exc)
             print(f"  [ATTENTION] {spec_erreur}")
-        return self._terminer_installation(manifest, app, spec, spec_erreur)
+        # Avec un registre des apps (obligatoire en production, facultatif
+        # ici), mêmes règles que install_source() : un app_id lié à une clé
+        # ne s'installe qu'avec elle, jamais en version antérieure.
+        avant_enregistrement = None
+        if self._registre is not None:
+            try:
+                version = SemVer.parse(manifest.version)
+            except ValueError as exc:
+                print(f"  [ERREUR] {_affichable(exc, 300)}")
+                return False
+            if manifest.code_signature is None:
+                if app_id in self._registre:
+                    print(f"  [ERREUR] '{_affichable(app_id)}' est lié à une clé sur ce robot : "
+                          f"une app non signée ne peut pas prendre cet app_id.")
+                    return False
+            else:
+                if not self._verifier_registre(manifest, version):
+                    return False
+                avant_enregistrement = lambda: self._lier(manifest, version)  # noqa: E731
+        return self._terminer_installation(manifest, app, spec, spec_erreur,
+                                           avant_enregistrement=avant_enregistrement)
 
     def _terminer_installation(self, manifest: AppManifest, app: Optional[RobotApp],
                                spec: Optional[Dict[str, Any]],
@@ -832,11 +857,16 @@ class PlayStoreRuntime:
             last_subscription_bill_time_s = self._read_billing_flag(
                 app_id, "last_subscription_bill_time_s", None)
 
+        # Le vocabulaire vocal d'une version précédente ne survit pas à une
+        # nouvelle installation sous le même app_id : son on_start le redéclare.
+        registre_vocal = getattr(self._speech_service, "registry", None)
         # Dernier contrôle, après l'humain : l'écriture du registre des apps.
         # Si elle échoue, rien n'est installé (une liaison perdue au
         # redémarrage laisserait une autre clé reprendre l'app_id).
         if avant_enregistrement is not None and not avant_enregistrement():
             return False
+        if registre_vocal is not None:
+            registre_vocal.retirer(app_id)
         self._apps[app_id] = InstalledApp(
             app=app, manifest=manifest, spec=spec, spec_erreur=spec_erreur,
             one_time_billed=one_time_billed,
@@ -852,7 +882,7 @@ class PlayStoreRuntime:
         """Signataire vérifié d'un manifeste (voir DetailsConfirmation)."""
         cle = manifest.developer_public_key if manifest.code_signature is not None else None
         liaison = None
-        if self._registre is not None:
+        if self._registre is not None and cle is not None:
             lien = self._registre.get(manifest.app_id)
             liaison = ("première installation de cet app_id sur ce robot : il sera lié à "
                        "cette clé" if lien is None else
@@ -1150,8 +1180,16 @@ class PlayStoreRuntime:
         # commandes reçues par le pont. L'app ne le reçoit jamais.
         ctx = self._make_ctx(entry.manifest)
         ctx.log(f"Démarrage '{entry.manifest.name}'")
+        # on_start (re)déclare le vocabulaire de l'app : celui d'un démarrage
+        # précédent, réussi ou non, est d'abord retiré.
+        registre_vocal = getattr(self._speech_service, "registry", None)
+        if registre_vocal is not None:
+            registre_vocal.retirer(app_id)
         try:
-            sandbox_result, _ = self._executer_hook(entry, "on_start", ctx)
+            # Un arrêt d'urgence interrompt aussi le démarrage : une app ne
+            # démarre pas sous e-stop (voir `arret` dans SandboxRunner.run_app).
+            sandbox_result, _ = self._executer_hook(entry, "on_start", ctx,
+                                                    arret=self._estop_actif)
             if sandbox_result.success:
                 ready = sandbox_result.result["pret"]
             else:

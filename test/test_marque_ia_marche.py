@@ -182,6 +182,20 @@ except ValueError:
     check("walk(origine inconnue) : refusé", True)
 check("walk() sans marque, sans ACTUATORS_AI_DRIVEN : permis (l'OS ne sait pas d'où "
       "vient le nombre)", silencieux(ctx.walk, 0.1) and loco.vitesses == [(0.1, 0.0, 0.0)])
+import socket  # noqa: E402
+from axis_os.store.runtime.canal_ipc import Canal  # noqa: E402
+from axis_os.store.runtime.hal_bridge import HALBridgeClient  # noqa: E402
+cote_app, cote_os = socket.socketpair()
+client = HALBridgeClient(Canal(cote_app))
+for nom, appel in [("walk", lambda: client.walk(0.1, origine="humain")),
+                   ("move_to_pose", lambda: client.move_to_pose({COUDE: 0.1}, origine="humain"))]:
+    try:
+        appel()
+        check(f"Par le pont, {nom}(origine inconnue) : ValueError, comme en direct", False)
+    except ValueError:
+        check(f"Par le pont, {nom}(origine inconnue) : ValueError, comme en direct", True)
+cote_app.close()
+cote_os.close()
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

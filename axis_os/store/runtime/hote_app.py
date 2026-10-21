@@ -265,6 +265,11 @@ def main(argv) -> int:
     from axis_os.store.runtime.canal_ipc import Canal
     from axis_os.store.runtime.processus_app import SCHEMA_DEPART
 
+    # Reçu héritable (pass_fds) ; ne doit pas l'être pour un programme que
+    # l'app lancerait (os.system, exec) : sorti du groupe de processus, il
+    # garderait le pont ouvert après la mort de l'app.
+    import os
+    os.set_inheritable(fd, False)
     canal = Canal.depuis_descripteur(fd)
     depart = SCHEMA_DEPART.verifier(canal.recevoir(timeout=30.0))
     sys.path[:] = [racine] + [p for p in depart["sys_path"] if p != racine]

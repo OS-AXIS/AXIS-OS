@@ -129,15 +129,14 @@ reason AXIS-OS is **not ready for a real robot**.
 6. **Some OS resources are not bounded per app yet.** The OS answers a
    few calls with a model inference (`listen` transcription, `look_for`,
    `describe_scene`) that can run past the hook's deadline by the length
-   of one inference. For the same reason, after an emergency stop the app
-   process is stopped within a second, but the mission lock is only
-   released once the OS call already in progress returns (the robot
-   itself stays stopped). A process started by the app that leaves its
-   process group outlives the call: the OS reports it but cannot stop it
-   (cgroups, step 4). Under the same user, an app can also send a signal
-   to the OS process. The persistent-memory quota is the same for every
-   app (1,000 keys, 1 MiB), and an app can only overwrite a key, not
-   delete it.
+   of one inference; after an emergency stop, such a call already under
+   way runs to its end in the background (its result is discarded),
+   microphone or camera included. A process started by the app that
+   leaves its process group outlives the call: the OS reports it but
+   cannot stop it (cgroups, step 4). Under the same user, an app can
+   also send a signal to the OS process. The persistent-memory quota is
+   the same for every app (1,000 keys, 1 MiB), and an app can only
+   overwrite a key, not delete it.
 7. **App identity: trust on first install.** In production, an `app_id` is
    bound to the key that first installed it on this robot (app registry):
    an approved key can therefore still claim an `app_id` before its real
@@ -145,8 +144,7 @@ reason AXIS-OS is **not ready for a real robot**.
    hand. The registry and the approved-keys file are protected only by
    their Unix permissions: while apps run as the same user as the OS
    (limit n° 1), an app can rewrite the registry, which the OS must be
-   able to rewrite too. Outside production, `install()` and
-   `update_app()`, which install app objects, do not consult the registry.
+   able to rewrite too.
 
 ## Resolved limits
 
@@ -333,16 +331,15 @@ réel**.
 6. **Certaines ressources de l'OS ne sont pas encore bornées par app.**
    L'OS répond à certains appels par une inférence de modèle
    (transcription de `listen`, `look_for`, `describe_scene`), qui peut
-   dépasser l'échéance du hook de la durée d'un calcul. Pour la même
-   raison, après un arrêt d'urgence, le processus de l'app est arrêté en
-   moins d'une seconde, mais le verrou de mission n'est rendu qu'au retour
-   de l'appel de l'OS déjà en cours (le robot, lui, reste arrêté). Un
-   processus lancé par l'app qui quitte son groupe de processus survit à
-   la fin de l'appel : l'OS le signale sans pouvoir l'arrêter (cgroups,
-   étape 4). Sous le même utilisateur, une app peut aussi envoyer un
-   signal au processus de l'OS. Le quota de mémoire persistante est le
-   même pour toutes les apps (1 000 clés, 1 Mio), et une app ne peut que
-   réécrire une clé, pas l'effacer.
+   dépasser l'échéance du hook de la durée d'un calcul ; après un arrêt
+   d'urgence, un tel appel déjà commencé va à son terme en arrière-plan
+   (son résultat est jeté), micro ou caméra compris. Un processus lancé
+   par l'app qui quitte son groupe de processus survit à la fin de
+   l'appel : l'OS le signale sans pouvoir l'arrêter (cgroups, étape 4).
+   Sous le même utilisateur, une app peut aussi envoyer un signal au
+   processus de l'OS. Le quota de mémoire persistante est le même pour
+   toutes les apps (1 000 clés, 1 Mio), et une app ne peut que réécrire
+   une clé, pas l'effacer.
 7. **Identité des apps : confiance à la première installation.** En
    production, un `app_id` est lié à la clé qui l'a installé la première
    fois sur ce robot (registre des apps) : une clé approuvée peut donc
@@ -351,8 +348,7 @@ réel**.
    le fichier des clés approuvées ne sont protégés que par leurs droits
    Unix : tant que les apps tournent sous le même utilisateur que l'OS
    (limite n° 1), une app peut réécrire le registre, que l'OS doit pouvoir
-   réécrire lui aussi. Hors production, `install()` et `update_app()`, qui
-   installent des objets app, ne consultent pas le registre.
+   réécrire lui aussi.
 
 ## Limites résolues
 

@@ -355,13 +355,50 @@ except TypeError:
     check("Sans manifeste déclaré : refusé (le code n'est jamais exécuté pour le lire)", True)
 check("Rien n'a été installé", rt._apps == {})
 
-section("8. Versions ambiguës refusées")
+section("8. Versions et app_id ambigus refusés")
 rt = runtime(nouveau_registre())
 for version in (" 1.0.0", "1_0.0.0", "١.0.0", "1.0.0-beta", "+1.0.0", "01.0.0"):
     ok, _ = installer(rt, A, version)
     check(f"Version {version!r} : refusée", ok is False)
+installer(rt, A)
+for sosie, quoi in [("com.test.identite ", "espace final"), ("Com.Test.Identite", "majuscules"),
+                    ("com.test.identitе", "lettre cyrillique"),
+                    ("com.test.identite\u0301", "accent combinant")]:
+    ok, _ = installer(rt, B, app_id=sosie)
+    check(f"Sosie de l'app_id de A ({quoi}), signé par B : refusé", ok is False)
+source, manifeste, signature, _ = paquet(A, "2.0.0")
+ok, _ = silencieux(rt.install_source, source, manifeste=manifeste.replace("Identité", "\ud800"),
+                   code_signature=signature, developer_public_key=A.public_key_b64)
+check("Manifeste qui ne s'encode pas en UTF-8 : refusé, sans exception", ok is False)
 
-section("9. Deux installations simultanées du même app_id")
+section("9. Registre : fichier temporaire resté d'une coupure, install() hors production")
+REG = nouveau_registre()
+(REG.parent / f".{REG.name}.{os.getpid()}.tmp").write_text("reste d'une coupure")
+ok, sortie = installer(runtime(REG), A)
+check("Un fichier temporaire laissé par une coupure ne bloque pas le registre", ok is True,
+      sortie[-200:])
+
+
+class AppNonSignee(RobotApp):
+    def manifest(self):
+        return AppManifest(app_id="com.test.identite", name="Copie", version="9.0.0",
+                           author="Atelier Dupont", author_email="t@t.com", description="d",
+                           category=AppCategory.UTILITIES)
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
+
+
+dev = silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.DEVELOPPEMENT, cles_approuvees=CLES,
+                 registre_apps=REG, confirmer_permissions=Operateur())[0]
+ok, sortie = silencieux(dev.install, AppNonSignee())
+check("Hors production, avec registre : une app non signée ne prend pas un app_id lié",
+      ok is False and "com.test.identite" not in dev._apps, sortie[-200:])
+
+section("10. Deux installations simultanées du même app_id")
 REG = nouveau_registre()
 rt = runtime(REG, Operateur(attente_s=0.3))
 resultats = {}

@@ -207,8 +207,8 @@ except AppLoadError:
 section("5 — Isolation : deux apps chargées dans le même process "
         "n'interfèrent jamais entre elles")
 
-source_a = VALID_APP_SOURCE.format(app_id="com.developer.appA_w5")
-source_b = VALID_APP_SOURCE.format(app_id="com.developer.appB_w5")
+source_a = VALID_APP_SOURCE.format(app_id="com.developer.appa_w5")
+source_b = VALID_APP_SOURCE.format(app_id="com.developer.appb_w5")
 enc_a = encrypt_app_code(source_a, kp.public_key_b64)
 enc_b = encrypt_app_code(source_b, kp.public_key_b64)
 

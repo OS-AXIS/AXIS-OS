@@ -15,12 +15,16 @@ Vérifié ici, chaque fois sur un robot neuf (un e-stop ne se réarme pas) :
      notée interrompue, pas facturée ;
   4. mission en plein calcul, sans appel au robot : son processus est tué ;
   5. mission bloquée dans un appel de l'OS (écoute) : son processus est tué
-     sans attendre la fin de l'appel ;
-  6. SandboxRunner seul : état KILLED, cause ARRET_URGENCE ; sans arrêt
+     et la mission rend la main (verrou compris) sans attendre la fin de
+     l'appel ;
+  6. on_start en cours : interrompu de même, l'app n'est pas démarrée ;
+  7. SandboxRunner seul : état KILLED, cause ARRET_URGENCE, même si un
+     programme lancé hors du groupe de processus survit ; sans arrêt
      d'urgence, rien ne change.
 """
 import contextlib
 import io
+import os
 import sys
 import threading
 import time
@@ -156,12 +160,29 @@ class AppQuiEcoute(RobotApp):
         return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
 
 
+class AppQuiDemarreLentement(RobotApp):
+    """on_start qui attend 15 s (initialisation longue)."""
+    def manifest(self):
+        return manifeste("com.test.demarrage", [])
+
+    def on_start(self, ctx):
+        t0 = ctx.now()
+        while ctx.now() - t0 < 15.0:
+            ctx.sleep(0.05)
+        return True
+
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
+
+
 class ParoleLente:
-    """Service de parole dont l'écoute dure 3 s, quoi qu'on lui demande."""
+    """Service de parole dont l'écoute dure 8 s, quoi qu'on lui demande."""
     registry = None
 
     def listen(self, duration_s=3.0, app_id=None):
-        time.sleep(3.0)
+        time.sleep(8.0)
         return ServiceResult(ok=True, value=None, reason="silence")
 
 
@@ -257,28 +278,42 @@ check("… son processus ne tourne plus", hotes_vivants() == [], str(hotes_vivan
 
 section("5. Mission bloquée dans une écoute servie par l'OS")
 robot, rt = pile(AppQuiEcoute(), speech_service=ParoleLente())
+r, duree = mission_avec_estop(robot, rt, "com.test.ecoute")
+check(f"Mission rendue (verrou compris) en moins de {BORNE_S:g} s, sans attendre la fin "
+      f"de l'écoute de 8 s", duree < BORNE_S, f"{duree:.2f} s")
+check("… notée interrompue, pas facturée",
+      r is not None and r.interrompue_par_arret_urgence and rt._billing == [])
+check("… son processus ne tourne plus", hotes_vivants() == [], str(hotes_vivants()))
+
+section("6. on_start en cours")
+with contextlib.redirect_stdout(io.StringIO()):
+    robot = NormalizedRobotHAL(UnitreeG1HAL("g1_demarrage"), build_g1_normalizer())
+    robot.initialize_all()
+    rt = PlayStoreRuntime(robot, WatchdogSystem(robot), profil=Profil.SIMULATION,
+                          confirmer_permissions=accepter_tout_SIMULATION)
+    rt.install(AppQuiDemarreLentement())
 res = {}
 
 
-def lancer_ecoute():
+def demarrer():
     with contextlib.redirect_stdout(io.StringIO()):
-        res["r"] = rt.run_mission("com.test.ecoute", {})
+        res["pret"] = rt.start_app("com.test.demarrage")
+    res["fin"] = time.monotonic()
 
 
-t = threading.Thread(target=lancer_ecoute)
+t = threading.Thread(target=demarrer)
 t.start()
-time.sleep(1.2)
+time.sleep(1.5)
+t_estop = time.monotonic()
 with contextlib.redirect_stdout(io.StringIO()):
     robot.emergency_stop_all()
-time.sleep(1.2)
-check("1,2 s après l'e-stop, le processus de l'app est arrêté, écoute en cours ou non",
-      hotes_vivants() == [], str(hotes_vivants()))
 t.join(timeout=30.0)
-r = res.get("r")
-check("… la mission revient ensuite, notée interrompue",
-      r is not None and r.interrompue_par_arret_urgence and rt._billing == [])
+check(f"on_start interrompu en moins de {BORNE_S:g} s", res.get("fin", float("inf")) - t_estop
+      < BORNE_S, f"{res.get('fin', float('inf')) - t_estop:.2f} s")
+check("… et l'app n'est pas démarrée", res.get("pret") is False
+      and not rt._apps["com.test.demarrage"].is_started)
 
-section("6. SandboxRunner seul")
+section("7. SandboxRunner seul")
 spec = reference_fonction(time.sleep)
 t0 = time.monotonic()
 with contextlib.redirect_stdout(io.StringIO()):
@@ -293,6 +328,15 @@ with contextlib.redirect_stdout(io.StringIO()):
     res7 = SandboxRunner("t.normal", ResourceQuota(max_runtime_s=10.0)).run_app(
         spec, "fonction", args=[0.2], arret=lambda: False)
 check("Sans arrêt d'urgence : exécution normale", res7.success, str(res7))
+# Un programme lancé par la fonction quitte le groupe de processus (setsid)
+# et vit encore 6 s : il ne doit retenir ni le pont ni le retour.
+t0 = time.monotonic()
+with contextlib.redirect_stdout(io.StringIO()):
+    res8 = SandboxRunner("t.descendant", ResourceQuota(max_runtime_s=10.0)).run_app(
+        reference_fonction(os.system), "fonction", args=["setsid -f sleep 6; sleep 30"],
+        arret=lambda: True)
+check("Un descendant sorti du groupe ne retient pas le retour", time.monotonic() - t0 < BORNE_S
+      and res8.state is SandboxState.KILLED, f"{time.monotonic() - t0:.2f} s, {res8.state}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

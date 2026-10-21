@@ -217,8 +217,11 @@ def message_paquet(manifeste: str, source: str) -> bytes:
     signature de paquet n'est jamais valable comme signature d'un code seul
     (format 1, sign_app_code), ni l'inverse. La longueur du manifeste fixe
     sans ambiguïté sa frontière avec le code."""
-    m = manifeste.encode("utf-8")
-    return _DOMAINE_PAQUET + len(m).to_bytes(8, "big") + m + source.encode("utf-8")
+    try:
+        m, s = manifeste.encode("utf-8"), source.encode("utf-8")
+    except (AttributeError, UnicodeEncodeError) as e:
+        raise SignatureError(f"manifeste ou code non encodable en UTF-8 : {e}") from None
+    return _DOMAINE_PAQUET + len(m).to_bytes(8, "big") + m + s
 
 
 def sign_app_package(manifeste: str, source: str, private_key_b64: str) -> str:
