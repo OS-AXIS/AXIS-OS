@@ -16,4 +16,4 @@ pandas==3.0.5           # conversion des épisodes VLA au format LeRobot
 pyarrow==26.0.0         # idem (fichiers parquet)
 imageio==2.38.1         # vidéos des épisodes VLA
 imageio-ffmpeg==0.6.0   # idem
-pytest==8.3.4           # lance la suite (test/conftest.py)
+pytest==9.1.1           # lance la suite (test/conftest.py)
