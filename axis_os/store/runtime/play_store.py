@@ -1046,6 +1046,11 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] on_stop: {exc}")
 
         entry.is_started = False
+        # Le vocabulaire de l'app part avec elle ; son prochain on_start (ou
+        # sa nouvelle version) le redéclare.
+        registre = getattr(self._speech_service, "registry", None)
+        if registre is not None:
+            registre.retirer(app_id)
 
     def update_app(
         self, new_app: RobotApp, *, allow_downgrade: bool = False,

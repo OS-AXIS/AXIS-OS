@@ -129,32 +129,50 @@ class IntentRegistry:
     pourquoi une autre n'a rien fait. Un modèle de langage pourrait
     remplacer ce composant un jour, mais il devrait rendre le même
     type de résultat : une intention nommée, jamais une commande.
+
+    Chaque app a son propre espace d'intentions, repéré par son app_id,
+    que l'OS fournit (RobotContext le tient du manifeste installé) et que
+    l'app ne choisit pas. Une app ne reçoit que ses propres intentions et
+    ne peut pas réserver le nom d'une intention d'une autre : deux apps
+    peuvent déclarer chacune « aller_vers_colis » sans se gêner. L'espace
+    None sert à l'OS et aux scripts qui n'ont pas d'app.
     """
 
+    # Plafond PAR APP : une app ne peut plus remplir le registre pour les
+    # autres (SECURITY.md, ancienne limite n° 8).
     MAX_INTENTIONS = 256
 
     def __init__(self):
-        self._intents: List[IntentDeclaration] = []
+        self._intents: Dict[Optional[str], List[IntentDeclaration]] = {}
 
-    def register(self, decl: IntentDeclaration) -> None:
-        """Ajoute une déclaration. Un nom déjà déclaré est refusé
-        (ValueError) : un nom d'intention désigne une seule
-        déclaration."""
-        if any(d.name == decl.name for d in self._intents):
+    def register(self, decl: IntentDeclaration, app_id: Optional[str] = None) -> None:
+        """Ajoute une déclaration dans l'espace de l'app `app_id`. Un nom
+        déjà déclaré par cette même app est refusé (ValueError) : dans un
+        espace, un nom d'intention désigne une seule déclaration."""
+        propres = self._intents.setdefault(app_id, [])
+        if any(d.name == decl.name for d in propres):
             raise ValueError(f"intention '{decl.name}' déjà déclarée")
         # Le registre vit dans le processus de l'OS et dure plus longtemps
         # que chaque app : sans borne, des déclarations répétées le feraient
         # grossir jusqu'à épuiser sa mémoire.
-        if len(self._intents) >= self.MAX_INTENTIONS:
-            raise ValueError(f"registre des intentions plein ({self.MAX_INTENTIONS})")
-        self._intents.append(decl)
+        if len(propres) >= self.MAX_INTENTIONS:
+            raise ValueError(f"registre des intentions plein pour cette app "
+                             f"({self.MAX_INTENTIONS})")
+        propres.append(decl)
+
+    def retirer(self, app_id: Optional[str]) -> None:
+        """Oublie toutes les intentions de l'app `app_id` (arrêt ou mise à
+        jour de l'app : la version suivante redéclare son vocabulaire)."""
+        self._intents.pop(app_id, None)
 
     @property
     def declarations(self) -> List[IntentDeclaration]:
-        return list(self._intents)
+        """Toutes les déclarations, toutes apps confondues."""
+        return [d for propres in self._intents.values() for d in propres]
 
-    def match(self, utterance: str) -> Optional[Intent]:
-        """Meilleure intention correspondante, ou None.
+    def match(self, utterance: str, app_id: Optional[str] = None) -> Optional[Intent]:
+        """Meilleure intention correspondante parmi celles de l'app
+        `app_id`, ou None.
 
         None est un résultat NORMAL : une phrase hors du vocabulaire
         déclaré ne doit rien déclencher. C'est ce qui garantit qu'une
@@ -166,7 +184,7 @@ class IntentRegistry:
         mots = set(norm.split())
 
         meilleur, score_max = None, 0.0
-        for decl in self._intents:
+        for decl in self._intents.get(app_id, ()):
             touches = 0
             for groupe in decl.keywords:
                 # Un mot-clé compte s'il apparaît dans la phrase
@@ -261,9 +279,10 @@ class SpeechService(IService):
 
     # ---- API ---------------------------------------------------------
 
-    def listen(self, duration_s: float = 3.0) -> ServiceResult:
+    def listen(self, duration_s: float = 3.0,
+               app_id: Optional[str] = None) -> ServiceResult:
         """Écoute pendant `duration_s` secondes, transcrit, et cherche
-        une intention.
+        une intention parmi celles de l'app `app_id` (voir IntentRegistry).
 
         value = Intent, ou None si rien ne correspond. `reason` dit
         toujours pourquoi il ne se passe rien : silence, transcription
@@ -292,7 +311,7 @@ class SpeechService(IService):
                        f"{self._min_conf}) : « {texte} » — ignorée plutôt "
                        f"qu'exécutée au hasard")
 
-        intent = self._registry.match(texte)
+        intent = self._registry.match(texte, app_id)
         if intent is None:
             self.stats["sans_intention"] += 1
             return ServiceResult(

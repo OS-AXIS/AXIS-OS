@@ -131,7 +131,7 @@ class ParoleNotee:
     def __init__(self):
         self.durees = []
 
-    def listen(self, duree):
+    def listen(self, duree, app_id=None):
         self.durees.append(duree)
         return ServiceResult(ok=False, value=None, reason=None)
 

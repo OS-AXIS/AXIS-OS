@@ -383,13 +383,14 @@ class RobotContext:
         None est un résultat normal et fréquent : silence, bruit, phrase
         hors du vocabulaire déclaré (voir declare_intent()), ou robot
         sans service de parole. Une app doit traiter ce cas comme
-        ordinaire, pas comme une erreur. Permission : SENSORS_MICROPHONE.
+        ordinaire, pas comme une erreur. Seules les intentions déclarées
+        par cette app peuvent lui revenir. Permission : SENSORS_MICROPHONE.
         """
         self._require(Permission.SENSORS_MICROPHONE)
         if self._speech is None:
             self.log("listen : ce robot n'a pas de service de parole.")
             return None
-        r = self._speech.listen(duration_s)
+        r = self._speech.listen(duration_s, app_id=self._manifest.app_id)
         if r.reason:
             self.log(f"listen : {r.reason}")
         return r.value if r.ok else None
@@ -408,9 +409,12 @@ class RobotContext:
         IntentDeclaration (axis_os/services/speech/service.py).
 
         Rend True si l'intention est enregistrée. Rend False si le robot
-        n'a pas de service de parole, ou si ce nom d'intention est déjà
-        déclaré (le conflit est noté dans le journal). Permission :
-        SENSORS_MICROPHONE.
+        n'a pas de service de parole, si cette app a déjà déclaré ce nom
+        d'intention ou si elle a atteint son plafond
+        (IntentRegistry.MAX_INTENTIONS) ; la raison est notée dans le
+        journal. Les intentions d'une app sont rangées sous son app_id :
+        une autre app ne peut ni les recevoir ni en réserver le nom.
+        Permission : SENSORS_MICROPHONE.
         """
         self._require(Permission.SENSORS_MICROPHONE)
         if self._speech is None:
@@ -419,11 +423,9 @@ class RobotContext:
         try:
             self._speech.registry.register(IntentDeclaration(
                 name=name, keywords=keywords, params=params or {},
-                description=description))
+                description=description), app_id=self._manifest.app_id)
             return True
         except ValueError as exc:
-            # Déjà déclarée par une autre app : ce n'est pas une erreur
-            # de programmation, c'est un conflit à arbitrer.
             self.log(f"declare_intent : {exc}")
             return False
 
