@@ -182,7 +182,7 @@ d'installer, et l'OS le fait respecter pendant l'exécution.
 
 | Champ | Rôle |
 |---|---|
-| `app_id` | identifiant unique, format `com.auteur.nom` |
+| `app_id` | identifiant unique, format `com.auteur.nom` : minuscules ASCII, chiffres et « _ » |
 | `name`, `version`, `author`, `author_email`, `description`, `category` | ce que voit l'utilisateur |
 | `permissions` | ce que l'app a le droit de faire (tableau suivant) |
 | `capabilities_required` | ce dont le robot doit être capable : `WALK`, `CAMERA_RGB`, `CAMERA_DEPTH`, `SPEECH_IN`, `GRASP_DUAL`, `NAVIGATION_MAP`, `MEMORY_PERSISTENT`… Un robot qui ne l'a pas : **installation refusée**, avec la raison |

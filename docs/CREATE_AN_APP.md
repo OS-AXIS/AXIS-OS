@@ -182,7 +182,7 @@ the OS enforces it at run time.
 
 | Field | Role |
 |---|---|
-| `app_id` | unique identifier, format `com.auteur.nom` |
+| `app_id` | unique identifier, format `com.auteur.nom`: lowercase ASCII, digits and `_` |
 | `name`, `version`, `author`, `author_email`, `description`, `category` | what the user sees |
 | `permissions` | what the app is allowed to do (next table) |
 | `capabilities_required` | what the robot must be capable of: `WALK`, `CAMERA_RGB`, `CAMERA_DEPTH`, `SPEECH_IN`, `GRASP_DUAL`, `NAVIGATION_MAP`, `MEMORY_PERSISTENT`… A robot that lacks it: **installation refused**, with the reason |
