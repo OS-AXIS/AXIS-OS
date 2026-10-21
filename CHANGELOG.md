@@ -10,6 +10,85 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Sécurité, changements cassants — ressources, identité des apps, intentions, marque IA (2026-10-21)
+
+Limites n° 6, 7 et 8 de `SECURITY.md`, et limite n° 2 en partie (ce qui
+reste ouvert y est décrit).
+
+- **Plafonds de l'OS pour les quotas** (`profil.PLAFONDS_QUOTAS`) : CPU,
+  mémoire et durée, plus stricts en `PRODUCTION` (100 %, 1 024 Mo,
+  3 600 s) qu'en simulation et en développement (400 %, 8 192 Mo,
+  7 200 s). Un manifeste qui en dépasse un est refusé à l'installation,
+  avant toute question à l'humain, avec un message qui dit le quota, sa
+  valeur, le plafond et le profil ; il n'est jamais ramené. `validate()`
+  refuse un quota NaN, infini, nul, négatif ou d'un autre type.
+- **Quotas et clé signataire montrés à l'humain** : `confirmer_au_terminal`
+  affiche les quotas, l'empreinte de la clé qui a signé l'app, le nom
+  inscrit pour elle dans le fichier des clés approuvées, ce que le
+  registre sait de l'`app_id`, et présente l'auteur comme déclaré.
+  `signing.public_key_fingerprint()` donne l'empreinte.
+- **L'arrêt d'urgence interrompt la mission en cours** : les appels de
+  l'app reçoivent `ESTOP_ACTIVE`, elle a 0,5 s pour rendre son résultat,
+  puis son groupe de processus est tué (`SandboxState.KILLED`,
+  `SandboxErrorKind.ARRET_URGENCE`), même si elle calcule ou attend une
+  réponse de l'OS. La mission est notée
+  `MissionResult.interrompue_par_arret_urgence`, échouée, jamais facturée,
+  y compris quand l'app a elle-même déclenché l'e-stop. Le robot reste
+  arrêté. `IsaacSimHAL.emergency_stop_all()` pose désormais `estop_active`.
+- **Quota de mémoire persistante par app** : `MemoryService.app_store()`
+  refuse au-delà de `MAX_CLES_PAR_APP` (1 000) clés ou
+  `MAX_OCTETS_PAR_APP` (1 Mio) ; `remember()` rend alors False et la
+  raison va au journal. Une valeur non JSON est refusée proprement.
+- **Manifeste déclaré, signé avec le code** : `install_source()` lit le
+  manifeste à côté du code (`manifeste_json.manifeste_texte`,
+  `manifeste_depuis_texte`), couvert par la même signature
+  (`signing.sign_app_package`, `verify_app_package`) ; aucune ligne de
+  l'app ne s'exécute avant l'accord de l'humain, et le hook « manifest »
+  du processus de l'app est supprimé.
+- **Registre des apps** (`profil.lire_registre_apps`,
+  `ecrire_registre_apps`, `creer_registre_apps`) : chaque `app_id` est lié
+  à la clé qui l'a installé la première fois, avec la version la plus
+  récente installée ; une autre clé ne peut ni l'installer ni le mettre à
+  jour, et une version plus ancienne est refusée, même après un
+  redémarrage.
+- **Mises à jour en production** : `update_source()`, même clé, version
+  strictement plus récente, facturation conservée. Une seule installation
+  depuis la source à la fois.
+- **Intentions vocales par app** : chaque app a son espace et son
+  plafond (`IntentRegistry.MAX_INTENTIONS`, désormais par app) ; elle ne
+  reçoit que ses intentions, ne peut pas réserver le nom d'une autre, et
+  son vocabulaire est retiré à son arrêt.
+- **Marque « IA » sur `walk()` et `move_to_pose()`** : paramètre
+  `origine=ORIGINE_IA`, porté par `GR00TAction.walk(ctx)`,
+  `LocomotionAction.walk(ctx)` (nouveau champ `base_velocity`),
+  `VLAAction.move_to_pose(ctx)` et `LocomotionAction.move_to_pose(ctx)` ;
+  sans `ACTUATORS_AI_DRIVEN`, refus avant tout mouvement.
+
+Ce qui casse pour un appelant :
+
+- `install_source(source, *, manifeste, code_signature, developer_public_key)` :
+  `manifeste` (texte JSON) est obligatoire, et la signature attendue est
+  celle du paquet (`sign_app_package(manifeste, source, clé)`), plus celle
+  du code seul. Pour une app chiffrée : `decrypt_verified_app_source(...,
+  manifeste=...)`.
+- En `PRODUCTION`, `PlayStoreRuntime` exige `registre_apps` (un fichier
+  existant, créé une fois par `creer_registre_apps`), et un confirmateur
+  qui porte `recoit_details = True` : il reçoit un `DetailsConfirmation`
+  en troisième argument (c'est le cas de `confirmer_au_terminal`).
+- Un manifeste dont un quota dépasse le plafond du profil, ou n'est pas un
+  nombre fini strictement positif, est refusé. Les apps de démonstration
+  à 8 192 Mo restent installables hors production seulement.
+- `SemVer.parse()` est strict : chiffres ASCII, sans zéro en tête, espace,
+  signe ni « _ » (« 1_0.0.0 » était lu 10.0.0).
+- `remember()` rend False au-delà du quota de l'app.
+- Un e-stop pendant `run_mission` arrête le processus de l'app ; une app
+  qui avalait `EstopActiveError` pour continuer est tuée 0,5 s après.
+- `IntentRegistry.register(decl, app_id=None)`, `match(texte, app_id=None)`
+  et `SpeechService.listen(duree, app_id=None)` prennent l'espace de
+  l'app ; sans `app_id`, c'est l'espace de l'OS, qui ne voit plus les
+  intentions des apps. Un faux service de parole doit accepter `app_id`.
+- `ConfirmationPermissions` devient `Callable[..., bool]`.
+
 ### Sécurité, changements cassants — isolation des apps et profils d'exécution (2026-10-20)
 
 Étapes 0 et 1 de `docs/isolation_apps.md`, et limites n° 1, 2 et 4 de

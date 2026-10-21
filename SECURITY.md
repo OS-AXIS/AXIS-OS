@@ -70,7 +70,8 @@ reason AXIS-OS is **not ready for a real robot**.
    objects any more. An app therefore can no longer get its code run in
    the OS process through this channel, nor reuse an OS connection to the
    motors. Under the PRODUCTION profile, an app's code is never loaded into
-   the OS process, not even to read its manifest. Still open: the app
+   the OS process, and runs nowhere before the human accepts: its manifest
+   is declared next to the code and signed with it. Still open: the app
    process runs as the same user as the OS (it can read the OS files and
    those of other apps); it has network access (on a real G1 it could open
    its own DDS connection to the motors, outside `JointSafetyGuard`); its
@@ -87,9 +88,13 @@ reason AXIS-OS is **not ready for a real robot**.
    refuses them to an app without the permission. But the OS cannot tell
    a number computed by a model from a hard-coded one: an app that builds
    its own commands from a model's output, without these actions, is not
-   detected. The SDK's `SetpointFollower` passes the mark on when given it
-   (`set_target(..., origine=ORIGINE_IA)`); `walk()` and `move_to_pose()`
-   do not carry it.
+   detected. The mark also goes through `SetpointFollower`
+   (`set_target(..., origine=ORIGINE_IA)`), and through `walk()` and
+   `move_to_pose()` when called via the SDK's actions
+   (`GR00TAction.walk(ctx)`, `LocomotionAction.walk(ctx)`,
+   `VLAAction.move_to_pose(ctx)`, `LocomotionAction.move_to_pose(ctx)`); an
+   app that copies a model's numbers by hand into `ctx.walk()` or
+   `ctx.move_to_pose()` does not carry it.
 3. **Some model weights, libraries and installers are not pinned.** OWL-ViT
    is loaded at a fixed revision and in the safetensors format. Whisper is
    loaded at the latest revision unless one is given, and `torch` (with
@@ -121,28 +126,27 @@ reason AXIS-OS is **not ready for a real robot**.
    yet. Filtering the network is step 3 of
    [docs/isolation_apps.md](docs/isolation_apps.md).
 
-6. **Some OS resources are not bounded per app yet.** An app's quotas are
-   those of its manifest, with no ceiling set by the OS and no display at
-   confirmation time. An e-stop refuses its commands but does not stop
-   its mission, which keeps the robot until its time limit. Its persistent
-   memory (`remember`) has no quota. The OS answers a few calls with a
-   model inference (`listen` transcription, `look_for`, `describe_scene`)
-   that can run past the hook's deadline by the length of one inference.
-   A process started by the app that
-   leaves its process group outlives the call: the OS reports it but
-   cannot stop it (cgroups, step 4). Under the same user, an app can also
-   send a signal to the OS process.
-7. **App identity and life cycle in production.** An approved key can
-   publish any `app_id` and any author name, and the confirmation shows
-   the identity the app declares, not its signer. `install_source()` runs
-   the signed code, without robot access, to read its manifest before the
-   human confirmation. An installed app cannot be updated in production,
-   and nothing prevents installing an older version after a restart.
-8. **Voice intents are shared between apps.** The intent registry does not
-   record which app declared what: an app can reserve another app's
-   intent name in advance, and that app then receives the parameters the
-   first one chose. It is capped at 256 declarations for all apps
-   together, so one app can fill it for the others.
+6. **Some OS resources are not bounded per app yet.** The OS answers a
+   few calls with a model inference (`listen` transcription, `look_for`,
+   `describe_scene`) that can run past the hook's deadline by the length
+   of one inference. For the same reason, after an emergency stop the app
+   process is stopped within a second, but the mission lock is only
+   released once the OS call already in progress returns (the robot
+   itself stays stopped). A process started by the app that leaves its
+   process group outlives the call: the OS reports it but cannot stop it
+   (cgroups, step 4). Under the same user, an app can also send a signal
+   to the OS process. The persistent-memory quota is the same for every
+   app (1,000 keys, 1 MiB), and an app can only overwrite a key, not
+   delete it.
+7. **App identity: trust on first install.** In production, an `app_id` is
+   bound to the key that first installed it on this robot (app registry):
+   an approved key can therefore still claim an `app_id` before its real
+   publisher, and changing an app's key means editing the registry by
+   hand. The registry and the approved-keys file are protected only by
+   their Unix permissions: while apps run as the same user as the OS
+   (limit n° 1), an app can rewrite the registry, which the OS must be
+   able to rewrite too. Outside production, `install()` and
+   `update_app()`, which install app objects, do not consult the registry.
 
 ## Resolved limits
 
@@ -161,8 +165,38 @@ Weaknesses that earlier versions of this page listed, and what fixed them
   mandatory, the developer key must be in the local approved-keys file,
   and `accepter_tout_SIMULATION` is refused (`axis_os/store/runtime/profil.py`).
 - **`ACTUATORS_AI_DRIVEN` never checked at run time.** It now is for
-  commands produced by the SDK's AI actions; see limit n° 2 for what
-  remains.
+  commands produced by the SDK's AI actions, including the walking speeds
+  and poses they pass through `walk()` and `move_to_pose()`; see limit
+  n° 2 for what remains.
+- **Quotas with no ceiling, not shown at confirmation (former limit
+  n° 6).** The OS sets a ceiling for each manifest quota, stricter under
+  PRODUCTION (`PLAFONDS_QUOTAS`, `axis_os/store/runtime/profil.py`); a
+  manifest above one, or with a NaN, infinite, zero or negative quota, is
+  refused at install time, never lowered. The human confirming the
+  permissions sees the quotas (`test/test_quotas_plafonds.py`).
+- **Emergency stop with no effect on the running mission (former limit
+  n° 6).** An e-stop now interrupts the mission: the app receives it
+  (`EstopActiveError` on its next call), its process is killed half a
+  second later, even in the middle of a computation, and the mission is
+  recorded as "interrupted by emergency stop", never billed; the robot
+  stays stopped (`test/test_arret_urgence_mission.py`).
+- **Persistent memory with no quota (former limit n° 6).** `remember` is
+  limited to 1,000 keys and 1 MiB per app, with a clear refusal
+  (`MemoryService.app_store`).
+- **App identity and life cycle in production (former limit n° 7).** The
+  manifest is declared next to the code and signed with it
+  (`signing.sign_app_package`): the OS reads it without running a line of
+  the app before the human agrees. An `app_id` is bound to the key that
+  first installed it (persistent registry, mandatory in production):
+  another key can neither install nor update it. The confirmation shows
+  the signing key (fingerprint, name recorded in the approved-keys file),
+  not only the declared author. Updates go through `update_source()`:
+  same key, strictly newer version; the newest installed version survives
+  a restart (`test/test_identite_apps.py`). Trust on first install
+  remains: limit n° 7.
+- **Voice intents shared between apps (former limit n° 8).** Each app has
+  its own intent space and its own cap: it only receives its own intents
+  and cannot reserve another app's name (`test/test_intentions_par_app.py`).
 
 ---
 
@@ -238,7 +272,9 @@ réel**.
    app ne peut donc plus faire exécuter son code dans le processus de l'OS
    par ce canal, ni réutiliser une connexion de l'OS vers les moteurs. En
    profil PRODUCTION, le code d'une app n'est jamais chargé dans le
-   processus de l'OS, pas même pour lire son manifeste. Restent ouverts :
+   processus de l'OS, et ne s'exécute nulle part avant que l'humain ait
+   accepté : son manifeste est déclaré à côté du code et signé avec lui.
+   Restent ouverts :
    le processus de l'app tourne sous le même utilisateur que l'OS (il peut
    lire les fichiers de l'OS et ceux des autres apps) ; il a accès au
    réseau (sur un vrai G1, il pourrait ouvrir sa propre connexion DDS vers
@@ -255,10 +291,14 @@ réel**.
    d'origine, et l'OS les refuse à une app qui n'a pas la permission. Mais
    l'OS ne peut pas distinguer un nombre calculé par un modèle d'un nombre
    écrit en dur : une app qui fabrique elle-même ses consignes à partir
-   d'un modèle, sans passer par ces actions, n'est pas détectée. Le
-   `SetpointFollower` du SDK transmet la marque si on la lui donne
-   (`set_target(..., origine=ORIGINE_IA)`) ; `walk()` et `move_to_pose()`
-   ne la portent pas.
+   d'un modèle, sans passer par ces actions, n'est pas détectée. La
+   marque passe aussi par `SetpointFollower`
+   (`set_target(..., origine=ORIGINE_IA)`), et par `walk()` et
+   `move_to_pose()` appelés à travers les actions du SDK
+   (`GR00TAction.walk(ctx)`, `LocomotionAction.walk(ctx)`,
+   `VLAAction.move_to_pose(ctx)`, `LocomotionAction.move_to_pose(ctx)`) ;
+   une app qui recopie à la main les nombres d'un modèle dans `ctx.walk()`
+   ou `ctx.move_to_pose()` ne la porte pas.
 3. **Certains poids, bibliothèques et installeurs ne sont pas épinglés.**
    OWL-ViT est chargé à une révision fixe et au format safetensors. Whisper
    est chargé à sa dernière révision si on n'en donne pas, et `torch` (avec
@@ -290,30 +330,29 @@ réel**.
    des fonctions que `RobotContext` n'offre pas encore. Le filtrage du
    réseau est l'étape 3 de [docs/isolation_apps.md](docs/isolation_apps.md).
 
-6. **Certaines ressources de l'OS ne sont pas encore bornées par app.** Les
-   quotas d'une app sont ceux de son manifeste, sans plafond fixé par l'OS
-   ni affichage au moment de la confirmation. Un e-stop refuse ses
-   commandes mais n'interrompt pas sa mission, qui garde le robot jusqu'à
-   son délai. Sa mémoire persistante (`remember`) n'a pas de quota. L'OS
-   répond à certains appels par une inférence de modèle (transcription de
-   `listen`, `look_for`, `describe_scene`), qui peut dépasser l'échéance
-   du hook de la durée d'un calcul. Un
+6. **Certaines ressources de l'OS ne sont pas encore bornées par app.**
+   L'OS répond à certains appels par une inférence de modèle
+   (transcription de `listen`, `look_for`, `describe_scene`), qui peut
+   dépasser l'échéance du hook de la durée d'un calcul. Pour la même
+   raison, après un arrêt d'urgence, le processus de l'app est arrêté en
+   moins d'une seconde, mais le verrou de mission n'est rendu qu'au retour
+   de l'appel de l'OS déjà en cours (le robot, lui, reste arrêté). Un
    processus lancé par l'app qui quitte son groupe de processus survit à
    la fin de l'appel : l'OS le signale sans pouvoir l'arrêter (cgroups,
    étape 4). Sous le même utilisateur, une app peut aussi envoyer un
-   signal au processus de l'OS.
-7. **Identité et cycle de vie des apps en production.** Une clé approuvée
-   peut publier n'importe quel `app_id` et n'importe quel nom d'auteur, et
-   la confirmation affiche l'identité déclarée par l'app, pas son
-   signataire. `install_source()` exécute le code signé, sans accès au
-   robot, pour lire son manifeste avant la confirmation humaine. Une app
-   installée ne peut pas être mise à jour en production, et rien
-   n'empêche, après un redémarrage, d'installer une version plus ancienne.
-8. **Les intentions vocales sont partagées entre apps.** Le registre des
-   intentions ne retient pas quelle app a déclaré quoi : une app peut
-   réserver d'avance le nom d'intention d'une autre, qui recevra alors les
-   paramètres choisis par la première. Il est plafonné à 256 déclarations pour
-   toutes les apps ensemble : une app peut donc le remplir pour les autres.
+   signal au processus de l'OS. Le quota de mémoire persistante est le
+   même pour toutes les apps (1 000 clés, 1 Mio), et une app ne peut que
+   réécrire une clé, pas l'effacer.
+7. **Identité des apps : confiance à la première installation.** En
+   production, un `app_id` est lié à la clé qui l'a installé la première
+   fois sur ce robot (registre des apps) : une clé approuvée peut donc
+   encore réserver un `app_id` avant son véritable éditeur, et changer la
+   clé d'une app demande de modifier le registre à la main. Le registre et
+   le fichier des clés approuvées ne sont protégés que par leurs droits
+   Unix : tant que les apps tournent sous le même utilisateur que l'OS
+   (limite n° 1), une app peut réécrire le registre, que l'OS doit pouvoir
+   réécrire lui aussi. Hors production, `install()` et `update_app()`, qui
+   installent des objets app, ne consultent pas le registre.
 
 ## Limites résolues
 
@@ -335,5 +374,38 @@ qui les a corrigées (détails dans [CHANGELOG.md](CHANGELOG.md)) :
   des clés approuvées, et `accepter_tout_SIMULATION` est refusée
   (`axis_os/store/runtime/profil.py`).
 - **`ACTUATORS_AI_DRIVEN` jamais vérifiée à l'exécution.** Elle l'est
-  désormais pour les consignes produites par les actions d'IA du SDK ;
-  voir la limite n° 2 pour ce qui reste.
+  désormais pour les consignes produites par les actions d'IA du SDK, y
+  compris les vitesses de marche et les poses qu'elles transmettent par
+  `walk()` et `move_to_pose()` ; voir la limite n° 2 pour ce qui reste.
+- **Quotas sans plafond, et invisibles à la confirmation (ancienne
+  limite n° 6).** L'OS fixe un plafond pour chaque quota du manifeste,
+  plus strict en PRODUCTION (`PLAFONDS_QUOTAS`,
+  `axis_os/store/runtime/profil.py`) ; un manifeste qui en dépasse un, ou
+  dont un quota est NaN, infini, nul ou négatif, est refusé à
+  l'installation, jamais ramené. L'humain qui confirme les permissions
+  voit les quotas (`test/test_quotas_plafonds.py`).
+- **Arrêt d'urgence sans effet sur la mission en cours (ancienne limite
+  n° 6).** Un e-stop interrompt désormais la mission : l'app le reçoit
+  (`EstopActiveError` à son prochain appel), son processus est tué une
+  demi-seconde plus tard, même en plein calcul, et la mission est notée
+  « interrompue par arrêt d'urgence », jamais facturée ; le robot reste
+  arrêté (`test/test_arret_urgence_mission.py`).
+- **Mémoire persistante sans quota (ancienne limite n° 6).** `remember`
+  est limitée à 1 000 clés et 1 Mio par app, avec un refus clair
+  (`MemoryService.app_store`).
+- **Identité et cycle de vie des apps en production (ancienne limite
+  n° 7).** Le manifeste est déclaré à côté du code et signé avec lui
+  (`signing.sign_app_package`) : l'OS le lit sans exécuter une ligne de
+  l'app avant l'accord de l'humain. Un `app_id` est lié à la clé qui l'a
+  installé la première fois (registre persistant, obligatoire en
+  production) : une autre clé ne peut ni l'installer ni le mettre à jour.
+  La confirmation montre la clé signataire (empreinte, nom inscrit dans le
+  fichier des clés approuvées), pas seulement l'auteur déclaré. Les mises
+  à jour passent par `update_source()` : même clé, version strictement
+  plus récente ; la version la plus récente installée survit au
+  redémarrage (`test/test_identite_apps.py`). Reste la confiance à la
+  première installation : limite n° 7.
+- **Intentions vocales partagées entre apps (ancienne limite n° 8).**
+  Chaque app a son propre espace d'intentions et son propre plafond : elle
+  ne reçoit que les siennes et ne peut pas réserver le nom d'une autre
+  (`test/test_intentions_par_app.py`).
