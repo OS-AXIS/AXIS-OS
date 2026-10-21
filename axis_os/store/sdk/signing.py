@@ -63,6 +63,7 @@ Licence : Apache 2.0
 
 from __future__ import annotations
 import base64
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
@@ -196,6 +197,24 @@ def verify_app_signature(
         return True
     except InvalidSignature:
         return False
+
+
+def public_key_fingerprint(public_key_b64: str) -> str:
+    """Empreinte courte d'une clé publique, à montrer à un humain :
+    « SHA256:» suivi des 16 premiers chiffres hexadécimaux du SHA-256 des 32
+    octets de la clé, par groupes de quatre. Deux clés différentes ont, en
+    pratique, des empreintes différentes ; le nom d'auteur d'un manifeste,
+    lui, peut être recopié par n'importe qui. Lève SignatureError si la clé
+    est malformée."""
+    try:
+        octets = base64.b64decode(public_key_b64, validate=True)
+    except Exception as e:
+        raise SignatureError(f"Clé publique malformée (base64 invalide) : {e}") from e
+    if len(octets) != 32:
+        raise SignatureError(
+            f"Clé publique Ed25519 invalide — attendu 32 octets, obtenu {len(octets)}.")
+    h = hashlib.sha256(octets).hexdigest()[:16]
+    return "SHA256:" + " ".join(h[i:i + 4] for i in range(0, 16, 4))
 
 
 def sign_app_file(file_path: Union[str, Path], private_key_b64: str) -> str:

@@ -75,6 +75,13 @@ class EstopActiveError(Exception):
     move_legs(), move_all() et walk() (voir _require_no_estop()), et non
     plus une seule fois, au lancement de la mission par
     PlayStoreRuntime.run_mission(). Test : test/test_estop_interrupt.py.
+
+    Depuis, l'arrêt d'urgence interrompt aussi la mission elle-même : dans
+    le processus de l'app, tout appel au robot (sauf log, stop_walking,
+    emergency_stop et get_recent_alerts) lève alors cette exception,
+    l'app a une demi-seconde pour rendre son résultat, puis son processus
+    est arrêté (voir `arret` dans SandboxRunner.run_app, et
+    test/test_arret_urgence_mission.py).
     """
     pass
 
@@ -337,8 +344,10 @@ class RobotContext:
         """Enregistre une donnée qui survit au redémarrage du robot.
 
         Rend True si la donnée est enregistrée. Rend False si le robot n'a
-        pas de mémoire persistante, ou si le service de mémoire refuse
-        (la raison est alors notée dans le journal). Permission :
+        pas de mémoire persistante, ou si le service de mémoire refuse, par
+        exemple parce que le quota de l'app est atteint
+        (MemoryService.MAX_CLES_PAR_APP clés, MAX_OCTETS_PAR_APP octets) ;
+        la raison est alors notée dans le journal. Permission :
         STORAGE_PERSISTENT.
 
         L'espace de stockage est celui de cette app : l'identifiant
@@ -883,6 +892,10 @@ class MissionResult:
 
     Si la mission lève PermissionError ou EstopActiveError dans le
     sandbox, l'OS construit lui-même un MissionResult d'échec.
+
+    `interrompue_par_arret_urgence` n'est posé que par l'OS (PlayStoreRuntime),
+    quand un arrêt d'urgence est survenu pendant la mission ; elle est alors
+    un échec, jamais facturée.
     """
     success:          bool
     mission_id:       str
@@ -892,9 +905,12 @@ class MissionResult:
     error_message:    Optional[str]    = None
     metrics:          Dict[str, Any]   = field(default_factory=dict)
     log:              list[str]        = field(default_factory=list)
+    interrompue_par_arret_urgence: bool = False
 
     def __str__(self) -> str:
-        status = "✓ SUCCESS" if self.success else "✗ FAILED"
+        status = "✓ SUCCESS" if self.success else (
+            "✗ INTERROMPUE (arrêt d'urgence)" if self.interrompue_par_arret_urgence
+            else "✗ FAILED")
         return (f"[Mission {self.mission_id}] {status} | "
                 f"app={self.app_id} | durée={self.duration_s:.2f}s | "
                 f"items={self.items_processed}")

@@ -24,7 +24,8 @@ Licence : Apache 2.0 (open-source — SDK public)
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, fields
 from enum import Enum, auto
 from typing import Optional
 
@@ -310,6 +311,12 @@ class ResourceQuota:
     mesures consécutives, et la surveillance du CPU et de la mémoire
     suppose que psutil (une bibliothèque de mesure des processus) soit
     installé.
+
+    Chaque valeur doit être un nombre fini strictement positif (validate)
+    et ne pas dépasser le plafond que l'OS fixe pour son profil
+    (PLAFONDS_QUOTAS dans axis_os/store/runtime/profil.py) : au-delà,
+    l'installation est refusée, la valeur n'est jamais ramenée en silence.
+    Ces quotas sont montrés à l'humain qui confirme les permissions.
     """
     max_cpu_percent: float = 50.0   # en % d'un cœur de processeur
     max_memory_mb:   int   = 256    # mémoire vive, en Mo
@@ -543,6 +550,16 @@ class AppManifest:
                 "Capability.AI_POLICY exige la permission ACTUATORS_AI_DRIVEN : une "
                 "app pilotée par une politique apprise doit le déclarer, pour que "
                 "l'utilisateur le confirme à l'installation.")
+        # Un quota NaN, infini, nul, négatif ou d'un autre type désactiverait
+        # en silence le contrôle correspondant de la sandbox (toute
+        # comparaison avec NaN est fausse) ; type() exact, comme plus haut.
+        q = self.quota
+        if type(q) is not ResourceQuota or any(
+                type(getattr(q, f.name)) not in (int, float)
+                or not 0 < getattr(q, f.name) < math.inf
+                for f in fields(ResourceQuota)):
+            errors.append("quota doit être un ResourceQuota de nombres finis "
+                          "strictement positifs")
         # Signature et clé vont ensemble : voir le commentaire de
         # code_signature plus haut.
         if (self.code_signature is None) != (self.developer_public_key is None):

@@ -30,7 +30,7 @@ Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 
 from __future__ import annotations
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Callable, Optional, Dict, Any, List, Union
 import math
 import os
@@ -53,12 +53,13 @@ from axis_os.store.sdk.app_base import (
 from axis_os.store.runtime.sandbox import (
     SandboxRunner, SandboxResult, SandboxState, SandboxErrorKind, _try_import_psutil,
 )
-from axis_os.store.runtime.profil import Profil, lire_cles_approuvees
+from axis_os.store.runtime.profil import PLAFONDS_QUOTAS, Profil, lire_cles_approuvees
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
 from axis_os.store.runtime.processus_app import (
     AppNonRechargeable, etat_json, rendre_os_non_inspectable, spec_depuis_instance,
 )
 from axis_os.services.memory.service import MemoryService
+from axis_os.store.sdk.signing import public_key_fingerprint
 import threading
 
 
@@ -82,7 +83,53 @@ import threading
 # répond exactement True ; il n'existe aucun accord implicite. Essais :
 # test/test_permissions_dangereuses.py.
 
-ConfirmationPermissions = Callable[[AppManifest, List[Permission]], bool]
+ConfirmationPermissions = Callable[..., bool]
+
+
+@dataclass(frozen=True)
+class DetailsConfirmation:
+    """Ce que l'humain doit voir, en plus du manifeste, avant d'accorder des
+    permissions DANGEROUS : qui a signé l'app et sous quel profil elle
+    s'installe. Les quotas sont dans manifest.quota, déjà vérifiés contre
+    les plafonds du profil.
+
+    Un confirmateur qui porte l'attribut `recoit_details = True` est appelé
+    avec ces détails en troisième argument ; c'est obligatoire en profil
+    PRODUCTION, pour que la clé signataire et les quotas soient montrés."""
+    profil:         str
+    signataire:     Optional[str]   # empreinte de la clé vérifiée ; None si non signée
+    nom_signataire: Optional[str]   # nom inscrit dans le fichier des clés approuvées
+    fichier_cles:   Optional[str]   # chemin de ce fichier, s'il y en a un
+
+
+MOTIF_ARRET_URGENCE = "Mission interrompue par arrêt d'urgence (e-stop)"
+
+_UNITES = {"max_cpu_percent": "% d'un cœur", "max_memory_mb": "Mo", "max_runtime_s": "s"}
+
+
+def decrire_quotas(q: Any) -> List[str]:
+    """Les quotas d'une app, en clair, tels que la sandbox les applique."""
+    return [
+        f"CPU : {q.max_cpu_percent:g} % d'un cœur (arrêt au-delà du double, sur trois mesures)",
+        f"Mémoire vive : {q.max_memory_mb:g} Mo",
+        f"Durée : {q.max_runtime_s:g} s par appel (on_start, mission, on_stop)",
+        f"Mémoire persistante : {MemoryService.MAX_CLES_PAR_APP} clés et "
+        f"{MemoryService.MAX_OCTETS_PAR_APP // 1024} Kio au plus (fixé par l'OS)",
+    ]
+
+
+def decrire_signataire(details: Optional[DetailsConfirmation]) -> str:
+    """La clé qui a signé l'app, telle que l'OS l'a vérifiée : son empreinte
+    et le nom sous lequel elle est inscrite, jamais l'auteur déclaré."""
+    if details is None or details.signataire is None:
+        return "app NON signée (aucune identité vérifiée)"
+    if details.fichier_cles is None:
+        if details.nom_signataire:
+            return f"{details.signataire} — {_affichable(details.nom_signataire)}"
+        return f"{details.signataire} (aucun fichier de clés approuvées sur ce robot)"
+    nom = _affichable(details.nom_signataire) if details.nom_signataire else "(sans nom)"
+    return (f"{details.signataire} — « {nom} », fichier des clés approuvées "
+            f"{_affichable(details.fichier_cles, 200)}")
 
 
 def accepter_tout_SIMULATION(manifest: AppManifest,
@@ -120,10 +167,11 @@ def _affichable(texte: Any, n: int = 80) -> str:
     return t if len(t) <= n else t[:n - 1] + "…"
 
 
-def confirmer_au_terminal(manifest: AppManifest,
-                          permissions: List[Permission]) -> bool:
+def confirmer_au_terminal(manifest: AppManifest, permissions: List[Permission],
+                          details: Optional[DetailsConfirmation] = None) -> bool:
     """Demande à l'opérateur, au terminal, d'accepter les permissions
-    DANGEROUS.
+    DANGEROUS, après lui avoir montré la clé qui a signé l'app et ses
+    quotas.
 
     Seul « o » ou « oui » accorde ; tout le reste (Entrée seule, fin de
     saisie, erreur de lecture) refuse. Le nom, l'auteur et l'app_id viennent
@@ -135,15 +183,22 @@ def confirmer_au_terminal(manifest: AppManifest,
     demandées."""
     app_id = _affichable(manifest.app_id)
     noms = ", ".join(p.name for p in permissions)
-    print(f"\n  L'app « {_affichable(manifest.name)} » ({app_id}, "
+    print(f"\n  L'app « {_affichable(manifest.name)} » ({app_id}, auteur déclaré : "
           f"{_affichable(manifest.author)}) demande des permissions DANGEREUSES :")
     for p in permissions:
         print(f"    - {p.name}")
+    print(f"  Signée par : {decrire_signataire(details)}")
+    print("  Ressources maximales :")
+    for ligne in decrire_quotas(manifest.quota):
+        print(f"    - {ligne}")
     try:
         rep = input(f"  Accorder {noms} à {app_id} ? [o/N] ")
     except (EOFError, OSError):
         return False
     return rep.strip().lower() in ("o", "oui")
+
+
+confirmer_au_terminal.recoit_details = True
 
 
 def _robot_reel(robot: Any) -> bool:
@@ -302,7 +357,10 @@ class PlayStoreRuntime:
         accordée et l'app est refusée. En cas de doute, le système refuse
         (comportement dit fail-safe) ; voir accepter_tout_SIMULATION et
         confirmer_au_terminal plus haut. Passer accepter_tout_SIMULATION
-        avec un robot réel lève ValueError.
+        avec un robot réel lève ValueError. Un confirmateur qui porte
+        `recoit_details = True` reçoit en troisième argument un
+        DetailsConfirmation (clé signataire vérifiée) ; il doit montrer à
+        l'humain cette clé et manifest.quota. En PRODUCTION, c'est exigé.
 
         `require_signed_apps` : si True, install() refuse toute app dont
         code_signature et developer_public_key ne sont pas renseignés.
@@ -369,6 +427,12 @@ class PlayStoreRuntime:
                 raise ValueError(
                     "Profil PRODUCTION : accepter_tout_SIMULATION refusé, les "
                     "permissions DANGEROUS y sont toujours confirmées par un humain.")
+            if confirmer_permissions is not None and \
+                    getattr(confirmer_permissions, "recoit_details", False) is not True:
+                raise ValueError(
+                    "Profil PRODUCTION : le confirmateur doit montrer à l'humain la clé "
+                    "signataire et les quotas (attribut recoit_details = True, voir "
+                    "DetailsConfirmation et confirmer_au_terminal).")
             if require_signed_apps is False:
                 raise ValueError(
                     "Profil PRODUCTION : la signature des apps est obligatoire "
@@ -390,6 +454,7 @@ class PlayStoreRuntime:
         self._profil = profil
         self._cles_approuvees: Optional[Dict[str, str]] = (
             None if cles_approuvees is None else lire_cles_approuvees(cles_approuvees))
+        self._fichier_cles = None if cles_approuvees is None else os.fspath(cles_approuvees)
         self._confirmer_permissions = confirmer_permissions
         self._robot   = robot
         self._watchdog = watchdog
@@ -587,6 +652,20 @@ class PlayStoreRuntime:
         capacités, matériel, confirmation des permissions DANGEROUS, puis
         enregistrement."""
         app_id = manifest.app_id
+        # Plafonds de l'OS (profil.PLAFONDS_QUOTAS), vérifiés avant tout le
+        # reste, et avant l'humain : un quota trop grand n'est jamais ramené
+        # en silence, l'installation est refusée. validate() a déjà vérifié
+        # que chaque quota est un nombre fini strictement positif.
+        plafond = PLAFONDS_QUOTAS[self._profil]
+        depasses = [f.name for f in fields(plafond)
+                    if getattr(manifest.quota, f.name) > getattr(plafond, f.name)]
+        for nom in depasses:
+            print(f"  [ERREUR] Quota {nom} = {getattr(manifest.quota, nom):g} {_UNITES[nom]} : "
+                  f"au-delà du plafond du profil {self._profil.name} "
+                  f"({getattr(plafond, nom):g} {_UNITES[nom]}). Installation refusée ; l'OS "
+                  f"ne réduit jamais un quota déclaré : corriger le manifeste.")
+        if depasses:
+            return False
         # Permissions de niveau ProtectionLevel.SIGNATURE, réservées aux
         # apps système (par exemple ACTUATORS_RAW, les commandes
         # articulaires brutes, ou FLEET_BROADCAST, l'envoi d'un message à
@@ -664,6 +743,13 @@ class PlayStoreRuntime:
                 print(f"  [ATTENTION] Capacité(s) optionnelle(s) absente(s) — "
                       f"l'app fonctionnera en mode dégradé : {names}")
 
+        # Ce que l'humain doit savoir, dit aussi dans le journal pour une app
+        # qui ne demande aucune permission DANGEROUS : qui a signé (la clé
+        # vérifiée, pas l'auteur déclaré) et les ressources accordées.
+        details = self._details_confirmation(manifest)
+        print(f"  Signée par : {decrire_signataire(details)}")
+        print(f"  Quotas    : {' ; '.join(decrire_quotas(manifest.quota))}")
+
         # Permissions DANGEROUS : confirmation humaine explicite, demandée en
         # dernier pour ne pas faire accepter à un humain une app qui serait
         # refusée de toute façon (capacités, matériel). Voir l'en-tête de
@@ -679,7 +765,10 @@ class PlayStoreRuntime:
                       f"défaut.")
                 return False
             try:
-                accord = self._confirmer_permissions(manifest, list(dangereuses))
+                if getattr(self._confirmer_permissions, "recoit_details", False) is True:
+                    accord = self._confirmer_permissions(manifest, list(dangereuses), details)
+                else:
+                    accord = self._confirmer_permissions(manifest, list(dangereuses))
             except Exception as exc:          # noqa: BLE001 — refus, jamais accord
                 print(f"  [ERREUR] Confirmation des permissions {noms} impossible "
                       f"({exc!r:.120}) — refus.")
@@ -727,6 +816,19 @@ class PlayStoreRuntime:
             print(f"  [PROFIL {self._profil.name}] app non signée installée : "
                   f"{_affichable(app_id)}")
         return True
+
+    def _details_confirmation(self, manifest: AppManifest) -> DetailsConfirmation:
+        """Signataire vérifié d'un manifeste (voir DetailsConfirmation)."""
+        cle = manifest.developer_public_key if manifest.code_signature is not None else None
+        if cle is None:
+            return DetailsConfirmation(self._profil.name, None, None, self._fichier_cles)
+        empreinte = public_key_fingerprint(cle)
+        if self._cles_approuvees is not None and cle in self._cles_approuvees:
+            return DetailsConfirmation(self._profil.name, empreinte,
+                                       self._cles_approuvees[cle], self._fichier_cles)
+        if cle == self._platform_public_key:
+            return DetailsConfirmation(self._profil.name, empreinte, "clé plateforme", None)
+        return DetailsConfirmation(self._profil.name, empreinte, None, self._fichier_cles)
 
     def _sdk_compatible(self, manifest: AppManifest) -> bool:
         """Compatibilité du SDK, dont la version est celle d'AXIS-OS (voir
@@ -900,7 +1002,7 @@ class PlayStoreRuntime:
         # fonctionner, donc précisément quand le Watchdog est mort ou
         # bloqué) ne positionnait pas watchdog.estop_fired, et restait
         # donc invisible ici.
-        if self._watchdog.estop_fired or self._robot.estop_active:
+        if self._estop_actif():
             mission_id = str(uuid.uuid4())[:8].upper()
             print(f"  [SECURITY] Mission {mission_id} refusée : "
                   f"e-stop actif sur le robot — {app_id}")
@@ -955,8 +1057,10 @@ class PlayStoreRuntime:
         # toute app. Le pont HALBridgeServer/HALBridgeClient permet à
         # l'app isolée d'appeler move_arms/move_legs/log/get_imu exactement
         # comme avec un RobotContext, sans qu'aucune app ait à changer.
+        # Un arrêt d'urgence survenu pendant la mission l'interrompt : voir
+        # `arret` dans SandboxRunner.run_app.
         sandbox_result, bridge_server = self._executer_hook(
-            entry, "run_mission", ctx, params)
+            entry, "run_mission", ctx, params, arret=self._estop_actif)
 
         if sandbox_result.success and sandbox_result.result.get("mission") is not None:
             # Reconstruit champ par champ à partir du JSON vérifié
@@ -1001,6 +1105,18 @@ class PlayStoreRuntime:
             result.mission_id = mission_id
             result.app_id     = app_id
             result.duration_s = time.monotonic() - t_start
+
+        # Arrêt d'urgence pendant la mission : elle est notée interrompue,
+        # quoi qu'en dise l'app, et donc jamais facturée. Lu APRÈS le hook :
+        # run_mission() refuse déjà toute mission sous e-stop, donc un e-stop
+        # vu ici est survenu pendant celle-ci (y compris déclenché par l'app
+        # elle-même, ou juste au moment où elle rendait success=True).
+        if result and (self._estop_actif()
+                       or sandbox_result.error_kind is SandboxErrorKind.ARRET_URGENCE):
+            result.success = False
+            result.interrompue_par_arret_urgence = True
+            result.error_message = MOTIF_ARRET_URGENCE + (
+                f" — {result.error_message}" if result.error_message else "")
 
         # Facturation. Pourquoi cette double condition : un audit de
         # sécurité externe a montré que la facturation reposait
@@ -1273,8 +1389,16 @@ class PlayStoreRuntime:
             available.add(Capability.MEMORY_PERSISTENT)
         return available
 
+    def _estop_actif(self) -> bool:
+        """Vrai si un arrêt d'urgence est actif. Deux sources : le Watchdog
+        (estop_fired) et le HAL (estop_active), que positionne aussi le
+        Supervisor quand le Watchdog est mort ou bloqué. Aucun réarmement
+        n'existe : seul un redémarrage de l'OS le remet à zéro."""
+        return bool(self._watchdog.estop_fired or self._robot.estop_active)
+
     def _executer_hook(self, entry: "InstalledApp", hook: str, ctx: RobotContext,
-                       params: Optional[Dict[str, Any]] = None):
+                       params: Optional[Dict[str, Any]] = None,
+                       arret: Optional[Callable[[], bool]] = None):
         """Exécute un hook de l'app dans son processus neuf et rend
         (SandboxResult, HALBridgeServer). Le serveur garde, côté OS, le
         compte des commandes motrices réussies (facturation)."""
@@ -1295,7 +1419,8 @@ class PlayStoreRuntime:
         etat = etat_json(entry.app) if entry.app is not None else None
         result = runner.run_app(entry.spec, hook, serveur=bridge_server,
                                 params=params, etat=etat,
-                                tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR)
+                                tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR,
+                                arret=arret)
         return result, bridge_server
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:

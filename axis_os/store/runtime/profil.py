@@ -6,6 +6,10 @@ par celui qui le crée ; le profil n'est jamais deviné (ni d'après le
 robot, ni d'après une variable d'environnement), et aucune app ni aucun
 manifeste ne peut le changer.
 
+Dans tous les profils, les quotas déclarés par une app (ResourceQuota)
+doivent rester sous les plafonds de PLAFONDS_QUOTAS, plus stricts en
+PRODUCTION ; un manifeste qui en dépasse un est refusé à l'installation.
+
   SIMULATION     robot simulé, tests. Tout ce qui est permis aujourd'hui
                  reste permis (apps non signées, accepter_tout_SIMULATION),
                  mais chaque facilité est signalée dans le journal.
@@ -55,11 +59,28 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Union
 
+from axis_os.store.sdk.manifest import ResourceQuota
+
 
 class Profil(Enum):
     SIMULATION = "simulation"
     DEVELOPPEMENT = "developpement"
     PRODUCTION = "production"
+
+
+# Plafonds de l'OS pour chaque quota du manifeste (mêmes unités que
+# ResourceQuota). Hors production, ils laissent passer les apps de
+# démonstration (8 192 Mo, héritage du temps où le processus de l'app était
+# une copie de celui de l'OS) et une ronde d'une heure (security_patrol).
+# En production, un processus d'app neuf pèse une vingtaine de Mo.
+PLAFONDS_QUOTAS: Dict[Profil, ResourceQuota] = {
+    Profil.SIMULATION:    ResourceQuota(max_cpu_percent=400.0, max_memory_mb=8192,
+                                        max_runtime_s=7200.0),
+    Profil.DEVELOPPEMENT: ResourceQuota(max_cpu_percent=400.0, max_memory_mb=8192,
+                                        max_runtime_s=7200.0),
+    Profil.PRODUCTION:    ResourceQuota(max_cpu_percent=100.0, max_memory_mb=1024,
+                                        max_runtime_s=3600.0),
+}
 
 
 class ClesApprouveesInvalides(ValueError):

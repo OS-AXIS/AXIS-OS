@@ -138,10 +138,14 @@ class AppSignee(RobotApp):
 CONFIRMATIONS = []
 
 
-def confirmer_test(manifest, permissions):
+def confirmer_test(manifest, permissions, details=None):
     """Tient le rôle de l'opérateur humain : note la demande et accepte."""
     CONFIRMATIONS.append([p.name for p in permissions])
     return True
+
+
+# En production, le confirmateur reçoit la clé signataire (DetailsConfirmation).
+confirmer_test.recoit_details = True
 
 
 section("1. Le profil est obligatoire et explicite")

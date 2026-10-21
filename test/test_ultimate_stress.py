@@ -171,15 +171,13 @@ time.sleep(0.1)
 
 check("Panne 3/4 (température critique) → e-stop déclenché malgré 2 "
       "pannes déjà actives sur d'autres joints", wd.estop_fired)
-# Note honnête : la mission lancée AVANT l'e-stop n'est pas interrompue
-# en plein vol (run_mission() ne vérifie l'e-stop qu'à l'entrée, pas en
-# cours d'exécution) — elle se termine avec son propre résultat, bon ou
-# mauvais selon le stub aléatoire de WarehouseOpsApp. Le vrai test de
-# la barrière de sécurité est sur la PROCHAINE mission (Panne 4/4),
-# pas sur celle-ci.
-check("Mission lancée juste avant l'e-stop s'est terminée normalement "
-      "(l'e-stop protège les missions SUIVANTES, pas celle en cours — "
-      "comportement documenté, pas un bug)",
+# La mission lancée juste avant l'e-stop rend bien un résultat : refusée
+# à l'entrée si l'e-stop l'a précédée, sinon interrompue en plein vol et
+# notée comme telle (test/test_arret_urgence_mission.py le vérifie en
+# détail). La barrière sur les missions SUIVANTES est vérifiée plus bas
+# (Panne 4/4).
+check("Mission lancée juste avant l'e-stop : un résultat est rendu "
+      "(refusée, ou interrompue par l'arrêt d'urgence)",
       mission_during_cascade.get("result") is not None)
 
 # Panne 4 : vérifier qu'AUCUNE app ne peut plus s'exécuter après cette

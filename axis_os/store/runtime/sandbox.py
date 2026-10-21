@@ -60,8 +60,8 @@ class SandboxState(Enum):
     ou VIOLATED (quota de CPU, de mémoire ou de durée constaté par
     _monitor_loop()). Un dépassement de durée peut donc finir en TIMEOUT
     ou en VIOLATED, selon qui le voit en premier ; error_kind vaut
-    TIMEOUT dans les deux cas. KILLED est défini mais n'est attribué
-    nulle part aujourd'hui.
+    TIMEOUT dans les deux cas. KILLED : processus arrêté par un arrêt
+    d'urgence (voir `arret` dans run_app), error_kind ARRET_URGENCE.
     """
     CREATED  = auto()
     STARTING = auto()
@@ -93,6 +93,9 @@ class SandboxErrorKind(Enum):
     # refuse (trame trop longue, JSON invalide, résultat hors schéma) : il
     # est arrêté. Voir run_app().
     PROTOCOL_VIOLATION   = auto()
+    # Un arrêt d'urgence est survenu pendant le hook : le processus de l'app
+    # a été arrêté (voir `arret` dans run_app()).
+    ARRET_URGENCE        = auto()
 
 
 @dataclass
@@ -272,11 +275,21 @@ class SandboxRunner:
     # Le contrôle CPU commence quand l'app est chargée, ou au plus tard
     # après ce délai (temps du robot).
     GRACE_CPU_S = 5.0
+    # Après un arrêt d'urgence, l'app a ce délai (temps RÉEL : une horloge
+    # simulée arrêtée ne doit pas retarder l'arrêt) pour rendre son
+    # résultat ; puis son processus est tué.
+    DELAI_ARRET_URGENCE_S = 0.5
+    # Seules actions encore servies après un arrêt d'urgence : sans effet
+    # sur le robot, ou qui l'arrêtent. Toute autre reçoit ESTOP_ACTIVE, que
+    # l'app voit comme EstopActiveError : c'est ainsi qu'elle reçoit l'arrêt.
+    ACTIONS_APRES_ARRET = frozenset({"log", "get_recent_alerts", "stop_walking",
+                                     "emergency_stop"})
 
     def run_app(self, spec: dict, hook: str, *, serveur=None, params=None,
                 etat: Optional[dict] = None, tolerance_lenteur: float = 60.0,
                 args: Optional[list] = None,
-                kwargs: Optional[dict] = None) -> SandboxResult:
+                kwargs: Optional[dict] = None,
+                arret: Optional[Callable[[], bool]] = None) -> SandboxResult:
         """Exécute un hook d'app (manifest, on_start, run_mission, on_stop)
         dans un processus NEUF (voir hote_app.py et processus_app.py), et
         sert ses appels au robot par `serveur` (un HALBridgeServer).
@@ -286,6 +299,15 @@ class SandboxRunner:
         JSON vérifié par schéma. Quotas, horloge et cycle de vie sont ceux
         de la classe ; `result` est le dict vérifié rendu par le hook
         (processus_app.SCHEMA_RESULTAT).
+
+        `arret` : fonction sans argument qui rend True dès qu'un arrêt
+        d'urgence est actif (PlayStoreRuntime la passe pour run_mission).
+        Elle est consultée toutes les 20 ms par un thread à part, que le
+        hook soit en plein calcul ou en attente d'un appel au robot. Dès
+        qu'elle répond True : les appels de l'app reçoivent ESTOP_ACTIVE
+        (voir ACTIONS_APRES_ARRET), l'app a DELAI_ARRET_URGENCE_S pour rendre
+        son résultat, puis son groupe de processus est tué. Si l'app n'a
+        rien rendu, l'état final est KILLED (ARRET_URGENCE).
         """
         from axis_os.store.runtime.canal_ipc import (
             CanalCorrompu, CanalFerme, MessageRefuse,
@@ -296,6 +318,7 @@ class SandboxRunner:
 
         t_start = self._clock()
         self._set_state(SandboxState.STARTING)
+        arret_vu, boucle_finie, veilleur = threading.Event(), threading.Event(), None
         try:
             proc = ProcessusHote(self._app_id)
         except Exception as exc:                 # noqa: BLE001
@@ -326,6 +349,11 @@ class SandboxRunner:
             monitor = threading.Thread(target=self._monitor_loop,
                                        args=(proc, t_start, cpu_actif), daemon=True)
             monitor.start()
+            if arret is not None:
+                veilleur = threading.Thread(
+                    target=self._veiller_arret, args=(proc, arret, arret_vu, boucle_finie),
+                    daemon=True, name=f"arret-urgence-{self._app_id}")
+                veilleur.start()
 
             fin, violation_protocole, refus = None, None, 0
             limite = self._quota.max_runtime_s + 1.0
@@ -352,13 +380,21 @@ class SandboxRunner:
                 genre = msg.get("type")
                 if genre == "appel":
                     cpu_actif.set()
-                    # Le serveur reçoit le temps qui reste au hook : une action
-                    # qui bloque par nature (listen) ne doit pas retenir le
-                    # thread de l'OS au-delà du quota.
-                    reste = max(0.0, limite - 1.0 - (self._clock() - t_start))
-                    reponse = serveur.traiter(msg, reste_s=reste) if serveur is not None else {
-                        "request_id": msg.get("request_id"), "success": False, "data": None,
-                        "error": "aucun accès au robot pendant ce hook"}
+                    rid = msg.get("request_id")
+                    if arret_vu.is_set() and msg.get("action") not in self.ACTIONS_APRES_ARRET:
+                        if isinstance(rid, bool) or not isinstance(rid, int):
+                            continue
+                        reponse = {"request_id": rid, "success": False, "data": None,
+                                   "error": "ESTOP_ACTIVE:arrêt d'urgence, mission interrompue"}
+                    elif serveur is not None:
+                        # Le serveur reçoit le temps qui reste au hook : une
+                        # action qui bloque par nature (listen) ne doit pas
+                        # retenir le thread de l'OS au-delà du quota.
+                        reste = max(0.0, limite - 1.0 - (self._clock() - t_start))
+                        reponse = serveur.traiter(msg, reste_s=reste)
+                    else:
+                        reponse = {"request_id": rid, "success": False, "data": None,
+                                   "error": "aucun accès au robot pendant ce hook"}
                     if reponse is None:
                         continue
                     reponse["type"] = "reponse"
@@ -385,6 +421,13 @@ class SandboxRunner:
                         violation_protocole = f"plus de {self.MAX_MESSAGES_REFUSES} messages refusés"
                         break
             self._set_state(SandboxState.STOPPING)
+            boucle_finie.set()
+            if veilleur is not None:
+                veilleur.join()
+            if arret_vu.is_set():
+                # Arrêt d'urgence : pas d'attente polie, le groupe est tué.
+                proc.kill()
+                proc.join(timeout=1.0)
 
             # Le processus a fini son hook : il doit sortir de lui-même.
             if fin is not None or violation_protocole is not None:
@@ -404,6 +447,13 @@ class SandboxRunner:
                 return SandboxResult(False, SandboxState.CRASHED,
                                      error=f"Violation du protocole du pont : {violation_protocole}",
                                      error_kind=SandboxErrorKind.PROTOCOL_VIOLATION,
+                                     duration_s=self._clock() - t_start)
+
+            if fin is None and arret_vu.is_set():
+                self._set_state(SandboxState.KILLED)
+                return SandboxResult(False, SandboxState.KILLED,
+                                     error="Arrêt d'urgence (e-stop) : processus de l'app arrêté.",
+                                     error_kind=SandboxErrorKind.ARRET_URGENCE,
                                      duration_s=self._clock() - t_start)
 
             if fin is None and encore_vivant:
@@ -453,7 +503,29 @@ class SandboxRunner:
             return SandboxResult(True, SandboxState.STOPPED, result=resultat,
                                  duration_s=self._clock() - t_start)
         finally:
+            # Le veilleur est joint AVANT fermer(), qui récolte le processus :
+            # il ne peut jamais viser un numéro de processus déjà réutilisé.
+            boucle_finie.set()
+            if veilleur is not None:
+                veilleur.join()
             proc.fermer()
+
+    def _veiller_arret(self, proc, arret: Callable[[], bool],
+                       arret_vu: threading.Event, boucle_finie: threading.Event) -> None:
+        """Thread de run_app : voir `arret`. Un arret() qui lève est tenu
+        pour un arrêt d'urgence (dans le doute, on arrête)."""
+        while not boucle_finie.wait(0.02):
+            try:
+                actif = arret()
+            except Exception:              # noqa: BLE001 — dans le doute, arrêter
+                actif = True
+            if actif:
+                arret_vu.set()
+                print(f"  [SECURITY] app '{self._app_id}' : arrêt d'urgence, son "
+                      f"processus est arrêté")
+                if not boucle_finie.wait(self.DELAI_ARRET_URGENCE_S):
+                    proc.kill()
+                return
 
     def _monitor_loop(self, proc, t_start: float,
                       cpu_actif: Optional[threading.Event] = None) -> None:
