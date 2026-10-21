@@ -208,8 +208,11 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "recall": Objet({"key": Chaine(256)}, facultatifs={"default": JsonLibre()}),
     "listen": Objet({}, facultatifs={"duration_s": Nombre(0, 120)}),
     "declare_intent": Objet({"name": Chaine(128),
-                             "keywords": Liste(Liste(Chaine(128), 64), 64)},
-                            facultatifs={"params": JsonLibre(), "description": Chaine(2048)}),
+                             "keywords": Liste(Liste(Chaine(64), 32), 16)},
+                            # Le type documenté d'IntentDeclaration.params :
+                            # des chaînes courtes.
+                            facultatifs={"params": Dictionnaire(Chaine(256), 32),
+                                         "description": Chaine(1024)}),
     "look_for": Objet({}, facultatifs={"query": Chaine(512), "frame": Chaine(64)}),
     "describe_scene": _VIDE,
     "walk": Objet({}, facultatifs={"vx": Nombre(), "vy": Nombre(), "wz": Nombre()}),
@@ -221,7 +224,7 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "get_full_state": _VIDE,
     "get_joint_state": Objet({"joint_id": Chaine(128)}),
     "get_imu": _VIDE,
-    "log": Objet({}, facultatifs={"message": Chaine(16384)}),
+    "log": Objet({}, facultatifs={"message": Chaine(4096)}),
     "emergency_stop": _VIDE,
     "get_recent_alerts": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
 }
@@ -342,9 +345,13 @@ class HALBridgeServer:
             # Une écoute ne dure jamais plus que ce qui reste au hook (voir
             # SandboxRunner.run_app) : ce thread de l'OS doit rendre la main
             # avant l'échéance du quota.
+            # La moitié du temps restant au plus : l'autre moitié est laissée
+            # à la transcription, qui suit la capture dans ce même thread.
+            # Une transcription plus longue reste possible (voir
+            # SECURITY.md, limite n° 6).
             duree = payload.get("duration_s")
             duree = 3.0 if duree is None else duree
-            payload = dict(payload, duration_s=max(0.0, min(duree, reste_s - 0.5)))
+            payload = dict(payload, duration_s=max(0.0, min(duree, (reste_s - 0.5) / 2)))
         cmd = HALCommand(action=raw["action"], payload=payload,
                          request_id=raw["request_id"])
         return asdict(self._handle(cmd))
@@ -953,10 +960,10 @@ class HALBridgeClient:
 
     def log(self, message: str) -> None:
         self._local_log.append(message)
-        # Le pont refuse une ligne de plus de 16 384 caractères : la fin
+        # Le pont refuse une ligne de plus de 4 096 caractères : la fin
         # d'une ligne trop longue est coupée ici plutôt que de faire
         # échouer l'app.
-        self._call("log", {"message": str(message)[:16384]})
+        self._call("log", {"message": str(message)[:4096]})
 
     def subscribe_alerts(self, callback) -> None:
         """

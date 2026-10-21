@@ -18,7 +18,11 @@ coûter à l'OS plus que ce qui est prévu, ou qu'une règle tient :
      decrypt_verified_app_source() puis install_source(), sans que son code
      s'exécute dans le processus de l'OS ;
  10. SetpointFollower transmet la marque « ia » : sans ACTUATORS_AI_DRIVEN,
-     ses consignes sont refusées.
+     ses consignes sont refusées ;
+ 11. seconde revue : journal borné en volume et neutralisé, relais borné
+     ligne par ligne, tube nommé et fichier énorme refusés comme fichier de
+     clés, date de facturation future gardée, registre des intentions
+     plafonné, erreurs de validate() neutralisées à l'affichage.
 """
 import contextlib
 import io
@@ -97,6 +101,11 @@ def erreur_avec_echappements():
     raise ValueError("\x1b[2J\x1b[31mfaux message de l'OS\x07")
 
 
+def beaucoup_de_lignes_courtes():
+    os.write(1, b"l\n" * 20000)
+    return "fini"
+
+
 section("1. Sortie très longue : la mémoire de l'OS ne grossit pas")
 import psutil  # noqa: E402
 avant = psutil.Process().memory_info().rss
@@ -135,8 +144,8 @@ ctx._attach_services(speech=parole)
 serveur = HALBridgeServer(ctx)
 rep, _ = silencieux(serveur.traiter, {"action": "listen", "payload": {"duration_s": 100.0},
                                       "request_id": 1}, reste_s=2.0)
-check("listen(100 s) avec 2 s restantes : écoute ramenée sous 2 s",
-      rep["success"] and parole.durees and parole.durees[-1] <= 2.0, str(parole.durees))
+check("listen(100 s) avec 2 s restantes : écoute ramenée à moins de la moitié",
+      rep["success"] and parole.durees and parole.durees[-1] <= 0.75, str(parole.durees))
 rep, _ = silencieux(serveur.traiter, {"action": "listen", "payload": {"duration_s": 3600.0},
                                       "request_id": 2}, reste_s=2.0)
 check("listen(3600 s) : refusé par le schéma", rep["success"] is False
@@ -246,6 +255,73 @@ suiveur.set_target({"left_elbow_joint": 0.1}, origine=ORIGINE_IA)
 etat, _ = silencieux(suiveur.tick)
 check("… avec ACTUATORS_AI_DRIVEN : acceptée", suiveur.stats.commands_sent == 1,
       str(suiveur.stats))
+
+section("11. Seconde revue : bornes et neutralisation")
+journal_os = RobotContext.for_testing(r, wd, manifeste([]))
+silencieux(lambda: [journal_os.log("\x1b[31m" + "é" * 5000) for _ in range(3000)])
+lignes = journal_os.get_mission_log()
+taille = sum(len(x) for x in lignes)
+check(f"Journal de l'OS borné en volume ({taille} caractères pour 15 M écrits)",
+      taille <= RobotContext.MAX_CARACTERES_JOURNAL + 200 and "tronqué" in lignes[-1])
+check("… chaque ligne coupée et sans caractère de contrôle",
+      all("\x1b" not in x and len(x) < RobotContext.MAX_CARACTERES_LIGNE + 100 for x in lignes))
+res, journal = silencieux(SandboxRunner("com.test.lignes", ResourceQuota(max_runtime_s=20.0)).run,
+                          beaucoup_de_lignes_courtes)
+relayees = journal.count("[app com.test.lignes]")
+check(f"20 000 lignes écrites : {relayees} relayées (au plus 5 001)", res.success and relayees <= 5001)
+tube = dossier / "tube"
+os.mkfifo(tube)
+try:
+    lire_cles_approuvees(tube)
+    check("Tube nommé comme fichier de clés : refusé sans bloquer", False)
+except ClesApprouveesInvalides:
+    check("Tube nommé comme fichier de clés : refusé sans bloquer", True)
+gros = dossier / "gros.txt"
+gros.write_text("# commentaire\n" * 100000, encoding="utf-8")
+os.chmod(gros, 0o600)
+try:
+    lire_cles_approuvees(gros)
+    check("Fichier de clés de plus de 1 Mio : refusé", False)
+except ClesApprouveesInvalides:
+    check("Fichier de clés de plus de 1 Mio : refusé", True)
+
+
+class MemoireFactice:
+    def __init__(self, valeur):
+        self.valeur = valeur
+
+    def app_load(self, espace, cle):
+        return ServiceResult(ok=True, value=self.valeur)
+
+
+import time  # noqa: E402
+futur = time.time() + 30 * 86400
+prod._memory_service = MemoireFactice(futur)
+lu, _ = silencieux(prod._read_billing_flag, "com.x.y", "last_subscription_bill_time_s", None)
+check("Date de facturation dans le futur : gardée (pas de refacturation)", lu == futur)
+prod._memory_service = MemoireFactice("pas une date")
+lu, _ = silencieux(prod._read_billing_flag, "com.x.y", "last_subscription_bill_time_s", None)
+check("Date de facturation illisible : ignorée", lu is None)
+prod._memory_service = None
+
+from axis_os.services.speech.service import IntentDeclaration, IntentRegistry  # noqa: E402
+registre = IntentRegistry()
+for i in range(IntentRegistry.MAX_INTENTIONS):
+    registre.register(IntentDeclaration(name=f"i{i}", keywords=[["mot"]]))
+try:
+    registre.register(IntentDeclaration(name="une_de_trop", keywords=[["mot"]]))
+    check("Registre des intentions plafonné", False)
+except ValueError:
+    check(f"Registre des intentions plafonné à {IntentRegistry.MAX_INTENTIONS}", True)
+
+SOURCE_VERSION = SOURCE.replace('category=AppCategory.UTILITIES)',
+                                'category=AppCategory.UTILITIES, sdk_version_min="\\x1b[31m9")')
+SOURCE_VERSION = SOURCE_VERSION.replace("com.test.chiffree", "com.test.version")
+ok, sortie = silencieux(prod.install_source, SOURCE_VERSION,
+                        code_signature=sign_app_code(SOURCE_VERSION, dev.private_key_b64),
+                        developer_public_key=dev.public_key_b64, origine="version")
+check("Erreur de validate() reprenant un champ de l'app : affichée neutralisée",
+      ok is False and "sdk_version_min" in sortie and "\x1b" not in sortie, sortie[-200:])
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

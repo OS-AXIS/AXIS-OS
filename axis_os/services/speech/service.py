@@ -131,6 +131,8 @@ class IntentRegistry:
     type de résultat : une intention nommée, jamais une commande.
     """
 
+    MAX_INTENTIONS = 256
+
     def __init__(self):
         self._intents: List[IntentDeclaration] = []
 
@@ -140,6 +142,11 @@ class IntentRegistry:
         déclaration."""
         if any(d.name == decl.name for d in self._intents):
             raise ValueError(f"intention '{decl.name}' déjà déclarée")
+        # Le registre vit dans le processus de l'OS et dure plus longtemps
+        # que chaque app : sans borne, des déclarations répétées le feraient
+        # grossir jusqu'à épuiser sa mémoire.
+        if len(self._intents) >= self.MAX_INTENTIONS:
+            raise ValueError(f"registre des intentions plein ({self.MAX_INTENTIONS})")
         self._intents.append(decl)
 
     @property

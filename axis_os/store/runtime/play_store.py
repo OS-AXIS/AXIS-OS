@@ -491,7 +491,8 @@ class PlayStoreRuntime:
 
         errors = manifest.validate()
         if errors:
-            for e in errors: print(f"  [ERREUR] {e}")
+            # Un message de validate() peut reprendre un champ de l'app.
+            for e in errors: print(f"  [ERREUR] {_affichable(e, 300)}")
             return False
 
         # Compatibilité du SDK, dont la version est celle d'AXIS-OS (voir
@@ -824,7 +825,7 @@ class PlayStoreRuntime:
         errors = manifest.validate()
         if errors:
             for e in errors:
-                print(f"  [ERREUR] {e}")
+                print(f"  [ERREUR] {_affichable(e, 300)}")
             return False
         if manifest.app_id in self._apps:
             print(f"  [ERREUR] '{_affichable(manifest.app_id)}' est déjà installée.")
@@ -1347,8 +1348,15 @@ class PlayStoreRuntime:
             return valeur if isinstance(valeur, bool) else default
         if key == "last_subscription_bill_time_s":
             ok = (isinstance(valeur, (int, float)) and not isinstance(valeur, bool)
-                  and math.isfinite(valeur) and 0 <= valeur <= time.time() + 60)
-            return float(valeur) if ok else default
+                  and math.isfinite(valeur) and valeur >= 0)
+            if not ok:
+                print(f"  [ATTENTION] date de facturation illisible pour "
+                      f"{_affichable(app_id)} : ignorée")
+                return default
+            # Une date dans le futur (horloge en retard au démarrage) est
+            # gardée : elle empêche une nouvelle facturation, à l'avantage du
+            # client, au lieu de faire refacturer l'abonnement.
+            return float(valeur)
         return default
 
     def _write_billing_flag(self, app_id: str, key: str, value) -> None:

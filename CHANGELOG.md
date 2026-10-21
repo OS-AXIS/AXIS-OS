@@ -49,8 +49,18 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
   est vérifié et son texte d'erreur neutralisé ; l'état de facturation est
   relu avec son type ; `decrypt_verified_app_source()` donne aux apps
   chiffrées un chemin sans exécution vers `install_source()` ; le fichier
-  des clés approuvées est lu sans suivre de lien symbolique et doit
-  appartenir à root ou à l'utilisateur de l'OS.
+  des clés approuvées est lu sans suivre de lien symbolique ni bloquer sur
+  un tube nommé, doit appartenir à root ou à l'utilisateur de l'OS et
+  faire au plus 1 Mio.
+- **Correctifs de la seconde revue** : le journal de mission tenu par l'OS
+  est neutralisé (plus de caractère de contrôle, quelle que soit l'origine
+  de la ligne), coupé à 1 000 caractères par ligne et borné à 1 million de
+  caractères ; le relais de la sortie d'une app passe par poll (aucune
+  limite sur le numéro de descripteur) et respecte sa borne ligne par
+  ligne ; une écoute laisse la moitié du temps restant à la transcription ;
+  le registre des intentions vocales est plafonné ; une date de
+  facturation dans le futur est gardée (pas de refacturation) ; les
+  erreurs de `validate()` sont neutralisées à l'affichage.
 
 Ce qui casse pour un appelant :
 
@@ -76,8 +86,12 @@ Ce qui casse pour un appelant :
   l'OS) ; par le pont, `listen()` est limité à 120 s et `get_joint_groups`
   exige `ACTUATORS_READ` (comme `get_full_state`, que `move_to_pose`
   appelle déjà) ; le journal de mission tenu par l'OS est plafonné à
-  10 000 lignes ; le processus de l'OS ne produit plus de vidage mémoire
-  (core dump).
+  10 000 lignes et 1 million de caractères, 1 000 par ligne ; le
+  processus de l'OS ne produit plus de vidage mémoire (core dump).
+- Par le pont : une ligne de `log()` fait au plus 4 096 caractères (coupée
+  par le client), et `declare_intent()` n'accepte que des `params` faits
+  de chaînes (32 au plus, de 256 caractères) et au plus 16 groupes de 32
+  mots-clés ; le registre des intentions refuse une 257e déclaration.
 
 Tests : `test/test_profils_production.py` et
 `test/test_isolation_durcissements.py` (nouveaux) ; la suite existante

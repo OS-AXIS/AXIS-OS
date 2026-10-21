@@ -74,7 +74,8 @@ def lire_cles_approuvees(chemin: Union[str, os.PathLike]) -> Dict[str, str]:
     # Ouvert sans suivre de lien symbolique, puis contrôlé et lu par le même
     # descripteur : le fichier vérifié est bien celui qui est lu.
     try:
-        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        # O_NONBLOCK : un tube nommé placé à ce chemin ne bloque pas l'ouverture.
+        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     except OSError as exc:
         raise ClesApprouveesInvalides(
             f"fichier des clés approuvées illisible (ou lien symbolique) : {exc}") from None
@@ -92,7 +93,9 @@ def lire_cles_approuvees(chemin: Union[str, os.PathLike]) -> Dict[str, str]:
                 f"{p} appartient à un autre utilisateur (uid {infos.st_uid}), qui "
                 f"pourrait y ajouter sa clé : il doit appartenir à root ou à "
                 f"l'utilisateur de l'OS.")
-        brut = f.read(1 << 20)
+        if infos.st_size > (1 << 20):
+            raise ClesApprouveesInvalides(f"{p} dépasse 1 Mio : refusé plutôt que tronqué")
+        brut = f.read()
     cles: Dict[str, str] = {}
     try:
         lignes = brut.decode("utf-8").splitlines()

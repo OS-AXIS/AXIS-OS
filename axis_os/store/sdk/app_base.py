@@ -186,6 +186,8 @@ class RobotContext:
         self._watchdog = watchdog
         self._manifest = manifest
         self._log_entries: list[str] = []
+        self._taille_journal = 0
+        self._journal_tronque = False
         self._t0 = time.monotonic()
         # Services système, injectés par le runtime (voir
         # _attach_services()). None signifie que le service n'existe pas
@@ -720,6 +722,8 @@ class RobotContext:
         self._watchdog.subscribe(callback)
 
     MAX_LIGNES_JOURNAL = 10_000
+    MAX_CARACTERES_LIGNE = 1_000
+    MAX_CARACTERES_JOURNAL = 1_000_000
 
     def log(self, message: str) -> None:
         """Ajoute une ligne au journal de mission et l'affiche.
@@ -727,16 +731,24 @@ class RobotContext:
         La ligne est préfixée par le temps réel écoulé depuis la création
         de ce contexte et par l'identifiant de l'app. Aucune permission
         requise."""
-        # Le journal vit dans le processus de l'OS pendant tout le hook : une
-        # app qui écrirait sans fin ferait grossir la mémoire de l'OS, hors
-        # de ses propres quotas. Au-delà de MAX_LIGNES_JOURNAL, une seule
-        # ligne le signale et la suite est ignorée.
-        if len(self._log_entries) >= self.MAX_LIGNES_JOURNAL:
-            if len(self._log_entries) == self.MAX_LIGNES_JOURNAL:
-                self._log_entries.append(f"[{self._manifest.app_id}] … journal tronqué")
+        # Le journal vit dans le processus de l'OS pendant tout le hook, et
+        # ses lignes s'affichent sur sa console : une app qui écrirait sans
+        # fin ferait grossir la mémoire de l'OS hors de ses propres quotas,
+        # ou réécrirait l'écran par des séquences d'échappement. Chaque
+        # ligne est donc neutralisée et coupée, et le journal est borné en
+        # lignes comme en volume ; une seule ligne signale la troncature.
+        if self._journal_tronque:
             return
+        brut = str(message)[:self.MAX_CARACTERES_LIGNE]
+        texte = "".join(c if c.isprintable() else "?" for c in brut)
         elapsed = time.monotonic() - self._t0
-        entry   = f"[T+{elapsed:06.2f}s] [{self._manifest.app_id}] {message}"
+        entry   = f"[T+{elapsed:06.2f}s] [{self._manifest.app_id}] {texte}"
+        if (len(self._log_entries) >= self.MAX_LIGNES_JOURNAL
+                or self._taille_journal + len(entry) > self.MAX_CARACTERES_JOURNAL):
+            self._journal_tronque = True
+            self._log_entries.append(f"[{self._manifest.app_id}] … journal tronqué")
+            return
+        self._taille_journal += len(entry)
         self._log_entries.append(entry)
         print(f"  {entry}")
 

@@ -125,7 +125,10 @@ reason AXIS-OS is **not ready for a real robot**.
    those of its manifest, with no ceiling set by the OS and no display at
    confirmation time. An e-stop refuses its commands but does not stop
    its mission, which keeps the robot until its time limit. Its persistent
-   memory (`remember`) has no quota. A process started by the app that
+   memory (`remember`) has no quota. The OS answers a few calls with a
+   model inference (`listen` transcription, `look_for`, `describe_scene`)
+   that can run past the hook's deadline by the length of one inference.
+   A process started by the app that
    leaves its process group outlives the call: the OS reports it but
    cannot stop it (cgroups, step 4). Under the same user, an app can also
    send a signal to the OS process.
@@ -138,7 +141,8 @@ reason AXIS-OS is **not ready for a real robot**.
 8. **Voice intents are shared between apps.** The intent registry does not
    record which app declared what: an app can reserve another app's
    intent name in advance, and that app then receives the parameters the
-   first one chose.
+   first one chose. It is capped at 256 declarations for all apps
+   together, so one app can fill it for the others.
 
 ## Resolved limits
 
@@ -290,7 +294,10 @@ réel**.
    quotas d'une app sont ceux de son manifeste, sans plafond fixé par l'OS
    ni affichage au moment de la confirmation. Un e-stop refuse ses
    commandes mais n'interrompt pas sa mission, qui garde le robot jusqu'à
-   son délai. Sa mémoire persistante (`remember`) n'a pas de quota. Un
+   son délai. Sa mémoire persistante (`remember`) n'a pas de quota. L'OS
+   répond à certains appels par une inférence de modèle (transcription de
+   `listen`, `look_for`, `describe_scene`), qui peut dépasser l'échéance
+   du hook de la durée d'un calcul. Un
    processus lancé par l'app qui quitte son groupe de processus survit à
    la fin de l'appel : l'OS le signale sans pouvoir l'arrêter (cgroups,
    étape 4). Sous le même utilisateur, une app peut aussi envoyer un
@@ -305,7 +312,8 @@ réel**.
 8. **Les intentions vocales sont partagées entre apps.** Le registre des
    intentions ne retient pas quelle app a déclaré quoi : une app peut
    réserver d'avance le nom d'intention d'une autre, qui recevra alors les
-   paramètres choisis par la première.
+   paramètres choisis par la première. Il est plafonné à 256 déclarations pour
+   toutes les apps ensemble : une app peut donc le remplir pour les autres.
 
 ## Limites résolues
 

@@ -301,6 +301,7 @@ class ProcessusHote:
         self._sortie = self._popen.stdout.fileno()
         self._arret_relais = threading.Event()
         self._eof_vu = False
+        self._erreur_relais = False
         self._relais = threading.Thread(target=self._relayer, daemon=True,
                                         name=f"sortie-app-{app_id}")
         self._relais.start()
@@ -315,43 +316,50 @@ class ProcessusHote:
         """Réaffiche la sortie de l'app, ligne par ligne, neutralisée et
         bornée : au plus MAX_LIGNE octets gardés par ligne, MAX_LIGNES et
         MAX_OCTETS par appel, le reste est lu et jeté. Lecture par morceaux
-        sur le descripteur brut, avec un délai : le thread s'arrête sur
-        ordre (fermer) même si un processus lancé par l'app garde le tube
-        ouvert."""
+        sur le descripteur brut, avec un délai (poll, sans limite sur le
+        numéro du descripteur) : le thread s'arrête sur ordre (fermer) même
+        si un processus lancé par l'app garde le tube ouvert."""
         import select
-        tampon, lignes, total, ignorer = b"", 0, 0, False
+        scrutateur = select.poll()
+        scrutateur.register(self._sortie, select.POLLIN | select.POLLHUP | select.POLLERR)
+        tampon, lignes, total, ignorer, plein = b"", 0, 0, False, False
         while not self._arret_relais.is_set():
             try:
-                prets, _, _ = select.select([self._sortie], [], [], 0.1)
-                if not prets:
+                if not scrutateur.poll(100):
                     continue
                 bloc = os.read(self._sortie, 65536)
             except (OSError, ValueError):
+                self._erreur_relais = True
                 break
             if not bloc:
                 self._eof_vu = True
                 break
             total += len(bloc)
-            if total > self.MAX_OCTETS_RELAYES or lignes > self.MAX_LIGNES_RELAYEES:
-                if tampon is not None:
-                    print(f"    [app {_affichable(self.app_id, 80)}] … sortie tronquée")
-                    tampon = None
+            if plein:
+                continue                      # lu et jeté
+            if total > self.MAX_OCTETS_RELAYES:
+                plein = True
+                print(f"    [app {_affichable(self.app_id, 80)}] … sortie tronquée")
                 continue
-            tampon += bloc
-            while b"\n" in tampon:
-                ligne, _, tampon = tampon.partition(b"\n")
+            morceaux = (tampon + bloc).split(b"\n")
+            tampon = morceaux.pop()           # dernière ligne, pas encore finie
+            for ligne in morceaux:
                 if not ignorer:
                     self._afficher(ligne)
                     lignes += 1
+                    if lignes >= self.MAX_LIGNES_RELAYEES:
+                        plein = True
+                        print(f"    [app {_affichable(self.app_id, 80)}] … sortie tronquée")
+                        break
                 ignorer = False
-            if len(tampon) > self.MAX_LIGNE:
+            if not plein and len(tampon) > self.MAX_LIGNE:
                 # Ligne trop longue : son début est affiché, la suite
                 # ignorée jusqu'au prochain saut de ligne.
                 if not ignorer:
                     self._afficher(tampon)
                     lignes += 1
                 tampon, ignorer = b"", True
-        if tampon and not ignorer:
+        if tampon and not ignorer and not plein:
             self._afficher(tampon)
 
     # ── Cycle de vie ─────────────────────────────────────────────────
@@ -410,7 +418,7 @@ class ProcessusHote:
         self._relais.join(timeout=1.0)
         self._arret_relais.set()
         self._relais.join(timeout=1.0)
-        if not self._eof_vu:
+        if not self._eof_vu and not self._erreur_relais:
             print(f"  [SECURITY] app '{_affichable(self.app_id, 80)}' : un processus "
                   f"qu'elle a lancé a quitté son groupe et garde sa sortie ouverte ; "
                   f"il n'a pas pu être arrêté (voir docs/isolation_apps.md, étape 4).")
