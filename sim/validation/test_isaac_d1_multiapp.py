@@ -73,6 +73,7 @@ def main():
         ProtectionLevel, get_protection_level,
     )
     from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+    from axis_os.store.runtime.profil import Profil
 
     # ---- robot debout, politique de marche active ---------------------
     cfg = G1LocomotionConfig()
@@ -126,7 +127,8 @@ def main():
     runtime = PlayStoreRuntime(nrobot, WatchdogSystem(nrobot),
                                locomotion_service=locomotion,
                                memory_service=memoire,
-                               confirmer_permissions=accepter_tout_SIMULATION)
+                               confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
 
     def faire_tourner(secondes):
         """Fait vivre le robot pendant que les scènes se jouent."""

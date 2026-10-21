@@ -11,7 +11,7 @@ tout G1 qui ne démarre pas déjà bras à zéro.
 """
 
 import sys
-import multiprocessing as mp
+import socket
 sys.path.insert(0, ".")
 
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
@@ -21,8 +21,10 @@ from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.core.types import ActuatorCommand, ControlMode, HALStatus
 from axis_os.store.sdk.app_base import RobotContext
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, Permission
+from axis_os.store.runtime.canal_ipc import Canal
 from axis_os.store.runtime.hal_bridge import HALBridgeServer
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
 from axis_os.apps.package_sorting.app import PackageSortingApp
 
 FAIL = 0
@@ -106,7 +108,8 @@ for jid in ("left_elbow_joint", "right_elbow_joint"):
     robot4._hal._actuators[jid]._position = 1.2  # bras repliés au démarrage
 
 wd4 = WatchdogSystem(robot4)
-runtime4 = PlayStoreRuntime(robot4, wd4, confirmer_permissions=accepter_tout_SIMULATION)
+runtime4 = PlayStoreRuntime(robot4, wd4, confirmer_permissions=accepter_tout_SIMULATION,
+                            profil=Profil.SIMULATION)
 runtime4.install(PackageSortingApp())
 ready4 = runtime4.start_app("com.acme.package_sorting")
 check("package_sorting démarre malgré des bras repliés à 1.2 rad", ready4 is True)
@@ -129,12 +132,12 @@ wd5 = WatchdogSystem(robot5)
 manifest5 = PackageSortingApp().manifest()
 ctx5 = RobotContext.for_testing(robot5, wd5, manifest5)
 
-cq, rq = mp.Queue(), mp.Queue()
-server5 = HALBridgeServer(ctx5, cq, rq)
+sock_os5, sock_app5 = socket.socketpair()
+server5 = HALBridgeServer(ctx5, canal=Canal(sock_os5))
 server5.start()
 
 from axis_os.store.runtime.hal_bridge import HALBridgeClient
-bridge_client = HALBridgeClient(cq, rq)
+bridge_client = HALBridgeClient(canal=Canal(sock_app5))
 reached5 = bridge_client.move_to_pose({"left_elbow_joint": 0.0}, duration_s=0.3, step_s=0.03)
 check("HALBridgeClient.move_to_pose() atteint la cible en sandbox",
       reached5 is True)

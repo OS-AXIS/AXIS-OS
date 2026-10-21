@@ -40,7 +40,7 @@ import time
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.core.types import (
     ActuatorCommand, ActuatorFeedback, HALStatus, ControlMode,
-    JointGroup, infer_joint_group,
+    JointGroup, infer_joint_group, ORIGINE_IA,
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
 from .manifest import AppManifest, Permission
@@ -186,6 +186,8 @@ class RobotContext:
         self._watchdog = watchdog
         self._manifest = manifest
         self._log_entries: list[str] = []
+        self._taille_journal = 0
+        self._journal_tronque = False
         self._t0 = time.monotonic()
         # Services système, injectés par le runtime (voir
         # _attach_services()). None signifie que le service n'existe pas
@@ -537,6 +539,7 @@ class RobotContext:
         e-stop est actif.
         """
         self._require(Permission.ACTUATORS_WRITE_ARMS)
+        self._exiger_pilotage_ia(commands)
         self._require_no_estop()
         filtered = self._apply_velocity_cap(
             self._route(commands, JointGroup.MANIPULATION))
@@ -555,6 +558,7 @@ class RobotContext:
         e-stop est actif.
         """
         self._require(Permission.ACTUATORS_WRITE_LEGS)
+        self._exiger_pilotage_ia(commands)
         self._require_no_estop()
         filtered = self._apply_velocity_cap(
             self._route(commands, JointGroup.LOCOMOTION))
@@ -572,6 +576,7 @@ class RobotContext:
         e-stop est actif.
         """
         self._require(Permission.ACTUATORS_WRITE_ALL)
+        self._exiger_pilotage_ia(commands)
         self._require_no_estop()
         commands = self._apply_velocity_cap(commands)
         return self._robot.send_joint_commands(commands)
@@ -716,14 +721,34 @@ class RobotContext:
         self._require(Permission.WATCHDOG_READ)
         self._watchdog.subscribe(callback)
 
+    MAX_LIGNES_JOURNAL = 10_000
+    MAX_CARACTERES_LIGNE = 1_000
+    MAX_CARACTERES_JOURNAL = 1_000_000
+
     def log(self, message: str) -> None:
         """Ajoute une ligne au journal de mission et l'affiche.
 
         La ligne est préfixée par le temps réel écoulé depuis la création
         de ce contexte et par l'identifiant de l'app. Aucune permission
         requise."""
+        # Le journal vit dans le processus de l'OS pendant tout le hook, et
+        # ses lignes s'affichent sur sa console : une app qui écrirait sans
+        # fin ferait grossir la mémoire de l'OS hors de ses propres quotas,
+        # ou réécrirait l'écran par des séquences d'échappement. Chaque
+        # ligne est donc neutralisée et coupée, et le journal est borné en
+        # lignes comme en volume ; une seule ligne signale la troncature.
+        if self._journal_tronque:
+            return
+        brut = str(message)[:self.MAX_CARACTERES_LIGNE]
+        texte = "".join(c if c.isprintable() else "?" for c in brut)
         elapsed = time.monotonic() - self._t0
-        entry   = f"[T+{elapsed:06.2f}s] [{self._manifest.app_id}] {message}"
+        entry   = f"[T+{elapsed:06.2f}s] [{self._manifest.app_id}] {texte}"
+        if (len(self._log_entries) >= self.MAX_LIGNES_JOURNAL
+                or self._taille_journal + len(entry) > self.MAX_CARACTERES_JOURNAL):
+            self._journal_tronque = True
+            self._log_entries.append(f"[{self._manifest.app_id}] … journal tronqué")
+            return
+        self._taille_journal += len(entry)
         self._log_entries.append(entry)
         print(f"  {entry}")
 
@@ -731,6 +756,23 @@ class RobotContext:
         """Copie du journal de mission (les lignes écrites par log()).
         Aucune permission requise."""
         return list(self._log_entries)
+
+    def _exiger_pilotage_ia(self, commands: Dict[str, ActuatorCommand]) -> None:
+        """Exige ACTUATORS_AI_DRIVEN dès qu'une consigne vient d'un modèle
+        d'IA (ActuatorCommand.origine == ORIGINE_IA, posée par les actions
+        du SDK : VLAAction, GR00TAction, LocomotionAction).
+
+        Pourquoi : la permission était confirmée à l'installation mais
+        jamais vérifiée à l'exécution (SECURITY.md, limite n° 2) ; une app
+        qui faisait tourner un modèle sans la déclarer n'était pas
+        arrêtée. Le contrôle a lieu ici, dans le processus de l'OS, quel
+        que soit le chemin (app sandboxée ou contexte direct). Limite : une
+        app qui fabrique elle-même ses consignes à partir de la sortie d'un
+        modèle, sans passer par les actions du SDK, ne porte pas la marque
+        et n'est pas détectée ; l'OS ne peut pas distinguer un nombre
+        calculé par un modèle d'un nombre écrit en dur."""
+        if any(getattr(c, "origine", None) == ORIGINE_IA for c in commands.values()):
+            self._require(Permission.ACTUATORS_AI_DRIVEN)
 
     def _require(self, permission: Permission) -> None:
         """Lève PermissionError si `permission` n'est pas déclarée dans le
@@ -853,11 +895,12 @@ class RobotApp(ABC):
     robot.
 
     Définir la classe de l'app au niveau du module, jamais à l'intérieur
-    d'une fonction : le sandbox transmet l'app au processus isolé en la
-    sérialisant avec pickle (le format de Python qui transforme un objet
-    en octets pour le faire passer d'un processus à l'autre), et une
-    classe locale ne se sérialise pas : l'app plante alors au démarrage
-    sans explication claire (voir docs/CREER_UNE_APP.md).
+    d'une fonction : chaque hook tourne dans un processus Python neuf, qui
+    recharge l'app depuis son module ou sa source (voir
+    store/runtime/hote_app.py) et ne peut pas retrouver une classe locale.
+    Le constructeur doit pouvoir être appelé sans argument : seuls les
+    attributs qui sont des données (nombres, chaînes, listes, dicts,
+    énumérations) sont recopiés depuis l'instance installée.
     """
 
     @abstractmethod

@@ -27,6 +27,7 @@ from axis_os.hal.watchdog.system import WatchdogSystem  # noqa: E402
 from axis_os.store.runtime.play_store import (  # noqa: E402
     PlayStoreRuntime, accepter_tout_SIMULATION, confirmer_au_terminal,
 )
+from axis_os.store.runtime.profil import Profil  # noqa: E402
 from axis_os.store.sdk.app_base import RobotApp  # noqa: E402
 from axis_os.store.sdk.manifest import (  # noqa: E402
     AppCategory, AppManifest, Capability, Permission, ProtectionLevel, get_protection_level,
@@ -54,7 +55,7 @@ def runtime(**kw):
     with contextlib.redirect_stdout(io.StringIO()):
         robot = NormalizedRobotHAL(UnitreeG1HAL(f"g1_perm_{N[0]}"), build_g1_normalizer())
         robot.initialize_all()
-        return PlayStoreRuntime(robot, WatchdogSystem(robot), **kw)
+        return PlayStoreRuntime(robot, WatchdogSystem(robot), **kw, profil=Profil.SIMULATION)
 
 
 def app(permissions, version="1.0.0", caps=(), app_id="com.test.bras", tel_quel=False):
@@ -152,13 +153,15 @@ reel = NormalizedRobotHAL(UnitreeG1HAL("g1_reel", backend="dds", network_interfa
                           build_g1_normalizer())
 try:
     with contextlib.redirect_stdout(io.StringIO()):
-        PlayStoreRuntime(reel, WatchdogSystem(reel), confirmer_permissions=accepter_tout_SIMULATION)
+        PlayStoreRuntime(reel, WatchdogSystem(reel), confirmer_permissions=accepter_tout_SIMULATION,
+                         profil=Profil.DEVELOPPEMENT)
     check("Robot réel (G1 en DDS) + accepter_tout_SIMULATION : REFUSÉ", False)
 except ValueError as exc:
     check(f"Robot réel (G1 en DDS) + accepter_tout_SIMULATION : REFUSÉ ({str(exc)[:50]}…)", True)
 try:
     with contextlib.redirect_stdout(io.StringIO()):
-        PlayStoreRuntime(reel, WatchdogSystem(reel), confirmer_permissions=confirmer_au_terminal)
+        PlayStoreRuntime(reel, WatchdogSystem(reel), confirmer_permissions=confirmer_au_terminal,
+                         profil=Profil.DEVELOPPEMENT)
     ok_reel = True
 except ValueError:
     ok_reel = False

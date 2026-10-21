@@ -135,6 +135,7 @@ def main():
     from axis_os.services.speech.service import SpeechService
     from axis_os.services.speech.whisper_recognizer import WhisperRecognizer
     from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+    from axis_os.store.runtime.profil import Profil
 
     sim_t = [0.0]
 
@@ -253,7 +254,8 @@ def main():
                                locomotion_service=loco,
                                speech_service=speech,
                                clock=lambda: sim_t[0],
-                               confirmer_permissions=accepter_tout_SIMULATION)
+                               confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
     app = VoiceInspectorApp()
     runtime.install(app)
     runtime.start_app(app.manifest().app_id)

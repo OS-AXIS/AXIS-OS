@@ -61,8 +61,8 @@ class Permission(Enum):
 
     Les deux permissions NETWORK_* sont les plus importantes à ce titre :
     rien n'empêche aujourd'hui une app d'ouvrir elle-même une connexion
-    réseau, car la sandbox (le processus séparé dans lequel tourne une app,
-    créé avec le module multiprocessing de Python) ne filtre pas le réseau.
+    réseau, car la sandbox (le processus séparé dans lequel tourne une app)
+    ne filtre pas le réseau.
     C'est une faiblesse connue, plus large que ces deux permissions, de
     l'isolation des apps. docs/isolation_apps.md la décrit avec le plan
     prévu pour la fermer ; docs/sandboxing_hardening_notes.md la recense
@@ -117,17 +117,15 @@ class Permission(Enum):
     # IA/script dans les permissions », que la documentation avait
     # volontairement reportée (voir docs/groot_architecture.md, section 6).
     #
-    # Limite connue, relevée à la relecture d'un audit de sécurité
-    # (10 octobre 2026) : la permission est DANGEROUS, donc confirmée à
-    # l'installation quand elle est déclarée, mais elle est
-    # NON APPLIQUÉE à l'exécution. Aucune méthode de RobotContext ne la
-    # vérifie, et une app qui fait tourner un connecteur VLA (l'interface
-    # qui interroge un tel modèle, axis_os/store/sdk/ai/connector.py) dans
-    # sa mission en ne déclarant que ACTUATORS_WRITE_ARMS n'est pas
-    # détectée. La règle « Capability.AI_POLICY exige ACTUATORS_AI_DRIVEN »
-    # (voir validate()) vaudra pour le futur service VLA ; le runtime ne
-    # fournit pas encore AI_POLICY.
-    ACTUATORS_AI_DRIVEN  = auto()  # NON APPLIQUÉE à l'exécution
+    # DANGEROUS, donc confirmée à l'installation. À l'exécution, toute
+    # consigne produite par une action d'IA du SDK (VLAAction,
+    # GR00TAction, LocomotionAction : ActuatorCommand.origine == "ia")
+    # l'exige aussi (RobotContext._exiger_pilotage_ia). Limite : une app
+    # qui fabrique elle-même ses consignes depuis la sortie d'un modèle
+    # n'est pas détectée (voir SECURITY.md). La règle « Capability.AI_POLICY
+    # exige ACTUATORS_AI_DRIVEN » (voir validate()) vaudra pour le futur
+    # service VLA ; le runtime ne fournit pas encore AI_POLICY.
+    ACTUATORS_AI_DRIVEN  = auto()
     # Faire se déplacer le robot dans l'espace (marche, roues...). Distincte
     # d'ACTUATORS_WRITE_LEGS, qui autorise à commander les articulations des
     # jambes : une app qui déplace le robot change son environnement, peut
@@ -496,6 +494,12 @@ class AppManifest:
                 errors.append(f"{champ} doit être un texte sans caractère de contrôle")
         if not self.app_id or "." not in self.app_id:
             errors.append("app_id doit être en format 'com.author.name'")
+        # « : » est réservé aux espaces internes de l'OS, comme « billing:: »
+        # où le Play Store range l'état de facturation : sans cette règle,
+        # une app d'app_id « billing::com.x.y » lisait et réécrivait par
+        # remember() la facturation de com.x.y.
+        if isinstance(self.app_id, str) and ":" in self.app_id:
+            errors.append("app_id ne doit pas contenir « : » (réservé à l'OS)")
         if self.base_price_eur < 0:
             errors.append("base_price_eur ne peut pas être négatif")
         if self.pricing_model != PricingModel.FREE and self.base_price_eur == 0:

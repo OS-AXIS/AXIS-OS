@@ -17,7 +17,7 @@ le déclare dans une ligne de commentaire, parmi ses 40 premières lignes :
     # pytest-marqueurs : isaac, gpu
 
 Sans la ressource, le test est SAUTÉ (avec la raison), pas compté comme
-réussi. Aucun script de test/ n'en déclare aujourd'hui : les 85 tournent sur
+réussi. Aucun script de test/ n'en déclare aujourd'hui : les 87 tournent sur
 une machine sans GPU, et la CI les exécute tous.
 """
 import importlib.util

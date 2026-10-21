@@ -23,11 +23,13 @@ from axis_os.hal.core.types import (
 from axis_os.hal.watchdog.system import WatchdogSystem, WatchdogConfig
 from axis_os.hal.watchdog.events import AlertKind
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
+from axis_os.store.runtime.canal_ipc import Canal
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALCommand
 from axis_os.store.sdk.app_base import RobotContext, PermissionError, MissionResult, RobotApp
 from axis_os.store.sdk.manifest import AppManifest, AppCategory, PricingModel, Permission
 from axis_os.apps.package_sorting.app import PackageSortingApp
-import multiprocessing as mp
+import socket
 from dataclasses import asdict
 
 FAIL = 0
@@ -99,17 +101,20 @@ wd_e8 = WatchdogSystem(robot_e8)
 manifest_e8 = PackageSortingApp().manifest()
 ctx_e8 = RobotContext.for_testing(robot_e8, wd_e8, manifest_e8)
 
-cq, rq = mp.Queue(), mp.Queue()
-server_e8 = HALBridgeServer(ctx_e8, cq, rq)
+# Les deux extrémités du pont JSON, dans ce même processus ; côté app, on
+# écrit directement sur le canal pour envoyer un message malformé.
+sock_os, sock_app = socket.socketpair()
+server_e8 = HALBridgeServer(ctx_e8, canal=Canal(sock_os))
 server_e8.start()
+cote_app = Canal(sock_app)
 
-cq.put({"foo": 1})  # message malformé
+cote_app.envoyer({"foo": 1})  # message malformé
 time.sleep(0.3)
 check("Thread serveur survit à un message malformé", server_e8._thread.is_alive())
 
-cq.put({"action": "get_imu", "payload": {}, "request_id": 1})
+cote_app.envoyer({"type": "appel", "action": "get_imu", "payload": {}, "request_id": 1})
 time.sleep(0.3)
-resp = rq.get(timeout=1.0)
+resp = cote_app.recevoir(timeout=1.0)
 check("Le serveur répond toujours à une vraie requête après le message malformé",
       resp["success"] is True)
 server_e8.stop()
@@ -149,7 +154,8 @@ section("E10 — e-stop du Supervisor visible par run_mission()")
 robot_e10 = NormalizedRobotHAL(UnitreeG1HAL("g1_e10_w2"), build_g1_normalizer())
 robot_e10.initialize_all()
 wd_e10 = WatchdogSystem(robot_e10)
-runtime_e10 = PlayStoreRuntime(robot_e10, wd_e10, confirmer_permissions=accepter_tout_SIMULATION)
+runtime_e10 = PlayStoreRuntime(robot_e10, wd_e10, confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
 runtime_e10.install(PackageSortingApp())
 runtime_e10.start_app("com.acme.package_sorting")
 
@@ -204,7 +210,8 @@ for model, expected_bills in [
     (PricingModel.ONE_TIME, 1), (PricingModel.SUBSCRIPTION, 1),
     (PricingModel.PAY_PER_MISSION, 3),
 ]:
-    runtime_m2 = PlayStoreRuntime(robot_m2, wd_m2, confirmer_permissions=accepter_tout_SIMULATION)
+    runtime_m2 = PlayStoreRuntime(robot_m2, wd_m2, confirmer_permissions=accepter_tout_SIMULATION,
+                                  profil=Profil.SIMULATION)
     app = _PricingTestApp(model)
     runtime_m2.install(app)
     runtime_m2.start_app(app.manifest().app_id)
@@ -237,7 +244,8 @@ class _LyingApp(RobotApp):
 robot_m3 = NormalizedRobotHAL(UnitreeG1HAL("g1_m3_w2"), build_g1_normalizer())
 robot_m3.initialize_all()
 wd_m3 = WatchdogSystem(robot_m3)
-runtime_m3 = PlayStoreRuntime(robot_m3, wd_m3, confirmer_permissions=accepter_tout_SIMULATION)
+runtime_m3 = PlayStoreRuntime(robot_m3, wd_m3, confirmer_permissions=accepter_tout_SIMULATION,
+                              profil=Profil.SIMULATION)
 liar = _LyingApp()
 runtime_m3.install(liar)
 runtime_m3.start_app(liar.manifest().app_id)
@@ -249,7 +257,8 @@ check("App qui ment sur success=True sans bouger le robot → aucune facture ém
 robot_m3b = NormalizedRobotHAL(UnitreeG1HAL("g1_m3b_w2"), build_g1_normalizer())
 robot_m3b.initialize_all()
 wd_m3b = WatchdogSystem(robot_m3b)
-runtime_m3b = PlayStoreRuntime(robot_m3b, wd_m3b, confirmer_permissions=accepter_tout_SIMULATION)
+runtime_m3b = PlayStoreRuntime(robot_m3b, wd_m3b, confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
 runtime_m3b.install(PackageSortingApp())
 runtime_m3b.start_app("com.acme.package_sorting")
 result_m3b = runtime_m3b.run_mission("com.acme.package_sorting", params={})

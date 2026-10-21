@@ -27,6 +27,7 @@ from axis_os.store.sdk.signing import (
 )
 from axis_os.store.sdk.manifest import AppManifest, AppCategory
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
@@ -51,7 +52,8 @@ def make_runtime() -> PlayStoreRuntime:
     robot = NormalizedRobotHAL(UnitreeG1HAL("g1_signing_test"), build_g1_normalizer())
     robot.initialize_all()
     wd = WatchdogSystem(robot)
-    return PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION)
+    return PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION,
+                            profil=Profil.SIMULATION)
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -205,6 +205,11 @@ class ActuatorCommand:
     servent pas à ce mode peuvent rester à None. stiffness et damping
     sont la raideur et l'amortissement demandés. timestamp_ns est
     l'instant de création de la consigne, en nanosecondes.
+
+    `origine` vaut ORIGINE_IA pour une consigne produite par un modèle
+    d'IA (VLAAction.to_commands, LocomotionAction.to_commands) : le
+    contexte d'une app exige alors la permission ACTUATORS_AI_DRIVEN
+    (voir RobotContext._exiger_pilotage_ia). None sinon.
     """
     mode:         ControlMode
     position:     Optional[float] = None
@@ -214,6 +219,11 @@ class ActuatorCommand:
     stiffness:    Optional[float] = None
     damping:      Optional[float] = None
     timestamp_ns: int = field(default_factory=time.time_ns)
+    origine:      Optional[str] = None
+
+
+# Valeur d'ActuatorCommand.origine pour une consigne venue d'un modèle d'IA.
+ORIGINE_IA = "ia"
 
 
 @dataclass

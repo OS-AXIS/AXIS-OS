@@ -18,6 +18,7 @@ from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
 from axis_os.apps.package_sorting.app import PackageSortingApp
 from axis_os.apps.security_patrol.app import SecurityPatrolApp
 
@@ -40,7 +41,8 @@ def make_runtime_with_apps():
     robot = NormalizedRobotHAL(UnitreeG1HAL("g1_lock_test"), build_g1_normalizer())
     robot.initialize_all()
     wd = WatchdogSystem(robot)
-    runtime = PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION)
+    runtime = PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
     runtime.install(PackageSortingApp())
     runtime.install(SecurityPatrolApp())
     runtime.start_app("com.acme.package_sorting")

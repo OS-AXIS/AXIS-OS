@@ -82,6 +82,7 @@ def main():
     from axis_os.services.perception.owlvit_detector import OwlViTDetector
     from axis_os.services.perception.service import PerceptionService
     from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+    from axis_os.store.runtime.profil import Profil
 
     cfg = G1LocomotionConfig()
     limits = {d.joint_id: (d.limits.pos_min, d.limits.pos_max)
@@ -159,7 +160,8 @@ def main():
                                perception_service=perception,
                                locomotion_service=locomotion,
                                memory_service=memoire,
-                               confirmer_permissions=accepter_tout_SIMULATION)
+                               confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
     app = WarehouseInventoryApp()
     man = app.manifest()
     installee = runtime.install(app)

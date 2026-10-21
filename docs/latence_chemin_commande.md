@@ -9,6 +9,12 @@ une question d'architecture qui a été posée deux fois** — faut-il un
 « chemin rapide » qui contournerait `JointSafetyGuard` pour tenir les
 hautes fréquences ? La réponse est non, et ces chiffres le prouvent.
 
+> **Mesures à refaire.** Elles datent de l'ancien pont, deux
+> `multiprocessing.Queue` sérialisées par pickle. Depuis le 2026-10-20, le
+> pont passe par une socket Unix et chaque message est encodé puis vérifié
+> en JSON (voir `docs/isolation_apps.md`, étapes 0 et 1) : le surcoût de
+> l'isolation a changé et n'est pas encore remesuré sur Isaac Sim.
+
 ---
 
 ## 1. Chemin direct — sans sandbox

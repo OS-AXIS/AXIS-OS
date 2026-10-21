@@ -60,9 +60,9 @@ config:
   themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; } .edge-animation-fast { stroke: #007aff; stroke-dasharray: 0 20 !important; stroke-width: 5px; } @media (prefers-reduced-motion: reduce) { .edge-animation-fast { animation: none; } }"
 ---
 flowchart TB
-    PS("<b>Play Store</b><br/>signature (facultative hors production, voir SECURITY.md)<br/>✓ permissions<br/>✓ confirmation des permissions DANGEROUS")
+    PS("<b>Play Store</b><br/>✓ signature, obligatoire en production<br/>✓ permissions<br/>✓ confirmation des permissions DANGEROUS")
 
-    A("<b>App tierce</b> · RobotApp<br/>processus à part, en sandbox<br/>quotas de CPU, de mémoire et de temps<br/>⚠ isolation incomplète, voir SECURITY.md")
+    A("<b>App tierce</b> · RobotApp<br/>processus neuf, en sandbox<br/>quotas de CPU, de mémoire et de temps<br/>⚠ isolation incomplète, voir SECURITY.md")
 
     subgraph OS["Processus d'AXIS-OS"]
         CTX("<b>RobotContext</b><br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse")
@@ -81,7 +81,7 @@ flowchart TB
     R(["<b>Moteurs du robot</b>"])
 
     PS e1@-->|installe| A
-    A e2@-->|"pont IPC · pickle, à remplacer"| CTX
+    A e2@-->|"pont IPC · JSON vérifié"| CTX
     CTX e3@--> SV
     CTX e4@--> N
     SV e5@-->|marche| G
@@ -119,8 +119,10 @@ flowchart TB
 
 En vert, les contrôles de sécurité (chaque ✓) : ni les apps ni les
 modèles d'IA ne les commandent. En orange, ce qui surveille le robot en
-parallèle et peut l'arrêter à tout moment. Le sandbox protège d'une app
-buggée, pas encore d'une app malveillante : voir [Statut et limites](#statut-et-limites).
+parallèle et peut l'arrêter à tout moment. Le processus de l'app n'hérite
+de rien de l'OS et n'échange avec lui que du JSON vérifié ; contre une app
+malveillante, l'isolation reste incomplète (fichiers, réseau) : voir
+[Statut et limites](#statut-et-limites).
 
 Un service, c'est ce dont deux apps de métiers différents auraient toutes
 les deux besoin (marcher, voir, saisir) ; ce qui est propre à un métier est
@@ -166,10 +168,13 @@ AXIS-OS est un logiciel de recherche. À lire avant de l'utiliser.
   Unitree G1 parle le vrai protocole du robot (DDS), mais il n'a jamais été
   branché sur un robot physique. Un comportement sûr en simulation n'est
   pas automatiquement sûr sur le matériel.
-- **L'isolation des apps n'est pas terminée.** Le sandbox protège le robot
-  d'une app buggée, pas d'une app malveillante : une app hostile peut
-  aujourd'hui agir en dehors de la HAL. **N'installez que des apps de
-  confiance, dont vous avez relu le code.** Le plan de correction est dans
+- **L'isolation des apps n'est pas terminée.** Chaque app tourne dans un
+  processus neuf, qui n'hérite de rien de l'OS et ne lui parle que par du
+  JSON vérifié. Mais ce processus tourne encore sous le même utilisateur et
+  a accès au réseau : une app hostile pourrait lire les fichiers de l'OS
+  et, sur un vrai G1, ouvrir sa propre connexion DDS vers les moteurs.
+  **Sur un vrai robot, utilisez le profil PRODUCTION et n'installez que des
+  apps de confiance, dont vous avez relu le code.** Le plan est dans
   [docs/isolation_apps.md](docs/isolation_apps.md), le détail dans
   [SECURITY.md](SECURITY.md).
 - **La saisie pilotée par un modèle vision-langage-action est en cours.**

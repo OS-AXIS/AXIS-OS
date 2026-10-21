@@ -216,9 +216,8 @@ class WatchdogSystem:
         # dans une sandbox (un processus séparé, isolé du reste
         # d'AXIS-OS) et y appelle subscribe_alerts() à travers
         # HALBridgeClient, son accès au HAL depuis la sandbox. Une
-        # fonction Python ne peut pas traverser la multiprocessing.Queue
-        # qui relie les deux processus : elle n'est pas sérialisable (on
-        # ne peut pas la convertir en octets pour l'envoyer). Le
+        # fonction Python ne peut pas traverser le pont qui relie les deux
+        # processus : seules des données JSON y passent. Le
         # processus enfant ne peut donc pas recevoir de callback en temps
         # réel. Ce tampon lui offre un
         # polling explicite, équivalent pour ce cas précis. Les abonnés

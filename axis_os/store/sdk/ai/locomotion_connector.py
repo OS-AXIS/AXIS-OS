@@ -86,7 +86,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-from axis_os.hal.core.types import ActuatorCommand, ControlMode
+from axis_os.hal.core.types import ActuatorCommand, ControlMode, ORIGINE_IA
 
 
 @dataclass
@@ -145,6 +145,7 @@ class LocomotionAction:
                 mode=ControlMode.POSITION,
                 position=angle,
                 velocity=velocity,
+                origine=ORIGINE_IA,
             )
             for joint_id, angle in self.target_positions.items()
         }

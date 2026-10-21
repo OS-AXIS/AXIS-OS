@@ -35,6 +35,7 @@ from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
 from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+from axis_os.store.runtime.profil import Profil
 from axis_os.store.sdk.app_base import RobotApp
 
 FAIL = 0
@@ -78,7 +79,8 @@ def make_runtime():
     )
     robot.initialize_all()
     wd = WatchdogSystem(robot)
-    return PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION)
+    return PlayStoreRuntime(robot, wd, confirmer_permissions=accepter_tout_SIMULATION,
+                            profil=Profil.SIMULATION)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -107,7 +109,7 @@ check("Le manifest de l'app chargée est correct",
 # ══════════════════════════════════════════════════════════════════
 
 section("2 — CRITIQUE : l'app chargée survit au sandboxing complet "
-        "(pickle via multiprocessing)")
+        "(processus neuf, pont JSON)")
 
 runtime2 = make_runtime()
 source2 = VALID_APP_SOURCE.format(app_id="com.developer.secretapp_w2")
@@ -294,7 +296,7 @@ print("=" * 66)
 
 if FAIL == 0:
     print("\n  ✓ Une app chargée depuis du code déchiffré survit au")
-    print("    sandboxing complet (pickle via multiprocessing)")
+    print("    sandboxing complet (processus neuf, pont JSON)")
     print("  ✓ Aucune fuite de module fantôme après un chargement échoué")
     print("  ✓ Deux apps chargées séparément n'interfèrent jamais entre")
     print("    elles, même en même temps dans le même process")

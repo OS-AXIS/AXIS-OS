@@ -123,7 +123,8 @@ class SetpointFollower:
 
         # Thread de la politique, en boucle, à son propre rythme :
         action = connecteur.predict_action(image, instruction)
-        follower.set_target(action.target_angles, action.timestamp_ns)
+        follower.set_target(action.target_angles, action.timestamp_ns,
+                            origine=ORIGINE_IA)
 
         # Boucle de mission, un pas toutes les step_s secondes :
         while mission_active:
@@ -152,6 +153,7 @@ class SetpointFollower:
         self._lock = threading.Lock()
         self._target: Dict[str, float] = {}
         self._target_ts_ns: int = 0
+        self._origine: Optional[str] = None
 
         self.state = FollowerState.IDLE
         self.stats = FollowerStats()
@@ -159,8 +161,13 @@ class SetpointFollower:
     # ---- appelé depuis n'importe quel thread -----------------------------
 
     def set_target(self, target_angles: Dict[str, float],
-                   timestamp_ns: Optional[int] = None) -> None:
+                   timestamp_ns: Optional[int] = None,
+                   origine: Optional[str] = None) -> None:
         """Remplace la consigne courante. Non bloquant.
+
+        origine : ORIGINE_IA si la consigne vient d'un modèle d'IA ; elle
+        est reportée sur chaque commande de tick(), pour que le contexte
+        exige ACTUATORS_AI_DRIVEN (voir RobotContext._exiger_pilotage_ia).
 
         timestamp_ns vient de VLAAction.timestamp_ns (l'action renvoyée par
         le modèle VLA, pour Vision-Language-Action) : c'est l'instant où
@@ -186,6 +193,7 @@ class SetpointFollower:
         with self._lock:
             self._target = dict(target_angles)
             self._target_ts_ns = ts
+            self._origine = origine
 
     def _age_s(self) -> float:
         """Âge de la consigne courante, en secondes. Infini, donc périmé,
@@ -229,6 +237,7 @@ class SetpointFollower:
         age = self._age_s()
         with self._lock:
             target = dict(self._target)
+            origine = self._origine
 
         if not target:
             self.state = FollowerState.IDLE
@@ -263,9 +272,10 @@ class SetpointFollower:
 
         # --- suivi normal -------------------------------------------------
         self.state = FollowerState.TRACKING
-        self._step_towards(target)
+        self._step_towards(target, origine)
 
-    def _step_towards(self, target: Dict[str, float]) -> None:
+    def _step_towards(self, target: Dict[str, float],
+                      origine: Optional[str] = None) -> None:
         # Relire l'état réel avant chaque pas, jamais une position supposée :
         # si une articulation a bougé autrement (perturbation, autre app),
         # on repart de sa vraie position.
@@ -296,7 +306,7 @@ class SetpointFollower:
             else:
                 next_pos = fb.position + (budget if error > 0 else -budget)
             commands[jid] = ActuatorCommand(
-                mode=ControlMode.POSITION, position=next_pos,
+                mode=ControlMode.POSITION, position=next_pos, origine=origine,
             )
 
         if non_finis:

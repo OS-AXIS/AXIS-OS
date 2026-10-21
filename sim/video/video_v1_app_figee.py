@@ -56,6 +56,7 @@ def main():
     from axis_os.hal.watchdog.system import WatchdogSystem
     from axis_os.services.locomotion.service import BaseState, LocomotionService
     from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
+    from axis_os.store.runtime.profil import Profil
 
     cfg = G1LocomotionConfig()
     limits = {d.joint_id: (d.limits.pos_min, d.limits.pos_max)
@@ -106,7 +107,8 @@ def main():
     nrobot.initialize_all()
     runtime = PlayStoreRuntime(nrobot, WatchdogSystem(nrobot),
                                locomotion_service=loco,
-                               confirmer_permissions=accepter_tout_SIMULATION)
+                               confirmer_permissions=accepter_tout_SIMULATION,
+                               profil=Profil.SIMULATION)
     app = AppQuiSeFige()
     runtime.install(app)
     runtime.start_app(app.manifest().app_id)

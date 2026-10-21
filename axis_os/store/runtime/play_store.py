@@ -31,7 +31,9 @@ Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Dict, Any, List
+from typing import Callable, Optional, Dict, Any, List, Union
+import math
+import os
 import time
 import uuid
 import traceback
@@ -48,12 +50,15 @@ from axis_os.store.sdk.app_base import (
     RobotApp, RobotContext, MissionResult, PermissionError, EstopActiveError,
     _RuntimeSessionToken,
 )
-from axis_os.store.runtime.sandbox import SandboxRunner, SandboxState, SandboxErrorKind
-from axis_os.store.runtime.hal_bridge import (
-    HALBridgeServer, HALBridgeClient, HALCommand, HALResponse
+from axis_os.store.runtime.sandbox import (
+    SandboxRunner, SandboxResult, SandboxState, SandboxErrorKind, _try_import_psutil,
+)
+from axis_os.store.runtime.profil import Profil, lire_cles_approuvees
+from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
+from axis_os.store.runtime.processus_app import (
+    AppNonRechargeable, etat_json, rendre_os_non_inspectable, spec_depuis_instance,
 )
 from axis_os.services.memory.service import MemoryService
-import multiprocessing as mp
 import threading
 
 
@@ -94,6 +99,12 @@ def accepter_tout_SIMULATION(manifest: AppManifest,
     print(f"  [SIMULATION] permissions DANGEROUS accordées SANS confirmation "
           f"humaine : {[p.name for p in permissions]}")
     return True
+
+
+# Marque lue par PlayStoreRuntime : refusée sur un robot réel et en
+# production. Un confirmateur maison qui accorde tout sans humain doit
+# porter la même marque.
+accepter_tout_SIMULATION.accorde_sans_humain = True
 
 
 def _affichable(texte: Any, n: int = 80) -> str:
@@ -155,100 +166,6 @@ def _robot_reel(robot: Any) -> bool:
     return False
 
 
-def _run_app_in_sandbox(app: RobotApp, params: Dict[str, Any],
-                        command_queue: mp.Queue, response_queue: mp.Queue) -> MissionResult:
-    """
-    Exécutée dans le processus enfant de la sandbox (lancé par
-    SandboxRunner) pour un appel à run_mission().
-
-    Pourquoi un pont : le vrai HAL et le vrai WatchdogSystem (le chien de
-    garde qui déclenche l'e-stop, l'arrêt d'urgence, quand une condition
-    dangereuse est détectée) contiennent des threads et ne passent pas
-    par pickle (le format de Python qui transforme un objet en octets
-    pour le faire passer d'un processus à l'autre). La fonction ne reçoit
-    donc jamais ces objets : elle reçoit l'app elle-même (SandboxRunner
-    exige qu'elle passe par pickle) et construit un HALBridgeClient sur
-    les deux files mp.Queue déjà ouvertes. C'est le pont IPC
-    (communication entre processus) de hal_bridge.py : les commandes de
-    l'app partent par une file, le processus parent les exécute sur le
-    vrai HAL et répond par l'autre.
-
-    L'app appelle ctx.move_arms/move_legs/log/get_imu/get_mission_log
-    exactement comme avec un RobotContext normal (l'objet que le runtime
-    remet à une app pour commander le robot) : HALBridgeClient offre
-    la même interface, donc aucune app existante n'a besoin d'être
-    modifiée pour bénéficier de l'isolation.
-
-    PermissionError et EstopActiveError sont converties ici en
-    MissionResult d'échec plutôt que de remonter jusqu'à SandboxRunner,
-    qui les classerait en APPLICATION_ERROR générique : on garde ainsi la
-    distinction entre un refus de sécurité et un bug de l'app.
-
-    Limite connue : cette isolation protège d'une app buggée, pas encore
-    d'une app hostile (voir docs/isolation_apps.md).
-    """
-    bridge_ctx = HALBridgeClient(command_queue, response_queue)
-    try:
-        result = app.run_mission(bridge_ctx, params)
-        if result is not None:
-            result.log = bridge_ctx.get_mission_log()
-        return result
-    except PermissionError as exc:
-        return MissionResult(
-            success=False, mission_id="", app_id="",
-            duration_s=0.0, error_message=f"Permission refusée : {exc}",
-            log=bridge_ctx.get_mission_log(),
-        )
-    except EstopActiveError as exc:
-        return MissionResult(
-            success=False, mission_id="", app_id="",
-            duration_s=0.0, error_message=f"Mission interrompue par e-stop : {exc}",
-            log=bridge_ctx.get_mission_log(),
-        )
-
-
-def _run_start_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
-                               response_queue: mp.Queue):
-    """
-    Équivalent de _run_app_in_sandbox() pour le hook on_start() (la
-    méthode que l'app exécute à son démarrage).
-
-    Pourquoi : un audit de sécurité externe (2026-09-14, voir
-    docs/audit_externe_2026-09-14.md et CHANGELOG.md) a montré que
-    start_app() et stop_app() appelaient jusque-là entry.app.on_start()
-    et on_stop() directement dans le processus parent, avec un vrai
-    RobotContext : accès complet au HAL, sans quota, sans délai maximal,
-    sans isolation de la mémoire. C'était exactement le trou que
-    SandboxRunner et HALBridgeServer comblent pour run_mission(), mais ils
-    n'avaient jamais été branchés ici. Le risque
-    n'était pas théorique : axis_os/apps/package_sorting/app.py appelle
-    ctx.move_arms(...) dans son on_start(), donc le robot bougeait
-    physiquement pendant ce hook non isolé.
-
-    Renvoie un couple (bool, list[str]) plutôt qu'un simple bool : le
-    journal de mission tenu par le HALBridgeClient serait perdu s'il
-    n'était pas renvoyé explicitement d'un processus à l'autre.
-    """
-    bridge_ctx = HALBridgeClient(command_queue, response_queue)
-    try:
-        ready = app.on_start(bridge_ctx)
-        return ready, bridge_ctx.get_mission_log()
-    except (PermissionError, EstopActiveError) as exc:
-        return False, bridge_ctx.get_mission_log() + [f"on_start refusé : {exc}"]
-
-
-def _run_stop_hook_in_sandbox(app: RobotApp, command_queue: mp.Queue,
-                              response_queue: mp.Queue):
-    """Équivalent de _run_start_hook_in_sandbox() pour le hook on_stop()
-    (exécuté à l'arrêt de l'app) : voir sa docstring pour le contexte."""
-    bridge_ctx = HALBridgeClient(command_queue, response_queue)
-    try:
-        app.on_stop(bridge_ctx)
-        return True, bridge_ctx.get_mission_log()
-    except (PermissionError, EstopActiveError) as exc:
-        return False, bridge_ctx.get_mission_log() + [f"on_stop refusé : {exc}"]
-
-
 @dataclass
 class InstalledApp:
     """Une app installée sur ce robot, avec son manifeste validé, ses
@@ -293,6 +210,12 @@ class InstalledApp:
     # rien dire.
     one_time_billed:              bool            = False
     last_subscription_bill_time_s: Optional[float] = None
+    # Comment le processus de l'app retrouve son code (voir
+    # processus_app.spec_depuis_instance), fixé à l'installation. None si
+    # l'app ne peut pas être rechargée ; spec_erreur dit alors pourquoi, et
+    # chacun de ses hooks échoue avec SandboxErrorKind.SANDBOX_ERROR.
+    spec:       Optional[Dict[str, Any]] = None
+    spec_erreur: Optional[str]           = None
 
     @property
     def commission_due(self) -> float:
@@ -336,7 +259,7 @@ class PlayStoreRuntime:
         self,
         robot: NormalizedRobotHAL,
         watchdog: WatchdogSystem,
-        require_signed_apps: bool = False,
+        require_signed_apps: Optional[bool] = None,
         platform_public_key: Optional[str] = None,
         memory_service: Optional[MemoryService] = None,
         perception_service=None,
@@ -344,8 +267,26 @@ class PlayStoreRuntime:
         speech_service=None,
         clock=None,
         confirmer_permissions: Optional[ConfirmationPermissions] = None,
+        *,
+        profil: Profil,
+        cles_approuvees: Optional[Union[str, os.PathLike]] = None,
     ):
         """
+        `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
+        PRODUCTION (voir axis_os/store/runtime/profil.py). En PRODUCTION :
+        signature obligatoire (require_signed_apps ne peut pas valoir
+        False), clés de développeur lues dans `cles_approuvees` (fichier
+        local, obligatoire), accepter_tout_SIMULATION refusé, quotas CPU et
+        mémoire exigés (psutil), et installation depuis la source signée
+        seulement (install_source) : le code d'une app n'est jamais exécuté
+        dans le processus de l'OS. SIMULATION est refusé sur un robot réel.
+        En SIMULATION et en DÉVELOPPEMENT, les facilités historiques restent
+        possibles, mais chacune est signalée dans le journal ([PROFIL …]).
+
+        `cles_approuvees` : chemin du fichier des clés publiques de
+        développeur approuvées (format dans profil.py). Fourni hors
+        production, il est appliqué de même.
+
         `robot` : le HAL du robot, vu à travers NormalizedRobotHAL, la
         façade qui présente aux apps les positions et vitesses dans une
         convention commune plutôt que celle du driver brut.
@@ -408,27 +349,73 @@ class PlayStoreRuntime:
         par son RobotContext ; voir _make_ctx(). `clock` : horloge du
         robot, voir le commentaire dans le corps de cette méthode.
         """
-        if confirmer_permissions is accepter_tout_SIMULATION and _robot_reel(robot):
+        if not isinstance(profil, Profil):
+            raise TypeError(
+                "profil doit être Profil.SIMULATION, Profil.DEVELOPPEMENT ou "
+                "Profil.PRODUCTION, donné explicitement (il n'est jamais deviné).")
+        reel = _robot_reel(robot)
+        if profil is Profil.SIMULATION and reel:
+            raise ValueError(
+                "Profil SIMULATION refusé : ce runtime pilote un robot RÉEL. "
+                "Choisir DEVELOPPEMENT (banc d'essai) ou PRODUCTION.")
+        sans_humain = getattr(confirmer_permissions, "accorde_sans_humain", False) is True
+        if sans_humain and reel:
             raise ValueError(
                 "accepter_tout_SIMULATION refusé : ce runtime pilote un robot RÉEL. "
                 "Les permissions DANGEROUS doivent y être confirmées par un humain "
                 "(confirmer_au_terminal, ou un écran de confirmation).")
+        if profil is Profil.PRODUCTION:
+            if sans_humain:
+                raise ValueError(
+                    "Profil PRODUCTION : accepter_tout_SIMULATION refusé, les "
+                    "permissions DANGEROUS y sont toujours confirmées par un humain.")
+            if require_signed_apps is False:
+                raise ValueError(
+                    "Profil PRODUCTION : la signature des apps est obligatoire "
+                    "(require_signed_apps=False refusé).")
+            require_signed_apps = True
+            if cles_approuvees is None:
+                raise ValueError(
+                    "Profil PRODUCTION : fichier des clés de développeur approuvées "
+                    "requis (paramètre cles_approuvees, format dans profil.py).")
+            if _try_import_psutil() is None:
+                raise RuntimeError(
+                    "Profil PRODUCTION : psutil est requis pour appliquer les quotas "
+                    "CPU et mémoire des apps.")
+            if not rendre_os_non_inspectable():
+                raise RuntimeError(
+                    "Profil PRODUCTION : impossible d'interdire l'inspection du "
+                    "processus de l'OS (prctl PR_SET_DUMPABLE) ; une app pourrait lire "
+                    "son environnement ou sa mémoire.")
+        self._profil = profil
+        self._cles_approuvees: Optional[Dict[str, str]] = (
+            None if cles_approuvees is None else lire_cles_approuvees(cles_approuvees))
         self._confirmer_permissions = confirmer_permissions
         self._robot   = robot
         self._watchdog = watchdog
         self._apps:    Dict[str, InstalledApp] = {}
         self._billing: List[BillingReport]     = []
         self._id = str(uuid.uuid4())[:8]
-        self._require_signed_apps = require_signed_apps
-        if not require_signed_apps:
-            # Avertissement affiché à chaque démarrage, et pas seulement
-            # documenté : un choix silencieux s'oublie facilement dans une
-            # configuration de production. Sans require_signed_apps=True,
-            # n'importe quel fichier .py dont une classe hérite de
-            # RobotApp s'installe sans vérification d'identité : install()
-            # ne contrôle alors que les permissions et les capacités
-            # déclarées, jamais qui a écrit le code. Contexte complet dans
-            # la docstring de __init__.
+        self._require_signed_apps = bool(require_signed_apps)
+        if profil is not Profil.PRODUCTION:
+            # Chaque facilité est dite au démarrage : un choix silencieux
+            # s'oublie facilement, et finit dans une configuration de
+            # production.
+            facilites = []
+            if not self._require_signed_apps:
+                facilites.append("apps non signées acceptées")
+            if self._cles_approuvees is None:
+                facilites.append("toute clé de développeur acceptée")
+            if sans_humain:
+                facilites.append("permissions DANGEROUS accordées sans humain")
+            facilites.append("installation d'objets app chargés dans l'OS")
+            print(f"  [PROFIL {profil.name}] ne convient pas à un vrai robot en "
+                  f"service : {', '.join(facilites)}.")
+        if not self._require_signed_apps:
+            # Contexte complet dans la docstring de __init__ : sans
+            # require_signed_apps=True, n'importe quel fichier .py dont une
+            # classe hérite de RobotApp s'installe sans vérification
+            # d'identité.
             print(
                 "  [SECURITY] PlayStoreRuntime démarré avec "
                 "require_signed_apps=False — toute app non signée "
@@ -481,6 +468,15 @@ class PlayStoreRuntime:
         capacités fonctionnelles, matériel, puis, en dernier, confirmation
         humaine des permissions DANGEROUS.
         """
+        if self._profil is Profil.PRODUCTION:
+            # L'objet app a déjà été créé dans ce processus : son code (son
+            # module, son constructeur, et manifest() juste après) y
+            # tourne avec tous les droits de l'OS.
+            print("  [ERREUR] Profil PRODUCTION : une app s'installe depuis sa source "
+                  "signée (install_source), jamais depuis un objet déjà chargé dans "
+                  "le processus de l'OS.")
+            return False
+
         # On travaille sur une copie du manifeste, validée puis conservée :
         # RobotContext consultera celle-ci, jamais l'objet fourni par
         # l'app, que l'app pourrait modifier après la confirmation des
@@ -495,7 +491,8 @@ class PlayStoreRuntime:
 
         errors = manifest.validate()
         if errors:
-            for e in errors: print(f"  [ERREUR] {e}")
+            # Un message de validate() peut reprendre un champ de l'app.
+            for e in errors: print(f"  [ERREUR] {_affichable(e, 300)}")
             return False
 
         # Compatibilité du SDK, dont la version est celle d'AXIS-OS (voir
@@ -505,18 +502,8 @@ class PlayStoreRuntime:
         # peut attendre un autre format pour HardwareRequirements ou
         # Capabilities, contrôlés plus loin ; mieux vaut échouer ici avec
         # un message clair qu'avec une erreur confuse ensuite.
-        if manifest.sdk_version_min is not None:
-            from axis_os import __version__ as axis_os_version, SemVer
-            required = SemVer.parse(manifest.sdk_version_min)
-            current  = SemVer.parse(axis_os_version)
-            if not required.is_compatible_with(current):
-                print(
-                    f"  [ERREUR] Incompatible avec AXIS-OS {current} — "
-                    f"cette app requiert {required} (SDK mineur ou majeur "
-                    f"différent). Mettez à jour l'app ou installez-la sur "
-                    f"une version d'AXIS-OS compatible."
-                )
-                return False
+        if not self._sdk_compatible(manifest):
+            return False
 
         # Signature du code (voir axis_os/store/sdk/signing.py). Contrôlée
         # après le SDK (inutile d'aller plus loin si le SDK est déjà
@@ -536,6 +523,7 @@ class PlayStoreRuntime:
             )
             return False
 
+        source_verifiee: Optional[str] = None
         if manifest.code_signature is not None:
             from axis_os.store.sdk.signing import verify_app_signature, SignatureError
             import inspect
@@ -574,7 +562,31 @@ class PlayStoreRuntime:
                     "après signature, ou mauvaise clé)."
                 )
                 return False
+            # C'est ce texte précis, et non le fichier relu plus tard sur le
+            # disque, que le processus de l'app exécutera.
+            source_verifiee = source
+            if not self._cle_approuvee(manifest.developer_public_key):
+                return False
 
+        # Comment le processus de l'app retrouvera son code. Une app qui ne
+        # peut pas être rechargée (classe définie dans une fonction)
+        # s'installe quand même, comme avant, mais chacun de ses hooks
+        # échouera avec un message clair.
+        try:
+            spec, spec_erreur = spec_depuis_instance(app, source_verifiee), None
+        except (AppNonRechargeable, OSError, UnicodeDecodeError) as exc:
+            spec, spec_erreur = None, str(exc)
+            print(f"  [ATTENTION] {spec_erreur}")
+        return self._terminer_installation(manifest, app, spec, spec_erreur)
+
+    def _terminer_installation(self, manifest: AppManifest, app: Optional[RobotApp],
+                               spec: Optional[Dict[str, Any]],
+                               spec_erreur: Optional[str]) -> bool:
+        """Contrôles communs à install() et install_source(), une fois le
+        manifeste obtenu et la signature vérifiée : permissions SIGNATURE,
+        capacités, matériel, confirmation des permissions DANGEROUS, puis
+        enregistrement."""
+        app_id = manifest.app_id
         # Permissions de niveau ProtectionLevel.SIGNATURE, réservées aux
         # apps système (par exemple ACTUATORS_RAW, les commandes
         # articulaires brutes, ou FLEET_BROADCAST, l'envoi d'un message à
@@ -706,12 +718,121 @@ class PlayStoreRuntime:
                 app_id, "last_subscription_bill_time_s", None)
 
         self._apps[app_id] = InstalledApp(
-            app=app, manifest=manifest,
+            app=app, manifest=manifest, spec=spec, spec_erreur=spec_erreur,
             one_time_billed=one_time_billed,
             last_subscription_bill_time_s=last_subscription_bill_time_s,
         )
         print(f"  ✓ '{manifest.name}' installée.")
+        if manifest.code_signature is None:
+            print(f"  [PROFIL {self._profil.name}] app non signée installée : "
+                  f"{_affichable(app_id)}")
         return True
+
+    def _sdk_compatible(self, manifest: AppManifest) -> bool:
+        """Compatibilité du SDK, dont la version est celle d'AXIS-OS (voir
+        axis_os/__init__.py ; versions au format SemVer). Vérifiée avant le
+        reste : une app écrite pour une version incompatible peut attendre
+        un autre format pour HardwareRequirements ou Capabilities."""
+        if manifest.sdk_version_min is not None:
+            from axis_os import __version__ as axis_os_version, SemVer
+            required = SemVer.parse(manifest.sdk_version_min)
+            current  = SemVer.parse(axis_os_version)
+            if not required.is_compatible_with(current):
+                print(
+                    f"  [ERREUR] Incompatible avec AXIS-OS {current} — "
+                    f"cette app requiert {required} (SDK mineur ou majeur "
+                    f"différent). Mettez à jour l'app ou installez-la sur "
+                    f"une version d'AXIS-OS compatible."
+                )
+                return False
+        return True
+
+    def _cle_approuvee(self, cle: Optional[str]) -> bool:
+        """Vrai si `cle` (clé publique du développeur, déjà vérifiée contre
+        la signature) est acceptée : clé plateforme, ou clé du fichier des
+        clés approuvées. Sans ce fichier (hors production), toute clé
+        est acceptée."""
+        if self._cles_approuvees is None:
+            return True
+        if cle is not None and (cle in self._cles_approuvees
+                                or cle == self._platform_public_key):
+            return True
+        print(f"  [ERREUR] Clé de développeur non approuvée sur ce robot "
+              f"({_affichable(cle or '', 20)}…) : absente du fichier des clés "
+              f"approuvées.")
+        return False
+
+    def install_source(self, source: str, *, code_signature: str,
+                       developer_public_key: str, origine: str = "app") -> bool:
+        """Installe une app à partir de son code source et de sa signature,
+        sans jamais exécuter ce code dans le processus de l'OS.
+
+        C'est le seul chemin d'installation en profil PRODUCTION. Ordre :
+          1. la signature est vérifiée sur le texte (de simples octets) et
+             la clé doit être approuvée (voir _cle_approuvee) ;
+          2. le processus neuf de l'app exécute ce texte et appelle
+             manifest() ; le manifeste revient en JSON et est revérifié
+             champ par champ (manifeste_json.py) ;
+          3. ce manifeste passe ensuite par les mêmes contrôles
+             qu'install() : validate(), SDK, permissions SIGNATURE,
+             capacités, matériel, confirmation des permissions DANGEROUS.
+
+        code_signature et developer_public_key du manifeste sont ceux
+        vérifiés ici, jamais ceux que le code de l'app annonce. Une app déjà
+        installée sous le même app_id est refusée : sa mise à jour depuis la
+        source n'est pas encore prise en charge (update_app() ne connaît
+        que les objets app).
+        """
+        from axis_os.store.sdk.signing import verify_app_signature, SignatureError
+        from axis_os.store.runtime.manifeste_json import manifeste_depuis_json, MessageRefuse
+
+        etiquette = "".join(c if c.isalnum() else "_" for c in origine)[:64] or "app"
+        print(f"\n[PlayStore] Installation depuis la source ({_affichable(origine)})")
+        if not isinstance(source, str):
+            print("  [ERREUR] Source de l'app attendue sous forme de texte.")
+            return False
+        try:
+            valide = verify_app_signature(source, code_signature, developer_public_key)
+        except SignatureError as exc:
+            print(f"  [ERREUR] Signature ou clé malformée : {exc}")
+            return False
+        if not valide:
+            print("  [ERREUR] Signature invalide — le code ne correspond pas à sa "
+                  "signature (code modifié après signature, ou mauvaise clé).")
+            return False
+        if not self._cle_approuvee(developer_public_key):
+            return False
+
+        spec = {"genre": "source", "module": f"axis_app_{etiquette}", "classe": None,
+                "source": source, "fichier": f"<{etiquette}>", "paquet": None}
+        runner = SandboxRunner(etiquette, None, clock=self._clock,
+                               strict=self._profil is Profil.PRODUCTION)
+        res = runner.run_app(spec, "manifest", serveur=None,
+                             tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR)
+        if not res.success:
+            print(f"  [ERREUR] Manifeste illisible : {res.state.name} — {res.error}")
+            return False
+        try:
+            manifest = manifeste_depuis_json(res.result["manifeste"])
+        except (MessageRefuse, KeyError, ValueError) as exc:
+            print(f"  [ERREUR] Manifeste refusé : {exc}")
+            return False
+        manifest.code_signature = code_signature
+        manifest.developer_public_key = developer_public_key
+
+        print(f"  App       : '{_affichable(manifest.name)}' v{_affichable(manifest.version)}")
+        print(f"  Auteur    : {_affichable(manifest.author)}")
+        errors = manifest.validate()
+        if errors:
+            for e in errors:
+                print(f"  [ERREUR] {_affichable(e, 300)}")
+            return False
+        if manifest.app_id in self._apps:
+            print(f"  [ERREUR] '{_affichable(manifest.app_id)}' est déjà installée.")
+            return False
+        if not self._sdk_compatible(manifest):
+            return False
+        return self._terminer_installation(manifest, None, spec, None)
 
     # ── Cycle de vie ──────────────────────────────────────────────
 
@@ -721,41 +842,33 @@ class PlayStoreRuntime:
         entry = self._get(app_id)
         if entry is None: return False
 
-        # Exécuté dans la sandbox : la raison (correctif demandé par un
-        # audit de sécurité externe) est dans la docstring de
-        # _run_start_hook_in_sandbox(). Même pont
-        # HALBridgeServer/HALBridgeClient que run_mission(), même
-        # isolation par processus séparé, avec les quotas déclarés dans le
-        # manifeste de l'app.
-        command_queue: mp.Queue  = mp.Queue()
-        response_queue: mp.Queue = mp.Queue()
-        # Ce RobotContext reste dans le processus parent : il sert au
+        # Exécuté dans la sandbox. Pourquoi : un audit de sécurité externe
+        # (2026-09-14, voir docs/audit_externe_2026-09-14.md et
+        # CHANGELOG.md) a montré que start_app() et stop_app() appelaient
+        # on_start() et on_stop() directement dans le processus de l'OS,
+        # avec un vrai RobotContext : accès complet au HAL, sans quota ni
+        # délai. Le risque était réel : package_sorting appelle
+        # ctx.move_arms(...) dans son on_start(). Même pont et même
+        # isolation que run_mission() (voir _executer_hook).
+        #
+        # Ce RobotContext reste dans le processus de l'OS : il sert au
         # journal et au HALBridgeServer, qui exécute pour l'app les
         # commandes reçues par le pont. L'app ne le reçoit jamais.
         ctx = self._make_ctx(entry.manifest)
         ctx.log(f"Démarrage '{entry.manifest.name}'")
-        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
-        bridge_server.start()
-
         try:
-            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
-            sandbox_result = runner.run(
-                _run_start_hook_in_sandbox,
-                args=(entry.app, command_queue, response_queue),
-            )
-            if sandbox_result.success and sandbox_result.result is not None:
-                ready, _log = sandbox_result.result
+            sandbox_result, _ = self._executer_hook(entry, "on_start", ctx)
+            if sandbox_result.success:
+                ready = sandbox_result.result["pret"]
             else:
                 kind = sandbox_result.error_kind
                 reason = kind.name if kind else "INCONNU"
                 print(f"  [SANDBOX] on_start arrêté par l'isolation : "
-                      f"{sandbox_result.state.name} ({reason})")
+                      f"{sandbox_result.state.name} ({reason}) — {sandbox_result.error}")
                 ready = False
         except Exception as exc:
             print(f"  [ERREUR] on_start: {exc}")
             ready = False
-        finally:
-            bridge_server.stop()
 
         entry.is_started = ready
         ctx.log("Prête." if ready else "Échec initialisation.")
@@ -835,60 +948,54 @@ class PlayStoreRuntime:
 
         t_start = time.monotonic()
 
-        # Isolation par processus séparé. Pourquoi : jusqu'à ce correctif,
+        # Isolation par processus séparé. Pourquoi : à l'origine,
         # entry.app.run_mission(ctx, params) était appelé directement dans
-        # ce processus, sans aucune des protections déjà construites
-        # (SandboxRunner, quotas de CPU, de mémoire et de durée) que le
-        # reste du projet suppose actives pour toute app. Le pont
-        # HALBridgeServer/HALBridgeClient, déjà écrit mais jamais branché,
-        # permet à l'app isolée d'appeler move_arms/move_legs/log/get_imu
-        # exactement comme avant, sans qu'aucune app existante ait besoin
-        # d'être modifiée.
-        command_queue: mp.Queue  = mp.Queue()
-        response_queue: mp.Queue = mp.Queue()
-        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
-        bridge_server.start()
+        # ce processus, sans aucune des protections (quotas de CPU, de
+        # mémoire et de durée) que le reste du projet suppose actives pour
+        # toute app. Le pont HALBridgeServer/HALBridgeClient permet à
+        # l'app isolée d'appeler move_arms/move_legs/log/get_imu exactement
+        # comme avec un RobotContext, sans qu'aucune app ait à changer.
+        sandbox_result, bridge_server = self._executer_hook(
+            entry, "run_mission", ctx, params)
 
-        try:
-            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
-            sandbox_result = runner.run(
-                _run_app_in_sandbox,
-                args=(entry.app, params, command_queue, response_queue),
+        if sandbox_result.success and sandbox_result.result.get("mission") is not None:
+            # Reconstruit champ par champ à partir du JSON vérifié
+            # (processus_app.SCHEMA_MISSION) : aucun objet de l'app.
+            m = sandbox_result.result["mission"]
+            result = MissionResult(
+                success=m["success"], mission_id=mission_id, app_id=app_id,
+                duration_s=time.monotonic() - t_start,
+                items_processed=m["items_processed"] or 0,
+                error_message=m["error_message"],
+                metrics=m["metrics"] if isinstance(m["metrics"], dict) else {},
+                log=list(m["log"] or []),
             )
-
-            if sandbox_result.success and sandbox_result.result is not None:
-                result = sandbox_result.result
-            elif sandbox_result.success and sandbox_result.result is None:
-                # L'app a renvoyé None au lieu d'un MissionResult. Les
-                # PermissionError et EstopActiveError n'arrivent pas
-                # ici : _run_app_in_sandbox les convertit déjà en
-                # MissionResult d'échec, plutôt que de les laisser
-                # remonter jusqu'à SandboxRunner, qui les aurait classées
-                # en APPLICATION_ERROR générique en perdant la distinction
-                # entre refus de sécurité et bug de l'app.
-                result = MissionResult(
-                    success=False, mission_id=mission_id, app_id=app_id,
-                    duration_s=time.monotonic() - t_start,
-                    error_message="Mission sandboxée n'a retourné aucun résultat.",
-                )
-            else:
-                # La sandbox a signalé un échec : délai dépassé, quota
-                # dépassé, plantage du processus, fonction qui ne passe
-                # pas par pickle, ou exception levée par l'app
-                # (APPLICATION_ERROR). Le SandboxErrorKind indique
-                # précisément la cause, pour le diagnostic après coup.
-                kind = sandbox_result.error_kind
-                reason = kind.name if kind else "INCONNU"
-                print(f"  [SANDBOX] Mission arrêtée par l'isolation : "
-                      f"{sandbox_result.state.name} ({reason})")
-                result = MissionResult(
-                    success=False, mission_id=mission_id, app_id=app_id,
-                    duration_s=time.monotonic() - t_start,
-                    error_message=(f"Isolation sandbox : {sandbox_result.state.name} "
-                                   f"— {sandbox_result.error}"),
-                )
-        finally:
-            bridge_server.stop()
+        elif sandbox_result.success:
+            # L'app a renvoyé None au lieu d'un MissionResult. Une
+            # PermissionError ou une EstopActiveError n'arrive pas ici :
+            # le processus de l'app les convertit en MissionResult d'échec
+            # (hote_app._executer), pour garder la distinction entre refus
+            # de sécurité et bug de l'app.
+            result = MissionResult(
+                success=False, mission_id=mission_id, app_id=app_id,
+                duration_s=time.monotonic() - t_start,
+                error_message="Mission sandboxée n'a retourné aucun résultat.",
+            )
+        else:
+            # La sandbox a signalé un échec : délai ou quota dépassé,
+            # plantage, violation du protocole du pont, app impossible à
+            # recharger, ou exception levée par l'app (APPLICATION_ERROR).
+            # Le SandboxErrorKind indique précisément la cause.
+            kind = sandbox_result.error_kind
+            reason = kind.name if kind else "INCONNU"
+            print(f"  [SANDBOX] Mission arrêtée par l'isolation : "
+                  f"{sandbox_result.state.name} ({reason})")
+            result = MissionResult(
+                success=False, mission_id=mission_id, app_id=app_id,
+                duration_s=time.monotonic() - t_start,
+                error_message=(f"Isolation sandbox : {sandbox_result.state.name} "
+                               f"— {sandbox_result.error}"),
+            )
 
         if result:
             result.mission_id = mission_id
@@ -926,29 +1033,17 @@ class PlayStoreRuntime:
         entry = self._get(app_id)
         if entry is None or not entry.is_started: return
 
-        # Exécuté dans la sandbox, pour la même raison que start_app()
-        # ci-dessus : voir _run_stop_hook_in_sandbox().
-        command_queue: mp.Queue  = mp.Queue()
-        response_queue: mp.Queue = mp.Queue()
+        # Exécuté dans la sandbox, pour la même raison que start_app().
         ctx = self._make_ctx(entry.manifest)
-        bridge_server = HALBridgeServer(ctx, command_queue, response_queue)
-        bridge_server.start()
-
         try:
-            runner = SandboxRunner(app_id, entry.manifest.quota, clock=self._clock)
-            sandbox_result = runner.run(
-                _run_stop_hook_in_sandbox,
-                args=(entry.app, command_queue, response_queue),
-            )
-            if not (sandbox_result.success and sandbox_result.result is not None):
+            sandbox_result, _ = self._executer_hook(entry, "on_stop", ctx)
+            if not sandbox_result.success:
                 kind = sandbox_result.error_kind
                 reason = kind.name if kind else "INCONNU"
                 print(f"  [SANDBOX] on_stop arrêté par l'isolation : "
-                      f"{sandbox_result.state.name} ({reason})")
+                      f"{sandbox_result.state.name} ({reason}) — {sandbox_result.error}")
         except Exception as exc:
             print(f"  [ERREUR] on_stop: {exc}")
-        finally:
-            bridge_server.stop()
 
         entry.is_started = False
 
@@ -1016,6 +1111,14 @@ class PlayStoreRuntime:
         l'ancienne reste installée, mais arrêtée si elle tournait.
         Essais : test/test_app_update.py.
         """
+        if self._profil is Profil.PRODUCTION:
+            # Refusé avant tout appel à l'objet (manifest() tournerait dans
+            # l'OS) et avant d'arrêter l'ancienne version, qui reste en
+            # service.
+            print("  [ERREUR] update_app() : refusé en profil PRODUCTION, où une app "
+                  "s'installe depuis sa source signée ; la mise à jour depuis la "
+                  "source n'est pas encore prise en charge.")
+            return False
         new_manifest = new_app.manifest()
         app_id = new_manifest.app_id
 
@@ -1165,6 +1268,31 @@ class PlayStoreRuntime:
             available.add(Capability.MEMORY_PERSISTENT)
         return available
 
+    def _executer_hook(self, entry: "InstalledApp", hook: str, ctx: RobotContext,
+                       params: Optional[Dict[str, Any]] = None):
+        """Exécute un hook de l'app dans son processus neuf et rend
+        (SandboxResult, HALBridgeServer). Le serveur garde, côté OS, le
+        compte des commandes motrices réussies (facturation)."""
+        bridge_server = HALBridgeServer(ctx)
+        if entry.spec is None:
+            return SandboxResult(
+                False, SandboxState.CRASHED,
+                error=f"App impossible à recharger dans son processus : {entry.spec_erreur}",
+                error_kind=SandboxErrorKind.SANDBOX_ERROR), bridge_server
+        # En production, quotas CPU et mémoire obligatoires (psutil) : voir
+        # `strict` dans SandboxRunner.
+        runner = SandboxRunner(entry.manifest.app_id, entry.manifest.quota,
+                               clock=self._clock,
+                               strict=self._profil is Profil.PRODUCTION)
+        # L'état de l'instance est relu à chaque appel, comme le faisait
+        # pickle : un attribut changé par l'opérateur entre deux missions
+        # est vu par la suivante.
+        etat = etat_json(entry.app) if entry.app is not None else None
+        result = runner.run_app(entry.spec, hook, serveur=bridge_server,
+                                params=params, etat=etat,
+                                tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR)
+        return result, bridge_server
+
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
         """Construit le RobotContext d'une app (l'objet par lequel elle
         commande le robot), avec le jeton de session de ce runtime,
@@ -1206,8 +1334,30 @@ class PlayStoreRuntime:
         comme neuve pour cet app_id précis, ce qui n'est jamais pire que
         le comportement sans memory_service.
         """
-        result = self._memory_service.app_load(f"billing::{app_id}", key)
-        return result.value if result.ok else default
+        try:
+            result = self._memory_service.app_load(f"billing::{app_id}", key)
+        except Exception:                 # noqa: BLE001 — voir la docstring
+            return default
+        if not result.ok:
+            return default
+        valeur = result.value
+        # Type attendu vérifié : une valeur d'un autre type (fichier abîmé,
+        # écrit par autre chose que _write_billing_flag) ne doit ni faire
+        # lever _bill() ni fausser la facturation.
+        if key == "one_time_billed":
+            return valeur if isinstance(valeur, bool) else default
+        if key == "last_subscription_bill_time_s":
+            ok = (isinstance(valeur, (int, float)) and not isinstance(valeur, bool)
+                  and math.isfinite(valeur) and valeur >= 0)
+            if not ok:
+                print(f"  [ATTENTION] date de facturation illisible pour "
+                      f"{_affichable(app_id)} : ignorée")
+                return default
+            # Une date dans le futur (horloge en retard au démarrage) est
+            # gardée : elle empêche une nouvelle facturation, à l'avantage du
+            # client, au lieu de faire refacturer l'abonnement.
+            return float(valeur)
+        return default
 
     def _write_billing_flag(self, app_id: str, key: str, value) -> None:
         """Écrit un indicateur de facturation dans MemoryService ; ne fait
@@ -1218,7 +1368,10 @@ class PlayStoreRuntime:
         prochain redémarrage serait perdue, pas la session actuelle."""
         if self._memory_service is None:
             return
-        self._memory_service.app_store(f"billing::{app_id}", key, value)
+        try:
+            self._memory_service.app_store(f"billing::{app_id}", key, value)
+        except Exception as exc:          # noqa: BLE001 — voir la docstring
+            print(f"  [ATTENTION] état de facturation non enregistré ({exc!r:.120})")
 
     def _bill(self, entry: InstalledApp, mission_id: str) -> Optional[BillingReport]:
         """

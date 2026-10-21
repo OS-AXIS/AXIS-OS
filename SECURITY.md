@@ -44,8 +44,13 @@ file read by the OS do something the design says it cannot. In particular:
   platform key;
 - accepting an app with a forged or invalid signature, or reading an
   encrypted app without its key;
-- running code in the OS process from outside it, or from an app, by a path
-  other than the known limit n° 1 below;
+- running code in the OS process from outside it, or from an app (for
+  example through the IPC bridge), except in the one accepted case: in
+  simulation or development, an app installed as an already-loaded object
+  was loaded into the OS process by the operator;
+- an app installed under the PRODUCTION profile without a valid
+  signature, with a key missing from the approved-keys file, or an app
+  that changes the profile;
 - a deployment script that runs downloaded code without checking it, or that
   can leak a token.
 
@@ -58,22 +63,33 @@ or security impact are welcome as ordinary issues.
 These are weaknesses we know about and have not fixed yet. They are the
 reason AXIS-OS is **not ready for a real robot**.
 
-1. **Apps are not isolated from a malicious app's point of view.** An app
-   runs in its own process, but that process starts as a copy of the OS
-   process: on a real G1 it inherits the open connections to the robot's
-   motors (DDS). The channel between the app and the OS also exchanges
-   Python objects (pickle), not plain data. A deliberately hostile app can
-   therefore act outside the HAL, and so outside `JointSafetyGuard`. The
-   sandbox does protect against buggy apps (crashes, infinite loops,
-   quotas). The fix is planned in [docs/isolation_apps.md](docs/isolation_apps.md):
-   its first step is a channel that only carries data, with no pickle.
-   **Until then, install only trusted apps whose code you have reviewed.**
-2. **`ACTUATORS_AI_DRIVEN` is confirmed at install time, but not checked at
-   run time.** The permission tells the user that an AI model will drive
-   the robot, and installing an app that declares it requires their
-   explicit confirmation. But the OS cannot yet tell whether a given command
-   comes from a model or from fixed code: an app that runs a model without
-   declaring the permission is not stopped.
+1. **App isolation against a malicious app is incomplete.** Each call to
+   an app runs in a fresh Python interpreter, which inherits neither the
+   OS memory, nor its HAL objects, nor its open connections: it only gets
+   a socket to the OS, which carries only checked JSON data and no pickle
+   objects any more. An app therefore can no longer get its code run in
+   the OS process through this channel, nor reuse an OS connection to the
+   motors. Under the PRODUCTION profile, an app's code is never loaded into
+   the OS process, not even to read its manifest. Still open: the app
+   process runs as the same user as the OS (it can read the OS files and
+   those of other apps); it has network access (on a real G1 it could open
+   its own DDS connection to the motors, outside `JointSafetyGuard`); its
+   quotas are measured on its first process only, with no seccomp or
+   cgroups. These are steps 2 to 4 of
+   [docs/isolation_apps.md](docs/isolation_apps.md). **Until then, on a
+   real robot, use the PRODUCTION profile and install only trusted apps
+   whose code you have reviewed.**
+2. **`ACTUATORS_AI_DRIVEN` is only partly checked at run time.** The
+   permission tells the user that an AI model will drive the robot, and
+   installing an app that declares it requires their confirmation. At run
+   time, the commands produced by the SDK's AI actions (`VLAAction`,
+   `GR00TAction`, `LocomotionAction`) carry an origin mark, and the OS
+   refuses them to an app without the permission. But the OS cannot tell
+   a number computed by a model from a hard-coded one: an app that builds
+   its own commands from a model's output, without these actions, is not
+   detected. The SDK's `SetpointFollower` passes the mark on when given it
+   (`set_target(..., origine=ORIGINE_IA)`); `walk()` and `move_to_pose()`
+   do not carry it.
 3. **Some model weights, libraries and installers are not pinned.** OWL-ViT
    is loaded at a fixed revision and in the safetensors format. Whisper is
    loaded at the latest revision unless one is given, and `torch` (with
@@ -87,11 +103,15 @@ reason AXIS-OS is **not ready for a real robot**.
    the GR00T-N1.7-3B and Cosmos-Reason2-2B weights
    (`deploy/machine_gpu/entrainer_vla.sh`). A change, or a compromise, of
    those upstream files would be picked up without notice.
-4. **`accepter_tout_SIMULATION` only recognises one real robot.** This
-   helper grants every DANGEROUS permission without asking, for simulation
-   and tests. The Play Store refuses to use it with a real robot, but the
-   only real robot it recognises today is the Unitree G1 driven over DDS. A
-   driver for another physical robot would not be detected.
+4. **Outside production, the only real robot recognised is the G1 over
+   DDS.** `accepter_tout_SIMULATION` grants every DANGEROUS permission
+   without asking, for simulation and tests. It is always refused under
+   the PRODUCTION profile, and both the SIMULATION profile and this helper
+   are refused with a recognised real robot. But the only real robot the
+   OS recognises is the Unitree G1 driven over DDS: in simulation or
+   development, a driver for another physical robot would not be detected.
+   The profile is never guessed: choosing PRODUCTION on any real robot is
+   the operator's job.
 5. **Some permissions are declared but not enforced yet.** An app can
    declare `NETWORK_CLOUD`, `NETWORK_LOCAL`, `SENSORS_FORCE_TORQUE` and
    `FLEET_BROADCAST`, but no check depends on them at run time. The sandbox
@@ -100,6 +120,49 @@ reason AXIS-OS is **not ready for a real robot**.
    `FLEET_BROADCAST` relate to functions that `RobotContext` does not offer
    yet. Filtering the network is step 3 of
    [docs/isolation_apps.md](docs/isolation_apps.md).
+
+6. **Some OS resources are not bounded per app yet.** An app's quotas are
+   those of its manifest, with no ceiling set by the OS and no display at
+   confirmation time. An e-stop refuses its commands but does not stop
+   its mission, which keeps the robot until its time limit. Its persistent
+   memory (`remember`) has no quota. The OS answers a few calls with a
+   model inference (`listen` transcription, `look_for`, `describe_scene`)
+   that can run past the hook's deadline by the length of one inference.
+   A process started by the app that
+   leaves its process group outlives the call: the OS reports it but
+   cannot stop it (cgroups, step 4). Under the same user, an app can also
+   send a signal to the OS process.
+7. **App identity and life cycle in production.** An approved key can
+   publish any `app_id` and any author name, and the confirmation shows
+   the identity the app declares, not its signer. `install_source()` runs
+   the signed code, without robot access, to read its manifest before the
+   human confirmation. An installed app cannot be updated in production,
+   and nothing prevents installing an older version after a restart.
+8. **Voice intents are shared between apps.** The intent registry does not
+   record which app declared what: an app can reserve another app's
+   intent name in advance, and that app then receives the parameters the
+   first one chose. It is capped at 256 declarations for all apps
+   together, so one app can fill it for the others.
+
+## Resolved limits
+
+Weaknesses that earlier versions of this page listed, and what fixed them
+(details in [CHANGELOG.md](CHANGELOG.md)):
+
+- **Pickle on the IPC bridge.** A crafted object sent by an app could run
+  code in the OS process when read. The bridge now carries only bounded,
+  strictly decoded JSON frames, each checked against the schema of its
+  action (`axis_os/store/runtime/canal_ipc.py`).
+- **App process copied from the OS process (fork).** It inherited the OS
+  memory, HAL objects and open connections, such as the DDS sockets of a
+  real G1. Each call now runs in a fresh interpreter that receives only
+  the bridge (`hote_app.py`, `processus_app.py`).
+- **Signature optional everywhere.** Under the PRODUCTION profile it is
+  mandatory, the developer key must be in the local approved-keys file,
+  and `accepter_tout_SIMULATION` is refused (`axis_os/store/runtime/profil.py`).
+- **`ACTUATORS_AI_DRIVEN` never checked at run time.** It now is for
+  commands produced by the SDK's AI actions; see limit n° 2 for what
+  remains.
 
 ---
 
@@ -149,7 +212,11 @@ impossible. En particulier :
 - une app acceptée avec une signature fausse ou invalide, ou une app
   chiffrée lue sans sa clé ;
 - du code exécuté dans le processus de l'OS depuis l'extérieur, ou depuis
-  une app, par un autre chemin que la limite connue n° 1 ci-dessous ;
+  une app (par exemple à travers le pont IPC), hors du seul cas assumé :
+  en simulation ou en développement, une app installée comme objet déjà
+  chargé l'a été par l'opérateur dans le processus de l'OS ;
+- une app installée en profil PRODUCTION sans signature valide, avec une
+  clé absente du fichier des clés approuvées, ou qui change de profil ;
 - un script de déploiement qui exécute du code téléchargé sans le
   vérifier, ou qui peut laisser fuir un jeton.
 
@@ -163,24 +230,35 @@ Ce sont des faiblesses que nous connaissons et que nous n'avons pas encore
 corrigées. C'est pour elles qu'AXIS-OS n'est **pas prêt pour un robot
 réel**.
 
-1. **Les apps ne sont pas isolées face à une app malveillante.** Une app
-   tourne dans son propre processus, mais ce processus démarre comme une
-   copie de celui de l'OS : sur un vrai G1, il hérite des connexions
-   ouvertes vers les moteurs du robot (DDS). Le canal entre l'app et l'OS
-   échange en outre des objets Python (pickle), pas de simples données.
-   Une app délibérément hostile peut donc agir en dehors de la HAL, et donc
-   de `JointSafetyGuard`. Le sandbox protège bien contre les apps buggées
-   (plantage, boucle infinie, quotas). La correction est planifiée dans
-   [docs/isolation_apps.md](docs/isolation_apps.md) : sa première étape est
-   un canal qui ne transporte que des données, sans pickle. **D'ici là,
-   n'installez que des apps de confiance, dont vous avez relu le code.**
-2. **`ACTUATORS_AI_DRIVEN` est confirmée à l'installation, mais pas
-   vérifiée à l'exécution.** Cette permission prévient l'utilisateur qu'un
-   modèle d'IA pilotera le robot, et l'installation d'une app qui la
-   déclare exige sa confirmation explicite. Mais l'OS ne sait pas encore
-   dire si une commande donnée vient d'un modèle ou de code fixe : une app
-   qui fait tourner un modèle sans déclarer la permission n'est pas
-   arrêtée.
+1. **L'isolation des apps face à une app malveillante est incomplète.**
+   Chaque appel à une app tourne dans un interpréteur Python neuf, qui
+   n'hérite ni de la mémoire de l'OS, ni de ses objets HAL, ni de ses
+   connexions ouvertes : il ne reçoit qu'une socket vers l'OS, où ne
+   passent que des données JSON vérifiées, et plus aucun objet pickle. Une
+   app ne peut donc plus faire exécuter son code dans le processus de l'OS
+   par ce canal, ni réutiliser une connexion de l'OS vers les moteurs. En
+   profil PRODUCTION, le code d'une app n'est jamais chargé dans le
+   processus de l'OS, pas même pour lire son manifeste. Restent ouverts :
+   le processus de l'app tourne sous le même utilisateur que l'OS (il peut
+   lire les fichiers de l'OS et ceux des autres apps) ; il a accès au
+   réseau (sur un vrai G1, il pourrait ouvrir sa propre connexion DDS vers
+   les moteurs, hors de `JointSafetyGuard`) ; ses quotas ne sont mesurés
+   que sur son premier processus, sans seccomp ni cgroups. Ce sont les
+   étapes 2 à 4 de [docs/isolation_apps.md](docs/isolation_apps.md). **D'ici
+   là, sur un vrai robot, utilisez le profil PRODUCTION et n'installez que
+   des apps de confiance, dont vous avez relu le code.**
+2. **`ACTUATORS_AI_DRIVEN` n'est vérifiée qu'en partie à l'exécution.**
+   Cette permission prévient l'utilisateur qu'un modèle d'IA pilotera le
+   robot, et l'installation d'une app qui la déclare exige sa confirmation.
+   À l'exécution, les consignes produites par les actions d'IA du SDK
+   (`VLAAction`, `GR00TAction`, `LocomotionAction`) portent une marque
+   d'origine, et l'OS les refuse à une app qui n'a pas la permission. Mais
+   l'OS ne peut pas distinguer un nombre calculé par un modèle d'un nombre
+   écrit en dur : une app qui fabrique elle-même ses consignes à partir
+   d'un modèle, sans passer par ces actions, n'est pas détectée. Le
+   `SetpointFollower` du SDK transmet la marque si on la lui donne
+   (`set_target(..., origine=ORIGINE_IA)`) ; `walk()` et `move_to_pose()`
+   ne la portent pas.
 3. **Certains poids, bibliothèques et installeurs ne sont pas épinglés.**
    OWL-ViT est chargé à une révision fixe et au format safetensors. Whisper
    est chargé à sa dernière révision si on n'en donne pas, et `torch` (avec
@@ -194,12 +272,15 @@ réel**.
    poids GR00T-N1.7-3B et Cosmos-Reason2-2B
    (`deploy/machine_gpu/entrainer_vla.sh`). Une modification, ou une
    compromission, de ces fichiers en amont serait prise sans prévenir.
-4. **`accepter_tout_SIMULATION` ne reconnaît qu'un seul robot réel.** Cette
-   fonction accorde toutes les permissions DANGEROUS sans rien demander,
-   pour la simulation et les tests. Le Play Store refuse de l'utiliser avec
-   un robot réel, mais le seul robot réel qu'il reconnaît aujourd'hui est
-   le Unitree G1 piloté en DDS. Le driver d'un autre robot physique ne
-   serait pas détecté.
+4. **Hors production, le seul robot réel reconnu est le G1 en DDS.**
+   `accepter_tout_SIMULATION` accorde toutes les permissions DANGEROUS sans
+   rien demander, pour la simulation et les tests. Elle est toujours
+   refusée en profil PRODUCTION, et le profil SIMULATION comme cette
+   fonction sont refusés sur un robot réel reconnu. Mais le seul robot réel
+   que l'OS reconnaît est le Unitree G1 piloté en DDS : en simulation ou en
+   développement, le driver d'un autre robot physique ne serait pas
+   détecté. Le profil n'est jamais deviné : c'est à l'opérateur de choisir
+   PRODUCTION sur tout vrai robot.
 5. **Certaines permissions sont déclarées mais pas encore appliquées.** Une
    app peut déclarer `NETWORK_CLOUD`, `NETWORK_LOCAL`,
    `SENSORS_FORCE_TORQUE` et `FLEET_BROADCAST`, mais aucun contrôle n'en
@@ -208,3 +289,51 @@ réel**.
    `NETWORK_LOCAL` ; `SENSORS_FORCE_TORQUE` et `FLEET_BROADCAST` concernent
    des fonctions que `RobotContext` n'offre pas encore. Le filtrage du
    réseau est l'étape 3 de [docs/isolation_apps.md](docs/isolation_apps.md).
+
+6. **Certaines ressources de l'OS ne sont pas encore bornées par app.** Les
+   quotas d'une app sont ceux de son manifeste, sans plafond fixé par l'OS
+   ni affichage au moment de la confirmation. Un e-stop refuse ses
+   commandes mais n'interrompt pas sa mission, qui garde le robot jusqu'à
+   son délai. Sa mémoire persistante (`remember`) n'a pas de quota. L'OS
+   répond à certains appels par une inférence de modèle (transcription de
+   `listen`, `look_for`, `describe_scene`), qui peut dépasser l'échéance
+   du hook de la durée d'un calcul. Un
+   processus lancé par l'app qui quitte son groupe de processus survit à
+   la fin de l'appel : l'OS le signale sans pouvoir l'arrêter (cgroups,
+   étape 4). Sous le même utilisateur, une app peut aussi envoyer un
+   signal au processus de l'OS.
+7. **Identité et cycle de vie des apps en production.** Une clé approuvée
+   peut publier n'importe quel `app_id` et n'importe quel nom d'auteur, et
+   la confirmation affiche l'identité déclarée par l'app, pas son
+   signataire. `install_source()` exécute le code signé, sans accès au
+   robot, pour lire son manifeste avant la confirmation humaine. Une app
+   installée ne peut pas être mise à jour en production, et rien
+   n'empêche, après un redémarrage, d'installer une version plus ancienne.
+8. **Les intentions vocales sont partagées entre apps.** Le registre des
+   intentions ne retient pas quelle app a déclaré quoi : une app peut
+   réserver d'avance le nom d'intention d'une autre, qui recevra alors les
+   paramètres choisis par la première. Il est plafonné à 256 déclarations pour
+   toutes les apps ensemble : une app peut donc le remplir pour les autres.
+
+## Limites résolues
+
+Faiblesses que de précédentes versions de cette page signalaient, et ce
+qui les a corrigées (détails dans [CHANGELOG.md](CHANGELOG.md)) :
+
+- **Pickle sur le pont IPC.** Un objet fabriqué par une app pouvait faire
+  exécuter du code dans le processus de l'OS au moment de sa lecture. Le
+  pont ne transporte plus que des trames JSON bornées et décodées
+  strictement, chacune vérifiée par le schéma de son action
+  (`axis_os/store/runtime/canal_ipc.py`).
+- **Processus de l'app copié de celui de l'OS (fork).** Il héritait de la
+  mémoire de l'OS, de ses objets HAL et de ses connexions ouvertes, comme
+  les sockets DDS d'un vrai G1. Chaque appel tourne désormais dans un
+  interpréteur neuf qui ne reçoit que le pont (`hote_app.py`,
+  `processus_app.py`).
+- **Signature facultative partout.** En profil PRODUCTION, elle est
+  obligatoire, la clé du développeur doit figurer dans le fichier local
+  des clés approuvées, et `accepter_tout_SIMULATION` est refusée
+  (`axis_os/store/runtime/profil.py`).
+- **`ACTUATORS_AI_DRIVEN` jamais vérifiée à l'exécution.** Elle l'est
+  désormais pour les consignes produites par les actions d'IA du SDK ;
+  voir la limite n° 2 pour ce qui reste.

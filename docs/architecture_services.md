@@ -491,8 +491,8 @@ Navigation, perception, préhension, parole, mémoire sont des **services systè
 — compilés dans AXIS-OS, démarrés au boot, sans manifest, sans facturation, sans
 sandbox. Quatre raisons, tirées directement du code existant :
 
-*Latence.* Le sandbox fait passer chaque appel par deux `multiprocessing.Queue`
-avec sérialisation. Acceptable pour une commande de mouvement toutes les 100 ms,
+*Latence.* Le sandbox fait passer chaque appel par une socket Unix, avec
+encodage et vérification JSON de chaque message. Acceptable pour une commande de mouvement toutes les 100 ms,
 catastrophique pour une boucle de perception à 30 images par seconde.
 
 *Durée de vie.* `SandboxRunner` tue le process au bout de `max_runtime_s`. Un
