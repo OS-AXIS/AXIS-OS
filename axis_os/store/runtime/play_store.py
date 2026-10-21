@@ -548,6 +548,9 @@ class PlayStoreRuntime:
         # lui, deux installations du même app_id par deux clés passeraient
         # toutes deux le contrôle du registre.
         self._verrou_installation = threading.Lock()
+        # app_id en cours de mise à jour (update_source, update_app) : son
+        # démarrage est refusé tant que la mise à jour n'est pas finie.
+        self._maj_en_cours: Optional[str] = None
         print(f"\n[PlayStore] Runtime démarré | id={self._id} | robot={robot.robot_id}")
 
     # ── Installation ──────────────────────────────────────────────
@@ -558,10 +561,21 @@ class PlayStoreRuntime:
         False (raison affichée) dès qu'un contrôle échoue.
 
         Ordre des contrôles : validité du manifeste, compatibilité du SDK,
-        signature du code, permissions réservées au système (SIGNATURE),
-        capacités fonctionnelles, matériel, puis, en dernier, confirmation
-        humaine des permissions DANGEROUS.
+        signature du code, registre des apps s'il y en a un, plafonds des
+        quotas, permissions réservées au système (SIGNATURE), capacités
+        fonctionnelles, matériel, puis, en dernier, confirmation humaine des
+        permissions DANGEROUS. Une seule installation à la fois.
         """
+        if not self._verrou_installation.acquire(blocking=False):
+            print("  [ERREUR] Une autre installation est en cours sur ce robot : refusé.")
+            return False
+        try:
+            return self._installer_objet(app)
+        finally:
+            self._verrou_installation.release()
+
+    def _installer_objet(self, app: RobotApp) -> bool:
+        """Corps d'install(), sous le verrou d'installation."""
         if self._profil is Profil.PRODUCTION:
             # L'objet app a déjà été créé dans ce processus : son code (son
             # module, son constructeur, et manifest() juste après) y
@@ -931,6 +945,10 @@ class PlayStoreRuntime:
         if self._registre is None:
             return True
         ancien = self._registre.get(manifest.app_id)
+        if ancien is not None and ancien["cle"] != manifest.developer_public_key:
+            print(f"  [ERREUR] '{_affichable(manifest.app_id)}' a été lié à une autre clé "
+                  f"pendant l'installation : refusé.")
+            return False
         plus_recente = version if ancien is None else max(version, SemVer.parse(ancien["version"]))
         nouveau = dict(self._registre)
         nouveau[manifest.app_id] = {"cle": manifest.developer_public_key,
@@ -1139,6 +1157,7 @@ class PlayStoreRuntime:
                 print(f"  [ERREUR] Une mission est en cours sur ce robot : mise à jour de "
                       f"'{_affichable(app_id)}' refusée.")
                 return False
+            self._maj_en_cours = app_id
             try:
                 if entree.is_started:
                     print(f"  [PlayStore] Arrêt de v{installee} avant mise à jour...")
@@ -1158,6 +1177,7 @@ class PlayStoreRuntime:
                 nouvelle.last_subscription_bill_time_s = derniere_facture
                 return True
             finally:
+                self._maj_en_cours = None
                 self._mission_lock.release()
         finally:
             self._verrou_installation.release()
@@ -1169,6 +1189,10 @@ class PlayStoreRuntime:
         la sandbox. Renvoie True si l'app s'est déclarée prête."""
         entry = self._get(app_id)
         if entry is None: return False
+        if app_id == self._maj_en_cours:
+            print(f"  [ERREUR] '{_affichable(app_id)}' est en cours de mise à jour : "
+                  f"démarrage refusé.")
+            return False
 
         # Exécuté dans la sandbox. Pourquoi : un audit de sécurité externe
         # (2026-09-14, voir docs/audit_externe_2026-09-14.md et
@@ -1523,6 +1547,16 @@ class PlayStoreRuntime:
             return False
         self._mission_lock.release()
 
+        self._maj_en_cours = app_id
+        try:
+            return self._remplacer_objet(existing_entry, new_app, app_id, old_version,
+                                         new_version)
+        finally:
+            self._maj_en_cours = None
+
+    def _remplacer_objet(self, existing_entry, new_app, app_id, old_version,
+                         new_version) -> bool:
+        """Suite d'update_app(), pendant laquelle start_app(app_id) est refusé."""
         was_started = existing_entry.is_started
         if was_started:
             print(f"  [PlayStore] Arrêt de l'ancienne version de "

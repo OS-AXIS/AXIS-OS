@@ -225,11 +225,17 @@ def ecrire_registre_apps(chemin: Union[str, os.PathLike],
         except OSError:
             pass
         raise
-    dossier = os.open(p.parent, os.O_RDONLY | os.O_DIRECTORY)
+    # Le nouveau registre est en place : un échec ici ne fait que le rendre
+    # moins sûr face à une coupure, il ne doit pas faire croire à un refus.
     try:
-        os.fsync(dossier)
-    finally:
-        os.close(dossier)
+        dossier = os.open(p.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dossier)
+        finally:
+            os.close(dossier)
+    except OSError as exc:
+        print(f"  [ATTENTION] Registre des apps écrit, mais sa durabilité n'est pas "
+              f"garantie (fsync du dossier : {exc!r:.120}).")
 
 
 def creer_registre_apps(chemin: Union[str, os.PathLike]) -> None:

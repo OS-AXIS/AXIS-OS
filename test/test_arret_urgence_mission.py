@@ -153,7 +153,9 @@ class AppQuiEcoute(RobotApp):
         return manifeste("com.test.ecoute", [Permission.SENSORS_MICROPHONE])
 
     def on_start(self, ctx): return True
-    def on_stop(self, ctx): pass
+
+    def on_stop(self, ctx):
+        ctx.listen(1.0)
 
     def run_mission(self, ctx, params):
         ctx.listen(5.0)
@@ -284,6 +286,12 @@ check(f"Mission rendue (verrou compris) en moins de {BORNE_S:g} s, sans attendre
 check("… notée interrompue, pas facturée",
       r is not None and r.interrompue_par_arret_urgence and rt._billing == [])
 check("… son processus ne tourne plus", hotes_vivants() == [], str(hotes_vivants()))
+t0 = time.monotonic()
+with contextlib.redirect_stdout(io.StringIO()):
+    rt.stop_app("com.test.ecoute")
+check("Tant que l'écoute abandonnée tourne, le micro est occupé : l'écoute d'on_stop est "
+      "refusée au lieu d'attendre", time.monotonic() - t0 < BORNE_S,
+      f"{time.monotonic() - t0:.2f} s")
 
 section("6. on_start en cours")
 with contextlib.redirect_stdout(io.StringIO()):
@@ -360,6 +368,37 @@ with contextlib.redirect_stdout(io.StringIO()):
         arret=lambda: True)
 check("Un descendant sorti du groupe ne retient pas le retour", time.monotonic() - t0 < BORNE_S
       and res8.state is SandboxState.KILLED, f"{time.monotonic() - t0:.2f} s, {res8.state}")
+def sans_veilleur():
+    """Lance une fonction de 20 s alors que le veilleur ne peut pas démarrer
+    (plus de threads disponibles) ; rend l'exception levée. (Une fonction et
+    non du code de niveau module : le processus d'une app de ce script n'en
+    reprend que les définitions.)"""
+    import axis_os.store.runtime.sandbox as module_sandbox
+    vrai_thread = module_sandbox.threading.Thread
+
+    class ThreadVeilleurImpossible(vrai_thread):
+        def start(self):
+            if self.name.startswith("arret-urgence"):
+                raise RuntimeError("can't start new thread")
+            super().start()
+
+    module_sandbox.threading.Thread = ThreadVeilleurImpossible
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            SandboxRunner("t.veilleur", ResourceQuota(max_runtime_s=10.0)).run_app(
+                reference_fonction(time.sleep), "fonction", args=[20], arret=lambda: False)
+        return None
+    except RuntimeError as exc:
+        return exc
+    finally:
+        module_sandbox.threading.Thread = vrai_thread
+
+
+leve = sans_veilleur()
+time.sleep(0.5)
+check("Veilleur impossible à démarrer : l'erreur remonte telle quelle, et le processus de "
+      "l'app est quand même arrêté", leve is not None and "start new thread" in str(leve)
+      and hotes_vivants() == [], f"{leve!r} {hotes_vivants()}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

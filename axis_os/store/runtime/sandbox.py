@@ -288,6 +288,11 @@ class SandboxRunner:
     # moyen de les interrompre : sous `arret`, ils sont servis dans un thread
     # que run_app abandonne si le processus de l'app est tué entre-temps.
     ACTIONS_LENTES = frozenset({"listen", "look_for", "describe_scene"})
+    # Appels lents abandonnés après un arrêt d'urgence et encore en cours,
+    # dans tout le processus de l'OS : tant qu'il en reste un, micro et
+    # caméra sont occupés, et un nouvel appel lent est refusé.
+    _abandonnes: list = []
+    _verrou_abandonnes = threading.Lock()
 
     def run_app(self, spec: dict, hook: str, *, serveur=None, params=None,
                 etat: Optional[dict] = None, tolerance_lenteur: float = 60.0,
@@ -359,10 +364,11 @@ class SandboxRunner:
                                        args=(proc, t_start, cpu_actif), daemon=True)
             monitor.start()
             if arret is not None:
-                veilleur = threading.Thread(
+                fil = threading.Thread(
                     target=self._veiller_arret, args=(proc, arret, arret_vu, boucle_finie, tue),
                     daemon=True, name=f"arret-urgence-{self._app_id}")
-                veilleur.start()
+                fil.start()
+                veilleur = fil          # seulement une fois démarré : voir le finally
 
             fin, violation_protocole, refus = None, None, 0
             limite = self._quota.max_runtime_s + 1.0
@@ -398,6 +404,12 @@ class SandboxRunner:
                             continue
                         reponse = {"request_id": rid, "success": False, "data": None,
                                    "error": "ESTOP_ACTIVE:arrêt d'urgence, mission interrompue"}
+                    elif msg.get("action") in self.ACTIONS_LENTES and self._peripherique_occupe():
+                        if isinstance(rid, bool) or not isinstance(rid, int):
+                            continue
+                        reponse = {"request_id": rid, "success": False, "data": None,
+                                   "error": "périphérique encore occupé par un appel interrompu "
+                                            "par un arrêt d'urgence"}
                     elif serveur is not None:
                         # Le serveur reçoit le temps qui reste au hook : une
                         # action qui bloque par nature (listen) ne doit pas
@@ -522,24 +534,36 @@ class SandboxRunner:
         finally:
             # Le veilleur est joint AVANT fermer(), qui récolte le processus :
             # il ne peut jamais viser un numéro de processus déjà réutilisé.
-            boucle_finie.set()
-            if veilleur is not None:
-                veilleur.join()
-            proc.fermer()
+            try:
+                boucle_finie.set()
+                if veilleur is not None:
+                    veilleur.join()
+            finally:
+                proc.fermer()
 
-    @staticmethod
-    def _servir_abandonnable(serveur, msg, reste: float, tue: threading.Event):
+    @classmethod
+    def _servir_abandonnable(cls, serveur, msg, reste: float, tue: threading.Event):
         """Sert un appel lent (ACTIONS_LENTES) dans un thread et attend sa
         réponse, sauf si le processus de l'app est tué entre-temps : la
         mission rend alors la main tout de suite, et la réponse, arrivée
-        trop tard, est jetée."""
+        trop tard, est jetée ; le thread reste noté comme abandonné tant
+        qu'il tourne (voir _peripherique_occupe)."""
         boite = {}
         fil = threading.Thread(target=lambda: boite.update(r=serveur.traiter(msg, reste_s=reste)),
                                daemon=True, name="appel-lent")
         fil.start()
         while fil.is_alive() and not tue.is_set():
             fil.join(0.05)
+        if fil.is_alive():
+            with cls._verrou_abandonnes:
+                cls._abandonnes.append(fil)
         return boite.get("r")
+
+    @classmethod
+    def _peripherique_occupe(cls) -> bool:
+        with cls._verrou_abandonnes:
+            cls._abandonnes[:] = [f for f in cls._abandonnes if f.is_alive()]
+            return bool(cls._abandonnes)
 
     def _veiller_arret(self, proc, arret: Callable[[], bool],
                        arret_vu: threading.Event, boucle_finie: threading.Event,

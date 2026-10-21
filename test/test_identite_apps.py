@@ -441,7 +441,72 @@ try:
 finally:
     os.chdir(cwd)
 
-section("10. Deux installations simultanées du même app_id")
+section("10. Pendant une mise à jour")
+
+
+class OperateurPresse(Operateur):
+    """Pendant qu'on lui demande de confirmer, quelqu'un d'autre agit."""
+    def __init__(self, action):
+        super().__init__()
+        self.action, self.resultat = action, None
+
+    def __call__(self, manifest, permissions, details=None):
+        if manifest.version != "1.0.0":
+            self.resultat = self.action()
+        return True
+
+
+REG = nouveau_registre()
+autre = paquet(B, "1.0.0", app_id="com.test.autre")
+pendant = OperateurPresse(lambda: silencieux(rt_maj.start_app, "com.test.identite")[0])
+rt_maj = runtime(REG, pendant)
+installer(rt_maj, A, "1.0.0")
+silencieux(rt_maj.start_app, "com.test.identite")
+ok, _ = installer(rt_maj, A, "1.1.0", methode="update_source")
+check("Pendant la confirmation d'une mise à jour, l'ancienne version ne peut pas être "
+      "redémarrée", ok is True and pendant.resultat is False
+      and rt_maj._apps["com.test.identite"].manifest.version == "1.1.0"
+      and rt_maj._apps["com.test.identite"].is_started is False, str(pendant.resultat))
+pendant.action = lambda: silencieux(rt_maj.install_source, autre[0], manifeste=autre[1],
+                                    code_signature=autre[2],
+                                    developer_public_key=B.public_key_b64)[0]
+ok, _ = installer(rt_maj, A, "1.2.0", methode="update_source")
+check("… ni une autre installation depuis la source commencer",
+      ok is True and pendant.resultat is False)
+AppVersion.VERSION = "1.0.0"
+pendant_dev = OperateurPresse(lambda: silencieux(rt_dev.install, AppVersion())[0])
+rt_dev = silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.DEVELOPPEMENT, cles_approuvees=CLES,
+                    registre_apps=nouveau_registre(), confirmer_permissions=pendant_dev)[0]
+installer(rt_dev, A, "1.0.0")
+ok, _ = installer(rt_dev, A, "1.1.0", methode="update_source")
+check("… ni, hors production, une installation d'objet app (install), qui écrit aussi le "
+      "registre", ok is True and pendant_dev.resultat is False
+      and "com.test.version" not in rt_dev._apps, str(pendant_dev.resultat))
+
+import axis_os.store.runtime.profil as module_profil  # noqa: E402
+vrai_open = module_profil.os.open
+
+
+def open_sans_dossier(chemin, drapeaux, *a, **kw):
+    if drapeaux & os.O_DIRECTORY:
+        raise OSError(5, "Input/output error")
+    return vrai_open(chemin, drapeaux, *a, **kw)
+
+
+REG = nouveau_registre()
+rt_fsync = runtime(REG)
+module_profil.os.open = open_sans_dossier
+try:
+    ok, sortie = installer(rt_fsync, A, "1.0.0")
+finally:
+    module_profil.os.open = vrai_open
+check("fsync du dossier en échec après l'écriture du registre : installation gardée, "
+      "avec un avertissement, disque et mémoire d'accord",
+      ok is True and "durabilité" in sortie
+      and lire_registre_apps(REG).get("com.test.identite") == rt_fsync._registre.get(
+          "com.test.identite"), sortie[-200:])
+
+section("11. Deux installations simultanées du même app_id")
 REG = nouveau_registre()
 rt = runtime(REG, Operateur(attente_s=0.3))
 resultats = {}
