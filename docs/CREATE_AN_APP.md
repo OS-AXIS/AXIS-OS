@@ -566,7 +566,10 @@ install or update it. To publish a new version: same key, a **strictly**
 greater version number (`MAJOR.MINOR.PATCH`, digits without leading
 zeros), then `runtime.update_source(...)` with the same arguments. A robot
 refuses a version older than the newest it has installed, even after a
-restart. Outside production, `sign_app_file` (the code alone) is still
+restart, and different content under a version number already installed:
+any change, even one line, needs a new number. A version that changes the
+pricing model or raises the price must be accepted by the human who
+installs it. Outside production, `sign_app_file` (the code alone) is still
 accepted by `install()`.
 
 ### Publishing

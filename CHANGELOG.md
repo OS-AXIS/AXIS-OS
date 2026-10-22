@@ -25,8 +25,9 @@ reste ouvert y est décrit).
 - **Quotas et clé signataire montrés à l'humain** : `confirmer_au_terminal`
   affiche les quotas, l'empreinte de la clé qui a signé l'app, le nom
   inscrit pour elle dans le fichier des clés approuvées, ce que le
-  registre sait de l'`app_id`, et présente l'auteur comme déclaré.
-  `signing.public_key_fingerprint()` donne l'empreinte.
+  registre sait de l'`app_id`, le prix (`decrire_prix`), et présente
+  l'auteur comme déclaré. `signing.public_key_fingerprint()` donne
+  l'empreinte.
 - **L'arrêt d'urgence interrompt la mission en cours** : les appels de
   l'app reçoivent `ESTOP_ACTIVE`, elle a 0,5 s pour rendre son résultat,
   puis son groupe de processus est tué (`SandboxState.KILLED`,
@@ -34,7 +35,8 @@ reste ouvert y est décrit).
   réponse de l'OS. La mission est notée
   `MissionResult.interrompue_par_arret_urgence`, échouée, jamais facturée,
   y compris quand l'app a elle-même déclenché l'e-stop. Le robot reste
-  arrêté. `IsaacSimHAL.emergency_stop_all()` pose désormais `estop_active`.
+  arrêté. `on_start` et `on_stop` appelés sous e-stop sont interrompus de
+  même. `IsaacSimHAL.emergency_stop_all()` pose désormais `estop_active`.
 - **Quota de mémoire persistante par app** : `MemoryService.app_store()`
   refuse au-delà de `MAX_CLES_PAR_APP` (1 000) clés ou
   `MAX_OCTETS_PAR_APP` (1 Mio) ; `remember()` rend alors False et la
@@ -48,12 +50,19 @@ reste ouvert y est décrit).
 - **Registre des apps** (`profil.lire_registre_apps`,
   `ecrire_registre_apps`, `creer_registre_apps`) : chaque `app_id` est lié
   à la clé qui l'a installé la première fois, avec la version la plus
-  récente installée ; une autre clé ne peut ni l'installer ni le mettre à
-  jour, et une version plus ancienne est refusée, même après un
-  redémarrage.
+  récente installée et l'empreinte (SHA-256) de son contenu signé ; une
+  autre clé ne peut ni l'installer ni le mettre à jour, une version plus
+  ancienne est refusée, même après un redémarrage, et la même version ne
+  se réinstalle qu'avec le même contenu. Un registre écrit avant ce
+  changement (sans empreinte) reste lisible.
 - **Mises à jour en production** : `update_source()`, même clé, version
-  strictement plus récente, facturation conservée. Une seule installation
-  depuis la source à la fois.
+  strictement plus récente ; facturation, nombre de missions et revenu
+  conservés (aussi par `update_app()`). Une seule installation depuis la
+  source à la fois.
+- **Nouveau prix confirmé** : une nouvelle version qui change le modèle
+  de prix ou augmente le prix demande l'accord de l'humain, même sans
+  permission DANGEROUS ; `DetailsConfirmation` gagne `prix` et
+  `prix_precedent`.
 - **Intentions vocales par app** : chaque app a son espace et son
   plafond (`IntentRegistry.MAX_INTENTIONS`, désormais par app) ; elle ne
   reçoit que ses intentions, ne peut pas réserver le nom d'une autre, et
@@ -87,8 +96,12 @@ Ce qui casse pour un appelant :
   production) l'appliquent aussi ; une app non signée ne peut pas prendre
   un `app_id` déjà lié.
 - `remember()` rend False au-delà du quota de l'app.
-- Un e-stop pendant `run_mission` ou `on_start` arrête le processus de
-  l'app ; une app qui avalait `EstopActiveError` pour continuer est tuée
+- Une mise à jour qui change le modèle de prix ou augmente le prix est
+  refusée sans confirmateur configuré.
+- Avec un registre, republier un autre contenu sous un numéro de version
+  déjà installé est refusé : il faut un numéro plus grand.
+- Un e-stop pendant `run_mission`, `on_start` ou `on_stop` arrête le
+  processus de l'app ; une app qui avalait `EstopActiveError` pour continuer est tuée
   0,5 s après.
 - `IntentRegistry.register(decl, app_id=None)`, `match(texte, app_id=None)`
   et `SpeechService.listen(duree, app_id=None)` prennent l'espace de

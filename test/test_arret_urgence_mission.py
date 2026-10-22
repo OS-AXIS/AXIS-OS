@@ -18,6 +18,8 @@ Vérifié ici, chaque fois sur un robot neuf (un e-stop ne se réarme pas) :
      et la mission rend la main (verrou compris) sans attendre la fin de
      l'appel ;
   6. on_start en cours : interrompu de même, l'app n'est pas démarrée ;
+     on_stop, appelé sous e-stop, est interrompu de même : l'app est
+     arrêtée sans attendre la fin de son quota ;
   7. SandboxRunner seul : état KILLED, cause ARRET_URGENCE, même si un
      programme lancé hors du groupe de processus survit ; sans arrêt
      d'urgence, rien ne change.
@@ -343,6 +345,33 @@ with contextlib.redirect_stdout(io.StringIO()):
     pret = rt.start_app("com.test.demarre_vite")
 check("Sous e-stop, une app qui répond vite à on_start n'est pas démarrée non plus",
       pret is False and not rt._apps["com.test.demarre_vite"].is_started)
+
+
+
+class AppQuiSArreteLentement(RobotApp):
+    """on_stop qui attend 15 s (rangement long)."""
+    def manifest(self):
+        return manifeste("com.test.arret_lent", [])
+
+    def on_start(self, ctx): return True
+
+    def on_stop(self, ctx):
+        t0 = ctx.now()
+        while ctx.now() - t0 < 15.0:
+            ctx.sleep(0.05)
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
+
+
+robot, rt = pile(AppQuiSArreteLentement())
+with contextlib.redirect_stdout(io.StringIO()):
+    robot.emergency_stop_all()
+    t0 = time.monotonic()
+    rt.stop_app("com.test.arret_lent")
+check(f"Sous e-stop, on_stop est interrompu : stop_app rend la main en moins de {BORNE_S:g} s",
+      time.monotonic() - t0 < BORNE_S, f"{time.monotonic() - t0:.2f} s")
+check("… et l'app est arrêtée", not rt._apps["com.test.arret_lent"].is_started)
 
 section("7. SandboxRunner seul")
 spec = reference_fonction(time.sleep)

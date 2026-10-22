@@ -573,7 +573,10 @@ nouvelle version : même clé, numéro de version **strictement** plus grand
 (`MAJEUR.MINEUR.CORRECTIF`, chiffres sans zéro en tête), puis
 `runtime.update_source(...)` avec les mêmes arguments. Un robot refuse une
 version plus ancienne que la plus récente qu'il ait installée, même après
-un redémarrage. Hors production, `sign_app_file` (le code seul) reste
+un redémarrage, et un autre contenu sous un numéro déjà installé : tout
+changement, même d'une ligne, demande un nouveau numéro. Une version qui
+change le modèle de prix ou augmente le prix doit être acceptée par
+l'humain qui installe. Hors production, `sign_app_file` (le code seul) reste
 accepté par `install()`.
 
 ### Publier

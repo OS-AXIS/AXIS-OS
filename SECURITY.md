@@ -144,7 +144,9 @@ reason AXIS-OS is **not ready for a real robot**.
    hand. The registry and the approved-keys file are protected only by
    their Unix permissions: while apps run as the same user as the OS
    (limit n° 1), an app can rewrite the registry, which the OS must be
-   able to rewrite too.
+   able to rewrite too. The registry does not keep the price: a new price
+   is confirmed on an update, but after a restart an installation is not
+   compared with the price of the version installed before.
 
 ## Resolved limits
 
@@ -177,7 +179,8 @@ Weaknesses that earlier versions of this page listed, and what fixed them
   (`EstopActiveError` on its next call), its process is killed half a
   second later, even in the middle of a computation, and the mission is
   recorded as "interrupted by emergency stop", never billed; the robot
-  stays stopped (`test/test_arret_urgence_mission.py`).
+  stays stopped. `on_start` and `on_stop` called under e-stop are
+  interrupted the same way (`test/test_arret_urgence_mission.py`).
 - **Persistent memory with no quota (former limit n° 6).** `remember` is
   limited to 1,000 keys and 1 MiB per app, with a clear refusal
   (`MemoryService.app_store`).
@@ -188,10 +191,13 @@ Weaknesses that earlier versions of this page listed, and what fixed them
   first installed it (persistent registry, mandatory in production):
   another key can neither install nor update it. The confirmation shows
   the signing key (fingerprint, name recorded in the approved-keys file),
-  not only the declared author. Updates go through `update_source()`:
-  same key, strictly newer version; the newest installed version survives
-  a restart (`test/test_identite_apps.py`). Trust on first install
-  remains: limit n° 7.
+  not only the declared author, and the price; a new version that
+  changes the pricing model or raises the price must be accepted by the
+  human. Updates go through `update_source()`: same key, strictly newer
+  version; the newest installed version survives a restart, and that
+  version number is reinstalled only with the same signed content (its
+  SHA-256 is in the registry) (`test/test_identite_apps.py`). Trust on
+  first install remains: limit n° 7.
 - **Voice intents shared between apps (former limit n° 8).** Each app has
   its own intent space and its own cap: it only receives its own intents
   and cannot reserve another app's name (`test/test_intentions_par_app.py`).
@@ -348,7 +354,10 @@ réel**.
    le fichier des clés approuvées ne sont protégés que par leurs droits
    Unix : tant que les apps tournent sous le même utilisateur que l'OS
    (limite n° 1), une app peut réécrire le registre, que l'OS doit pouvoir
-   réécrire lui aussi.
+   réécrire lui aussi. Le registre ne garde pas le prix : un nouveau prix
+   est confirmé lors d'une mise à jour, mais après un redémarrage une
+   installation n'est pas comparée au prix de la version installée
+   avant.
 
 ## Limites résolues
 
@@ -385,7 +394,8 @@ qui les a corrigées (détails dans [CHANGELOG.md](CHANGELOG.md)) :
   (`EstopActiveError` à son prochain appel), son processus est tué une
   demi-seconde plus tard, même en plein calcul, et la mission est notée
   « interrompue par arrêt d'urgence », jamais facturée ; le robot reste
-  arrêté (`test/test_arret_urgence_mission.py`).
+  arrêté. `on_start` et `on_stop` appelés sous e-stop sont interrompus de
+  même (`test/test_arret_urgence_mission.py`).
 - **Mémoire persistante sans quota (ancienne limite n° 6).** `remember`
   est limitée à 1 000 clés et 1 Mio par app, avec un refus clair
   (`MemoryService.app_store`).
@@ -396,10 +406,13 @@ qui les a corrigées (détails dans [CHANGELOG.md](CHANGELOG.md)) :
   installé la première fois (registre persistant, obligatoire en
   production) : une autre clé ne peut ni l'installer ni le mettre à jour.
   La confirmation montre la clé signataire (empreinte, nom inscrit dans le
-  fichier des clés approuvées), pas seulement l'auteur déclaré. Les mises
-  à jour passent par `update_source()` : même clé, version strictement
-  plus récente ; la version la plus récente installée survit au
-  redémarrage (`test/test_identite_apps.py`). Reste la confiance à la
+  fichier des clés approuvées), pas seulement l'auteur déclaré, et le
+  prix ; une nouvelle version qui change le modèle de prix ou augmente le
+  prix doit être acceptée par l'humain. Les mises à jour passent par
+  `update_source()` : même clé, version strictement plus récente ; la
+  version la plus récente installée survit au redémarrage, et ce numéro
+  ne se réinstalle qu'avec le même contenu signé (son SHA-256 est au
+  registre) (`test/test_identite_apps.py`). Reste la confiance à la
   première installation : limite n° 7.
 - **Intentions vocales partagées entre apps (ancienne limite n° 8).**
   Chaque app a son propre espace d'intentions et son propre plafond : elle

@@ -51,12 +51,14 @@ Registre des apps
 Fichier JSON local, obligatoire en PRODUCTION (paramètre registre_apps de
 PlayStoreRuntime), qui survit aux redémarrages :
 
-    {"format": 1, "apps": {"<app_id>": {"cle": "<clé base64>", "version": "X.Y.Z"}}}
+    {"format": 1, "apps": {"<app_id>": {"cle": "<clé base64>", "version": "X.Y.Z",
+                                         "empreinte": "<SHA-256 de ce qui est signé>"}}}
 
 La première clé qui installe un app_id le lie à elle : aucune autre clé ne
 peut ensuite installer ou mettre à jour cet app_id, et aucune version
 antérieure à la plus récente déjà installée n'est acceptée, même après un
-redémarrage. Le fichier doit exister avant le premier démarrage (créé une
+redémarrage ; cette version-là ne se réinstalle qu'avec le même contenu
+signé (empreinte). Le fichier doit exister avant le premier démarrage (créé une
 fois par creer_registre_apps) : un chemin mal saisi ou un fichier supprimé
 ne doit pas remettre les liaisons à zéro en silence. Mêmes règles d'accès
 que le fichier des clés approuvées ; il est réécrit par l'OS (fichier
@@ -190,8 +192,12 @@ def lire_registre_apps(chemin: Union[str, os.PathLike]) -> Dict[str, Dict[str, s
     if set(d) != {"format", "apps"} or d["format"] != 1 or not isinstance(apps, dict):
         raise RegistreAppsInvalide(f"{p} : format attendu {{\"format\": 1, \"apps\": {{...}}}}")
     for app_id, lien in apps.items():
-        ok = (isinstance(lien, dict) and set(lien) == {"cle", "version"}
-              and _cle_valide(lien["cle"]) and isinstance(lien["version"], str))
+        ok = (isinstance(lien, dict) and set(lien) in ({"cle", "version"},
+                                                      {"cle", "version", "empreinte"})
+              and _cle_valide(lien["cle"]) and isinstance(lien["version"], str)
+              and (lien.get("empreinte") is None
+                   or (isinstance(lien["empreinte"], str) and len(lien["empreinte"]) == 64
+                       and all(c in "0123456789abcdef" for c in lien["empreinte"]))))
         if ok:
             try:
                 ok = str(SemVer.parse(lien["version"])) == lien["version"]

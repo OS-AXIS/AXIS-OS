@@ -30,8 +30,9 @@ Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 
 from __future__ import annotations
 import copy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Callable, Optional, Dict, Any, List, Union
+import hashlib
 import math
 import os
 import time
@@ -61,7 +62,7 @@ from axis_os.store.runtime.processus_app import (
     AppNonRechargeable, etat_json, rendre_os_non_inspectable, spec_depuis_instance,
 )
 from axis_os.services.memory.service import MemoryService
-from axis_os.store.sdk.signing import public_key_fingerprint
+from axis_os.store.sdk.signing import message_paquet, public_key_fingerprint
 import threading
 
 
@@ -103,6 +104,8 @@ class DetailsConfirmation:
     nom_signataire: Optional[str]   # nom inscrit dans le fichier des clés approuvées
     fichier_cles:   Optional[str]   # chemin de ce fichier, s'il y en a un
     liaison:        Optional[str] = None  # ce que dit le registre des apps de cet app_id
+    prix:           Optional[str] = None  # ce que paiera le client (decrire_prix)
+    prix_precedent: Optional[str] = None  # prix de la version installée, s'il change
 
 
 MOTIF_ARRET_URGENCE = "Mission interrompue par arrêt d'urgence (e-stop)"
@@ -123,6 +126,17 @@ def decrire_quotas(q: Any) -> List[str]:
         f"Mémoire persistante : {MemoryService.MAX_CLES_PAR_APP} clés et "
         f"{MemoryService.MAX_OCTETS_PAR_APP // 1024} Kio au plus (fixé par l'OS)",
     ]
+
+
+def decrire_prix(m: Any) -> str:
+    """Ce que paiera le client, en clair."""
+    if m.pricing_model == PricingModel.FREE:
+        return "gratuite"
+    modele = {PricingModel.ONE_TIME: "achat unique",
+              PricingModel.SUBSCRIPTION: "abonnement, par période de 30 jours",
+              PricingModel.PAY_PER_MISSION: "à chaque mission"}.get(m.pricing_model,
+                                                                  m.pricing_model.name)
+    return f"{m.store_price_eur:.2f} € ({modele})"
 
 
 def decrire_signataire(details: Optional[DetailsConfirmation]) -> str:
@@ -190,18 +204,27 @@ def confirmer_au_terminal(manifest: AppManifest, permissions: List[Permission],
     demandées."""
     app_id = _affichable(manifest.app_id)
     noms = ", ".join(p.name for p in permissions)
-    print(f"\n  L'app « {_affichable(manifest.name)} » ({app_id}, auteur déclaré : "
-          f"{_affichable(manifest.author)}) demande des permissions DANGEREUSES :")
+    if permissions:
+        print(f"\n  L'app « {_affichable(manifest.name)} » ({app_id}, auteur déclaré : "
+              f"{_affichable(manifest.author)}) demande des permissions DANGEREUSES :")
+    else:
+        print(f"\n  L'app « {_affichable(manifest.name)} » ({app_id}, auteur déclaré : "
+              f"{_affichable(manifest.author)}) change de prix :")
     for p in permissions:
         print(f"    - {p.name}")
+    print(f"  Prix       : {decrire_prix(manifest)}")
+    if details is not None and details.prix_precedent:
+        print(f"  ⚠ PRIX MODIFIÉ : la version installée coûtait {details.prix_precedent}")
     print(f"  Signée par : {decrire_signataire(details)}")
     if details is not None and details.liaison:
         print(f"  Registre   : {details.liaison}")
     print("  Ressources maximales :")
     for ligne in decrire_quotas(manifest.quota):
         print(f"    - {ligne}")
+    question = (f"  Accorder {noms} à {app_id} ? [o/N] " if permissions
+                else f"  Accepter le nouveau prix de {app_id} ? [o/N] ")
     try:
-        rep = input(f"  Accorder {noms} à {app_id} ? [o/N] ")
+        rep = input(question)
     except (EOFError, OSError):
         return False
     return rep.strip().lower() in ("o", "oui")
@@ -701,9 +724,10 @@ class PlayStoreRuntime:
                           f"une app non signée ne peut pas prendre cet app_id.")
                     return False
             else:
-                if not self._verifier_registre(manifest, version):
+                empreinte = hashlib.sha256(source_verifiee.encode("utf-8")).hexdigest()
+                if not self._verifier_registre(manifest, version, empreinte):
                     return False
-                avant_enregistrement = lambda: self._lier(manifest, version)  # noqa: E731
+                avant_enregistrement = lambda: self._lier(manifest, version, empreinte)  # noqa: E731
         return self._terminer_installation(manifest, app, spec, spec_erreur,
                                            avant_enregistrement=avant_enregistrement)
 
@@ -816,6 +840,11 @@ class PlayStoreRuntime:
         details = self._details_confirmation(manifest)
         print(f"  Signée par : {decrire_signataire(details)}")
         print(f"  Quotas    : {' ; '.join(decrire_quotas(manifest.quota))}")
+        print(f"  Prix      : {decrire_prix(manifest)}")
+        # Une nouvelle version (mise à jour, ou réinstallation par-dessus)
+        # qui change le modèle de prix ou augmente le prix doit être acceptée
+        # par l'humain, même sans permission DANGEROUS.
+        prix_change = details.prix_precedent is not None
 
         # Permissions DANGEROUS : confirmation humaine explicite, demandée en
         # dernier pour ne pas faire accepter à un humain une app qui serait
@@ -824,12 +853,12 @@ class PlayStoreRuntime:
         dangereuses = list(dict.fromkeys(
             p for p in manifest.permissions
             if get_protection_level(p) == ProtectionLevel.DANGEROUS))
-        if dangereuses:
-            noms = [p.name for p in dangereuses]
+        if dangereuses or prix_change:
+            noms = [p.name for p in dangereuses] or ["(nouveau prix)"]
             if self._confirmer_permissions is None:
-                print(f"  [ERREUR] Permission(s) DANGEROUS {noms} : aucune confirmation "
-                      f"configurée sur ce runtime (confirmer_permissions) — refus par "
-                      f"défaut.")
+                print(f"  [ERREUR] Permission(s) DANGEROUS ou nouveau prix {noms} : aucune "
+                      f"confirmation configurée sur ce runtime (confirmer_permissions) — "
+                      f"refus par défaut.")
                 return False
             try:
                 if getattr(self._confirmer_permissions, "recoit_details", False) is True:
@@ -895,7 +924,19 @@ class PlayStoreRuntime:
         return True
 
     def _details_confirmation(self, manifest: AppManifest) -> DetailsConfirmation:
-        """Signataire vérifié d'un manifeste (voir DetailsConfirmation)."""
+        """Signataire vérifié, liaison et prix d'un manifeste (voir
+        DetailsConfirmation)."""
+        details = self._details_signataire(manifest)
+        installee = self._apps.get(manifest.app_id)
+        precedent = None
+        if installee is not None:
+            ancien = installee.manifest
+            if ancien.pricing_model != manifest.pricing_model or \
+                    manifest.store_price_eur > ancien.store_price_eur:
+                precedent = decrire_prix(ancien)
+        return replace(details, prix=decrire_prix(manifest), prix_precedent=precedent)
+
+    def _details_signataire(self, manifest: AppManifest) -> DetailsConfirmation:
         cle = manifest.developer_public_key if manifest.code_signature is not None else None
         liaison = None
         if self._registre is not None and cle is not None:
@@ -916,11 +957,14 @@ class PlayStoreRuntime:
         return DetailsConfirmation(self._profil.name, empreinte, None, self._fichier_cles,
                                    liaison)
 
-    def _verifier_registre(self, manifest: AppManifest, version: SemVer) -> bool:
+    def _verifier_registre(self, manifest: AppManifest, version: SemVer,
+                           empreinte: Optional[str] = None) -> bool:
         """Règles du registre des apps, avant l'humain : un app_id lié à une
         clé ne s'installe qu'avec elle, et jamais dans une version antérieure
-        à la plus récente déjà installée (une version égale est une
-        réinstallation, après un redémarrage par exemple)."""
+        à la plus récente déjà installée. Une version égale n'est acceptée
+        que pour le même contenu signé (`empreinte`, SHA-256 de ce qui est
+        signé) : c'est une réinstallation, après un redémarrage par exemple ;
+        un autre contenu exige un numéro plus grand."""
         if self._registre is None:
             return True
         lien = self._registre.get(manifest.app_id)
@@ -937,9 +981,16 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] '{app_id}' v{version} : antérieure à la version la plus récente "
                   f"déjà installée sur ce robot (v{lien['version']}) : refusé.")
             return False
+        if (version == SemVer.parse(lien["version"]) and empreinte is not None
+                and lien.get("empreinte") not in (None, empreinte)):
+            print(f"  [ERREUR] '{app_id}' v{version} : ce numéro a déjà été installé sur ce robot "
+                  f"avec un AUTRE contenu signé ; un nouveau contenu exige un numéro de version "
+                  f"plus grand : refusé.")
+            return False
         return True
 
-    def _lier(self, manifest: AppManifest, version: SemVer) -> bool:
+    def _lier(self, manifest: AppManifest, version: SemVer,
+              empreinte: Optional[str] = None) -> bool:
         """Inscrit au registre des apps (sur disque) la liaison app_id -> clé et
         la version la plus récente installée. False si l'écriture échoue."""
         if self._registre is None:
@@ -949,10 +1000,13 @@ class PlayStoreRuntime:
             print(f"  [ERREUR] '{_affichable(manifest.app_id)}' a été lié à une autre clé "
                   f"pendant l'installation : refusé.")
             return False
-        plus_recente = version if ancien is None else max(version, SemVer.parse(ancien["version"]))
+        lien = {"cle": manifest.developer_public_key, "version": str(version)}
+        if empreinte is not None:
+            lien["empreinte"] = empreinte
+        if ancien is not None and SemVer.parse(ancien["version"]) >= version:
+            lien = ancien                 # la plus récente reste celle déjà inscrite
         nouveau = dict(self._registre)
-        nouveau[manifest.app_id] = {"cle": manifest.developer_public_key,
-                                    "version": str(plus_recente)}
+        nouveau[manifest.app_id] = lien
         try:
             ecrire_registre_apps(self._chemin_registre, nouveau)
         except OSError as exc:
@@ -1050,7 +1104,8 @@ class PlayStoreRuntime:
             return None
         spec = {"genre": "source", "module": f"axis_app_{etiquette}", "classe": None,
                 "source": source, "fichier": f"<{etiquette}>", "paquet": None}
-        return manifest, spec, version
+        empreinte = hashlib.sha256(message_paquet(manifeste, source)).hexdigest()
+        return manifest, spec, version, empreinte
 
     def install_source(self, source: str, *, manifeste: str, code_signature: str,
                        developer_public_key: str, origine: str = "app") -> bool:
@@ -1085,16 +1140,16 @@ class PlayStoreRuntime:
                                    origine)
             if lu is None:
                 return False
-            manifest, spec, version = lu
+            manifest, spec, version, empreinte = lu
             if manifest.app_id in self._apps:
                 print(f"  [ERREUR] '{_affichable(manifest.app_id)}' est déjà installée : "
                       f"la mettre à jour par update_source().")
                 return False
-            if not self._verifier_registre(manifest, version):
+            if not self._verifier_registre(manifest, version, empreinte):
                 return False
             return self._terminer_installation(
                 manifest, None, spec, None,
-                avant_enregistrement=lambda: self._lier(manifest, version))
+                avant_enregistrement=lambda: self._lier(manifest, version, empreinte))
         finally:
             self._verrou_installation.release()
 
@@ -1124,7 +1179,7 @@ class PlayStoreRuntime:
                                    origine)
             if lu is None:
                 return False
-            manifest, spec, version = lu
+            manifest, spec, version, empreinte = lu
             app_id = manifest.app_id
             entree = self._apps.get(app_id)
             if entree is None:
@@ -1149,7 +1204,7 @@ class PlayStoreRuntime:
                 print(f"  [ERREUR] v{version} n'est pas strictement plus récente que la version "
                       f"installée (v{installee}) : mise à jour refusée.")
                 return False
-            if not self._verifier_registre(manifest, version):
+            if not self._verifier_registre(manifest, version, empreinte):
                 return False
             # Tenu pendant toute la mise à jour : aucune mission ne démarre
             # pendant qu'on remplace le code de l'app.
@@ -1164,17 +1219,22 @@ class PlayStoreRuntime:
                     self.stop_app(app_id)
                 facture_une_fois = entree.one_time_billed
                 derniere_facture = entree.last_subscription_bill_time_s
+                missions, revenu = entree.mission_count, entree.total_revenue
                 print(f"  [PlayStore] Mise à jour de '{_affichable(app_id)}' : "
                       f"v{installee} → v{version}")
+                if entree.app is not None:
+                    print("  [ATTENTION] Version installée depuis un objet app : son état "
+                          "d'instance n'est pas repris par la version installée depuis la source.")
                 if not self._terminer_installation(
                         manifest, None, spec, None,
-                        avant_enregistrement=lambda: self._lier(manifest, version)):
+                        avant_enregistrement=lambda: self._lier(manifest, version, empreinte)):
                     print(f"  [ERREUR] La nouvelle version a échoué aux vérifications : "
                           f"l'ANCIENNE (v{installee}) reste installée, arrêtée.")
                     return False
                 nouvelle = self._apps[app_id]
                 nouvelle.one_time_billed = facture_une_fois
                 nouvelle.last_subscription_bill_time_s = derniere_facture
+                nouvelle.mission_count, nouvelle.total_revenue = missions, revenu
                 return True
             finally:
                 self._maj_en_cours = None
@@ -1414,7 +1474,10 @@ class PlayStoreRuntime:
         # Exécuté dans la sandbox, pour la même raison que start_app().
         ctx = self._make_ctx(entry.manifest)
         try:
-            sandbox_result, _ = self._executer_hook(entry, "on_stop", ctx)
+            # Sous e-stop, on_stop aussi est interrompu : il ne garde ni les
+            # capteurs ni les verrous jusqu'à son quota.
+            sandbox_result, _ = self._executer_hook(entry, "on_stop", ctx,
+                                                    arret=self._estop_actif)
             if not sandbox_result.success:
                 kind = sandbox_result.error_kind
                 reason = kind.name if kind else "INCONNU"
@@ -1568,6 +1631,7 @@ class PlayStoreRuntime:
         # de la docstring de update_app()).
         preserved_one_time_billed = existing_entry.one_time_billed
         preserved_last_subscription_bill_time_s = existing_entry.last_subscription_bill_time_s
+        missions, revenu = existing_entry.mission_count, existing_entry.total_revenue
 
         print(f"  [PlayStore] Mise à jour de '{app_id}' : "
               f"v{old_version} → v{new_version}")
@@ -1584,6 +1648,7 @@ class PlayStoreRuntime:
         if new_entry is not None:
             new_entry.one_time_billed = preserved_one_time_billed
             new_entry.last_subscription_bill_time_s = preserved_last_subscription_bill_time_s
+            new_entry.mission_count, new_entry.total_revenue = missions, revenu
 
         return True
 

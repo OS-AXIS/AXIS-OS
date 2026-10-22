@@ -27,6 +27,7 @@ Vérifié ici, en profil PRODUCTION, avec deux clés approuvées A et B :
 """
 import builtins
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -54,7 +55,8 @@ from axis_os.store.sdk.manifest import (  # noqa: E402
     AppCategory, AppManifest, Permission, PricingModel,
 )
 from axis_os.store.sdk.signing import (  # noqa: E402
-    generate_developer_keypair, public_key_fingerprint, sign_app_code, sign_app_package,
+    generate_developer_keypair, message_paquet, public_key_fingerprint, sign_app_code,
+    sign_app_package,
 )
 
 FAIL = 0
@@ -124,7 +126,8 @@ class AppIdentite(RobotApp):
 N = [0]
 
 
-def paquet(cle, version="1.0.0", app_id="com.test.identite", permissions=None):
+def paquet(cle, version="1.0.0", app_id="com.test.identite", permissions=None,
+           prix=(PricingModel.ONE_TIME, 10.0)):
     """(source, manifeste déclaré, signature, témoin) d'une app, comme les
     prépare un développeur sur sa machine."""
     N[0] += 1
@@ -135,7 +138,7 @@ def paquet(cle, version="1.0.0", app_id="com.test.identite", permissions=None):
         app_id=app_id, name="Identité", version=version, author="Atelier Dupont",
         author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
         permissions=[Permission.ACTUATORS_WRITE_ARMS] if permissions is None else permissions,
-        pricing_model=PricingModel.ONE_TIME, base_price_eur=10.0))
+        pricing_model=prix[0], base_price_eur=prix[1]))
     return source, manifeste, sign_app_package(manifeste, source, cle.private_key_b64), temoin
 
 
@@ -157,8 +160,9 @@ def runtime(registre, operateur=None, **kw):
                       registre_apps=registre, confirmer_permissions=operateur or Operateur(), **kw)[0]
 
 
-def installer(rt, cle, version="1.0.0", methode="install_source", **kw):
-    source, manifeste, signature, _ = paquet(cle, version, **kw)
+def installer(rt, cle, version="1.0.0", methode="install_source", deja=None, **kw):
+    """Installe un paquet neuf, ou `deja` (un paquet déjà installé, à l'octet près)."""
+    source, manifeste, signature, _ = deja or paquet(cle, version, **kw)
     return silencieux(getattr(rt, methode), source, manifeste=manifeste, code_signature=signature,
                       developer_public_key=cle.public_key_b64, origine="identite")
 
@@ -210,19 +214,29 @@ refuse_registre("Registre qui est un lien symbolique", lien=True)
 section("2. Un app_id est lié à la clé qui l'a installé la première fois")
 REG = nouveau_registre()
 rt1 = runtime(REG)
-ok, _ = installer(rt1, A)
+PAQUET_A = paquet(A)
+ok, _ = installer(rt1, A, deja=PAQUET_A)
 check("A installe com.test.identite v1.0.0", ok is True)
+lien = lire_registre_apps(REG).get("com.test.identite") or {}
 check("… le registre, sur disque, lie l'app_id à A",
-      lire_registre_apps(REG).get("com.test.identite") == {"cle": A.public_key_b64,
-                                                          "version": "1.0.0"})
+      {k: lien.get(k) for k in ("cle", "version")} == {"cle": A.public_key_b64,
+                                                       "version": "1.0.0"}, str(lien))
+check("… avec l'empreinte du paquet installé (manifeste et code)",
+      lien.get("empreinte") == hashlib.sha256(message_paquet(PAQUET_A[1], PAQUET_A[0])).hexdigest(),
+      str(lien))
 rt2 = runtime(REG)  # redémarrage de l'OS : rien n'est gardé en mémoire
 ok, sortie = installer(rt2, B, "2.0.0")
 check("Après redémarrage, B ne peut pas installer le même app_id",
       ok is False and "com.test.identite" not in rt2._apps)
 check("… et le message montre la clé à laquelle il est lié",
       EMPREINTE_A in sortie and EMPREINTE_B in sortie, sortie[-400:])
-ok, _ = installer(rt2, A)
+ok, _ = installer(rt2, A, deja=PAQUET_A)
 check("A le réinstalle (même version) après redémarrage", ok is True)
+rt3 = runtime(REG)  # nouveau redémarrage : l'app n'est pas installée dans ce runtime
+ok, sortie = installer(rt3, A)
+check("Même version, signée par A, mais un autre contenu : refusée (il faut une "
+      "version plus récente)", ok is False and "com.test.identite" not in rt3._apps
+      and "AUTRE contenu" in sortie, sortie[-300:])
 ok, _ = installer(rt2, B, "2.0.0", methode="update_source")
 check("B ne peut pas non plus le mettre à jour", ok is False
       and rt2._apps["com.test.identite"].manifest.version == "1.0.0")
@@ -294,13 +308,14 @@ check("update_app(objet) toujours refusé en production", ok is False)
 
 section("5. La version la plus récente survit au redémarrage")
 REG = nouveau_registre()
-ok, _ = installer(runtime(REG), A, "2.0.0")
+PAQUET_V2 = paquet(A, "2.0.0")
+ok, _ = installer(runtime(REG), A, deja=PAQUET_V2)
 check("A installe v2.0.0", ok is True)
 rt2 = runtime(REG)
 ok, sortie = installer(rt2, A, "1.0.0")
 check("Après redémarrage, v1.0.0 (plus ancienne) : refusée", ok is False
       and "2.0.0" in sortie, sortie[-300:])
-ok, _ = installer(rt2, A, "2.0.0")
+ok, _ = installer(rt2, A, deja=PAQUET_V2)
 check("v2.0.0 (la même) : réinstallée", ok is True)
 ok, _ = installer(runtime(REG), A, "2.1.0")
 check("v2.1.0 (plus récente) : installée, et retenue",
@@ -527,6 +542,107 @@ check("Une seule des deux réussit", len(gagnant) == 1, str(resultats))
 check("… et le registre lie l'app_id à sa clé",
       len(gagnant) == 1 and lien is not None
       and lien["cle"] == {"A": A, "B": B}[gagnant[0]].public_key_b64, str(lien))
+
+section("12. Prix : montré à l'humain, et confirmé quand il change")
+operateur = Operateur()
+rt = runtime(nouveau_registre(), operateur)
+installer(rt, A, "1.0.0")
+details = operateur.vus[-1][1] if operateur.vus else None
+check("À l'installation, l'humain voit le prix (commission comprise) et son modèle",
+      getattr(details, "prix", None) == "14.29 € (achat unique)"
+      and getattr(details, "prix_precedent", None) is None, str(details))
+LECTURE = [Permission.ACTUATORS_READ]   # aucune permission DANGEROUS : rien d'autre à confirmer
+operateur = Operateur()
+rt = runtime(nouveau_registre(), operateur)
+installer(rt, A, "1.0.0", permissions=LECTURE)
+ok, _ = installer(rt, A, "1.1.0", methode="update_source", permissions=LECTURE)
+check("Mise à jour au même prix, sans permission DANGEROUS : rien à confirmer",
+      ok is True and operateur.vus == [], str(operateur.vus))
+ok, _ = installer(rt, A, "1.2.0", methode="update_source", permissions=LECTURE,
+                  prix=(PricingModel.ONE_TIME, 5.0))
+check("… ni pour une baisse de prix", ok is True and operateur.vus == [], str(operateur.vus))
+ok, _ = installer(rt, A, "1.3.0", methode="update_source", permissions=LECTURE,
+                  prix=(PricingModel.PAY_PER_MISSION, 1.0))
+details = operateur.vus[-1][1] if operateur.vus else None
+check("Passage d'un achat unique à un paiement par mission : l'humain doit l'accepter",
+      ok is True and getattr(details, "prix", None) == "1.43 € (à chaque mission)"
+      and getattr(details, "prix_precedent", None) == "7.14 € (achat unique)", str(details))
+ok, _ = installer(rt, A, "1.4.0", methode="update_source", permissions=LECTURE,
+                  prix=(PricingModel.PAY_PER_MISSION, 3.0))
+details = operateur.vus[-1][1] if len(operateur.vus) == 2 else None
+check("Hausse du prix : l'humain doit l'accepter",
+      ok is True and getattr(details, "prix_precedent", None) == "1.43 € (à chaque mission)",
+      str(details))
+
+
+class OperateurQuiRefuse(Operateur):
+    def __call__(self, manifest, permissions, details=None):
+        super().__call__(manifest, permissions, details)
+        return False
+
+
+rt = runtime(nouveau_registre(), OperateurQuiRefuse())
+installer(rt, A, "1.0.0", permissions=LECTURE)
+ok, _ = installer(rt, A, "1.1.0", methode="update_source", permissions=LECTURE,
+                  prix=(PricingModel.SUBSCRIPTION, 10.0))
+check("Nouveau prix refusé par l'humain : la mise à jour n'a pas lieu",
+      ok is False and rt._apps["com.test.identite"].manifest.version == "1.0.0"
+      and rt._apps["com.test.identite"].manifest.pricing_model == PricingModel.ONE_TIME)
+rt = silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.DEVELOPPEMENT, cles_approuvees=CLES,
+                registre_apps=nouveau_registre())[0]
+installer(rt, A, "1.0.0", permissions=LECTURE)
+ok, _ = installer(rt, A, "1.1.0", methode="update_source", permissions=LECTURE,
+                  prix=(PricingModel.ONE_TIME, 50.0))
+check("Sans confirmation configurée, un nouveau prix est refusé par défaut",
+      ok is False and rt._apps["com.test.identite"].manifest.version == "1.0.0")
+reponses = []
+vrai_input = builtins.input
+builtins.input = lambda question: reponses.append(question) or "n"
+try:
+    source, manifeste, _, _ = paquet(A, "2.0.0", permissions=LECTURE,
+                                     prix=(PricingModel.SUBSCRIPTION, 10.0))
+    from axis_os.store.runtime.manifeste_json import manifeste_depuis_texte  # noqa: E402
+    from axis_os.store.runtime.play_store import DetailsConfirmation, confirmer_au_terminal  # noqa: E402
+    try:
+        details = DetailsConfirmation("PRODUCTION", EMPREINTE_A, "Dev A", str(CLES),
+                                      prix_precedent="14.29 € (achat unique)")
+    except TypeError:   # code d'avant cette correction : pas de champ prix_precedent
+        details = DetailsConfirmation("PRODUCTION", EMPREINTE_A, "Dev A", str(CLES))
+    accepte, sortie = silencieux(confirmer_au_terminal, manifeste_depuis_texte(manifeste), [],
+                                 details)
+finally:
+    builtins.input = vrai_input
+check("Au terminal : le nouveau prix, l'ancien, et une question sur le prix (pas sur des "
+      "permissions vides)", accepte is False and "PRIX MODIFIÉ" in sortie
+      and "achat unique" in sortie and "abonnement" in sortie
+      and reponses and "nouveau prix" in reponses[0], sortie[-400:])
+
+section("13. Une mise à jour garde les compteurs de l'app")
+rt = runtime(nouveau_registre())
+installer(rt, A, "1.0.0")
+silencieux(rt.start_app, "com.test.identite")
+res, _ = silencieux(rt.run_mission, "com.test.identite", {})
+avant = rt._apps["com.test.identite"]
+compteurs = (avant.mission_count, avant.total_revenue)
+check("Une mission facturée (achat unique) avant la mise à jour",
+      res is not None and res.success and compteurs[0] == 1 and compteurs[1] > 0, str(compteurs))
+ok, _ = installer(rt, A, "1.1.0", methode="update_source")
+apres = rt._apps["com.test.identite"]
+check("Après update_source : missions et revenu conservés (rapport financier juste)",
+      ok is True and (apres.mission_count, apres.total_revenue) == compteurs,
+      str((apres.mission_count, apres.total_revenue)))
+AppVersion.VERSION = "1.0.0"
+rt = silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.DEVELOPPEMENT,
+                confirmer_permissions=Operateur())[0]
+silencieux(rt.install, AppVersion())
+rt._apps["com.test.version"].mission_count = 4
+rt._apps["com.test.version"].total_revenue = 12.5
+AppVersion.VERSION = "1.1.0"
+ok, _ = silencieux(rt.update_app, AppVersion())
+apres = rt._apps.get("com.test.version")
+check("Après update_app (objet, hors production) : de même",
+      ok is True and apres is not None and (apres.mission_count, apres.total_revenue) == (4, 12.5),
+      str(apres and (apres.mission_count, apres.total_revenue)))
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
