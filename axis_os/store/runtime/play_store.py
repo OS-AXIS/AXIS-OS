@@ -62,7 +62,7 @@ from axis_os.store.runtime.processus_app import (
     AppNonRechargeable, etat_json, rendre_os_non_inspectable, spec_depuis_instance,
 )
 from axis_os.services.memory.service import MemoryService
-from axis_os.store.sdk.signing import message_paquet, public_key_fingerprint
+from axis_os.store.sdk.signing import SignatureError, message_paquet, public_key_fingerprint
 import threading
 
 
@@ -137,6 +137,19 @@ def decrire_prix(m: Any) -> str:
               PricingModel.PAY_PER_MISSION: "à chaque mission"}.get(m.pricing_model,
                                                                   m.pricing_model.name)
     return f"{m.store_price_eur:.2f} € ({modele})"
+
+
+def empreinte_paquet(manifest: AppManifest, source: str) -> Optional[str]:
+    """SHA-256 du contenu d'une app (manifeste, dans sa forme canonique
+    manifeste_texte, et code), celle que garde le registre des apps : la
+    même quel que soit le chemin d'installation (install, install_source).
+    None, une fois la raison affichée, si ce contenu ne s'encode pas."""
+    from axis_os.store.runtime.manifeste_json import manifeste_texte
+    try:
+        return hashlib.sha256(message_paquet(manifeste_texte(manifest), source)).hexdigest()
+    except SignatureError as exc:
+        print(f"  [ERREUR] {_affichable(exc, 300)}")
+        return None
 
 
 def decrire_signataire(details: Optional[DetailsConfirmation]) -> str:
@@ -724,8 +737,8 @@ class PlayStoreRuntime:
                           f"une app non signée ne peut pas prendre cet app_id.")
                     return False
             else:
-                empreinte = hashlib.sha256(source_verifiee.encode("utf-8")).hexdigest()
-                if not self._verifier_registre(manifest, version, empreinte):
+                empreinte = empreinte_paquet(manifest, source_verifiee)
+                if empreinte is None or not self._verifier_registre(manifest, version, empreinte):
                     return False
                 avant_enregistrement = lambda: self._lier(manifest, version, empreinte)  # noqa: E731
         return self._terminer_installation(manifest, app, spec, spec_erreur,
@@ -1003,8 +1016,13 @@ class PlayStoreRuntime:
         lien = {"cle": manifest.developer_public_key, "version": str(version)}
         if empreinte is not None:
             lien["empreinte"] = empreinte
-        if ancien is not None and SemVer.parse(ancien["version"]) >= version:
-            lien = ancien                 # la plus récente reste celle déjà inscrite
+        if ancien is not None:
+            inscrite = SemVer.parse(ancien["version"])
+            # La plus récente reste celle déjà inscrite, avec son contenu ;
+            # une entrée sans empreinte (écrite à la main, pour changer de
+            # clé) reçoit celle de cette installation du même numéro.
+            if inscrite > version or (inscrite == version and "empreinte" in ancien):
+                lien = ancien
         nouveau = dict(self._registre)
         nouveau[manifest.app_id] = lien
         try:
@@ -1058,7 +1076,8 @@ class PlayStoreRuntime:
         """Étapes communes à install_source() et update_source(), sans rien
         exécuter de l'app : signature du paquet (manifeste déclaré + code),
         clé approuvée, manifeste relu et validé, version stricte, SDK. Rend
-        (manifeste, spec, version), ou None une fois la raison affichée."""
+        (manifeste, spec, version, empreinte_paquet), ou None une fois la
+        raison affichée."""
         from axis_os.store.sdk.signing import verify_app_package, SignatureError
         from axis_os.store.runtime.manifeste_json import manifeste_depuis_texte, MessageRefuse
 
@@ -1104,7 +1123,9 @@ class PlayStoreRuntime:
             return None
         spec = {"genre": "source", "module": f"axis_app_{etiquette}", "classe": None,
                 "source": source, "fichier": f"<{etiquette}>", "paquet": None}
-        empreinte = hashlib.sha256(message_paquet(manifeste, source)).hexdigest()
+        empreinte = empreinte_paquet(manifest, source)
+        if empreinte is None:
+            return None
         return manifest, spec, version, empreinte
 
     def install_source(self, source: str, *, manifeste: str, code_signature: str,

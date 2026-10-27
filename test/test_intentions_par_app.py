@@ -212,7 +212,9 @@ section("6. Démarrage répété, nouvelle installation")
 check("start_app une seconde fois sans arrêt : l'intention est redéclarée sans conflit",
       silencieux(rt.start_app, "com.test.voix_a"))
 silencieux(rt.stop_app, "com.test.voix_a")
-silencieux(rt.start_app, "com.test.voix_a")
+check("A redémarrée : son intention est au registre (avant la nouvelle installation)",
+      silencieux(rt.start_app, "com.test.voix_a")
+      and svc.registry.match("va vers le carton", "com.test.voix_a") is not None)
 silencieux(rt.install, AppA())       # nouvelle installation, app démarrée ou non
 check("Nouvelle installation sous le même app_id : l'ancien vocabulaire est retiré",
       not svc.registry.match("va vers le carton", "com.test.voix_a"))

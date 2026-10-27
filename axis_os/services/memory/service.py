@@ -275,10 +275,12 @@ class MemoryService(IService):
 
     @staticmethod
     def _octets(cle_stockee: str, valeur: Any) -> int:
-        """Taille comptée par le quota : clé stockée et valeur en JSON
-        compact UTF-8, l'encodage même du fichier app_store.json (voir
-        _write_category)."""
-        return len(cle_stockee.encode("utf-8")) + len(
+        """Taille comptée par le quota : l'entrée telle qu'écrite dans
+        app_store.json (JSON compact UTF-8, voir _write_category), soit la
+        clé stockée encodée à son tour en JSON (ses guillemets et ses barres
+        obliques inverses y sont échappés une seconde fois), « : », la
+        valeur et « , »."""
+        return len(json.dumps(cle_stockee, ensure_ascii=False).encode("utf-8")) + 2 + len(
             json.dumps(valeur, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
     def app_load(self, app_id: str, key: str) -> ServiceResult:

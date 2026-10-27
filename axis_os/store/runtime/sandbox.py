@@ -310,8 +310,8 @@ class SandboxRunner:
         (processus_app.SCHEMA_RESULTAT).
 
         `arret` : fonction sans argument qui rend True dès qu'un arrêt
-        d'urgence est actif (PlayStoreRuntime la passe pour run_mission et
-        on_start).
+        d'urgence est actif (PlayStoreRuntime la passe pour run_mission,
+        on_start et on_stop).
         Elle est consultée toutes les 20 ms par un thread à part, que le
         hook soit en plein calcul ou en attente d'un appel au robot. Dès
         qu'elle répond True : les appels de l'app reçoivent ESTOP_ACTIVE
@@ -399,12 +399,16 @@ class SandboxRunner:
                 if genre == "appel":
                     cpu_actif.set()
                     rid = msg.get("request_id")
-                    if arret_vu.is_set() and msg.get("action") not in self.ACTIONS_APRES_ARRET:
+                    # Pas encore vérifiée par le schéma (serveur.traiter) : une
+                    # action qui n'est pas un texte ne doit pas faire lever le
+                    # test d'appartenance ; le schéma la refusera.
+                    action = msg.get("action") if isinstance(msg.get("action"), str) else None
+                    if arret_vu.is_set() and action not in self.ACTIONS_APRES_ARRET:
                         if isinstance(rid, bool) or not isinstance(rid, int):
                             continue
                         reponse = {"request_id": rid, "success": False, "data": None,
                                    "error": "ESTOP_ACTIVE:arrêt d'urgence, mission interrompue"}
-                    elif msg.get("action") in self.ACTIONS_LENTES and self._peripherique_occupe():
+                    elif action in self.ACTIONS_LENTES and self._peripherique_occupe():
                         if isinstance(rid, bool) or not isinstance(rid, int):
                             continue
                         reponse = {"request_id": rid, "success": False, "data": None,
@@ -415,7 +419,7 @@ class SandboxRunner:
                         # action qui bloque par nature (listen) ne doit pas
                         # retenir le thread de l'OS au-delà du quota.
                         reste = max(0.0, limite - 1.0 - (self._clock() - t_start))
-                        if arret is not None and msg.get("action") in self.ACTIONS_LENTES:
+                        if arret is not None and action in self.ACTIONS_LENTES:
                             reponse = self._servir_abandonnable(serveur, msg, reste, tue)
                             if tue.is_set():
                                 break

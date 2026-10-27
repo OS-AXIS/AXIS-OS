@@ -211,7 +211,7 @@ check("Le confirmateur reçoit la clé vérifiée, pas l'auteur déclaré",
       and espion_prod.appels[0][2].fichier_cles == str(CLES), str(espion_prod.appels))
 check("Le journal d'installation montre la clé et les quotas",
       public_key_fingerprint(CLE.public_key_b64) in sortie and "Atelier Dupont" in sortie
-      and "1024 Mo" in sortie, sortie[-400:])
+      and f"{PLAFONDS_QUOTAS[Profil.PRODUCTION].max_memory_mb:g} Mo" in sortie, sortie[-400:])
 details = espion_prod.appels[0][2]
 m = manifeste(ResourceQuota(max_cpu_percent=60.0, max_memory_mb=384, max_runtime_s=600.0),
               [Permission.ACTUATORS_WRITE_ARMS], "com.test.affichage")
@@ -241,8 +241,9 @@ try:
     silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.PRODUCTION, cles_approuvees=CLES,
                confirmer_permissions=lambda manifest, permissions: True, registre_apps=REGISTRE)
     check("PRODUCTION : confirmateur sans les détails : refusé", False)
-except ValueError:
-    check("PRODUCTION : confirmateur sans les détails : refusé", True)
+except ValueError as exc:   # et pas un registre ou des clés illisibles (sous-classes)
+    check("PRODUCTION : confirmateur sans les détails : refusé", "recoit_details" in str(exc),
+          str(exc))
 
 section("5. Mémoire persistante : quota par app")
 svc = MemoryService(storage_dir=Path(tempfile.mkdtemp(prefix="axis_quota_memoire_")))
@@ -290,6 +291,19 @@ check("Valeurs imbriquées acceptées sous le quota", ecrites == 20, str(ecrites
 taille = (disque._storage_dir / "app_store.json").stat().st_size
 check("Sur le disque, l'espace d'une app pèse ce que compte le quota (pas 30 fois plus)",
       taille <= 1.2 * MemoryService.MAX_OCTETS_PAR_APP, f"{taille} octets")
+echappe = MemoryService(storage_dir=Path(tempfile.mkdtemp(prefix="axis_quota_echappe_")))
+echappe.start()
+# Des clés de 250 guillemets (la longueur que permet le pont), échappés deux
+# fois sur le disque : dans la clé stockée, puis dans le fichier JSON.
+acceptees = 0
+for i in range(MemoryService.MAX_CLES_PAR_APP):
+    if not echappe.app_store("com.a.app", f"{i:03d}" + '"' * 250, "v" * 200).ok:
+        break
+    acceptees += 1
+taille = (echappe._storage_dir / "app_store.json").stat().st_size
+check("Clés pleines de guillemets : le quota d'octets refuse avant la limite de clés, et le "
+      "fichier ne dépasse pas le quota", acceptees < MemoryService.MAX_CLES_PAR_APP
+      and taille <= MemoryService.MAX_OCTETS_PAR_APP + 2, f"{acceptees} clés, {taille} octets")
 
 svc2 = MemoryService(storage_dir=Path(tempfile.mkdtemp(prefix="axis_quota_pont_")))
 svc2.start()

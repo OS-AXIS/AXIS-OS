@@ -321,6 +321,18 @@ ok, _ = installer(runtime(REG), A, "2.1.0")
 check("v2.1.0 (plus récente) : installée, et retenue",
       ok is True and lire_registre_apps(REG)["com.test.identite"]["version"] == "2.1.0")
 
+REG = nouveau_registre()
+# Entrée écrite à la main (procédure de changement de clé) : sans empreinte.
+REG.write_text(json.dumps({"format": 1, "apps": {"com.test.identite": {
+    "cle": A.public_key_b64, "version": "1.0.0"}}}), encoding="utf-8")
+ok, _ = installer(runtime(REG), A, "1.0.0")
+lien = lire_registre_apps(REG).get("com.test.identite") or {}
+check("Entrée sans empreinte (écrite à la main) : la réinstallation de ce numéro est acceptée, "
+      "et son empreinte inscrite", ok is True and len(lien.get("empreinte", "")) == 64, str(lien))
+ok, sortie = installer(runtime(REG), A, "1.0.0")
+check("… ensuite, un autre contenu sous ce numéro est refusé", ok is False
+      and "AUTRE contenu" in sortie, sortie[-300:])
+
 section("6. Aucune ligne de l'app ne tourne avant l'humain")
 
 
@@ -392,6 +404,39 @@ REG = nouveau_registre()
 ok, sortie = installer(runtime(REG), A)
 check("Un fichier temporaire laissé par une coupure ne bloque pas le registre", ok is True,
       sortie[-200:])
+import axis_os.store.runtime.profil as module_profil  # noqa: E402
+
+
+class OsVuParProfil:
+    """Le module os tel que le voit profil.py seul, avec certaines fonctions
+    remplacées : os n'est pas modifié pour le reste du processus."""
+    def __init__(self, **remplacees):
+        self.remplacees = remplacees
+
+    def __getattr__(self, nom):
+        return self.remplacees.get(nom) or getattr(os, nom)
+
+
+def coupure(*a, **kw):
+    """Renommage qui échoue, comme une coupure entre l'écriture du fichier
+    temporaire et son renommage."""
+    raise OSError(5, "coupure simulée")
+
+
+avant = REG.read_bytes()
+temporaires = set(REG.parent.glob(f".{REG.name}.*.tmp"))
+module_profil.os = OsVuParProfil(replace=coupure)
+try:
+    ok, sortie = installer(runtime(REG), A, "1.1.0", app_id="com.test.coupure")
+finally:
+    module_profil.os = os
+check("Coupure pendant l'écriture du registre : installation refusée", ok is False, sortie[-200:])
+check("… l'ancien registre est intact sur le disque, sans fichier temporaire laissé",
+      REG.read_bytes() == avant and set(REG.parent.glob(f".{REG.name}.*.tmp")) == temporaires,
+      str(set(REG.parent.glob(f".{REG.name}.*.tmp")) - temporaires))
+ok, _ = installer(runtime(REG), A, "1.1.0", app_id="com.test.coupure")
+check("… et l'installation suivante réussit",
+      ok is True and "com.test.coupure" in lire_registre_apps(REG))
 
 
 class AppNonSignee(RobotApp):
@@ -498,8 +543,7 @@ check("… ni, hors production, une installation d'objet app (install), qui écr
       "registre", ok is True and pendant_dev.resultat is False
       and "com.test.version" not in rt_dev._apps, str(pendant_dev.resultat))
 
-import axis_os.store.runtime.profil as module_profil  # noqa: E402
-vrai_open = module_profil.os.open
+vrai_open = os.open
 
 
 def open_sans_dossier(chemin, drapeaux, *a, **kw):
@@ -510,11 +554,11 @@ def open_sans_dossier(chemin, drapeaux, *a, **kw):
 
 REG = nouveau_registre()
 rt_fsync = runtime(REG)
-module_profil.os.open = open_sans_dossier
+module_profil.os = OsVuParProfil(open=open_sans_dossier)
 try:
     ok, sortie = installer(rt_fsync, A, "1.0.0")
 finally:
-    module_profil.os.open = vrai_open
+    module_profil.os = os
 check("fsync du dossier en échec après l'écriture du registre : installation gardée, "
       "avec un avertissement, disque et mémoire d'accord",
       ok is True and "durabilité" in sortie
@@ -643,6 +687,74 @@ apres = rt._apps.get("com.test.version")
 check("Après update_app (objet, hors production) : de même",
       ok is True and apres is not None and (apres.mission_count, apres.total_revenue) == (4, 12.5),
       str(apres and (apres.mission_count, apres.total_revenue)))
+
+section("14. install() d'un objet app signé, hors production, avec registre")
+# Le fichier de l'app est signé en entier (format 1, sign_app_code) ; la
+# signature et la clé sont posées sur la classe après l'import, hors du
+# fichier signé.
+MODULE_OBJET = DOSSIER / "app_objet_signee.py"
+MODULE_OBJET.write_text('''
+from axis_os.store.sdk.app_base import MissionResult, RobotApp
+from axis_os.store.sdk.manifest import AppCategory, AppManifest
+
+
+class AppObjetSignee(RobotApp):
+    SIGNATURE, CLE, VERSION = None, None, "1.0.0"
+
+    def manifest(self):
+        return AppManifest(app_id="com.test.objet_signe", name="Objet", version=self.VERSION,
+                           author="T", author_email="t@t.com", description="d",
+                           category=AppCategory.UTILITIES, code_signature=self.SIGNATURE,
+                           developer_public_key=self.CLE)
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
+''', encoding="utf-8")
+sys.path.insert(0, str(DOSSIER))
+import importlib  # noqa: E402
+AppObjetSignee = importlib.import_module("app_objet_signee").AppObjetSignee
+SOURCE_OBJET = MODULE_OBJET.read_text(encoding="utf-8")
+
+
+def objet(cle, version):
+    AppObjetSignee.SIGNATURE = sign_app_code(SOURCE_OBJET, cle.private_key_b64)
+    AppObjetSignee.CLE, AppObjetSignee.VERSION = cle.public_key_b64, version
+    return AppObjetSignee()
+
+
+def rt_dev(registre):
+    return silencieux(PlayStoreRuntime, ROBOT, WD, profil=Profil.DEVELOPPEMENT, cles_approuvees=CLES,
+                      registre_apps=registre, confirmer_permissions=Operateur())[0]
+
+
+REG = nouveau_registre()
+rt = rt_dev(REG)
+ok, _ = silencieux(rt.install, objet(A, "1.0.0"))
+lien = lire_registre_apps(REG).get("com.test.objet_signe") or {}
+check("install() d'un objet signé par A : installé, et l'app_id lié à A sur disque",
+      ok is True and lien.get("cle") == A.public_key_b64 and lien.get("version") == "1.0.0"
+      and len(lien.get("empreinte", "")) == 64, str(lien))
+ok, sortie = silencieux(rt_dev(REG).install, objet(B, "1.0.0"))
+check("Après redémarrage, le même objet signé par B : refusé, avec les deux clés montrées",
+      ok is False and EMPREINTE_A in sortie and EMPREINTE_B in sortie, sortie[-300:])
+ok, _ = silencieux(rt.update_app, objet(B, "1.1.0"))
+check("update_app() vers une version signée par B : refusé, la version de A reste",
+      ok is False and rt._apps["com.test.objet_signe"].manifest.version == "1.0.0"
+      and rt._apps["com.test.objet_signe"].manifest.developer_public_key == A.public_key_b64)
+ok, _ = silencieux(rt.update_app, objet(A, "1.1.0"))
+check("update_app() vers une version signée par A : accepté, et retenu au registre",
+      ok is True and lire_registre_apps(REG)["com.test.objet_signe"]["version"] == "1.1.0")
+# Même app (même manifeste, même code) installée ensuite depuis la source :
+# l'empreinte est la même quel que soit le chemin.
+declare = manifeste_texte(objet(A, "1.1.0").manifest())
+ok, sortie = silencieux(runtime(REG).install_source, SOURCE_OBJET, manifeste=declare,
+                        code_signature=sign_app_package(declare, SOURCE_OBJET, A.private_key_b64),
+                        developer_public_key=A.public_key_b64, origine="objet")
+check("La même version, au contenu identique, installée par install_source après redémarrage : "
+      "acceptée (même empreinte)", ok is True, sortie[-300:])
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

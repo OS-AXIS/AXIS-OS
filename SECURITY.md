@@ -76,7 +76,8 @@ reason AXIS-OS is **not ready for a real robot**.
    those of other apps); it has network access (on a real G1 it could open
    its own DDS connection to the motors, outside `JointSafetyGuard`); its
    quotas are measured on its first process only, with no seccomp or
-   cgroups. These are steps 2 to 4 of
+   cgroups, and outside production, without psutil, only the duration is
+   enforced (the confirmation says so). These are steps 2 to 4 of
    [docs/isolation_apps.md](docs/isolation_apps.md). **Until then, on a
    real robot, use the PRODUCTION profile and install only trusted apps
    whose code you have reviewed.**
@@ -144,9 +145,13 @@ reason AXIS-OS is **not ready for a real robot**.
    hand. The registry and the approved-keys file are protected only by
    their Unix permissions: while apps run as the same user as the OS
    (limit n° 1), an app can rewrite the registry, which the OS must be
-   able to rewrite too. The registry does not keep the price: a new price
-   is confirmed on an update, but after a restart an installation is not
-   compared with the price of the version installed before.
+   able to rewrite too. The registry is read once at startup and rewritten
+   whole on each installation: one runtime per registry, edited only while
+   the OS is stopped; an entry written by hand without its `empreinte`
+   field receives the fingerprint of the next installation of that
+   version. The registry does not keep the price: a new price is confirmed
+   on an update, but after a restart an installation is not compared with
+   the price of the version installed before.
 
 ## Resolved limits
 
@@ -176,7 +181,8 @@ Weaknesses that earlier versions of this page listed, and what fixed them
   permissions sees the quotas (`test/test_quotas_plafonds.py`).
 - **Emergency stop with no effect on the running mission (former limit
   n° 6).** An e-stop now interrupts the mission: the app receives it
-  (`EstopActiveError` on its next call), its process is killed half a
+  (`EstopActiveError` on its next call; only `log`, `get_recent_alerts`,
+  `stop_walking` and `emergency_stop` are still served), its process is killed half a
   second later, even in the middle of a computation, and the mission is
   recorded as "interrupted by emergency stop", never billed; the robot
   stays stopped. `on_start` and `on_stop` called under e-stop are
@@ -283,7 +289,9 @@ réel**.
    lire les fichiers de l'OS et ceux des autres apps) ; il a accès au
    réseau (sur un vrai G1, il pourrait ouvrir sa propre connexion DDS vers
    les moteurs, hors de `JointSafetyGuard`) ; ses quotas ne sont mesurés
-   que sur son premier processus, sans seccomp ni cgroups. Ce sont les
+   que sur son premier processus, sans seccomp ni cgroups, et hors
+   production, sans psutil, seule la durée est appliquée (la confirmation
+   le dit). Ce sont les
    étapes 2 à 4 de [docs/isolation_apps.md](docs/isolation_apps.md). **D'ici
    là, sur un vrai robot, utilisez le profil PRODUCTION et n'installez que
    des apps de confiance, dont vous avez relu le code.**
@@ -354,10 +362,13 @@ réel**.
    le fichier des clés approuvées ne sont protégés que par leurs droits
    Unix : tant que les apps tournent sous le même utilisateur que l'OS
    (limite n° 1), une app peut réécrire le registre, que l'OS doit pouvoir
-   réécrire lui aussi. Le registre ne garde pas le prix : un nouveau prix
-   est confirmé lors d'une mise à jour, mais après un redémarrage une
-   installation n'est pas comparée au prix de la version installée
-   avant.
+   réécrire lui aussi. Le registre est lu une fois au démarrage et réécrit
+   en entier à chaque installation : un seul runtime par registre, modifié
+   seulement OS arrêté ; une entrée écrite à la main sans son champ
+   `empreinte` reçoit l'empreinte de la prochaine installation de ce
+   numéro. Le registre ne garde pas le prix : un nouveau prix est confirmé
+   lors d'une mise à jour, mais après un redémarrage une installation
+   n'est pas comparée au prix de la version installée avant.
 
 ## Limites résolues
 
@@ -391,7 +402,9 @@ qui les a corrigées (détails dans [CHANGELOG.md](CHANGELOG.md)) :
   voit les quotas (`test/test_quotas_plafonds.py`).
 - **Arrêt d'urgence sans effet sur la mission en cours (ancienne limite
   n° 6).** Un e-stop interrompt désormais la mission : l'app le reçoit
-  (`EstopActiveError` à son prochain appel), son processus est tué une
+  (`EstopActiveError` à son prochain appel ; seuls `log`,
+  `get_recent_alerts`, `stop_walking` et `emergency_stop` restent servis),
+  son processus est tué une
   demi-seconde plus tard, même en plein calcul, et la mission est notée
   « interrompue par arrêt d'urgence », jamais facturée ; le robot reste
   arrêté. `on_start` et `on_stop` appelés sous e-stop sont interrompus de

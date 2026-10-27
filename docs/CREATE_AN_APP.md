@@ -111,9 +111,11 @@ Generated files:
 
 ```
 mon_assistant/
-├── app.py          ← votre code : le manifeste + 3 méthodes
-├── manifest.json   ← les métadonnées pour le Play Store
-├── test_app.py     ← un test qui installe et lance l'app
+├── app.py          ← your code: the manifest + 3 methods
+├── manifest.json   ← metadata read by simulate and publish; the
+│                     manifest to ship with the code is
+│                     manifeste_texte(MyApp().manifest()) ("Signing your app")
+├── test_app.py     ← a test that installs and runs the app
 └── README.md
 ```
 
@@ -300,7 +302,9 @@ Each one comes from a real bug, met while developing the reference apps.
    that no app has declared produces nothing, and your app only receives
    the intents it declared itself.
 8. **An emergency stop ends your mission.** As soon as it happens, every
-   `ctx` call raises `EstopActiveError`; you have half a second to return
+   `ctx` call raises `EstopActiveError`, except `log`,
+   `get_recent_alerts`, `stop_walking` and `emergency_stop` (you can still
+   log and stop walking); you have half a second to return
    your result, then your process is stopped. The mission is recorded as
    "interrupted by emergency stop" and is never billed. Do not count on
    that delay to finish a job.
@@ -569,7 +573,10 @@ refuses a version older than the newest it has installed, even after a
 restart, and different content under a version number already installed:
 any change, even one line, needs a new number. A version that changes the
 pricing model or raises the price must be accepted by the human who
-installs it. Outside production, `sign_app_file` (the code alone) is still
+installs it. `update_source()` updates an app installed since the OS
+started; after a restart, the new version is installed with
+`install_source()`, and its price is then not compared with the old one
+(`SECURITY.md`, limit n° 7). Outside production, `sign_app_file` (the code alone) is still
 accepted by `install()`.
 
 ### Publishing

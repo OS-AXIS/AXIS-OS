@@ -112,7 +112,9 @@ Fichiers générés :
 ```
 mon_assistant/
 ├── app.py          ← votre code : le manifeste + 3 méthodes
-├── manifest.json   ← les métadonnées pour le Play Store
+├── manifest.json   ← les métadonnées lues par simulate et publish ; le
+│                     manifeste à livrer avec le code est
+│                     manifeste_texte(MonApp().manifest()) (« Signer son app »)
 ├── test_app.py     ← un test qui installe et lance l'app
 └── README.md
 ```
@@ -304,7 +306,9 @@ référence.
    Une phrase qu'aucune app n'a déclarée ne produit rien, et votre app ne
    reçoit que les intentions qu'elle a déclarées elle-même.
 8. **Un arrêt d'urgence met fin à votre mission.** Dès qu'il survient,
-   tout appel à `ctx` lève `EstopActiveError` ; vous avez une
+   tout appel à `ctx` lève `EstopActiveError`, sauf `log`,
+   `get_recent_alerts`, `stop_walking` et `emergency_stop` (vous pouvez
+   encore journaliser et arrêter la marche) ; vous avez une
    demi-seconde pour rendre votre résultat, puis votre processus est
    arrêté. La mission est notée « interrompue par arrêt d'urgence » et
    n'est jamais facturée. Ne comptez pas sur ce délai pour finir un
@@ -576,7 +580,10 @@ version plus ancienne que la plus récente qu'il ait installée, même après
 un redémarrage, et un autre contenu sous un numéro déjà installé : tout
 changement, même d'une ligne, demande un nouveau numéro. Une version qui
 change le modèle de prix ou augmente le prix doit être acceptée par
-l'humain qui installe. Hors production, `sign_app_file` (le code seul) reste
+l'humain qui installe. `update_source()` met à jour une app installée
+depuis le démarrage de l'OS ; après un redémarrage, la nouvelle version
+s'installe par `install_source()`, et son prix n'est alors pas comparé à
+l'ancien (`SECURITY.md`, limite n° 7). Hors production, `sign_app_file` (le code seul) reste
 accepté par `install()`.
 
 ### Publier

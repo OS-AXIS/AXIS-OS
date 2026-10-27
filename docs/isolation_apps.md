@@ -66,7 +66,7 @@ pass_fds=(pont,), start_new_session=True)`, avec un environnement réduit
 à PATH et à la langue ; `hote_app.py` recharge l'app depuis sa source
 vérifiée. Le processus de l'app meurt avec l'OS (PR_SET_PDEATHSIG), et
 tout son groupe de processus est tué à la fin de chaque appel, ou dès un
-arrêt d'urgence pendant une mission. En profil PRODUCTION, le code d'une
+arrêt d'urgence pendant `run_mission`, `on_start` ou `on_stop`. En profil PRODUCTION, le code d'une
 app ne s'exécute jamais dans le processus de l'OS, ni nulle part avant
 l'accord de l'humain : `PlayStoreRuntime.install_source()` lit le
 manifeste déclaré à côté du code et signé avec lui. Le plan d'origine :

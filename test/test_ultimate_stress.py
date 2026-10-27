@@ -156,6 +156,7 @@ check("Panne 2/4 (surcharge couple, joint différent) confirmée → DEGRADED",
 # Panne 3 : LA panne critique qui doit vraiment déclencher l'e-stop,
 # pendant qu'une mission tourne en parallèle dans un thread
 mission_during_cascade = {}
+facturations_avant = len(runtime._billing)
 def run_mission_during_cascade():
     mission_during_cascade["result"] = runtime.run_mission(
         "com.axisos.warehouse_ops", {"objects": [{"id": "CRATE-X", "weight_kg": 2.0, "zone": "zone_a"}]}
@@ -176,9 +177,12 @@ check("Panne 3/4 (température critique) → e-stop déclenché malgré 2 "
 # notée comme telle (test/test_arret_urgence_mission.py le vérifie en
 # détail). La barrière sur les missions SUIVANTES est vérifiée plus bas
 # (Panne 4/4).
+r_cascade = mission_during_cascade.get("result")
 check("Mission lancée juste avant l'e-stop : un résultat est rendu "
-      "(refusée, ou interrompue par l'arrêt d'urgence)",
-      mission_during_cascade.get("result") is not None)
+      "(refusée, ou interrompue par l'arrêt d'urgence), jamais facturé",
+      r_cascade is not None and not r_cascade.success
+      and (r_cascade.interrompue_par_arret_urgence or "E-STOP" in (r_cascade.error_message or ""))
+      and len(runtime._billing) == facturations_avant)
 
 # Panne 4 : vérifier qu'AUCUNE app ne peut plus s'exécuter après cette
 # cascade complète, quelle qu'elle soit

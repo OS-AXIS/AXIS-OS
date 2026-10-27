@@ -10,8 +10,9 @@ Vérifié ici :
      ou LocomotionAction.move_to_pose : refusée sans la permission, avant
      tout mouvement ; acceptée avec ;
   3. même règle depuis le processus de l'app (pont JSON) ;
-  4. une origine inconnue est refusée ; un appel sans marque reste permis,
-     c'est la partie que l'OS ne peut pas détecter (documentée).
+  4. une origine inconnue est refusée, par le client de l'app comme par le
+     schéma du pont côté OS ; un appel sans marque reste permis, c'est la
+     partie que l'OS ne peut pas détecter (documentée).
 """
 import contextlib
 import io
@@ -196,6 +197,21 @@ for nom, appel in [("walk", lambda: client.walk(0.1, origine="humain")),
         check(f"Par le pont, {nom}(origine inconnue) : ValueError, comme en direct", True)
 cote_app.close()
 cote_os.close()
+# Côté OS, sans passer par le client de l'app (qu'elle contrôle) : le
+# schéma du pont refuse une origine inconnue, même avec la permission.
+from axis_os.store.runtime.hal_bridge import HALBridgeServer  # noqa: E402
+ctx, loco = contexte(MARCHE + BRAS + [Permission.ACTUATORS_AI_DRIVEN])
+serveur = HALBridgeServer(ctx)
+avant = position_coude()
+for nom, payload in [("walk", {"vx": 0.1, "origine": "humain"}),
+                     ("move_arms", {"commands": {COUDE: {"mode": "POSITION", "position": 0.1,
+                                                         "origine": "humain"}}})]:
+    reponse = silencieux(serveur.traiter, {"action": nom, "payload": payload, "request_id": 1})
+    check(f"Message {nom} brut à l'origine inconnue : refusé par le pont, côté OS",
+          reponse is not None and reponse["success"] is False
+          and "MALFORMED" in (reponse["error"] or ""), str(reponse))
+check("… rien n'a atteint la locomotion ni le bras", loco.vitesses == [] and position_coude() == avant,
+      f"{loco.vitesses} {position_coude()}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

@@ -12,7 +12,7 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ### Sécurité, changements cassants — ressources, identité des apps, intentions, marque IA (2026-10-21)
 
-Limites n° 6, 7 et 8 de `SECURITY.md`, et limite n° 2 en partie (ce qui
+Limite n° 8 de `SECURITY.md`, et limites n° 2, 6 et 7 en partie (ce qui
 reste ouvert y est décrit).
 
 - **Plafonds de l'OS pour les quotas** (`profil.PLAFONDS_QUOTAS`) : CPU,
@@ -29,7 +29,8 @@ reste ouvert y est décrit).
   l'auteur comme déclaré. `signing.public_key_fingerprint()` donne
   l'empreinte.
 - **L'arrêt d'urgence interrompt la mission en cours** : les appels de
-  l'app reçoivent `ESTOP_ACTIVE`, elle a 0,5 s pour rendre son résultat,
+  l'app reçoivent `ESTOP_ACTIVE` (sauf `log`, `get_recent_alerts`,
+  `stop_walking` et `emergency_stop`), elle a 0,5 s pour rendre son résultat,
   puis son groupe de processus est tué (`SandboxState.KILLED`,
   `SandboxErrorKind.ARRET_URGENCE`), même si elle calcule ou attend une
   réponse de l'OS. La mission est notée
@@ -53,16 +54,19 @@ reste ouvert y est décrit).
   récente installée et l'empreinte (SHA-256) de son contenu signé ; une
   autre clé ne peut ni l'installer ni le mettre à jour, une version plus
   ancienne est refusée, même après un redémarrage, et la même version ne
-  se réinstalle qu'avec le même contenu. Un registre écrit avant ce
-  changement (sans empreinte) reste lisible.
+  se réinstalle qu'avec le même contenu. L'empreinte est la même par
+  `install()` et par `install_source()` (`play_store.empreinte_paquet`).
+  Une entrée sans empreinte (écrite à la main, pour changer de clé) reçoit
+  celle de la prochaine installation de ce numéro.
 - **Mises à jour en production** : `update_source()`, même clé, version
   strictement plus récente ; facturation, nombre de missions et revenu
   conservés (aussi par `update_app()`). Une seule installation depuis la
   source à la fois.
 - **Nouveau prix confirmé** : une nouvelle version qui change le modèle
   de prix ou augmente le prix demande l'accord de l'humain, même sans
-  permission DANGEROUS ; `DetailsConfirmation` gagne `prix` et
-  `prix_precedent`.
+  permission DANGEROUS. `DetailsConfirmation` (nouveau) porte ce que voit
+  l'humain : `profil`, `signataire`, `nom_signataire`, `fichier_cles`,
+  `liaison`, `prix`, `prix_precedent`.
 - **Intentions vocales par app** : chaque app a son espace et son
   plafond (`IntentRegistry.MAX_INTENTIONS`, désormais par app) ; elle ne
   reçoit que ses intentions, ne peut pas réserver le nom d'une autre, et
@@ -77,8 +81,8 @@ Ce qui casse pour un appelant :
 
 - `install_source(source, *, manifeste, code_signature, developer_public_key)` :
   `manifeste` (texte JSON) est obligatoire, et la signature attendue est
-  celle du paquet (`sign_app_package(manifeste, source, clé)`), plus celle
-  du code seul. Pour une app chiffrée : `decrypt_verified_app_source(...,
+  celle du paquet (`sign_app_package(manifeste, source, clé)`), et non
+  plus celle du code seul (`sign_app_file`). Pour une app chiffrée : `decrypt_verified_app_source(...,
   manifeste=...)`.
 - En `PRODUCTION`, `PlayStoreRuntime` exige `registre_apps` (un fichier
   existant, créé une fois par `creer_registre_apps`), et un confirmateur
@@ -105,8 +109,16 @@ Ce qui casse pour un appelant :
   0,5 s après.
 - `IntentRegistry.register(decl, app_id=None)`, `match(texte, app_id=None)`
   et `SpeechService.listen(duree, app_id=None)` prennent l'espace de
-  l'app ; sans `app_id`, c'est l'espace de l'OS, qui ne voit plus les
-  intentions des apps. Un faux service de parole doit accepter `app_id`.
+  l'app ; sans `app_id`, c'est l'espace de l'OS : il ne voit plus les
+  intentions des apps, et une app ne reçoit plus celles déclarées sans
+  `app_id`. Un faux service de parole doit accepter `app_id`, et un
+  registre d'intentions de substitution offrir `register(decl, app_id=)`
+  et `retirer(app_id)`.
+- Une seule installation à la fois, `install()` et `update_app()`
+  compris : une installation lancée pendant une autre rend False.
+- Le quota de mémoire persistante compte chaque entrée telle qu'écrite
+  dans le fichier (clé échappée comprise) : une app aux clés pleines de
+  guillemets atteint son quota plus tôt.
 - `ConfirmationPermissions` devient `Callable[..., bool]`.
 
 ### Sécurité, changements cassants — isolation des apps et profils d'exécution (2026-10-20)
