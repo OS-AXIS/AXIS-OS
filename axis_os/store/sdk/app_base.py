@@ -48,6 +48,9 @@ from .lifecycle import (
     CONFIRMATION_MAX_S, PROGRESS_HISTORY_MAX, PROGRESS_MESSAGE_MAX, QUESTION_MAX,
     STOP_MARGIN_S, STOP_SOURCES, EventPoller, MissionCancelled, Progress,
 )
+from .stream import (
+    BusyError, CapabilityMissingError, TargetStream, TargetStreamEngine, stream_params,
+)
 from .results import (
     ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal,
     BatteryInfo, InvalidArgumentError, RefusalCode, RobotInfo, SafetyStatus,
@@ -234,6 +237,9 @@ class RobotContext:
         self._progression: list = []
         self._humain = None
         self._evenements: Optional[EventPoller] = None
+        # Flux de consignes ouvert (TargetStreamEngine), un à la fois.
+        self._flux: Optional[TargetStreamEngine] = None
+        self._flux_id = 0
         # Horloge du robot : l'heure réelle par défaut, remplacée par
         # l'heure simulée en simulation (voir _set_clock() et now()).
         self._clock = time.monotonic
@@ -346,6 +352,10 @@ class RobotContext:
         self._ferme = True
         if self._evenements is not None:
             self._evenements.stop()
+        if self._flux is not None:
+            # Arrêt sûr du flux (la marche ralentit puis s'arrête), sans
+            # attendre : son fil termine seul.
+            self._flux.close(attendre_s=0.0)
 
     def _demander_arret(self, source: str) -> None:
         """Appelée par le runtime (PlayStoreRuntime.request_stop) : un
@@ -1109,6 +1119,87 @@ class RobotContext:
         if reponse is False:
             return refused("DECLINED", RefusalCode.HUMAN_DECLINED, "refusé par l'humain")
         return refused("TIMEOUT", RefusalCode.TIMEOUT, f"pas de réponse en {delai:g} s")
+
+    # ---- Flux de consignes (téléopération locale) -----------------------
+
+    def stream_targets(self, kind: str, *, deadman_ms: float = 200.0,
+                       max_rate_hz: float = 50.0, max_age_ms: float = 150.0,
+                       max_speed: Optional[float] = None) -> TargetStream:
+        """Ouvre un flux de consignes (voir axis_os/store/sdk/stream.py) :
+        « arms », cibles des articulations des bras ; « walk », vitesses de
+        marche (vx, vy, wz). Local seulement (pont de l'app, jamais le
+        réseau).
+
+        deadman_ms  : au-delà, sans consigne valide homme mort tenu, arrêt
+                      sûr (marche : ralentir puis s'arrêter ; bras : sur
+                      place). Dans [50, 1000].
+        max_rate_hz : consignes acceptées par seconde au plus (au-delà :
+                      RATE_LIMITED). Dans [1, 100].
+        max_age_ms  : âge maximal d'une consigne à son arrivée (au-delà :
+                      STALE_TARGET). Dans [10, 1000].
+        max_speed   : vitesse propre au flux. « arms » : rad/s, dans
+                      ]0, 2] (1 par défaut) ; « walk » : fraction de la
+                      vitesse maximale du robot, dans ]0, 0.5] (0.3 par
+                      défaut). Une consigne au-delà est rejetée
+                      (OUT_OF_BOUNDS), jamais rognée.
+
+        Permissions : TELEOP_STREAM, plus celles des commandes remplacées
+        (« arms » : ACTUATORS_READ et ACTUATORS_WRITE_ARMS ; « walk » :
+        LOCOMOTION_WALK et ACTUATORS_WRITE_LEGS). Lève
+        InvalidArgumentError, EstopActiveError, CapabilityMissingError (pas
+        de bras ou pas de marche) et BusyError (un flux déjà ouvert)."""
+        self._require(Permission.TELEOP_STREAM)
+        params = stream_params(kind, deadman_ms, max_rate_hz, max_age_ms, max_speed)
+        sid, info = self._flux_ouvrir(params)
+        return TargetStream(self, sid, params["kind"], info)
+
+    def _flux_ouvrir(self, params: Dict[str, Any]) -> tuple:
+        # Jamais plus de droits que la somme des commandes que le flux
+        # remplace : on exige les leurs.
+        if params["kind"] == "arms":
+            self._require(Permission.ACTUATORS_READ)
+            self._require(Permission.ACTUATORS_WRITE_ARMS)
+        else:
+            self._require(Permission.LOCOMOTION_WALK)
+            self._require(Permission.ACTUATORS_WRITE_LEGS)
+        self._require_no_estop()
+        if self._flux is not None and self._flux.state != "CLOSED":
+            raise BusyError("un flux est déjà ouvert : le fermer d'abord")
+        if params["kind"] == "arms":
+            bras = {d.joint_id: (d.limits.pos_min, d.limits.pos_max)
+                    for d in self._robot.get_joint_definitions()
+                    if self._group_of(d.joint_id) is JointGroup.MANIPULATION}
+            if not bras:
+                raise CapabilityMissingError("ce robot n'a pas de bras pilotables")
+            moteur = TargetStreamEngine(self, params, joints=bras)
+        else:
+            if self._locomotion is None:
+                raise CapabilityMissingError("pas de service de locomotion sur ce robot")
+            bras = {}
+            moteur = TargetStreamEngine(self, params, max_twist=self._locomotion.max_twist)
+        self._flux_id += 1
+        self._flux = moteur
+        return self._flux_id, {"joints": sorted(bras), "limits": dict(moteur.limits)}
+
+    def _flux_moteur(self, stream_id: int) -> TargetStreamEngine:
+        self._require(Permission.TELEOP_STREAM)
+        if self._flux is None or stream_id != self._flux_id:
+            raise InvalidArgumentError("flux inconnu (fermé, ou ouvert par un autre contexte)")
+        return self._flux
+
+    def _flux_push(self, stream_id: int, cible, deadman: bool, t: Optional[float]):
+        moteur = self._flux_moteur(stream_id)
+        self._require_no_estop()
+        return moteur.push(cible, deadman, t)
+
+    def _flux_resume(self, stream_id: int) -> ActionResult:
+        return self._flux_moteur(stream_id).resume()
+
+    def _flux_metrics(self, stream_id: int):
+        return self._flux_moteur(stream_id).metrics()
+
+    def _flux_close(self, stream_id: int) -> None:
+        self._flux_moteur(stream_id).close()
 
     def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
              origine: Optional[str] = None) -> bool:

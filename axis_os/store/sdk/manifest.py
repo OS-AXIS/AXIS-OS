@@ -169,6 +169,10 @@ class Permission(Enum):
     # Poser une question à l'humain présent (ask_confirmation). L'app ne
     # peut jamais y répondre elle-même.
     HUMAN_CONFIRMATION   = auto()
+    # Téléopération locale : pousser un flux de cibles des bras ou de
+    # vitesses de marche (stream_targets), sous homme mort. Exige aussi les
+    # droits des commandes qu'il remplace (bras ou marche).
+    TELEOP_STREAM        = auto()
 
 
 class ProtectionLevel(Enum):
@@ -247,6 +251,8 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # réponse : c'est lui qui décide.
     Permission.MISSION_LIFECYCLE:    ProtectionLevel.NORMAL,
     Permission.HUMAN_CONFIRMATION:   ProtectionLevel.NORMAL,
+    # DANGEROUS : le flux fait bouger le robot.
+    Permission.TELEOP_STREAM:        ProtectionLevel.DANGEROUS,
 }
 
 

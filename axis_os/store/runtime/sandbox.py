@@ -285,7 +285,7 @@ class SandboxRunner:
     ACTIONS_APRES_ARRET = frozenset({"log", "get_recent_alerts", "stop_walking",
                                      "emergency_stop", "robot_info", "has_capability",
                                      "safety_status", "should_stop", "report_progress",
-                                     "poll_events"})
+                                     "poll_events", "stream_metrics", "stream_close"})
     # Appels que l'OS sert par une capture ou une inférence de modèle, sans
     # moyen de les interrompre : sous `arret`, ils sont servis dans un thread
     # que run_app abandonne si le processus de l'app est tué entre-temps.

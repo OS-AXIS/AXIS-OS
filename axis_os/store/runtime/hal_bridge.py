@@ -69,13 +69,17 @@ from axis_os.store.sdk.lifecycle import (
     CONFIRMATION_MAX_S, PROGRESS_MESSAGE_MAX, QUESTION_MAX, EventPoller, MissionCancelled,
 )
 from axis_os.store.sdk.manifest import Permission
+from axis_os.store.sdk.stream import (
+    MAX_JOINTS, StreamAck, StreamMetrics, TargetStream, stream_params, stream_target,
+)
 from axis_os.store.sdk.results import (
     EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
     RobotInfo, SafetyStatus, object_from_target, require_number, require_text,
     surface_height_from_target,
 )
 from axis_os.store.runtime.canal_ipc import (
-    Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste, MessageRefuse,
+    Booleen, Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste,
+    MessageRefuse,
     Nombre, Objet, UnParmi,
 )
 
@@ -253,6 +257,17 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "poll_events": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
     "ask_confirmation": Objet({"question": Chaine(QUESTION_MAX),
                                "timeout_s": Nombre(0, CONFIRMATION_MAX_S)}),
+    # Bornes exactes : stream_params() / stream_target(), côté OS.
+    "stream_open": Objet({"kind": UnParmi("arms", "walk"), "deadman_ms": Nombre(),
+                          "max_rate_hz": Nombre(), "max_age_ms": Nombre(),
+                          "max_speed": Nombre()}),
+    "stream_push": Objet({"stream_id": Entier(0, 2 ** 31), "deadman": Booleen(),
+                          "t": Nombre()},
+                         facultatifs={"joints": Dictionnaire(Nombre(), MAX_JOINTS),
+                                      "velocity": Liste(Nombre(), 3)}),
+    "stream_resume": Objet({"stream_id": Entier(0, 2 ** 31)}),
+    "stream_metrics": Objet({"stream_id": Entier(0, 2 ** 31)}),
+    "stream_close": Objet({"stream_id": Entier(0, 2 ** 31)}),
 }
 
 # Actions longues dont le délai est borné par le temps qui reste au hook
@@ -631,6 +646,40 @@ class HALBridgeServer:
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.safety_status().to_json())
 
+            elif cmd.action == "stream_open":
+                p = cmd.payload
+                flux = self._ctx.stream_targets(
+                    p["kind"], deadman_ms=p["deadman_ms"], max_rate_hz=p["max_rate_hz"],
+                    max_age_ms=p["max_age_ms"], max_speed=p["max_speed"])
+                return HALResponse(cmd.request_id, True, data={
+                    "stream_id": flux._id, "joints": list(flux.joints),
+                    "limits": flux.limits, "now": self._ctx.now()})
+
+            elif cmd.action == "stream_push":
+                p = cmd.payload
+                moteur = self._ctx._flux_moteur(p["stream_id"])
+                cible = stream_target(moteur.kind, p.get("joints") if moteur.kind == "arms"
+                                      else p.get("velocity"))
+                ack = self._ctx._flux_push(p["stream_id"], cible, p["deadman"], p["t"])
+                if ack.accepted:
+                    # Consigne acceptée : le robot la suit (facturation, voir
+                    # __init__).
+                    self.successful_motor_commands += 1
+                return HALResponse(cmd.request_id, True,
+                                   data=dict(ack.to_json(), now=self._ctx.now()))
+
+            elif cmd.action == "stream_resume":
+                return HALResponse(cmd.request_id, True, data=self._ctx._flux_resume(
+                    cmd.payload["stream_id"]).to_json())
+
+            elif cmd.action == "stream_metrics":
+                return HALResponse(cmd.request_id, True, data=self._ctx._flux_metrics(
+                    cmd.payload["stream_id"]).to_json())
+
+            elif cmd.action == "stream_close":
+                self._ctx._flux_close(cmd.payload["stream_id"])
+                return HALResponse(cmd.request_id, True, data=None)
+
             elif cmd.action == "should_stop":
                 # Le motif seul (estop, human, os) : check_cancelled() du
                 # client lève la même exception qu'en direct.
@@ -813,6 +862,7 @@ class HALBridgeClient:
         self._alert_poll_stop = threading.Event()
         self._alert_poll_interval_s = alert_poll_interval_s
         self._evenements: Optional[EventPoller] = None
+        self._decalage_horloge = 0.0
         self.__groups_cache: Optional[Dict[str, str]] = None
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
@@ -1222,6 +1272,45 @@ class HALBridgeClient:
                                strict_min=True)
         return ActionResult.from_json(self._call("place", {
             "surface_height_m": hauteur, "timeout_s": delai}, duree_nominale_s=delai))
+
+    # ---- Flux de consignes (voir RobotContext.stream_targets) -------------
+    # L'heure de chaque consigne est estimée ici en heure du robot, recalée
+    # à chaque réponse (l'OS y joint son heure) : elle sert à l'OS à jeter
+    # les consignes trop vieilles.
+
+    def stream_targets(self, kind: str, *, deadman_ms: float = 200.0,
+                       max_rate_hz: float = 50.0, max_age_ms: float = 150.0,
+                       max_speed: Optional[float] = None) -> TargetStream:
+        params = stream_params(kind, deadman_ms, max_rate_hz, max_age_ms, max_speed)
+        t0 = time.monotonic()
+        rep = self._call("stream_open", params)
+        self._recaler_horloge(rep["now"], t0)
+        return TargetStream(self, rep["stream_id"], params["kind"], rep)
+
+    def _recaler_horloge(self, maintenant_os: float, t0: float) -> None:
+        self._decalage_horloge = float(maintenant_os) - (t0 + time.monotonic()) / 2.0
+
+    def _flux_push(self, stream_id: int, cible, deadman: bool, t: Optional[float]):
+        if t is None:
+            t = time.monotonic() + self._decalage_horloge
+        payload = {"stream_id": stream_id, "deadman": deadman, "t": t}
+        if isinstance(cible, dict):
+            payload["joints"] = cible
+        else:
+            payload["velocity"] = list(cible)
+        t0 = time.monotonic()
+        rep = self._call("stream_push", payload)
+        self._recaler_horloge(rep["now"], t0)
+        return StreamAck.from_json(rep)
+
+    def _flux_resume(self, stream_id: int) -> ActionResult:
+        return ActionResult.from_json(self._call("stream_resume", {"stream_id": stream_id}))
+
+    def _flux_metrics(self, stream_id: int) -> StreamMetrics:
+        return StreamMetrics.from_json(self._call("stream_metrics", {"stream_id": stream_id}))
+
+    def _flux_close(self, stream_id: int) -> None:
+        self._call("stream_close", {"stream_id": stream_id})
 
     # ---- Cycle de vie (voir RobotContext) ---------------------------------
 
