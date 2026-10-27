@@ -16,7 +16,7 @@ from typing import Optional, Dict, List
 
 from .interfaces import IRobotHAL, IIMU, IForceTorqueSensor
 from .types import (
-    ActuatorCommand, ActuatorFeedback, HALStatus,
+    ActuatorCommand, ActuatorFeedback, BatteryState, HALStatus,
     JointDefinition, JointLimits
 )
 from .kinematic_normalizer import KinematicNormalizer
@@ -83,6 +83,11 @@ class NormalizedRobotHAL:
 
     def get_capabilities(self) -> CapabilitySet:
         return self._hal.get_capabilities()
+
+    def get_battery(self) -> Optional[BatteryState]:
+        """Relaie IRobotHAL.get_battery() : la charge mesurée, ou None
+        (inconnue)."""
+        return self._hal.get_battery()
 
     # ── Commandes normalisées → brutes ────────────────────────────
 

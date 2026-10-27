@@ -44,9 +44,13 @@ from axis_os.hal.core.types import (
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
 from .manifest import AppManifest, Permission
+from .results import (
+    ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, AxisRefusal, BatteryInfo,
+    InvalidArgumentError, RefusalCode, RobotInfo, SafetyStatus, require_text,
+)
 
 
-class PermissionError(Exception):
+class PermissionError(AxisRefusal):
     """
     Levée quand une app appelle une méthode de RobotContext dont la
     permission n'est pas déclarée dans son manifeste.
@@ -54,11 +58,13 @@ class PermissionError(Exception):
     Attention au nom : cette classe porte le même nom que l'exception
     standard de Python, mais c'est une classe distincte, définie ici.
     Pour l'intercepter, il faut importer celle de ce module.
+
+    Code de refus : RefusalCode.PERMISSION_DENIED (voir results.py).
     """
-    pass
+    code = RefusalCode.PERMISSION_DENIED
 
 
-class EstopActiveError(Exception):
+class EstopActiveError(AxisRefusal):
     """
     Levée quand une app tente d'envoyer une commande de mouvement alors
     qu'un e-stop (arrêt d'urgence) global est actif sur le robot.
@@ -83,8 +89,14 @@ class EstopActiveError(Exception):
     l'app a une demi-seconde pour rendre son résultat, puis son processus
     est arrêté (voir `arret` dans SandboxRunner.run_app, et
     test/test_arret_urgence_mission.py).
+
+    Code de refus : RefusalCode.ESTOP_ACTIVE (voir results.py).
     """
-    pass
+    code = RefusalCode.ESTOP_ACTIVE
+
+
+EXCEPTIONS_PAR_CODE[RefusalCode.PERMISSION_DENIED.value] = PermissionError
+EXCEPTIONS_PAR_CODE[RefusalCode.ESTOP_ACTIVE.value] = EstopActiveError
 
 
 class UnauthorizedContextError(Exception):
@@ -211,6 +223,11 @@ class RobotContext:
         # Groupes d'articulations déclarés par la HAL (bras, jambes ou
         # autre), résolus à la première utilisation (voir _group_of()).
         self._joint_groups: Optional[Dict[str, JointGroup]] = None
+        # Profil d'exécution de l'OS (voir robot_info()) et échéance du
+        # hook en cours sur l'horloge du robot (voir safety_status()),
+        # posés par le runtime.
+        self._profil_nom: Optional[str] = None
+        self._echeance: Optional[float] = None
 
     @classmethod
     def for_testing(
@@ -301,6 +318,16 @@ class RobotContext:
         self._locomotion = locomotion
         self._speech = speech
         self._memory = memory
+
+    def _set_os_info(self, profil_nom: Optional[str]) -> None:
+        """Injection par le runtime du nom de son profil (SIMULATION,
+        DEVELOPPEMENT, PRODUCTION) : privée, hors de la surface publique."""
+        self._profil_nom = profil_nom
+
+    def _set_deadline(self, echeance: Optional[float]) -> None:
+        """Injection par le runtime de l'échéance du hook en cours (heure du
+        robot à laquelle le quota de durée est atteint)."""
+        self._echeance = echeance
 
     def _set_clock(self, clock) -> None:
         """Injection de l'horloge par le runtime : privée, hors de la
@@ -485,6 +512,140 @@ class RobotContext:
             return "aucune perception disponible"
         r = self._perception.describe_scene()
         return r.value if r.ok else f"perception indisponible : {r.reason}"
+
+    # ---- État, capacités et diagnostic --------------------------------
+
+    # Profils de l'OS, tels que l'app les lit (noms anglais de l'API).
+    _PROFILS = {"SIMULATION": "simulation", "DEVELOPPEMENT": "development",
+                "PRODUCTION": "production"}
+
+    def _services(self) -> Dict[str, str]:
+        """Services système présents sur ce robot (AVAILABLE ou ABSENT)."""
+        presents = {"locomotion": self._locomotion, "perception": self._perception,
+                    "speech_in": self._speech, "memory": self._memory}
+        services = {nom: AVAILABLE if s is not None else ABSENT
+                    for nom, s in presents.items()}
+        services["battery"] = AVAILABLE if self._lire_batterie() is not None else ABSENT
+        return services
+
+    def _lire_batterie(self):
+        """BatteryState mesuré, ou None (inconnue, ou HAL sans batterie)."""
+        lire = getattr(self._robot, "get_battery", None)
+        return lire() if lire is not None else None
+
+    def _capacites(self) -> Dict[str, str]:
+        """État de chaque capacité matérielle : AVAILABLE, DEGRADED, ou
+        ABSENT (non déclarée, ou hors service en ce moment)."""
+        from axis_os.hal.core.capabilities import CapabilityStatus, RobotCapability
+        try:
+            caps = self._robot.get_capabilities()
+        except Exception:       # noqa: BLE001 — HAL sans capacités déclarées
+            caps = None
+        etats = {}
+        for c in RobotCapability:
+            s = caps.status_of(c) if caps is not None else None
+            etats[c.name.lower()] = (AVAILABLE if s is CapabilityStatus.AVAILABLE
+                                     else DEGRADED if s is CapabilityStatus.DEGRADED
+                                     else ABSENT)
+        return etats
+
+    def _batterie(self) -> BatteryInfo:
+        b = self._lire_batterie()
+        if b is None:
+            return BatteryInfo(known=False)
+        return BatteryInfo(known=True, percent=float(b.percent), charging=b.charging,
+                           voltage=b.voltage)
+
+    def robot_info(self) -> RobotInfo:
+        """Le robot qui exécute l'app : modèle, fabricant, version d'AXIS-OS
+        et de l'API du SDK, profil (« simulation », « development » ou
+        « production »), capacités matérielles et leur état (AVAILABLE,
+        DEGRADED, ABSENT), services système présents, limites utiles et
+        batterie (inconnue si le driver ne la mesure pas : jamais une
+        valeur inventée).
+
+        Limites : vitesse de marche maximale vers l'avant et sur le côté
+        (m/s), rotation maximale (rad/s), toutes celles du service de
+        locomotion (None sans locomotion), et le rapport de vitesse
+        articulaire du manifeste (max_velocity_ratio).
+
+        Permission : SYSTEM_INFO. Servie aussi pendant un arrêt d'urgence :
+        c'est de la lecture seule."""
+        self._require(Permission.SYSTEM_INFO)
+        import axis_os
+        from .version import API_VERSION
+        info = self._robot.get_robot_info()
+        twist = getattr(self._locomotion, "max_twist", None)
+        limits = {
+            "max_walk_speed_mps": getattr(twist, "vx", None),
+            "max_lateral_speed_mps": getattr(twist, "vy", None),
+            "max_turn_rate_radps": getattr(twist, "wz", None),
+            "max_velocity_ratio": self._manifest.max_velocity_ratio,
+        }
+        return RobotInfo(
+            model=str(info.get("model", "")), manufacturer=str(info.get("manufacturer", "")),
+            os_version=axis_os.__version__, sdk_api_version=API_VERSION,
+            profile=self._PROFILS.get(self._profil_nom or "", "unknown"),
+            capabilities=self._capacites(), services=self._services(),
+            limits=limits, battery=self._batterie())
+
+    def has_capability(self, name: str) -> bool:
+        """Vrai si le robot peut servir `name` maintenant : une capacité
+        matérielle (« legs », « camera », « speaker »… : voir
+        robot_info().capabilities) déclarée ET disponible, ou un service
+        système présent (« locomotion », « perception », « battery »… :
+        voir robot_info().services).
+
+        Pour désactiver proprement une fonction facultative au lieu de
+        planter. Un nom inconnu lève InvalidArgumentError (une faute de
+        frappe ne doit pas désactiver une fonction en silence).
+        Permission : SYSTEM_INFO."""
+        self._require(Permission.SYSTEM_INFO)
+        nom = require_text("name", name, 64).strip().lower()
+        capacites, services = self._capacites(), self._services()
+        if nom in capacites:
+            return capacites[nom] == AVAILABLE
+        if nom in services:
+            return services[nom] == AVAILABLE
+        raise InvalidArgumentError(
+            f"capacité inconnue : {nom!r} — capacités : {sorted(capacites)} ; "
+            f"services : {sorted(services)}")
+
+    def safety_status(self) -> SafetyStatus:
+        """État de sécurité au moment de l'appel : arrêt d'urgence, gardien
+        de proximité (« clear », « slowing », « stopped » ou
+        « unavailable »), chute détectée (None si le robot ne marche pas),
+        et quotas restants : durée du hook en cours (secondes du robot),
+        clés et octets de mémoire persistante.
+
+        Permission : SYSTEM_INFO. Servie aussi pendant un arrêt d'urgence."""
+        self._require(Permission.SYSTEM_INFO)
+        loco = self._locomotion
+        proximite, distance, raison = "unavailable", None, ""
+        if loco is not None and getattr(loco, "has_proximity_guard", False):
+            v = getattr(loco, "dernier_verdict", None)
+            if v is not None:
+                proximite = ("stopped" if v.facteur <= 0.0 else
+                             "slowing" if v.facteur < 1.0 else "clear")
+                distance = (None if v.distance is None or not math.isfinite(v.distance)
+                            else float(v.distance))
+                raison = str(v.raison)[:200]
+        chute = None
+        if loco is not None and hasattr(loco, "state"):
+            chute = getattr(loco.state, "name", "") == "FALLEN"
+        reste = None if self._echeance is None else max(0.0, self._echeance - self.now())
+        cles = octets = None
+        if self._memory is not None and hasattr(self._memory, "app_usage"):
+            r = self._memory.app_usage(self._manifest.app_id)
+            if r.ok:
+                n, taille = r.value
+                cles = max(0, self._memory.MAX_CLES_PAR_APP - n)
+                octets = max(0, self._memory.MAX_OCTETS_PAR_APP - taille)
+        return SafetyStatus(
+            estop_active=bool(self._watchdog.estop_fired or self._robot.estop_active),
+            proximity=proximite, proximity_distance_m=distance, proximity_reason=raison,
+            fall_detected=chute, time_remaining_s=reste,
+            storage_keys_remaining=cles, storage_bytes_remaining=octets)
 
     def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
              origine: Optional[str] = None) -> bool:

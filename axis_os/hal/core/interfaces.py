@@ -27,7 +27,8 @@ from typing import Optional, List, Dict
 from .types import (
     ActuatorCommand, ActuatorFeedback, ActuatorState,
     ControlMode, HALStatus, IMUData, ForceTorqueData,
-    JointDefinition, SensorType, CameraFrame, CameraIntrinsics, AudioChunk
+    JointDefinition, SensorType, CameraFrame, CameraIntrinsics, AudioChunk,
+    BatteryState,
 )
 from .capabilities import CapabilitySet
 
@@ -416,3 +417,12 @@ class IRobotHAL(ABC):
         robot mal déclaré que l'inverse.
         """
         return CapabilitySet.empty()
+
+    def get_battery(self) -> Optional[BatteryState]:
+        """
+        Charge de la batterie, mesurée par le driver, ou None si ce
+        robot ne sait pas la lire (implémentation par défaut). None veut
+        dire « inconnue » : jamais une valeur inventée, qui ferait
+        continuer une app sur une batterie vide.
+        """
+        return None

@@ -1783,6 +1783,8 @@ class PlayStoreRuntime:
         # pickle : un attribut changé par l'opérateur entre deux missions
         # est vu par la suivante.
         etat = etat_json(entry.app) if entry.app is not None else None
+        # Échéance du hook, lue par ctx.safety_status() (temps restant).
+        ctx._set_deadline(self._clock() + entry.manifest.quota.max_runtime_s)
         result = runner.run_app(entry.spec, hook, serveur=bridge_server,
                                 params=params, etat=etat,
                                 tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR,
@@ -1804,6 +1806,7 @@ class PlayStoreRuntime:
         # absent (robot sans caméra, sans jambes) donne une réponse vide
         # et explicite, jamais une erreur obscure.
         ctx._set_clock(self._clock)
+        ctx._set_os_info(self._profil.name)
         ctx._attach_services(perception=self._perception_service,
                              locomotion=self._locomotion_service,
                              speech=self._speech_service,

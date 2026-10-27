@@ -65,6 +65,10 @@ from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
 )
 from axis_os.store.sdk.manifest import Permission
+from axis_os.store.sdk.results import (
+    EXCEPTIONS_PAR_CODE, AxisRefusal, InvalidArgumentError, RobotInfo, SafetyStatus,
+    require_text,
+)
 from axis_os.store.runtime.canal_ipc import (
     Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste, MessageRefuse,
     Nombre, Objet, UnParmi,
@@ -221,6 +225,9 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "log": Objet({}, facultatifs={"message": Chaine(4096)}),
     "emergency_stop": _VIDE,
     "get_recent_alerts": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
+    "robot_info": _VIDE,
+    "has_capability": Objet({"name": Chaine(64)}),
+    "safety_status": _VIDE,
 }
 
 _ENVELOPPE = Objet({"action": Chaine(64), "payload": Dictionnaire(JsonLibre(), 64),
@@ -572,6 +579,18 @@ class HALBridgeServer:
                     "next_index": since_index + len(alerts),
                 })
 
+            elif cmd.action == "robot_info":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.robot_info().to_json())
+
+            elif cmd.action == "has_capability":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.has_capability(cmd.payload["name"]))
+
+            elif cmd.action == "safety_status":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.safety_status().to_json())
+
             else:
                 return HALResponse(cmd.request_id, False,
                                    error=f"Action inconnue : {cmd.action}")
@@ -593,6 +612,12 @@ class HALBridgeServer:
             # interruption de sécurité, et non comme une erreur
             # applicative ordinaire (voir HALBridgeClient._call).
             return HALResponse(cmd.request_id, False, error=f"ESTOP_ACTIVE:{exc}")
+        except AxisRefusal as exc:
+            # Tout autre refus structuré (InvalidArgumentError, annulation…)
+            # traverse le pont avec son code, que le client reconvertit en
+            # la même exception (voir HALBridgeClient._call).
+            return HALResponse(cmd.request_id, False,
+                               error=f"{exc.code.value}:{exc.message}")
         except Exception as exc:
             return HALResponse(cmd.request_id, False, error=f"{type(exc).__name__}: {exc}")
 
@@ -1063,6 +1088,19 @@ class HALBridgeClient:
         raw = self._call("emergency_stop", {})
         return HALStatus[raw["status"]]
 
+    # ---- État, capacités et diagnostic (voir RobotContext) -------------
+
+    def robot_info(self) -> RobotInfo:
+        return RobotInfo.from_json(self._call("robot_info", {}))
+
+    def has_capability(self, name: str) -> bool:
+        # Même refus qu'en direct, avant d'envoyer : le schéma du pont
+        # refuserait un nom qui n'est pas un texte.
+        return bool(self._call("has_capability", {"name": require_text("name", name, 64)}))
+
+    def safety_status(self) -> SafetyStatus:
+        return SafetyStatus.from_json(self._call("safety_status", {}))
+
     def get_mission_log(self) -> list:
         """
         Contrairement aux autres méthodes, le journal de mission est tenu
@@ -1108,14 +1146,14 @@ class HALBridgeClient:
             delai = self._delai(duree_nominale_s)
             resp = self._appel_canal(action, payload, req_id, delai)
         if not resp.success:
-            if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
-                raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
-            if resp.error and resp.error.startswith("PERMISSION_DENIED:"):
-                # Même exception qu'en direct : une app écrite pour
-                # RobotContext se comporte de la même façon, sandboxée
-                # ou non.
-                raise SandboxPermissionError(
-                    resp.error[len("PERMISSION_DENIED:"):])
+            # Un refus structuré redevient la même exception qu'en direct
+            # (PermissionError, EstopActiveError, InvalidArgumentError…) :
+            # une app écrite pour RobotContext se comporte de la même façon,
+            # sandboxée ou non.
+            code, sep, message = (resp.error or "").partition(":")
+            classe = EXCEPTIONS_PAR_CODE.get(code) if sep else None
+            if classe is not None:
+                raise classe(message)
             raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
         return resp.data
 

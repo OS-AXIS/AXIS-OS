@@ -283,7 +283,8 @@ class SandboxRunner:
     # sur le robot, ou qui l'arrêtent. Toute autre reçoit ESTOP_ACTIVE, que
     # l'app voit comme EstopActiveError : c'est ainsi qu'elle reçoit l'arrêt.
     ACTIONS_APRES_ARRET = frozenset({"log", "get_recent_alerts", "stop_walking",
-                                     "emergency_stop"})
+                                     "emergency_stop", "robot_info", "has_capability",
+                                     "safety_status"})
     # Appels que l'OS sert par une capture ou une inférence de modèle, sans
     # moyen de les interrompre : sous `arret`, ils sont servis dans un thread
     # que run_app abandonne si le processus de l'app est tué entre-temps.

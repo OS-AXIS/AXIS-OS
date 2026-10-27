@@ -150,6 +150,11 @@ class Permission(Enum):
     # environnement, et l'utilisateur doit savoir quelles apps en gardent
     # une trace.
     STORAGE_PERSISTENT   = auto()
+    # Lire l'état du robot et de sa sécurité : modèle, versions, profil,
+    # capacités présentes, limites, batterie (robot_info, has_capability),
+    # arrêt d'urgence, gardien de proximité, chute, quotas restants
+    # (safety_status). Aucun effet sur le robot.
+    SYSTEM_INFO          = auto()
 
 
 class ProtectionLevel(Enum):
@@ -217,6 +222,9 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # NORMAL : écrire dans son propre espace cloisonné ne met rien en danger
     # physiquement. C'est une question de traçabilité, pas de sécurité.
     Permission.STORAGE_PERSISTENT:   ProtectionLevel.NORMAL,
+    # NORMAL : de la lecture seule, qui aide l'app à ne pas faire ce que le
+    # robot ne peut pas faire (capacité absente, batterie faible).
+    Permission.SYSTEM_INFO:          ProtectionLevel.NORMAL,
 }
 
 
