@@ -41,6 +41,7 @@ Licence : Apache 2.0
 """
 
 from __future__ import annotations
+import itertools
 from pathlib import Path
 from typing import Optional, Union
 
@@ -50,6 +51,11 @@ from axis_os.store.sdk.encryption import (
     EncryptionError, DecryptionError,
 )
 from axis_os.store.sdk.signing import verify_app_package, verify_app_signature, SignatureError
+
+# Numéro de chaque module d'app chargé : un nom tiré de id(objet code)
+# resservait dès que l'objet code d'un chargement précédent était libéré,
+# et le module d'une app remplaçait alors celui d'une autre.
+_NUMEROS_MODULES = itertools.count(1)
 
 
 class AppLoadError(Exception):
@@ -144,7 +150,7 @@ def _load_app_instance_from_source(source_code: str, *, origin_label: str) -> Ro
             f"Code déchiffré syntaxiquement invalide ({origin_label}) : {e}"
         ) from e
 
-    module_name = f"axis_os_encrypted_app_{id(code_obj)}_{origin_label}"
+    module_name = f"axis_os_encrypted_app_{next(_NUMEROS_MODULES)}_{origin_label}"
     module_name = module_name.replace(".", "_").replace("/", "_")
     module = types.ModuleType(module_name)
     module.__dict__["__name__"] = module_name

@@ -71,6 +71,10 @@ reste ouvert y est décrit).
   plafond (`IntentRegistry.MAX_INTENTIONS`, désormais par app) ; elle ne
   reçoit que ses intentions, ne peut pas réserver le nom d'une autre, et
   son vocabulaire est retiré à son arrêt.
+- **Apps chiffrées chargées dans l'OS** (`packaging.load_app_from_encrypted_bytes`) :
+  chaque module d'app reçoit un nom unique. Le nom tiré de `id()` de
+  l'objet code pouvait resservir, et le module d'une app remplaçait
+  alors celui d'une autre dans `sys.modules`.
 - **Marque « IA » sur `walk()` et `move_to_pose()`** : paramètre
   `origine=ORIGINE_IA`, porté par `GR00TAction.walk(ctx)`,
   `LocomotionAction.walk(ctx)` (nouveau champ `base_velocity`),
