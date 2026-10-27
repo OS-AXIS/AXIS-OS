@@ -89,6 +89,12 @@ class Detection:
     traitée, plutôt qu'à celle du moment où elle a été capturée, décale
     l'objet de plusieurs centimètres."""
 
+    # Dernier champ : un appel positionnel écrit avant lui reste valide.
+    frame: str = "base"
+    """Repère de `direction` et de `position_3d` : « base » (le robot,
+    qui bouge avec lui) ou « world » (fixe, celui de la carte). Le SDK
+    exige « world » pour saisir un objet (RobotContext.pick)."""
+
 
 class IObjectDetector(ABC):
     """Contrat d'un détecteur d'objets — le MODÈLE, pas le service.
@@ -415,6 +421,7 @@ class PerceptionService(IService):
                 label=d.label, confidence=d.confidence, bbox=d.bbox,
                 direction=direction,
                 position_3d=position,
+                frame="world" if frame == FRAME_WORLD else "base",
                 timestamp_ns=d.timestamp_ns,
             ))
         return out, warn

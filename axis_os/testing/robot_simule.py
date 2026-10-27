@@ -146,9 +146,8 @@ class SimulatedPerception:
             d = Detection(label=o.label, confidence=o.confidence, bbox=(0, 0, 1, 1),
                           direction=Vector3(q[0] / n, q[1] / n, q[2] / n),
                           position_3d=Vector3(float(q[0]), float(q[1]), float(q[2])),
-                          timestamp_ns=time.monotonic_ns())
-            if hasattr(d, "frame"):
-                d.frame = "world" if frame == FRAME_WORLD else "base"
+                          timestamp_ns=time.monotonic_ns(),
+                          frame="world" if frame == FRAME_WORLD else "base")
             dets.append(d)
         return ServiceResult(ok=True, value=dets)
 
@@ -271,6 +270,8 @@ class SimulatedRobot:
         from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
         from axis_os.store.runtime.profil import Profil
         reglages = dict(locomotion_service=self.locomotion, perception_service=self.perception,
+                        navigation_service=self.navigation,
+                        manipulation_service=self.manipulation,
                         clock=self.clock, profil=Profil.SIMULATION,
                         confirmer_permissions=accepter_tout_SIMULATION)
         reglages.update(kw)

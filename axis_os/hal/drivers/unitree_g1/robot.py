@@ -557,6 +557,14 @@ class UnitreeG1HAL(IRobotHAL):
             "dof":              str(len(self._joint_defs)),
         }
 
+    def get_rest_pose(self) -> Dict[str, float]:
+        """Posture de repos du G1 : bras le long du corps, à la position
+        zéro du fabricant (celle où le driver démarre, à l'intérieur des
+        butées de chaque articulation). Seuls les bras : la posture d'un
+        bipède debout ne se change pas en bougeant ses jambes."""
+        return {d.joint_id: 0.0 for d in self._joint_defs
+                if d.group is JointGroup.MANIPULATION}
+
     def get_capabilities(self) -> CapabilitySet:
         """
         Capacités réelles du G1 : humanoïde bipède avec bras articulés,

@@ -426,3 +426,13 @@ class IRobotHAL(ABC):
         continuer une app sur une batterie vide.
         """
         return None
+
+    def get_rest_pose(self) -> Optional[Dict[str, float]]:
+        """
+        Posture de repos sûre, définie par le driver (jamais par une app) :
+        {joint_id: position}, dans la convention du driver. Ne contient que
+        des articulations qu'on peut déplacer sans risque pour l'équilibre
+        (les bras, jamais les jambes d'un bipède debout). None (défaut) :
+        ce robot n'en déclare pas.
+        """
+        return None

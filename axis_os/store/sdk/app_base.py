@@ -45,8 +45,9 @@ from axis_os.hal.core.types import (
 from axis_os.hal.watchdog.system import WatchdogSystem
 from .manifest import AppManifest, Permission
 from .results import (
-    ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, AxisRefusal, BatteryInfo,
-    InvalidArgumentError, RefusalCode, RobotInfo, SafetyStatus, require_text,
+    ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal,
+    BatteryInfo, InvalidArgumentError, RefusalCode, RobotInfo, SafetyStatus,
+    object_from_target, refused, require_number, require_text, surface_height_from_target,
 )
 
 
@@ -217,6 +218,11 @@ class RobotContext:
         self._locomotion = None
         self._speech = None
         self._memory = None
+        self._navigation = None
+        self._manipulation = None
+        # Vrai une fois le hook terminé (voir _fermer()) : plus aucune action
+        # longue lancée par ce contexte ne continue.
+        self._ferme = False
         # Horloge du robot : l'heure réelle par défaut, remplacée par
         # l'heure simulée en simulation (voir _set_clock() et now()).
         self._clock = time.monotonic
@@ -307,7 +313,8 @@ class RobotContext:
     # ---- Services système -------------------------------------------
 
     def _attach_services(self, perception=None, locomotion=None,
-                         speech=None, memory=None) -> None:
+                         speech=None, memory=None, navigation=None,
+                         manipulation=None) -> None:
         """Injection des services par le runtime.
 
         Méthode privée (préfixe _), donc hors de la surface publique que
@@ -318,6 +325,23 @@ class RobotContext:
         self._locomotion = locomotion
         self._speech = speech
         self._memory = memory
+        self._navigation = navigation
+        self._manipulation = manipulation
+
+    def _fermer(self) -> None:
+        """Appelée par le runtime à la fin de chaque hook, même si le
+        processus de l'app a été tué : une action longue encore servie
+        (go_to, move_to_pose…) s'arrête au pas suivant."""
+        self._ferme = True
+
+    def _motif_interruption(self) -> Optional[tuple]:
+        """(code, message) si une action longue doit s'interrompre : arrêt
+        d'urgence, ou hook terminé ; None sinon."""
+        if self._watchdog.estop_fired or self._robot.estop_active:
+            return RefusalCode.ESTOP_ACTIVE, "arrêt d'urgence"
+        if self._ferme:
+            return RefusalCode.CANCELLED, "fin du hook de l'app"
+        return None
 
     def _set_os_info(self, profil_nom: Optional[str]) -> None:
         """Injection par le runtime du nom de son profil (SIMULATION,
@@ -522,7 +546,8 @@ class RobotContext:
     def _services(self) -> Dict[str, str]:
         """Services système présents sur ce robot (AVAILABLE ou ABSENT)."""
         presents = {"locomotion": self._locomotion, "perception": self._perception,
-                    "speech_in": self._speech, "memory": self._memory}
+                    "speech_in": self._speech, "memory": self._memory,
+                    "navigation": self._navigation, "manipulation": self._manipulation}
         services = {nom: AVAILABLE if s is not None else ABSENT
                     for nom, s in presents.items()}
         services["battery"] = AVAILABLE if self._lire_batterie() is not None else ABSENT
@@ -646,6 +671,245 @@ class RobotContext:
             proximity=proximite, proximity_distance_m=distance, proximity_reason=raison,
             fall_detected=chute, time_remaining_s=reste,
             storage_keys_remaining=cles, storage_bytes_remaining=octets)
+
+    # ---- Services de haut niveau : navigation, manipulation, repos -----
+
+    # Durée maximale d'une action longue (go_to, pick, place). Dans le
+    # processus de l'app, elle est aussi bornée par le temps qui reste au
+    # hook (voir HALBridgeServer.traiter).
+    MAX_ACTION_S = 600.0
+    # Pas d'attente d'une action longue (secondes du robot).
+    _PAS_ATTENTE_S = 0.02
+
+    def go_to(self, x: float, y: float, theta: Optional[float] = None, *,
+              timeout_s: float) -> ActionResult:
+        """Va au point (x, y) de la carte (mètres, repère monde), et s'y
+        oriente selon `theta` (radians) s'il est donné. BLOQUANT : rend la
+        main à l'arrivée, ou dès que l'issue est connue.
+
+        Le service de navigation planifie un chemin qui contourne les
+        obstacles de la carte, puis le suit par des consignes de vitesse au
+        service de locomotion : la marche est donc bornée comme celle de
+        walk() (vitesse maximale du robot) et plafonnée par le gardien de
+        proximité, qui ralentit puis arrête le robot devant une personne.
+        Un obstacle immobile sur le chemin est contourné si un autre
+        passage existe.
+
+        Rend un ActionResult dont `status` vaut :
+          - ARRIVED : arrivé ;
+          - BLOCKED : pas de chemin, ou plus de passage (code BLOCKED) ;
+          - REFUSED : arrêt d'urgence survenu (ESTOP_ACTIVE), annulation
+            (CANCELLED), robot à terre (SAFETY_LIMIT), pas de navigation
+            sur ce robot (CAPABILITY_MISSING) ;
+          - TIMEOUT : délai dépassé (code TIMEOUT, ou PROXIMITY_GUARD si le
+            gardien tenait le robot arrêté à ce moment).
+        Le robot est arrêté (en équilibre) pour toute issue autre
+        qu'ARRIVED.
+
+        Lève InvalidArgumentError (coordonnée ou délai non fini, délai hors
+        de ]0, MAX_ACTION_S]) et EstopActiveError si un arrêt d'urgence est
+        déjà actif. Permission : NAVIGATION_GOTO."""
+        self._require(Permission.NAVIGATION_GOTO)
+        x = require_number("x", x, mini=-1e4, maxi=1e4)
+        y = require_number("y", y, mini=-1e4, maxi=1e4)
+        if theta is not None:
+            theta = require_number("theta", theta, mini=-2 * math.pi, maxi=2 * math.pi)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        self._require_no_estop()
+        nav = self._navigation
+        if nav is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "pas de service de navigation sur ce robot")
+        from axis_os.services.navigation.service import EtatNavigation, Pose2D
+        # cap None : le suiveur ne s'aligne sur aucun cap à l'arrivée.
+        r = nav.aller_vers(Pose2D(x, y, theta))
+        if not r.ok:
+            return refused("BLOCKED", RefusalCode.BLOCKED, str(r.reason))
+        echeance = self.now() + delai
+        while True:
+            motif = self._motif_interruption()
+            if motif is not None:
+                nav.annuler()
+                return refused("REFUSED", motif[0], f"navigation interrompue : {motif[1]}")
+            if getattr(getattr(self._locomotion, "state", None), "name", "") == "FALLEN":
+                nav.annuler()
+                return refused("REFUSED", RefusalCode.SAFETY_LIMIT, "chute détectée")
+            if nav.etat is EtatNavigation.ARRIVE:
+                return ActionResult(ok=True, status="ARRIVED", message="arrivé")
+            if nav.etat is EtatNavigation.ECHEC:
+                nav.annuler()
+                return refused("BLOCKED", RefusalCode.BLOCKED, nav.raison or "pas de chemin")
+            if self.now() >= echeance:
+                v = getattr(self._locomotion, "dernier_verdict", None)
+                garde = v is not None and v.facteur <= 0.0
+                nav.annuler()
+                return refused("TIMEOUT",
+                               RefusalCode.PROXIMITY_GUARD if garde else RefusalCode.TIMEOUT,
+                               f"délai de {delai:g} s dépassé" +
+                               (f" — {v.raison}" if garde else ""))
+            self.sleep(self._PAS_ATTENTE_S)
+
+    def _attendre_manipulation(self, fini, echec, delai: float, geste: str) -> ActionResult:
+        """Attend l'issue d'un geste du service de manipulation : `fini()`
+        vrai -> réussite ; `echec()` rend un message -> échec. Ne commande
+        rien sous arrêt d'urgence."""
+        manip = self._manipulation
+        echeance = self.now() + delai
+        while True:
+            motif = self._motif_interruption()
+            if motif is not None:
+                return refused("REFUSED", motif[0], f"{geste} interrompu : {motif[1]}")
+            if fini():
+                return ActionResult(ok=True, status="DONE", message=f"{geste} terminé")
+            msg = echec()
+            if msg:
+                return refused("FAILED", self._code_refus_manipulation(msg), msg)
+            if self.now() >= echeance:
+                return refused("TIMEOUT", RefusalCode.TIMEOUT,
+                               f"{geste} : délai de {delai:g} s dépassé "
+                               f"(état {getattr(manip.etat, 'name', manip.etat)})")
+            self.sleep(self._PAS_ATTENTE_S)
+
+    @staticmethod
+    def _code_refus_manipulation(raison: str) -> RefusalCode:
+        """Code d'un refus du service de manipulation, d'après sa raison."""
+        if raison.startswith(("prise refusée", "plateau trop haut", "dépose impossible")):
+            return RefusalCode.OUT_OF_REACH
+        if raison.startswith("exemption refusée"):
+            return RefusalCode.SAFETY_LIMIT
+        if raison.startswith("occupé"):
+            return RefusalCode.BUSY
+        if raison.startswith("service non démarré"):
+            return RefusalCode.CAPABILITY_MISSING
+        return RefusalCode.FAILED
+
+    def pick(self, target, *, size_m=None, timeout_s: float = 15.0) -> ActionResult:
+        """Prend un objet à deux mains. BLOQUANT jusqu'à l'issue du geste.
+
+        `target` : une Detection vue par look_for(..., frame="world"), avec
+        sa position 3D, et alors `size_m` = (largeur, profondeur, hauteur)
+        en mètres, que l'image ne donne pas ; ou une ObjectSpec (centre et
+        taille, repère monde).
+
+        Le service de manipulation, seul écrivain des bras, ne serre que si
+        l'objet est entre les mains (sinon OUT_OF_REACH : c'est à l'app
+        de placer le robot, par go_to), demande au gardien de proximité une
+        exemption bornée autour de l'objet, puis vérifie que l'objet a suivi
+        avant de le dire tenu. Chaque consigne de bras passe par le
+        garde-fou des articulations.
+
+        `status` : HELD (tenu), REFUSED (OUT_OF_REACH, BUSY, SAFETY_LIMIT,
+        CAPABILITY_MISSING, ESTOP_ACTIVE, CANCELLED), FAILED (prise non
+        confirmée : les bras se rouvrent progressivement) ou TIMEOUT.
+
+        Lève InvalidArgumentError (cible ou taille invalide, délai hors de
+        ]0, MAX_ACTION_S]) et EstopActiveError si un arrêt d'urgence est
+        actif. Permission : MANIPULATION."""
+        self._require(Permission.MANIPULATION)
+        spec = object_from_target(target, size_m)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        self._require_no_estop()
+        manip = self._manipulation
+        if manip is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "pas de service de manipulation sur ce robot")
+        from axis_os.services.manipulation.service import Etat, Objet
+        largeur, profondeur, hauteur = spec.size
+        r = manip.prendre(Objet(spec.center, largeur, profondeur, hauteur))
+        if not r.ok:
+            return refused("REFUSED", self._code_refus_manipulation(str(r.reason)),
+                           str(r.reason))
+        res = self._attendre_manipulation(
+            lambda: manip.etat is Etat.TENU,
+            lambda: manip.raison or "prise non confirmée" if manip.etat is Etat.ECHEC else "",
+            delai, "prise")
+        if res.ok:
+            return ActionResult(ok=True, status="HELD", message="objet tenu")
+        if res.status in ("FAILED", "TIMEOUT") and not self._motif_interruption():
+            # Bras rouverts progressivement : ne jamais rester serrés sur un
+            # objet mal pris.
+            manip.reinitialiser()
+        return res
+
+    def place(self, target=None, *, timeout_s: float = 15.0) -> ActionResult:
+        """Pose l'objet tenu. BLOQUANT jusqu'à l'issue du geste.
+
+        `target` : None pour redescendre à hauteur de port et ouvrir les
+        bras ; un nombre, la hauteur du plateau (m, repère monde) ; une
+        ObjectSpec du plateau (sa face supérieure) ; ou une Detection vue
+        dans le repère monde (la hauteur du point vu). Avec un plateau,
+        l'objet descend jusqu'à l'effleurer avant que les bras s'ouvrent :
+        jamais lâché de haut.
+
+        `status` : PLACED, REFUSED (OUT_OF_REACH : plateau trop haut ;
+        FAILED : rien en main ; CAPABILITY_MISSING, ESTOP_ACTIVE,
+        CANCELLED), FAILED (code OUT_OF_REACH : bras au plus bas sans que
+        l'objet touche le plateau ; il reste tenu) ou TIMEOUT.
+
+        Lève InvalidArgumentError et EstopActiveError comme pick().
+        Permission : MANIPULATION."""
+        self._require(Permission.MANIPULATION)
+        hauteur = surface_height_from_target(target)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        self._require_no_estop()
+        manip = self._manipulation
+        if manip is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "pas de service de manipulation sur ce robot")
+        from axis_os.services.manipulation.service import Etat
+        r = manip.poser(hauteur)
+        if not r.ok:
+            return refused("REFUSED", self._code_refus_manipulation(str(r.reason)),
+                           str(r.reason))
+        res = self._attendre_manipulation(
+            lambda: manip.etat is Etat.LIBRE,
+            lambda: manip.raison if manip.etat is Etat.TENU and manip.raison else "",
+            delai, "pose")
+        if res.ok:
+            return ActionResult(ok=True, status="PLACED", message="objet posé")
+        return res
+
+    def rest_pose(self, *, duration_s: float = 2.0) -> ActionResult:
+        """Ramène le robot dans sa posture de repos sûre, définie par son
+        driver (jamais par l'app) : pour le G1, les bras le long du corps.
+        Jamais les jambes d'un bipède debout.
+
+        Le geste passe par move_to_pose() : mêmes permissions, mêmes pas
+        interpolés sous le garde-fou des articulations, même refus sous
+        arrêt d'urgence (EstopActiveError).
+
+        `status` : AT_REST, FAILED (un pas refusé par le garde-fou, code
+        SAFETY_LIMIT), REFUSED (CAPABILITY_MISSING : le driver ne déclare
+        pas de posture de repos).
+
+        Lève InvalidArgumentError si `duration_s` n'est pas dans [0.5, 30].
+        Permissions : celles de move_to_pose() pour les articulations de la
+        posture (ACTUATORS_READ et ACTUATORS_WRITE_ARMS pour le G1)."""
+        duree = require_number("duration_s", duration_s, mini=0.5, maxi=30.0)
+        lire = getattr(self._robot, "get_rest_pose", None)
+        pose = lire() if lire is not None else None
+        if not pose:
+            # Les permissions restent exigées avant de répondre : une app ne
+            # doit pas apprendre par ce biais ce qu'elle n'a pas le droit de
+            # commander.
+            self._require(Permission.ACTUATORS_READ)
+            self._require(Permission.ACTUATORS_WRITE_ARMS)
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "ce robot ne déclare pas de posture de repos")
+        manip = self._manipulation
+        etat = getattr(getattr(manip, "etat", None), "name", "LIBRE")
+        if etat not in ("LIBRE", "ECHEC"):
+            # Les bras appartiennent au service de manipulation pendant un
+            # geste : ne pas lâcher un objet tenu en les ramenant au repos.
+            return refused("REFUSED", RefusalCode.BUSY,
+                           f"bras occupés par la manipulation (état {etat}) : place() d'abord")
+        if self.move_to_pose(dict(pose), duration_s=duree):
+            return ActionResult(ok=True, status="AT_REST", message="posture de repos")
+        return refused("FAILED", RefusalCode.SAFETY_LIMIT,
+                       "un pas vers la posture de repos a été refusé (voir le journal)")
 
     def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
              origine: Optional[str] = None) -> bool:
@@ -871,6 +1135,11 @@ class RobotContext:
                 return False
 
             _time.sleep(step_s)
+            if self._ferme:
+                # Hook terminé (processus de l'app arrêté) : le geste qu'il
+                # avait demandé ne continue pas sans lui.
+                self.log("move_to_pose: fin du hook — abandon.")
+                return False
 
         return True
 

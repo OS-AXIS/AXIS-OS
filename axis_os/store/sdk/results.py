@@ -249,3 +249,77 @@ class SafetyStatus:
                    time_remaining_s=d.get("time_remaining_s"),
                    storage_keys_remaining=d.get("storage_keys_remaining"),
                    storage_bytes_remaining=d.get("storage_bytes_remaining"))
+
+
+# ─── Objets à saisir (pick, place) ───────────────────────────────────────
+
+@dataclass(frozen=True)
+class ObjectSpec:
+    """Un objet décrit par l'app, dans le repère monde (celui de la
+    carte) : son centre (x, y, z), en mètres, et ses dimensions (largeur,
+    prise entre les mains ; profondeur, vers l'avant du robot ; hauteur),
+    en mètres. Pour un objet vu par look_for(..., frame="world"), passer
+    plutôt la Detection elle-même à pick(), avec sa taille."""
+    center: tuple
+    size: tuple
+
+
+# Bornes d'une description d'objet : un centre dans un site de 1 km de
+# côté, entre 1 m sous le sol et 3 m de haut ; une taille entre 2 cm et
+# 70 cm, l'exemption maximale du gardien de proximité autour d'un objet
+# manipulé (ChampsProtection.exemption_cote_max).
+CENTRE_MAX_M, Z_MIN_M, Z_MAX_M = 1000.0, -1.0, 3.0
+TAILLE_MIN_M, TAILLE_MAX_M = 0.02, 0.70
+
+
+def object_spec(center: Any, size: Any) -> ObjectSpec:
+    """ObjectSpec validé, ou InvalidArgumentError."""
+    if not isinstance(center, (list, tuple)) or len(center) != 3:
+        raise InvalidArgumentError("center doit être un triplet (x, y, z) en mètres")
+    if not isinstance(size, (list, tuple)) or len(size) != 3:
+        raise InvalidArgumentError("size doit être un triplet (largeur, profondeur, "
+                                   "hauteur) en mètres")
+    x = require_number("center.x", center[0], mini=-CENTRE_MAX_M, maxi=CENTRE_MAX_M)
+    y = require_number("center.y", center[1], mini=-CENTRE_MAX_M, maxi=CENTRE_MAX_M)
+    z = require_number("center.z", center[2], mini=Z_MIN_M, maxi=Z_MAX_M)
+    taille = tuple(require_number(f"size[{i}]", v, mini=TAILLE_MIN_M, maxi=TAILLE_MAX_M)
+                   for i, v in enumerate(size))
+    return ObjectSpec((x, y, z), taille)
+
+
+def object_from_target(target: Any, size: Any = None) -> ObjectSpec:
+    """L'objet à saisir, depuis une ObjectSpec ou une Detection vue dans le
+    repère monde (avec sa position 3D), dont la taille est alors exigée :
+    une image ne donne pas les dimensions d'un objet, et l'OS ne les
+    invente pas."""
+    if isinstance(target, ObjectSpec):
+        return object_spec(target.center, target.size)
+    p = getattr(target, "position_3d", None)
+    if p is None or not hasattr(target, "frame"):
+        raise InvalidArgumentError("cible : une ObjectSpec, ou une Detection avec sa "
+                                   "position 3D (caméra de profondeur)")
+    if target.frame != "world":
+        raise InvalidArgumentError("détection dans le repère du robot : la chercher avec "
+                                   "look_for(..., frame=\"world\")")
+    if size is None:
+        raise InvalidArgumentError("size exigé pour une Detection : (largeur, profondeur, "
+                                   "hauteur) en mètres")
+    return object_spec((p.x, p.y, p.z), size)
+
+
+def surface_height_from_target(target: Any) -> Optional[float]:
+    """Hauteur du plateau où poser (m, repère monde) : None (pas de
+    plateau), un nombre, une ObjectSpec (sa face supérieure) ou une
+    Detection vue dans le repère monde (la hauteur du point vu)."""
+    if target is None:
+        return None
+    if isinstance(target, ObjectSpec):
+        spec = object_from_target(target)
+        target = spec.center[2] + spec.size[2] / 2.0
+    elif not isinstance(target, (int, float)) or isinstance(target, bool):
+        p = getattr(target, "position_3d", None)
+        if p is None or getattr(target, "frame", None) != "world":
+            raise InvalidArgumentError("cible : None, une hauteur (m), une ObjectSpec ou "
+                                       "une Detection vue dans le repère « world »")
+        target = p.z
+    return require_number("hauteur du plateau", target, mini=0.0, maxi=2.5)

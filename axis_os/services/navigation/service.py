@@ -46,13 +46,14 @@ from __future__ import annotations
 
 import heapq
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from axis_os.hal.core.types import HALStatus
-from axis_os.services.base import IService, ServiceHealth, ServiceResult
+from axis_os.services.base import IService, ServiceHealth, ServiceResult, sous_verrou
 from axis_os.store.sdk.manifest import Capability
 
 
@@ -493,6 +494,7 @@ class NavigationService(IService):
         self._but: Optional[Pose2D] = None
         self.raison = ""
         self._demarre = False
+        self._verrou = threading.RLock()
         self._attente_ct = attente_contournement_s
         self._passage = passage_min_m
         self._duree_temp = duree_obstacle_temp_s
@@ -532,6 +534,7 @@ class NavigationService(IService):
 
     # ---- API offerte aux apps -------------------------------------------
 
+    @sous_verrou
     def aller_vers(self, destination) -> ServiceResult:
         """Part vers une destination : nom d'un poste de la carte, ou
         Pose2D. Non bloquant : suivre `etat`, ou le résultat de tick().
@@ -550,6 +553,7 @@ class NavigationService(IService):
         self._expirer_temporaires(self._horloge())
         return self._planifier(premiere=True)
 
+    @sous_verrou
     def annuler(self) -> None:
         """Abandonne la destination et arrête le robot."""
         self._but, self.chemin = None, None
@@ -647,6 +651,7 @@ class NavigationService(IService):
             self.raison = "obstacle immobile, aucun autre passage — attente"
             self.stats["contournements_impossibles"] += 1
 
+    @sous_verrou
     def tick(self) -> ServiceResult:
         """Un pas, au rythme du service de locomotion : surveille les
         obstacles, vérifie que la pose est fraîche, replanifie si le robot

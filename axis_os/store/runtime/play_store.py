@@ -371,6 +371,8 @@ class PlayStoreRuntime:
         profil: Profil,
         cles_approuvees: Optional[Union[str, os.PathLike]] = None,
         registre_apps: Optional[Union[str, os.PathLike]] = None,
+        navigation_service=None,
+        manipulation_service=None,
     ):
         """
         `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
@@ -460,6 +462,11 @@ class PlayStoreRuntime:
         services système (vision, marche, parole) transmis à chaque app
         par son RobotContext ; voir _make_ctx(). `clock` : horloge du
         robot, voir le commentaire dans le corps de cette méthode.
+
+        `navigation_service`, `manipulation_service` : services servis par
+        ctx.go_to() et ctx.pick() / place() ; None : l'app reçoit
+        CAPABILITY_MISSING. Leur tick() reste l'affaire de la boucle du
+        robot.
         """
         if not isinstance(profil, Profil):
             raise TypeError(
@@ -554,6 +561,10 @@ class PlayStoreRuntime:
         self._perception_service = perception_service
         self._locomotion_service = locomotion_service
         self._speech_service = speech_service
+        # Services de haut niveau, servis par ctx.go_to(), pick(), place().
+        # Ils restent tickés par la boucle du robot, jamais par une app.
+        self._navigation_service = navigation_service
+        self._manipulation_service = manipulation_service
         # Horloge du robot : simulée en simulation, réelle sur le robot.
         # Elle est transmise à la sandbox (pour mesurer les quotas) et aux
         # apps (ctx.now / ctx.sleep). C'est l'équivalent de use_sim_time
@@ -1785,10 +1796,15 @@ class PlayStoreRuntime:
         etat = etat_json(entry.app) if entry.app is not None else None
         # Échéance du hook, lue par ctx.safety_status() (temps restant).
         ctx._set_deadline(self._clock() + entry.manifest.quota.max_runtime_s)
-        result = runner.run_app(entry.spec, hook, serveur=bridge_server,
-                                params=params, etat=etat,
-                                tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR,
-                                arret=arret)
+        try:
+            result = runner.run_app(entry.spec, hook, serveur=bridge_server,
+                                    params=params, etat=etat,
+                                    tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR,
+                                    arret=arret)
+        finally:
+            # Une action longue encore servie pour ce hook (go_to abandonné
+            # après un arrêt d'urgence…) s'arrête au pas suivant.
+            ctx._fermer()
         return result, bridge_server
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
@@ -1810,7 +1826,9 @@ class PlayStoreRuntime:
         ctx._attach_services(perception=self._perception_service,
                              locomotion=self._locomotion_service,
                              speech=self._speech_service,
-                             memory=self._memory_service)
+                             memory=self._memory_service,
+                             navigation=self._navigation_service,
+                             manipulation=self._manipulation_service)
         return ctx
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:

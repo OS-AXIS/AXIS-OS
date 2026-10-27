@@ -51,6 +51,7 @@ Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations
+import math
 import os
 import threading
 import time
@@ -66,8 +67,9 @@ from axis_os.store.sdk.app_base import (
 )
 from axis_os.store.sdk.manifest import Permission
 from axis_os.store.sdk.results import (
-    EXCEPTIONS_PAR_CODE, AxisRefusal, InvalidArgumentError, RobotInfo, SafetyStatus,
-    require_text,
+    EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
+    RobotInfo, SafetyStatus, object_from_target, require_number, require_text,
+    surface_height_from_target,
 )
 from axis_os.store.runtime.canal_ipc import (
     Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste, MessageRefuse,
@@ -112,7 +114,8 @@ def _serialize_detection(d) -> Dict[str, Any]:
         return None if v is None else [v.x, v.y, v.z]
     return {"label": d.label, "confidence": d.confidence,
             "bbox": list(d.bbox), "direction": _v(d.direction),
-            "position_3d": _v(d.position_3d), "timestamp_ns": d.timestamp_ns}
+            "position_3d": _v(d.position_3d), "timestamp_ns": d.timestamp_ns,
+            "frame": getattr(d, "frame", "base")}
 
 
 def _deserialize_detection(d: Dict[str, Any]):
@@ -135,6 +138,7 @@ def _deserialize_detection(d: Dict[str, Any]):
         bbox=tuple(d.get("bbox", (0, 0, 0, 0))),
         direction=_v(d.get("direction")), position_3d=_v(d.get("position_3d")),
         timestamp_ns=int(d.get("timestamp_ns", 0)),
+        frame="world" if d.get("frame") == "world" else "base",
     )
 
 
@@ -228,7 +232,22 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "robot_info": _VIDE,
     "has_capability": Objet({"name": Chaine(64)}),
     "safety_status": _VIDE,
+    # Bornes larges ici ; les bornes exactes sont celles de RobotContext
+    # (require_number), vérifiées à nouveau côté OS.
+    "go_to": Objet({"x": Nombre(-1e4, 1e4), "y": Nombre(-1e4, 1e4),
+                    "timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
+                   facultatifs={"theta": Nombre(-2 * math.pi, 2 * math.pi)}),
+    "pick": Objet({"center": Liste(Nombre(), 3), "size": Liste(Nombre(), 3),
+                   "timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)}),
+    "place": Objet({"timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
+                   facultatifs={"surface_height_m": Nombre(0, 2.5)}),
+    "rest_pose": Objet({}, facultatifs={"duration_s": Nombre(0, 30)}),
 }
+
+# Actions longues dont le délai est borné par le temps qui reste au hook
+# (voir HALBridgeServer.traiter) : champ du délai, valeur minimale.
+_DELAIS_BORNES = {"go_to": ("timeout_s", 0.1), "pick": ("timeout_s", 0.1),
+                  "place": ("timeout_s", 0.1), "rest_pose": ("duration_s", 0.5)}
 
 _ENVELOPPE = Objet({"action": Chaine(64), "payload": Dictionnaire(JsonLibre(), 64),
                     "request_id": Entier(0, 2 ** 53)},
@@ -370,6 +389,15 @@ class HALBridgeServer:
             duree = payload.get("duration_s")
             duree = 3.0 if duree is None else duree
             payload = dict(payload, duration_s=max(0.0, min(duree, (reste_s - 0.5) / 2)))
+        borne = _DELAIS_BORNES.get(raw["action"])
+        if borne is not None and reste_s is not None:
+            # Une action longue rend la main avant l'échéance du quota du
+            # hook. On ne fait que RÉDUIRE le délai demandé : un délai
+            # invalide (0) reste invalide et sera refusé par RobotContext.
+            champ, mini = borne
+            demande = payload.get(champ)
+            demande = 2.0 if demande is None else demande
+            payload = dict(payload, **{champ: min(demande, max(mini, reste_s - 0.5))})
         cmd = HALCommand(action=raw["action"], payload=payload,
                          request_id=raw["request_id"])
         return asdict(self._handle(cmd))
@@ -590,6 +618,27 @@ class HALBridgeServer:
             elif cmd.action == "safety_status":
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.safety_status().to_json())
+
+            elif cmd.action in ("go_to", "pick", "place", "rest_pose"):
+                p = cmd.payload
+                if cmd.action == "go_to":
+                    res = self._ctx.go_to(p["x"], p["y"], p.get("theta"),
+                                          timeout_s=p["timeout_s"])
+                elif cmd.action == "pick":
+                    res = self._ctx.pick(ObjectSpec(tuple(p["center"]), tuple(p["size"])),
+                                         timeout_s=p["timeout_s"])
+                elif cmd.action == "place":
+                    res = self._ctx.place(p.get("surface_height_m"), timeout_s=p["timeout_s"])
+                else:
+                    duree = p.get("duration_s")
+                    res = self._ctx.rest_pose(duration_s=2.0 if duree is None else duree)
+                if res.ok:
+                    # Le robot a réellement bougé (arrivé, objet tenu ou
+                    # posé, bras au repos) : preuve de mouvement pour la
+                    # facturation, comme une commande motrice réussie (voir
+                    # __init__).
+                    self.successful_motor_commands += 1
+                return HALResponse(cmd.request_id, True, data=res.to_json())
 
             else:
                 return HALResponse(cmd.request_id, False,
@@ -1100,6 +1149,45 @@ class HALBridgeClient:
 
     def safety_status(self) -> SafetyStatus:
         return SafetyStatus.from_json(self._call("safety_status", {}))
+
+    # ---- Services de haut niveau (voir RobotContext) ---------------------
+    # Les arguments sont validés ici comme en direct, avant l'envoi : une
+    # app reçoit la même InvalidArgumentError dans les deux cas. L'OS les
+    # valide à nouveau de son côté.
+
+    MAX_ACTION_S = RobotContext.MAX_ACTION_S
+
+    def go_to(self, x: float, y: float, theta: Optional[float] = None, *,
+              timeout_s: float) -> ActionResult:
+        payload = {"x": require_number("x", x, mini=-1e4, maxi=1e4),
+                   "y": require_number("y", y, mini=-1e4, maxi=1e4),
+                   "timeout_s": require_number("timeout_s", timeout_s, mini=0.0,
+                                               maxi=self.MAX_ACTION_S, strict_min=True)}
+        if theta is not None:
+            payload["theta"] = require_number("theta", theta, mini=-2 * math.pi,
+                                              maxi=2 * math.pi)
+        return ActionResult.from_json(self._call("go_to", payload,
+                                                 duree_nominale_s=payload["timeout_s"]))
+
+    def pick(self, target, *, size_m=None, timeout_s: float = 15.0) -> ActionResult:
+        spec = object_from_target(target, size_m)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        return ActionResult.from_json(self._call("pick", {
+            "center": list(spec.center), "size": list(spec.size), "timeout_s": delai},
+            duree_nominale_s=delai))
+
+    def place(self, target=None, *, timeout_s: float = 15.0) -> ActionResult:
+        hauteur = surface_height_from_target(target)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        return ActionResult.from_json(self._call("place", {
+            "surface_height_m": hauteur, "timeout_s": delai}, duree_nominale_s=delai))
+
+    def rest_pose(self, *, duration_s: float = 2.0) -> ActionResult:
+        duree = require_number("duration_s", duration_s, mini=0.5, maxi=30.0)
+        return ActionResult.from_json(self._call("rest_pose", {"duration_s": duree},
+                                                 duree_nominale_s=duree))
 
     def get_mission_log(self) -> list:
         """

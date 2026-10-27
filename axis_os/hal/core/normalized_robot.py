@@ -89,6 +89,21 @@ class NormalizedRobotHAL:
         (inconnue)."""
         return self._hal.get_battery()
 
+    def get_rest_pose(self) -> Optional[Dict[str, float]]:
+        """Posture de repos du driver (IRobotHAL.get_rest_pose), convertie
+        dans la convention normalisée, celle des apps. None si le driver
+        n'en déclare pas."""
+        pose = self._hal.get_rest_pose()
+        if pose is None:
+            return None
+        normalisee = {}
+        for jid, brut in pose.items():
+            try:
+                normalisee[jid] = self._norm.raw_to_normalized(jid, brut)
+            except KeyError:
+                normalisee[jid] = brut
+        return normalisee
+
     # ── Commandes normalisées → brutes ────────────────────────────
 
     def send_joint_commands(

@@ -155,6 +155,13 @@ class Permission(Enum):
     # arrêt d'urgence, gardien de proximité, chute, quotas restants
     # (safety_status). Aucun effet sur le robot.
     SYSTEM_INFO          = auto()
+    # Aller seul à un point de la carte (go_to) : le service de navigation
+    # planifie un chemin qui contourne les obstacles et fait marcher le
+    # robot, toujours sous le gardien de proximité.
+    NAVIGATION_GOTO      = auto()
+    # Prendre et poser un objet (pick, place) par le service de
+    # manipulation, seul écrivain des bras pendant le geste.
+    MANIPULATION         = auto()
 
 
 class ProtectionLevel(Enum):
@@ -225,6 +232,10 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # NORMAL : de la lecture seule, qui aide l'app à ne pas faire ce que le
     # robot ne peut pas faire (capacité absente, batterie faible).
     Permission.SYSTEM_INFO:          ProtectionLevel.NORMAL,
+    # DANGEROUS : elles font bouger le robot (marcher jusqu'à un point,
+    # fermer les bras sur un objet).
+    Permission.NAVIGATION_GOTO:      ProtectionLevel.DANGEROUS,
+    Permission.MANIPULATION:         ProtectionLevel.DANGEROUS,
 }
 
 

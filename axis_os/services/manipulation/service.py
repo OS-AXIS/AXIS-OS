@@ -53,6 +53,7 @@ dans AXIS-OS : la simulation et les tests fournissent leur propre horloge.
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -61,7 +62,7 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 
 from axis_os.hal.core.types import HALStatus
-from axis_os.services.base import IService, ServiceHealth, ServiceResult
+from axis_os.services.base import IService, ServiceHealth, ServiceResult, sous_verrou
 from axis_os.store.sdk.manifest import Capability
 
 
@@ -224,6 +225,7 @@ class ManipulationService(IService):
         self.raison = ""
         self._t0 = 0.0
         self._demarre = False
+        self._verrou = threading.RLock()
         if arret_securite is None and gardien is not None \
                 and hasattr(type(gardien), "arrete"):
             arret_securite = lambda: gardien.arrete
@@ -338,6 +340,7 @@ class ManipulationService(IService):
         self._aller(Etat.PRESAISIE)
         return ServiceResult(ok=True)
 
+    @sous_verrou
     def prendre(self, objet: Objet) -> ServiceResult:
         """Lance la prise de l'objet. Non bloquant : suivre la progression
         par `etat`, ou par le résultat de tick(). Refusée si l'objet n'est
@@ -410,6 +413,7 @@ class ManipulationService(IService):
         self._aller(Etat.MONTEE)
         return ServiceResult(ok=True)
 
+    @sous_verrou
     def poser(self, hauteur_surface: Optional[float] = None) -> ServiceResult:
         """Sans plateau : redescend à hauteur de port et ouvre les bras.
 
@@ -436,6 +440,7 @@ class ManipulationService(IService):
         self._aller(Etat.DESCENTE)
         return ServiceResult(ok=True)
 
+    @sous_verrou
     def reinitialiser(self, large: bool = False) -> None:
         """Après un échec : rouvre les bras en posture de port et lève
         l'exemption.
@@ -485,6 +490,7 @@ class ManipulationService(IService):
     _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.MONTEE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
                      Etat.DESCENTE, Etat.LACHER)
 
+    @sous_verrou
     def tick(self) -> ServiceResult:
         """Un pas de la machine à états, à appeler régulièrement : écrit la
         consigne des bras pour ce pas. Rend l'état dans `value` et, s'il y

@@ -288,7 +288,8 @@ class SandboxRunner:
     # Appels que l'OS sert par une capture ou une inférence de modèle, sans
     # moyen de les interrompre : sous `arret`, ils sont servis dans un thread
     # que run_app abandonne si le processus de l'app est tué entre-temps.
-    ACTIONS_LENTES = frozenset({"listen", "look_for", "describe_scene"})
+    ACTIONS_LENTES = frozenset({"listen", "look_for", "describe_scene",
+                                "go_to", "pick", "place", "rest_pose"})
     # Appels lents abandonnés après un arrêt d'urgence et encore en cours,
     # dans tout le processus de l'OS : tant qu'il en reste un, micro et
     # caméra sont occupés, et un nouvel appel lent est refusé.
