@@ -582,7 +582,9 @@ class PlayStoreRuntime:
         self._reglages: Dict[str, Dict[str, Any]] = {}
         # Contexte du hook en cours, par app (pour request_stop), et
         # dernière progression rapportée (get_progress).
-        self._ctx_courants: Dict[str, RobotContext] = {}
+        # Plusieurs hooks d'une même app peuvent tourner à la fois (stop_app
+        # pendant une mission) : une liste par app.
+        self._ctx_courants: Dict[str, List[RobotContext]] = {}
         self._progressions: Dict[str, Any] = {}
         # Horloge du robot : simulée en simulation, réelle sur le robot.
         # Elle est transmise à la sandbox (pour mesurer les quotas) et aux
@@ -1827,7 +1829,7 @@ class PlayStoreRuntime:
         # Échéance du hook, lue par ctx.safety_status() (temps restant).
         ctx._set_deadline(self._clock() + entry.manifest.quota.max_runtime_s)
         app_id = entry.manifest.app_id
-        self._ctx_courants[app_id] = ctx
+        self._ctx_courants.setdefault(app_id, []).append(ctx)
         try:
             result = runner.run_app(entry.spec, hook, serveur=bridge_server,
                                     params=params, etat=etat,
@@ -1837,8 +1839,11 @@ class PlayStoreRuntime:
             # Une action longue encore servie pour ce hook (go_to abandonné
             # après un arrêt d'urgence…) s'arrête au pas suivant.
             ctx._fermer()
-            if self._ctx_courants.get(app_id) is ctx:
-                del self._ctx_courants[app_id]
+            courants = self._ctx_courants.get(app_id, [])
+            if ctx in courants:
+                courants.remove(ctx)
+            if not courants:
+                self._ctx_courants.pop(app_id, None)
             if ctx._progression:
                 self._progressions[app_id] = ctx._progression[-1]
         return result, bridge_server
@@ -1850,19 +1855,23 @@ class PlayStoreRuntime:
         longues en cours rendent la main (CANCELLED). Rend False si aucun
         hook de l'app ne tourne. Ne remplace pas l'arrêt forcé : voir
         emergency_stop et le quota de durée."""
-        ctx = self._ctx_courants.get(app_id)
-        if ctx is None:
-            return False
-        ctx._demander_arret(source)
-        return True
+        if source not in ("human", "os"):
+            raise ValueError(f"source d'arrêt inconnue : {source!r}")
+        courants = list(self._ctx_courants.get(app_id, []))
+        for ctx in courants:
+            # Tous les hooks en cours de l'app : une demande d'arrêt ne doit
+            # pas se perdre parce qu'un autre hook a commencé entre-temps.
+            ctx._demander_arret(source)
+        return bool(courants)
 
     def get_progress(self, app_id: str):
         """Dernière progression rapportée par l'app (Progress : fraction,
         message, timestamp), pendant le hook en cours ou au dernier hook ;
         None si elle n'en a jamais rapporté."""
-        ctx = self._ctx_courants.get(app_id)
-        if ctx is not None and ctx._progression:
-            return ctx._progression[-1]
+        rapports = [c._progression[-1] for c in self._ctx_courants.get(app_id, [])
+                    if c._progression]
+        if rapports:
+            return max(rapports, key=lambda p: p.timestamp)
         return self._progressions.get(app_id)
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:

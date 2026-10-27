@@ -49,8 +49,16 @@ raises `PermissionError` (code `PERMISSION_DENIED`).
   it without a human — never on a real robot).
 
 A high-level API never has more rights than the low-level APIs it replaces:
-`play_animation` also requires the rights of `move_arms`,
+on top of its own permission, `go_to` also requires the rights of `walk`,
+`pick`/`place`/`play_animation` those of `move_arms`,
 `stream_targets("walk")` those of `walk`, and so on.
+
+One context drives the robot at a time through the high-level APIs: while
+an app has a `go_to`, a grasp, a rest pose, an animation or a stream in
+progress, another app's hook (an `on_start` during a mission, say) gets
+`BUSY`. Within one app, the arms have one writer at a time (grasp,
+animation or arm stream), and walking has one too (`go_to` or a walk
+stream).
 
 ### Results
 
@@ -159,7 +167,8 @@ the joint guard and the emergency stop.
 
 ### `ctx.go_to(x, y, theta=None, *, timeout_s) -> ActionResult`
 
-Permission: `NAVIGATION_GOTO` (DANGEROUS). Walks to `(x, y)` on the map
+Permissions: `NAVIGATION_GOTO` (DANGEROUS), plus those of `walk`
+(`LOCOMOTION_WALK`, `ACTUATORS_WRITE_LEGS`). Walks to `(x, y)` on the map
 (world frame, metres), around the map's obstacles, then turns to `theta`
 (radians) if given. A still obstacle on the path is avoided when another way
 exists; a person stops the robot (proximity guard).
@@ -169,7 +178,7 @@ exists; a person stops the robot (proximity guard).
 | `ARRIVED` | — | arrived |
 | `BLOCKED` | `BLOCKED` | no path, or goal inside an obstacle or off the map |
 | `TIMEOUT` | `TIMEOUT` or `PROXIMITY_GUARD` | deadline passed (the guard held the robot) |
-| `REFUSED` | `ESTOP_ACTIVE`, `CANCELLED`, `SAFETY_LIMIT` (fall), `CAPABILITY_MISSING` | interrupted, or no navigation |
+| `REFUSED` | `ESTOP_ACTIVE`, `CANCELLED`, `SAFETY_LIMIT` (fall), `CAPABILITY_MISSING`, `BUSY` (a walk stream is open) | interrupted, or no navigation |
 
 The robot is stopped for every outcome but `ARRIVED`. Raises
 `InvalidArgumentError` (NaN, infinite, coordinates beyond ±10 km, `theta`
@@ -181,19 +190,26 @@ r = ctx.go_to(1.5, 0.0, 0.0, timeout_s=60)
 
 ### `ctx.pick(target, *, size_m=None, timeout_s=15.0) -> ActionResult`
 
-Permission: `MANIPULATION` (DANGEROUS). Grasps an object with both arms.
+Permissions: `MANIPULATION` (DANGEROUS), plus those of `move_arms`
+(`ACTUATORS_READ`, `ACTUATORS_WRITE_ARMS`). Grasps an object with both arms.
 `target` is a `Detection` seen with `look_for(query, "world")` (then
 `size_m=(width, depth, height)` is required: an image does not give an
 object's size, and the OS does not guess it), or an
-`ObjectSpec(center, size)` (`axis_os.store.sdk.results.object_spec`). The
-manipulation service only closes the arms if the object is between the
-hands, asks the proximity guard for a bounded exemption around it, then
-checks the object followed before reporting it held.
+`ObjectSpec(center, size)` (`axis_os.store.sdk.results.object_spec`). In
+both cases the OS's own perception must have seen an object within 10 cm
+of that centre in the last 30 s (`look_for(..., "world")` by this app):
+otherwise `REFUSED`/`SAFETY_LIMIT`. The manipulation service only closes
+the arms if the object is between the hands, asks the proximity guard for
+a bounded exemption around it, then checks the object followed before
+reporting it held. The hands must also be within the object's height
+(otherwise `OUT_OF_REACH`). If the grasp is cancelled (stop requested, end
+of the hook, the app's process gone), the arms reopen gradually and the
+exemption is lifted: the gesture never goes on without the app.
 
 | `status` | `code` |
 |---|---|
 | `HELD` | — |
-| `REFUSED` | `OUT_OF_REACH` (move closer with `go_to`), `BUSY`, `SAFETY_LIMIT`, `CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED` |
+| `REFUSED` | `OUT_OF_REACH` (move closer with `go_to`), `BUSY` (the arms are busy: grasp, animation, arm stream), `SAFETY_LIMIT` (object not seen), `CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED` |
 | `FAILED` | `FAILED` — grasp not confirmed: the arms reopen gradually |
 | `TIMEOUT` | `TIMEOUT` |
 
@@ -202,11 +218,13 @@ centre or size NaN / out of bounds, size outside [2 cm, 70 cm]).
 
 ### `ctx.place(target=None, *, timeout_s=15.0) -> ActionResult`
 
-Permission: `MANIPULATION`. Puts the held object down. `target`: `None`
+Permissions: those of `pick`. Puts the held object down. `target`: `None`
 (lower to carrying height and open), a surface height in metres, an
 `ObjectSpec` of the surface (its top), or a `Detection` in the world frame.
 With a surface, the object goes down until it touches it before the arms
-open: it is never dropped from above.
+open: it is never dropped from above. A put-down that has started goes to
+its end even if a stop is requested (lowering then opening is the safe way
+to finish).
 
 `PLACED`; `REFUSED` (`OUT_OF_REACH`: surface too high; `FAILED`: nothing
 held; `CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED`); `FAILED` with
@@ -218,11 +236,12 @@ held); `TIMEOUT`.
 Permissions: those of `move_to_pose` (`ACTUATORS_READ`,
 `ACTUATORS_WRITE_ARMS` on the G1). Returns to the rest pose **defined by the
 driver**, never by the app (G1: arms only, never a standing biped's legs),
-in interpolated steps under the joint guard. `AT_REST`; `REFUSED`
-(`CAPABILITY_MISSING`: no rest pose declared; `BUSY`: the arms hold an
-object, `place()` first); `FAILED` (`SAFETY_LIMIT`); `TIMEOUT` (not enough
-time left in the hook: the motion is refused rather than sped up).
-`duration_s` in [0.5, 30].
+in interpolated steps under the joint guard, at 1 rad/s at most (a shorter
+`duration_s` is lengthened, never the opposite). `AT_REST`; `REFUSED`
+(`CAPABILITY_MISSING`: no rest pose declared; `BUSY`: the arms are busy —
+an object held, an animation, an arm stream); `FAILED` (`SAFETY_LIMIT`);
+`TIMEOUT` (not enough time left in the hook: the motion is refused rather
+than sped up). `duration_s` in [0.5, 30].
 
 ---
 
@@ -236,7 +255,9 @@ source="human" | "os")`), when less than 2 s remain in the hook, or during
 an emergency stop. `check_cancelled()` raises `MissionCancelled` (code
 `CANCELLED`; the OS records the mission as cancelled), or
 `EstopActiveError` during an emergency stop. A long action in progress
-(`go_to`, `pick`…) also returns with `CANCELLED`.
+(`go_to`, `pick`…) also returns with `CANCELLED`, and an open stream makes a
+safe stop and refuses `resume()`. If the app's process dies (crash,
+quota), its long action in progress stops too.
 
 This is **cooperative**: it lets the app put things down and return. It
 does not replace the forced stop: the emergency stop cuts everything
@@ -260,7 +281,8 @@ Refusals: `INVALID_ARGUMENT`.
 ### `ctx.on_estop(callback)` · `ctx.on_alert(callback)` · `ctx.on_low_battery(callback, *, threshold_percent=20.0) -> bool`
 
 Callbacks run **in the app's process**, in a thread that polls the OS every
-100 ms (no function crosses the bridge). A callback that raises is logged
+100 ms (no function crosses the bridge); polling needs at least one of
+these permissions. A callback that raises is logged
 and does not stop the others.
 
 - `on_estop(cb)` — `MISSION_LIFECYCLE`. `cb()` once, as soon as an emergency
@@ -280,8 +302,9 @@ blocking calls (during a 30 s `go_to`, an alert waits for it to return).
 ### `ctx.ask_confirmation(question, *, timeout_s=30.0) -> ActionResult`
 
 Permission: `HUMAN_CONFIRMATION` (NORMAL). Asks the human present a yes/no
-question, in the name of the app (the name shown comes from the manifest,
-never from the app). The human interface exists only on the OS side: an
+question, in the name of the app: the OS gives the human interface the
+app's `app_id` (checked at install) and its manifest name, never anything
+the app chooses at run time. The human interface exists only on the OS side: an
 app can neither see it nor answer in the human's place.
 
 | `status` | `code` |
@@ -309,7 +332,7 @@ through the app's bridge, never over the network.
 | Parameter | Range | Meaning |
 |---|---|---|
 | `kind` | `"arms"`, `"walk"` | arm joint targets, or walking velocities `(vx, vy, wz)` |
-| `deadman_ms` | [50, 1000] | without a valid target with the deadman held for this long: safe stop |
+| `deadman_ms` | [50, 1000] (walk: [50, 500]) | without a valid target with the deadman held for this long: safe stop |
 | `max_rate_hz` | [1, 100] | targets accepted per second at most |
 | `max_age_ms` | [10, 1000] | maximum age of a target when it arrives |
 | `max_speed` | arms: ]0, 2] rad/s (1); walk: ]0, 0.5] × the robot's max speed (0.3) | the stream's own speed limit |
@@ -324,7 +347,9 @@ are never cut), arms stop where they are. After a safe stop nothing passes
 until the app calls `resume()`. Arms are driven through `SetpointFollower`
 and `move_arms` (joint guard on every step), walking through `walk`
 (proximity guard). Raises `InvalidArgumentError`, `EstopActiveError`,
-`CapabilityMissingError`, `BusyError` (a stream already open).
+`CapabilityMissingError`, `BusyError` (a stream already open; for `"arms"`,
+the arms busy with a grasp or an animation; for `"walk"`, a `go_to` in
+progress).
 
 ### `TargetStream`
 
@@ -387,9 +412,12 @@ Permission: `ANIMATION_PLAY` (DANGEROUS), plus those of `move_arms`
 animation shipped with the robot, a dict in the format above, or an
 `Animation`. A file path is not accepted: the OS does not read files for an
 app; an app loads its own with `load_animation()`. Each step goes through
-`move_arms` (joint guard); the gesture pauses while the proximity guard
-holds the robot. First a gentle approach (0.5 rad/s) from the measured pose
-to the first keyframe.
+`move_arms` (joint guard), through a limiter that keeps each joint's
+commanded velocity ≤ 2 rad/s and acceleration ≤ 10 rad/s² step by step
+(the arm follows the keyframes with a slight lag rather than jerking at
+each keyframe; a late thread is never caught up in one step); the gesture
+pauses while the proximity guard holds the robot. First a gentle approach
+(0.5 rad/s) from the measured pose to the first keyframe.
 
 `wait=True`: blocks until `PLAYED`, or `timeout_s` (default: the duration
 plus 2 s, extended while paused, at most 120 s; then the gesture is stopped:

@@ -304,7 +304,13 @@ class ManipulationService(IService):
 
         Sur le côté : son centre doit être entre les deux mains, avec la
         place de s'y loger et 1 cm de marge. En profondeur : les mains
-        doivent être entre sa face avant et sa face arrière, à 2 cm près.
+        doivent être entre sa face avant et sa face arrière, à 2 cm près. En
+        hauteur : les mains doivent être entre son dessous et son dessus, à
+        2 cm près. Pourquoi cette dernière règle : prendre un objet fait
+        ignorer au gardien de proximité un volume autour de lui ; une revue
+        adversariale a obtenu cette exemption pour un « objet » posé bien
+        plus bas que les mains, là où le gardien ne voyait alors plus une
+        personne accroupie.
         Rend (True, "") ou (False, raison du refus).
         """
         g, d = self._mains()
@@ -324,6 +330,12 @@ class ManipulationService(IService):
         if not (avant < mains_x < arriere):
             return False, (f"mains à {mains_x:.2f} m, objet entre "
                            f"{avant:.2f} et {arriere:.2f} m devant le robot")
+        mains_z = (float(g[2]) + float(d[2])) / 2.0
+        dessous = float(objet.centre[2]) - objet.hauteur / 2.0 - 0.02
+        dessus = float(objet.centre[2]) + objet.hauteur / 2.0 + 0.02
+        if not (dessous < mains_z < dessus):
+            return False, (f"mains à {mains_z:.2f} m de haut, objet entre "
+                           f"{dessous + 0.02:.2f} et {dessus - 0.02:.2f} m")
         return True, ""
 
     # ---- API offerte aux apps --------------------------------------------

@@ -76,8 +76,11 @@ def leve(code, f, *a, **kw):
         return exc.code is code
 
 
-TOUT = [Permission.NAVIGATION_GOTO, Permission.MANIPULATION, Permission.ACTUATORS_READ,
-        Permission.ACTUATORS_WRITE_ARMS, Permission.SENSORS_CAMERA]
+# go_to exige aussi les droits de walk(), pick/place ceux des bras : jamais
+# plus de droits que les commandes remplacées.
+TOUT = [Permission.NAVIGATION_GOTO, Permission.LOCOMOTION_WALK, Permission.ACTUATORS_WRITE_LEGS,
+        Permission.MANIPULATION, Permission.ACTUATORS_READ, Permission.ACTUATORS_WRITE_ARMS,
+        Permission.SENSORS_CAMERA]
 
 
 def manifeste(perms, app_id="com.test.haut_niveau"):
@@ -105,6 +108,14 @@ def boite_devant(robot, label="red box"):
     hauteur de port)."""
     o = SimulatedObject(label, (robot.x + 0.30, robot.y, 0.90))
     robot.objects.append(o)
+    return o
+
+
+def boite_vue(robot, ctx, label="red box"):
+    """boite_devant(), puis vue par la perception de l'OS (look_for dans le
+    repère monde) : pick() n'accepte qu'une cible vue."""
+    o = boite_devant(robot, label)
+    silencieux(ctx.look_for, None, FRAME_WORLD)
     return o
 
 
@@ -181,6 +192,10 @@ with SimulatedRobot() as robot:
     sans = contexte(robot, perms=[Permission.MANIPULATION])
     check("Sans NAVIGATION_GOTO : PermissionError, code PERMISSION_DENIED",
           leve(RefusalCode.PERMISSION_DENIED, sans.go_to, 0.5, 0.0, timeout_s=5.0))
+    sans_marche = contexte(robot, perms=[Permission.NAVIGATION_GOTO])
+    check("NAVIGATION_GOTO sans les droits de walk() (LOCOMOTION_WALK, ACTUATORS_WRITE_LEGS) : "
+          "PERMISSION_DENIED", leve(RefusalCode.PERMISSION_DENIED, sans_marche.go_to, 0.5, 0.0,
+                                    timeout_s=5.0))
     try:
         silencieux(sans.go_to, 0.5, 0.0, timeout_s=5.0)
     except SdkPermissionError:
@@ -232,6 +247,14 @@ section("3. pick / place : cas normal et issues")
 with SimulatedRobot() as robot:
     ctx = contexte(robot)
     boite = boite_devant(robot)
+    r = silencieux(ctx.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=15.0)
+    check("Cible jamais vue par la perception de l'OS : REFUSED/SAFETY_LIMIT, sans exemption "
+          "du gardien ni geste", r.code == RefusalCode.SAFETY_LIMIT.value
+          and robot.guard._exemption is None and robot.manipulation.etat is Etat.LIBRE, str(r))
+    silencieux(ctx.look_for, None, FRAME_WORLD)
+    r = silencieux(ctx.pick, object_spec((0.30, 0.25, 0.90), (0.24, 0.20, 0.20)), timeout_s=5.0)
+    check("Cible à 25 cm de l'objet vu : REFUSED/SAFETY_LIMIT",
+          r.code == RefusalCode.SAFETY_LIMIT.value and robot.guard._exemption is None, str(r))
     r = silencieux(ctx.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=15.0)
     check("pick(ObjectSpec) : HELD, l'objet a suivi les mains", r.ok and r.status == "HELD"
           and robot.held is boite and robot.manipulation.etat is Etat.TENU, str(r))
@@ -295,15 +318,16 @@ with SimulatedRobot(start=(1.0, 0.0, 0.0)) as robot:
                timeout_s=float("inf")))
     check("… aucun geste lancé par ces refus", robot.manipulation.etat is Etat.LIBRE)
 
-with SimulatedRobot() as robot:
+with SimulatedRobot(objects=[SimulatedObject("far box", (1.5, 0.0, 0.9))]) as robot:
     ctx = contexte(robot)
+    silencieux(ctx.look_for, None, FRAME_WORLD)
     r = silencieux(ctx.pick, object_spec((1.5, 0.0, 0.9), (0.24, 0.20, 0.20)), timeout_s=5.0)
     check("Objet à 1.5 m (pas entre les mains) : REFUSED/OUT_OF_REACH, bras immobiles",
           r.code == RefusalCode.OUT_OF_REACH.value and robot.manipulation.etat is Etat.LIBRE, str(r))
 
 with SimulatedRobot(grasp_succeeds=False) as robot:
     ctx = contexte(robot)
-    boite = boite_devant(robot)
+    boite = boite_vue(robot, ctx)
     r = silencieux(ctx.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=15.0)
     check("Prise qui ne tient pas : FAILED (code FAILED)", r.status == "FAILED"
           and r.code == RefusalCode.FAILED.value, str(r))
@@ -319,6 +343,11 @@ with SimulatedRobot() as robot:
           leve(RefusalCode.PERMISSION_DENIED, sans.pick, spec, timeout_s=5.0))
     check("place sans MANIPULATION : PERMISSION_DENIED",
           leve(RefusalCode.PERMISSION_DENIED, sans.place, None, timeout_s=5.0))
+    sans_bras = contexte(robot, perms=[Permission.MANIPULATION])
+    check("MANIPULATION sans les droits des bras (ACTUATORS_READ, ACTUATORS_WRITE_ARMS) : "
+          "PERMISSION_DENIED", leve(RefusalCode.PERMISSION_DENIED, sans_bras.pick, spec,
+                                    timeout_s=5.0)
+          and leve(RefusalCode.PERMISSION_DENIED, sans_bras.place, None, timeout_s=5.0))
     ctx = contexte(robot)
     silencieux(robot.hal.emergency_stop_all)
     check("pick sous arrêt d'urgence : ESTOP_ACTIVE",
@@ -329,7 +358,7 @@ with SimulatedRobot() as robot:
 
 with SimulatedRobot() as robot:
     ctx = contexte(robot)
-    boite = boite_devant(robot)
+    boite = boite_vue(robot, ctx)
     threading.Timer(0.3, lambda: silencieux(robot.hal.emergency_stop_all)).start()
     r = silencieux(ctx.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=15.0)
     check("Arrêt d'urgence pendant la prise : REFUSED/ESTOP_ACTIVE",
@@ -343,6 +372,21 @@ with SimulatedRobot(manipulation=False) as robot:
     r = silencieux(ctx.place, None, timeout_s=5.0)
     check("… place REFUSED/CAPABILITY_MISSING", r.code == RefusalCode.CAPABILITY_MISSING.value,
           str(r))
+
+with SimulatedRobot() as robot:
+    ctx = contexte(robot)
+    boite = boite_vue(robot, ctx)
+    ctx._vus = [(t - RobotContext.VU_AGE_MAX_S - 1.0, p) for t, p in ctx._vus]
+    r = silencieux(ctx.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=5.0)
+    check(f"Objet vu il y a plus de {RobotContext.VU_AGE_MAX_S:g} s : REFUSED/SAFETY_LIMIT",
+          r.code == RefusalCode.SAFETY_LIMIT.value, str(r))
+    autre = contexte(robot)
+    r = silencieux(autre.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=5.0)
+    silencieux(ctx.look_for, None, FRAME_WORLD)
+    r2 = silencieux(autre.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=5.0)
+    check("Ce qu'une app a vu ne vaut pas pour une autre (contexte distinct)",
+          r.code == RefusalCode.SAFETY_LIMIT.value and r2.code == RefusalCode.SAFETY_LIMIT.value,
+          f"{r} {r2}")
 
 section("5. rest_pose")
 with SimulatedRobot() as robot:
@@ -401,6 +445,8 @@ class AppFetch(RobotApp):
                            author="T", author_email="t@t.com", description="d",
                            category=AppCategory.UTILITIES,
                            permissions=[Permission.NAVIGATION_GOTO, Permission.MANIPULATION,
+                                        Permission.LOCOMOTION_WALK,
+                                        Permission.ACTUATORS_WRITE_LEGS,
                                         Permission.SENSORS_CAMERA, Permission.ACTUATORS_READ,
                                         Permission.ACTUATORS_WRITE_ARMS])
 
@@ -439,6 +485,30 @@ class AppFetch(RobotApp):
                              metrics=issues)
 
 
+class AppDetectionFabriquee(RobotApp):
+    """Fabrique une Detection « vue » là où il n'y a rien, et la passe à
+    pick() : doit être refusée."""
+    def manifest(self):
+        return AppManifest(app_id="com.test.detection_fabriquee", name="Fab", version="1.0.0",
+                           author="T", author_email="t@t.com", description="d",
+                           category=AppCategory.UTILITIES,
+                           permissions=[Permission.MANIPULATION, Permission.SENSORS_CAMERA,
+                                        Permission.ACTUATORS_READ,
+                                        Permission.ACTUATORS_WRITE_ARMS])
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        from axis_os.hal.core.types import Vector3
+        from axis_os.services.perception.service import Detection
+        faux = Detection(label="red box", confidence=0.99, bbox=(0, 0, 1, 1),
+                         position_3d=Vector3(0.30, 0.0, 0.90), frame="world")
+        r = ctx.pick(faux, size_m=(0.24, 0.20, 0.20), timeout_s=5.0)
+        return MissionResult(success=r.ok, mission_id="", app_id="", duration_s=0.0,
+                             metrics={"status": r.status, "code": r.code})
+
+
 class AppSansDroitDeMarcher(RobotApp):
     """Appelle go_to sans avoir déclaré NAVIGATION_GOTO : doit être refusée."""
     def manifest(self):
@@ -464,7 +534,8 @@ class AppLongTrajet(RobotApp):
         return AppManifest(app_id="com.test.long_trajet", name="Long", version="1.0.0",
                            author="T", author_email="t@t.com", description="d",
                            category=AppCategory.UTILITIES,
-                           permissions=[Permission.NAVIGATION_GOTO])
+                           permissions=[Permission.NAVIGATION_GOTO, Permission.LOCOMOTION_WALK,
+                                        Permission.ACTUATORS_WRITE_LEGS])
 
     def on_start(self, ctx): return True
     def on_stop(self, ctx): pass
@@ -488,6 +559,13 @@ with AppTestHarness(AppFetch(), objects=[SimulatedObject("red box", (1.0, 0.0, 0
     check("La boîte a été rapportée près du point de départ", abs(h.robot.objects[0].position[0]) < 0.6,
           str(h.robot.objects[0].position))
     check("Aucune erreur dans la boucle des services", h.robot.errors == [], str(h.robot.errors))
+
+with AppTestHarness(AppDetectionFabriquee()) as h:
+    res = h.run()
+    check("Detection fabriquée par l'app (rien à cet endroit) : REFUSED/SAFETY_LIMIT, aucune "
+          "exemption du gardien", res is not None and res.metrics.get("code") == "SAFETY_LIMIT"
+          and h.robot.guard._exemption is None and h.robot.guard.journal_exemptions == [],
+          str(getattr(res, "metrics", None)))
 
 with AppTestHarness(AppSansDroitDeMarcher()) as h:
     res = h.run()

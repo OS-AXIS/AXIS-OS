@@ -71,8 +71,49 @@ manipulation et le gardien de proximité, `AppTestHarness`,
 `publish --dry-run` ; trois exemples testés dans `examples/`
 (`hello_robot`, `fetch`, `teleop_local`).
 
+**Deux revues adversariales** (une app peut-elle faire bouger le robot sans
+la bonne permission, pendant un arrêt d'urgence, plus vite que les limites,
+ou sans humain quand il en faut un ?). Aucun mouvement sans permission ni
+sous arrêt d'urgence n'a été trouvé ; les constats suivants sont corrigés,
+chacun avec son test (`test/test_sdk_revue.py`, et les tests de chaque
+partie) :
+
+- R1 — `pick()` n'obtient l'exemption du gardien de proximité qu'autour d'un
+  objet vu par la perception de l'OS (moins de 10 cm, moins de 30 s) ; une
+  app pouvait nommer une « cible » là où il n'y avait rien.
+- R2, R6, R9 — Un seul écrivain des bras (prise, animation, flux) et de la
+  marche (`go_to`, flux) par app, et un seul contexte à la fois conduit le
+  robot par les API de haut niveau (sauts de 0.57 à 0.62 rad mesurés ; une
+  app détournait la navigation d'une autre). `request_stop` atteint tous les
+  hooks en cours de l'app.
+- R3 — Animations : vitesse et accélération commandées bornées pas à pas
+  (162 rad/s² mesurés sur une animation validée), retard du fil jamais
+  rattrapé d'un coup.
+- R4 — `rest_pose` : au plus 1 rad/s (6.2 rad/s mesurés), jamais les jambes.
+- R5 — Flux de marche : homme mort au plus 500 ms, le délai de la
+  locomotion.
+- R7 — Une action longue s'arrête si le processus de l'app meurt
+  (plantage, quota) ; elle roulait encore 13 s, jusqu'à 3.9 m.
+- R8 — `pick` annulé rouvre les bras et lève l'exemption ; une pose
+  commencée va à son terme.
+- R10 — Le flux de consignes s'arrête sur demande d'arrêt.
+- R11 — L'exemption de `pick` exige les mains à la hauteur de l'objet.
+- R12 — `ask_confirmation` transmet à l'interface humaine l'`app_id`
+  vérifié, pas seulement le nom libre du manifeste.
+- R13 — `go_to`, `pick` et `place` exigent aussi les droits des commandes
+  qu'ils remplacent (règle de la somme).
+- `poll_events` exige une permission d'événement ; une consigne de marche
+  nulle ou une animation seulement lancée ne comptent plus comme mouvement
+  réel pour la facturation.
+
+Ce qui reste ouvert : `SECURITY.md`, limite connue n° 8.
+
 **Changements cassants**
 
+- `go_to` exige `LOCOMOTION_WALK` et `ACTUATORS_WRITE_LEGS` en plus de
+  `NAVIGATION_GOTO` ; `pick` et `place`, `ACTUATORS_READ` et
+  `ACTUATORS_WRITE_ARMS` en plus de `MANIPULATION`.
+- `IHumanInterface.confirm(app_id, app_name, question, timeout_s)`.
 - `Detection` gagne un champ `frame` (« base » ou « world »), en dernier :
   un appel positionnel existant reste valide.
 - `PermissionError` et `EstopActiveError` héritent désormais d'`AxisRefusal`

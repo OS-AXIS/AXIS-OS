@@ -36,9 +36,11 @@ class FetchApp(RobotApp):
                 Permission.MISSION_LIFECYCLE,
                 Permission.SENSORS_CAMERA,       # look_for
                 Permission.NAVIGATION_GOTO,      # go_to (DANGEROUS)
+                Permission.LOCOMOTION_WALK,      # ... et les droits de walk()
+                Permission.ACTUATORS_WRITE_LEGS,
                 Permission.MANIPULATION,         # pick, place (DANGEROUS)
-                Permission.ACTUATORS_READ,       # rest_pose : les droits
-                Permission.ACTUATORS_WRITE_ARMS,  # de move_to_pose
+                Permission.ACTUATORS_READ,       # ... et les droits des bras
+                Permission.ACTUATORS_WRITE_ARMS,  # (aussi ceux de rest_pose)
             ],
             min_sdk_version="1.0.0",
             max_velocity_ratio=0.5,

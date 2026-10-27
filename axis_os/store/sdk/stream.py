@@ -50,6 +50,10 @@ from .results import (
 STREAM_KINDS = ("arms", "walk")
 # Bornes des réglages d'un flux.
 DEADMAN_MS = (50.0, 1000.0)
+# Marche : pas plus que le délai de validité d'une consigne du service de
+# locomotion (0.5 s) ; sinon le flux ferait rouler le robot plus longtemps
+# sans consigne que walk() (constaté par une revue adversariale : 1.07 s).
+DEADMAN_WALK_MAX_MS = 500.0
 MAX_AGE_MS = (10.0, 1000.0)
 MAX_RATE_HZ = 100.0
 MAX_ARM_SPEED_RADPS = 2.0
@@ -87,7 +91,8 @@ def stream_params(kind: Any, deadman_ms: Any, max_rate_hz: Any, max_age_ms: Any,
     return {
         "kind": kind,
         "deadman_ms": require_number("deadman_ms", deadman_ms, mini=DEADMAN_MS[0],
-                                     maxi=DEADMAN_MS[1]),
+                                     maxi=DEADMAN_MS[1] if kind == "arms"
+                                     else DEADMAN_WALK_MAX_MS),
         "max_rate_hz": require_number("max_rate_hz", max_rate_hz, mini=1.0, maxi=MAX_RATE_HZ),
         "max_age_ms": require_number("max_age_ms", max_age_ms, mini=MAX_AGE_MS[0],
                                      maxi=MAX_AGE_MS[1]),
@@ -265,6 +270,9 @@ class TargetStreamEngine:
         maintenant = self._ctx.now()
         with self._verrou:
             self.m.received += 1
+            if self._ctx._arret_demande is not None:
+                # Arrêt demandé : sans attendre le prochain pas du flux.
+                self._arret_sur(f"arrêt demandé ({self._ctx._arret_demande})")
             if self.state != "ACTIVE":
                 return self._rejeter(RefusalCode.STREAM_STOPPED)
             if not deadman:
@@ -313,6 +321,9 @@ class TargetStreamEngine:
     def resume(self) -> ActionResult:
         if self._ctx._watchdog.estop_fired or self._ctx._robot.estop_active:
             return refused("REFUSED", RefusalCode.ESTOP_ACTIVE, "arrêt d'urgence actif")
+        if self._ctx._arret_demande is not None:
+            return refused("REFUSED", RefusalCode.CANCELLED,
+                           f"arrêt demandé ({self._ctx._arret_demande})")
         with self._verrou:
             if self.state == "CLOSED":
                 return refused("REFUSED", RefusalCode.STREAM_STOPPED, "flux fermé")
@@ -390,6 +401,11 @@ class TargetStreamEngine:
                 self._arret_sur("arrêt d'urgence" if estop else "fin du hook")
                 if ctx._ferme:
                     self._fermer = True
+            elif ctx._arret_demande is not None:
+                # Arrêt demandé par un humain ou par l'OS : arrêt sûr, comme
+                # go_to et les animations (constaté par une revue : le flux
+                # continuait).
+                self._arret_sur(f"arrêt demandé ({ctx._arret_demande})")
             if self.state == "ACTIVE" and self._dernier_ok is not None \
                     and ctx.now() - self._dernier_ok > self._deadman_s:
                 self._arret_sur("plus de consigne valide (homme mort, perte ou retard du flux)")

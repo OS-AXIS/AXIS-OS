@@ -153,6 +153,26 @@ reason AXIS-OS is **not ready for a real robot**.
    on an update, but after a restart an installation is not compared with
    the price of the version installed before.
 
+8. **SDK v1 high-level APIs: what the OS does not check yet.** `pick()`
+   makes the proximity guard ignore a small volume around the target (at
+   most 0.70 m per side, at most 15 s, lifted as soon as the grasp is
+   confirmed, fails or is cancelled), otherwise the robot would stop in
+   front of the very object it must grasp. The OS only grants it around an
+   object its own perception saw at that place in the last 30 s, with the
+   hands within the object's height; but perception can still mistake a
+   person's arm for an object. One context at a time drives the robot
+   through the high-level APIs, and within an app the arms and walking have
+   one writer each; the low-level `move_arms` and `walk` of another app,
+   and other OS writers (the VLA), are not arbitrated, as before. Event
+   callbacks (`on_estop`, `on_alert`, `on_low_battery`) are delivered
+   between two blocking calls of the app: during a long `go_to`, an alert
+   waits. `ask_confirmation()` is only as trustworthy as the OS-side human
+   interface it is given, which must show the `app_id`; in the SIMULATION
+   profile the test answers. Animations limit each joint's commanded
+   velocity and acceleration step by step, but their accelerations are
+   validated only between keyframes, on average. The teleoperation stream
+   is local; no OS input service reads a real gamepad yet.
+
 ## Resolved limits
 
 Weaknesses that earlier versions of this page listed, and what fixed them
@@ -369,6 +389,28 @@ réel**.
    numéro. Le registre ne garde pas le prix : un nouveau prix est confirmé
    lors d'une mise à jour, mais après un redémarrage une installation
    n'est pas comparée au prix de la version installée avant.
+
+8. **API de haut niveau du SDK v1 : ce que l'OS ne vérifie pas encore.**
+   `pick()` fait ignorer au gardien de proximité un petit volume autour de
+   la cible (0,70 m de côté au plus, 15 s au plus, levé dès que la prise est
+   confirmée, ratée ou annulée), sans quoi le robot s'arrêterait devant
+   l'objet même qu'il doit saisir. L'OS ne l'accorde qu'autour d'un objet
+   que sa propre perception a vu à cet endroit dans les 30 dernières
+   secondes, mains à la hauteur de l'objet ; mais la perception peut encore
+   prendre le bras d'une personne pour un objet. Un seul contexte à la fois
+   conduit le robot par les API de haut niveau, et dans une app, les bras
+   et la marche ont chacun un seul écrivain ; les `move_arms` et `walk` bas
+   niveau d'une autre app, et les autres écrivains de l'OS (le VLA), ne
+   sont pas arbitrés, comme avant. Les callbacks d'événements
+   (`on_estop`, `on_alert`, `on_low_battery`) sont livrés entre deux
+   appels bloquants de l'app : pendant un long `go_to`, une alerte attend.
+   `ask_confirmation()` ne vaut que ce que vaut l'interface humaine donnée
+   à l'OS, qui doit montrer l'`app_id` ; en profil SIMULATION, c'est le
+   test qui répond. Les animations bornent pas à pas la vitesse et
+   l'accélération commandées de chaque articulation, mais leurs
+   accélérations ne sont validées qu'entre deux images, en moyenne. Le flux
+   de téléopération est local ; aucun service d'entrée de l'OS ne lit
+   encore une vraie manette.
 
 ## Limites résolues
 

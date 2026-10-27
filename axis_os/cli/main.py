@@ -404,6 +404,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
     perms = set(manifeste.permissions)
     exigences = {
         Permission.ANIMATION_PLAY: (Permission.ACTUATORS_READ, Permission.ACTUATORS_WRITE_ARMS),
+        Permission.MANIPULATION: (Permission.ACTUATORS_READ, Permission.ACTUATORS_WRITE_ARMS),
+        Permission.NAVIGATION_GOTO: (Permission.LOCOMOTION_WALK, Permission.ACTUATORS_WRITE_LEGS),
     }
     for perm, besoins in exigences.items():
         manque = [b.name for b in besoins if perm in perms and b not in perms]

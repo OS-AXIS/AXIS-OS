@@ -424,8 +424,8 @@ class SandboxRunner:
                         # action qui bloque par nature (listen) ne doit pas
                         # retenir le thread de l'OS au-delà du quota.
                         reste = max(0.0, limite - 1.0 - (self._clock() - t_start))
-                        if arret is not None and action in self.ACTIONS_LENTES:
-                            reponse = self._servir_abandonnable(serveur, msg, reste, tue)
+                        if action in self.ACTIONS_LENTES:
+                            reponse = self._servir_abandonnable(serveur, msg, reste, tue, proc)
                             if tue.is_set():
                                 break
                         else:
@@ -551,18 +551,32 @@ class SandboxRunner:
                 proc.fermer()
 
     @classmethod
-    def _servir_abandonnable(cls, serveur, msg, reste: float, tue: threading.Event):
+    def _servir_abandonnable(cls, serveur, msg, reste: float, tue: threading.Event,
+                             proc=None):
         """Sert un appel lent (ACTIONS_LENTES) dans un thread et attend sa
         réponse, sauf si le processus de l'app est tué entre-temps : la
         mission rend alors la main tout de suite, et la réponse, arrivée
         trop tard, est jetée ; le thread reste noté comme abandonné tant
-        qu'il tourne (voir _peripherique_occupe)."""
+        qu'il tourne (voir _peripherique_occupe).
+
+        Si le processus de l'app meurt pendant l'appel (plantage, quota de
+        CPU ou de mémoire), son contexte est fermé aussitôt : l'action qu'il
+        avait demandée (go_to, geste, animation, question à l'humain)
+        s'arrête au pas suivant. Pourquoi : une revue adversariale a mesuré
+        un go_to qui roulait encore 13 s, jusqu'à 3.9 m, après la mort de
+        l'app qui l'avait lancé."""
         boite = {}
         fil = threading.Thread(target=lambda: boite.update(r=serveur.traiter(msg, reste_s=reste)),
                                daemon=True, name="appel-lent")
         fil.start()
+        ferme = False
         while fil.is_alive() and not tue.is_set():
             fil.join(0.05)
+            if not ferme and proc is not None and not proc.is_alive():
+                ctx = getattr(serveur, "_ctx", None)
+                if ctx is not None:
+                    ctx._fermer()
+                ferme = True
         if fil.is_alive():
             with cls._verrou_abandonnes:
                 cls._abandonnes.append(fil)

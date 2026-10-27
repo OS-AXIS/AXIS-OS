@@ -33,9 +33,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Optional, Dict, Any
+import functools
 import math
 import secrets
+import threading
 import time
+import weakref
 
 from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
 from axis_os.hal.core.types import (
@@ -175,6 +178,42 @@ class _RuntimeSessionToken:
         return candidate is self
 
 
+# Le contexte qui conduit chaque robot par une API de haut niveau (go_to,
+# pick, place, rest_pose, play_animation, stream_targets), tant qu'il a une
+# telle action en cours. Pourquoi : les hooks de deux apps peuvent tourner
+# en même temps (on_start de l'une pendant la mission de l'autre) ; une
+# revue adversariale a montré qu'une app détournait alors la navigation de
+# l'autre, qui se croyait arrivée.
+_CONDUCTEURS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_VERROU_CONDUCTEURS = threading.Lock()
+
+
+def _conduite(leve: bool = False):
+    """Décorateur des API de haut niveau qui font bouger le robot : refus
+    BUSY si un autre contexte le conduit encore (BusyError si `leve`) ; sinon
+    ce contexte le conduit le temps de l'appel, et tant que son flux ou son
+    animation tourne."""
+    def deco(methode):
+        @functools.wraps(methode)
+        def conduit(self, *args, **kwargs):
+            with _VERROU_CONDUCTEURS:
+                autre = _CONDUCTEURS.get(self._robot)
+                if autre is not None and autre is not self and autre._conduit_encore():
+                    occupe = f"le robot est conduit par une autre app ({autre._manifest.app_id})"
+                    if leve:
+                        raise BusyError(occupe)
+                    return refused("REFUSED", RefusalCode.BUSY, occupe)
+                _CONDUCTEURS[self._robot] = self
+                self._actions_en_cours += 1
+            try:
+                return methode(self, *args, **kwargs)
+            finally:
+                with _VERROU_CONDUCTEURS:
+                    self._actions_en_cours -= 1
+        return conduit
+    return deco
+
+
 class RobotContext:
     """
     Interface sécurisée entre une app et le robot.
@@ -233,6 +272,10 @@ class RobotContext:
         self._memory = None
         self._navigation = None
         self._manipulation = None
+        # Objets vus par la perception de l'OS pour cette app, dans le
+        # repère monde : (instant, (x, y, z)). pick() n'accepte qu'une cible
+        # proche de l'un d'eux (voir _cible_vue).
+        self._vus: list = []
         # Vrai une fois le hook terminé (voir _fermer()) : plus aucune action
         # longue lancée par ce contexte ne continue.
         self._ferme = False
@@ -243,6 +286,8 @@ class RobotContext:
         self._progression: list = []
         self._humain = None
         self._evenements: Optional[EventPoller] = None
+        # Actions de haut niveau en cours (voir _conduite).
+        self._actions_en_cours = 0
         # Flux de consignes ouvert (TargetStreamEngine), un à la fois.
         self._flux: Optional[TargetStreamEngine] = None
         self._flux_id = 0
@@ -370,6 +415,15 @@ class RobotContext:
             # Arrêt sûr du flux (la marche ralentit puis s'arrête), sans
             # attendre : son fil termine seul.
             self._flux.close(attendre_s=0.0)
+
+    def _conduit_encore(self) -> bool:
+        """Vrai si ce contexte conduit encore le robot : hook pas terminé, et
+        une action de haut niveau, un flux ou une animation en cours."""
+        if self._ferme:
+            return False
+        return (self._actions_en_cours > 0
+                or (self._flux is not None and self._flux.state != "CLOSED")
+                or (self._animation is not None and not self._animation.done))
 
     def _demander_arret(self, source: str) -> None:
         """Appelée par le runtime (PlayStoreRuntime.request_stop) : un
@@ -600,6 +654,13 @@ class RobotContext:
             return []
         if r.reason:
             self.log(f"look_for : {r.reason}")
+        if repere == FRAME_WORLD:
+            maintenant = self.now()
+            for d in r.value or []:
+                p = getattr(d, "position_3d", None)
+                if p is not None:
+                    self._vus.append((maintenant, (float(p.x), float(p.y), float(p.z))))
+            del self._vus[:-self._VUS_MAX]
         return r.value or []
 
     def describe_scene(self) -> str:
@@ -761,6 +822,7 @@ class RobotContext:
     # Pas d'attente d'une action longue (secondes du robot).
     _PAS_ATTENTE_S = 0.02
 
+    @_conduite()
     def go_to(self, x: float, y: float, theta: Optional[float] = None, *,
               timeout_s: float) -> ActionResult:
         """Va au point (x, y) de la carte (mètres, repère monde), et s'y
@@ -790,6 +852,9 @@ class RobotContext:
         de ]0, MAX_ACTION_S]) et EstopActiveError si un arrêt d'urgence est
         déjà actif. Permission : NAVIGATION_GOTO."""
         self._require(Permission.NAVIGATION_GOTO)
+        # Jamais plus de droits que la commande remplacée : ceux de walk().
+        self._require(Permission.LOCOMOTION_WALK)
+        self._require(Permission.ACTUATORS_WRITE_LEGS)
         x = require_number("x", x, mini=-1e4, maxi=1e4)
         y = require_number("y", y, mini=-1e4, maxi=1e4)
         if theta is not None:
@@ -801,6 +866,10 @@ class RobotContext:
         if nav is None:
             return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
                            "pas de service de navigation sur ce robot")
+        if self._flux is not None and self._flux.kind == "walk" and self._flux.state != "CLOSED":
+            # Un seul écrivain de la marche : le flux de l'app, ou la
+            # navigation, jamais les deux.
+            return refused("REFUSED", RefusalCode.BUSY, "un flux de marche est ouvert")
         from axis_os.services.navigation.service import EtatNavigation, Pose2D
         # cap None : le suiveur ne s'aligne sur aucun cap à l'arrivée.
         r = nav.aller_vers(Pose2D(x, y, theta))
@@ -830,14 +899,19 @@ class RobotContext:
                                (f" — {v.raison}" if garde else ""))
             self.sleep(self._PAS_ATTENTE_S)
 
-    def _attendre_manipulation(self, fini, echec, delai: float, geste: str) -> ActionResult:
+    def _attendre_manipulation(self, fini, echec, delai: float, geste: str,
+                               annulable: bool = True) -> ActionResult:
         """Attend l'issue d'un geste du service de manipulation : `fini()`
         vrai -> réussite ; `echec()` rend un message -> échec. Ne commande
-        rien sous arrêt d'urgence."""
+        rien sous arrêt d'urgence. annulable=False : une demande d'arrêt
+        coopérative n'interrompt pas l'attente (le geste va à son terme)."""
         manip = self._manipulation
         echeance = self.now() + delai
         while True:
             motif = self._motif_interruption()
+            if motif is not None and not annulable and self._arret_demande is not None \
+                    and not self._ferme and motif[0] is RefusalCode.CANCELLED:
+                motif = None
             if motif is not None:
                 return refused("REFUSED", motif[0], f"{geste} interrompu : {motif[1]}")
             if fini():
@@ -850,6 +924,37 @@ class RobotContext:
                                f"{geste} : délai de {delai:g} s dépassé "
                                f"(état {getattr(manip.etat, 'name', manip.etat)})")
             self.sleep(self._PAS_ATTENTE_S)
+
+    # Une cible de pick() doit être à moins de VU_RAYON_M d'un objet vu par
+    # look_for(..., "world") depuis moins de VU_AGE_MAX_S.
+    VU_RAYON_M = 0.10
+    VU_AGE_MAX_S = 30.0
+    _VUS_MAX = 64
+
+    def _bras_occupes(self, sauf: str = "") -> Optional[str]:
+        """Raison pour laquelle les bras sont déjà commandés par une autre
+        API de ce contexte (geste de manipulation, animation, flux des
+        bras), ou None. `sauf` : l'API qui demande, ignorée."""
+        etat = getattr(getattr(self._manipulation, "etat", None), "name", "LIBRE")
+        if sauf != "manipulation" and etat not in ("LIBRE", "ECHEC"):
+            return f"bras occupés par la manipulation (état {etat})"
+        if sauf != "animation" and self._animation is not None and not self._animation.done:
+            return "une animation est en cours"
+        if sauf != "flux" and self._flux is not None and self._flux.kind == "arms" \
+                and self._flux.state != "CLOSED":
+            return "un flux de consignes des bras est ouvert"
+        return None
+
+    def _cible_vue(self, centre) -> bool:
+        """Vrai si la perception de l'OS a vu un objet à cet endroit, depuis
+        peu. Pourquoi : prendre un objet fait ignorer au gardien de
+        proximité un petit volume autour de lui (sinon le robot s'arrêterait
+        devant l'objet même qu'il doit saisir) ; aucune API bas niveau ne
+        donne ce droit. Sans ce contrôle, une app pouvait nommer une
+        « cible » là où il n'y a pas d'objet, et faire ignorer ce volume."""
+        maintenant = self.now()
+        return any(maintenant - t <= self.VU_AGE_MAX_S
+                   and math.dist(p, centre) <= self.VU_RAYON_M for t, p in self._vus)
 
     @staticmethod
     def _code_refus_manipulation(raison: str) -> RefusalCode:
@@ -864,13 +969,17 @@ class RobotContext:
             return RefusalCode.CAPABILITY_MISSING
         return RefusalCode.FAILED
 
+    @_conduite()
     def pick(self, target, *, size_m=None, timeout_s: float = 15.0) -> ActionResult:
         """Prend un objet à deux mains. BLOQUANT jusqu'à l'issue du geste.
 
         `target` : une Detection vue par look_for(..., frame="world"), avec
         sa position 3D, et alors `size_m` = (largeur, profondeur, hauteur)
         en mètres, que l'image ne donne pas ; ou une ObjectSpec (centre et
-        taille, repère monde).
+        taille, repère monde). Dans les deux cas, la perception de l'OS
+        doit avoir vu un objet à moins de VU_RAYON_M de ce centre depuis
+        moins de VU_AGE_MAX_S (look_for(..., "world") par cette app) :
+        sinon REFUSED/SAFETY_LIMIT.
 
         Le service de manipulation, seul écrivain des bras, ne serre que si
         l'objet est entre les mains (sinon OUT_OF_REACH : c'est à l'app
@@ -887,6 +996,9 @@ class RobotContext:
         ]0, MAX_ACTION_S]) et EstopActiveError si un arrêt d'urgence est
         actif. Permission : MANIPULATION."""
         self._require(Permission.MANIPULATION)
+        # Jamais plus de droits que les commandes remplacées : celles des bras.
+        self._require(Permission.ACTUATORS_READ)
+        self._require(Permission.ACTUATORS_WRITE_ARMS)
         spec = object_from_target(target, size_m)
         delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
                                strict_min=True)
@@ -895,6 +1007,13 @@ class RobotContext:
         if manip is None:
             return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
                            "pas de service de manipulation sur ce robot")
+        occupe = self._bras_occupes(sauf="manipulation")
+        if occupe:
+            return refused("REFUSED", RefusalCode.BUSY, occupe)
+        if not self._cible_vue(spec.center):
+            return refused("REFUSED", RefusalCode.SAFETY_LIMIT,
+                           "aucun objet vu à cet endroit par la perception de l'OS : "
+                           "le chercher d'abord avec look_for(..., \"world\")")
         from axis_os.services.manipulation.service import Etat, Objet
         largeur, profondeur, hauteur = spec.size
         r = manip.prendre(Objet(spec.center, largeur, profondeur, hauteur))
@@ -911,8 +1030,15 @@ class RobotContext:
             # Bras rouverts progressivement : ne jamais rester serrés sur un
             # objet mal pris.
             manip.reinitialiser()
+        elif res.code == RefusalCode.CANCELLED.value:
+            # Annulée (arrêt demandé, fin du hook, app morte) : le geste ne
+            # continue pas sans l'app — bras rouverts progressivement,
+            # exemption du gardien levée. (Constaté par une revue : la prise
+            # allait à son terme, exemption active, après l'annulation.)
+            manip.reinitialiser()
         return res
 
+    @_conduite()
     def place(self, target=None, *, timeout_s: float = 15.0) -> ActionResult:
         """Pose l'objet tenu. BLOQUANT jusqu'à l'issue du geste.
 
@@ -931,6 +1057,8 @@ class RobotContext:
         Lève InvalidArgumentError et EstopActiveError comme pick().
         Permission : MANIPULATION."""
         self._require(Permission.MANIPULATION)
+        self._require(Permission.ACTUATORS_READ)
+        self._require(Permission.ACTUATORS_WRITE_ARMS)
         hauteur = surface_height_from_target(target)
         delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
                                strict_min=True)
@@ -947,11 +1075,43 @@ class RobotContext:
         res = self._attendre_manipulation(
             lambda: manip.etat is Etat.LIBRE,
             lambda: manip.raison if manip.etat is Etat.TENU and manip.raison else "",
-            delai, "pose")
+            # Une pose commencée va à son terme, même si l'arrêt est demandé :
+            # descendre puis ouvrir est la façon sûre de finir ; s'arrêter en
+            # route laisserait l'objet tenu au-dessus du plateau.
+            delai, "pose", annulable=False)
         if res.ok:
             return ActionResult(ok=True, status="PLACED", message="objet posé")
         return res
 
+    # Vitesse maximale d'une articulation vers la posture de repos (rad/s) :
+    # une durée demandée plus courte est allongée, jamais l'inverse.
+    REST_POSE_MAX_SPEED = 1.0
+
+    def _pose_repos(self) -> Optional[Dict[str, float]]:
+        """Posture de repos déclarée par le driver, sans articulation de
+        jambe (jamais commandées par cette API), ou None."""
+        lire = getattr(self._robot, "get_rest_pose", None)
+        pose = lire() if lire is not None else None
+        if not pose:
+            return None
+        pose = {j: v for j, v in pose.items()
+                if self._group_of(j) is not JointGroup.LOCOMOTION}
+        return pose or None
+
+    def _duree_repos(self, duree: float) -> float:
+        """Durée effective du retour au repos : au moins la durée demandée,
+        et assez pour ne jamais dépasser REST_POSE_MAX_SPEED. Pourquoi : une
+        revue adversariale a mesuré 6.2 rad/s pour rest_pose(duration_s=0.5)
+        depuis des bras levés."""
+        pose = self._pose_repos()
+        if not pose:
+            return duree
+        etat = self._robot.get_full_state()
+        ecart = max((abs(etat[j].position - v) for j, v in pose.items() if j in etat),
+                    default=0.0)
+        return max(duree, ecart / self.REST_POSE_MAX_SPEED)
+
+    @_conduite()
     def rest_pose(self, *, duration_s: float = 2.0) -> ActionResult:
         """Ramène le robot dans sa posture de repos sûre, définie par son
         driver (jamais par l'app) : pour le G1, les bras le long du corps.
@@ -969,8 +1129,7 @@ class RobotContext:
         Permissions : celles de move_to_pose() pour les articulations de la
         posture (ACTUATORS_READ et ACTUATORS_WRITE_ARMS pour le G1)."""
         duree = require_number("duration_s", duration_s, mini=0.5, maxi=30.0)
-        lire = getattr(self._robot, "get_rest_pose", None)
-        pose = lire() if lire is not None else None
+        pose = self._pose_repos()
         if not pose:
             # Les permissions restent exigées avant de répondre : une app ne
             # doit pas apprendre par ce biais ce qu'elle n'a pas le droit de
@@ -979,14 +1138,12 @@ class RobotContext:
             self._require(Permission.ACTUATORS_WRITE_ARMS)
             return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
                            "ce robot ne déclare pas de posture de repos")
-        manip = self._manipulation
-        etat = getattr(getattr(manip, "etat", None), "name", "LIBRE")
-        if etat not in ("LIBRE", "ECHEC"):
-            # Les bras appartiennent au service de manipulation pendant un
-            # geste : ne pas lâcher un objet tenu en les ramenant au repos.
-            return refused("REFUSED", RefusalCode.BUSY,
-                           f"bras occupés par la manipulation (état {etat}) : place() d'abord")
-        if self.move_to_pose(dict(pose), duration_s=duree):
+        # Les bras appartiennent au geste en cours (manipulation, animation,
+        # flux) : ne pas lâcher un objet tenu en les ramenant au repos.
+        occupe = self._bras_occupes()
+        if occupe:
+            return refused("REFUSED", RefusalCode.BUSY, occupe)
+        if self.move_to_pose(dict(pose), duration_s=self._duree_repos(duree)):
             return ActionResult(ok=True, status="AT_REST", message="posture de repos")
         return refused("FAILED", RefusalCode.SAFETY_LIMIT,
                        "un pas vers la posture de repos a été refusé (voir le journal)")
@@ -1064,8 +1221,12 @@ class RobotContext:
         if self._manifest.has_permission(Permission.SYSTEM_INFO):
             b = self._lire_batterie()
             pct = None if b is None else float(b.percent)
-        return {"estop": bool(self._watchdog.estop_fired or self._robot.estop_active),
-                "alerts": alertes, "next_index": suivant, "battery_percent": pct}
+        estop = False
+        if self._manifest.has_permission(Permission.MISSION_LIFECYCLE) \
+                or self._manifest.has_permission(Permission.SYSTEM_INFO):
+            estop = bool(self._watchdog.estop_fired or self._robot.estop_active)
+        return {"estop": estop, "alerts": alertes, "next_index": suivant,
+                "battery_percent": pct}
 
     def _abonner(self, kind: str, callback, threshold: Optional[float] = None) -> None:
         if self._evenements is None:
@@ -1137,7 +1298,7 @@ class RobotContext:
                            "aucun humain pour répondre sur ce robot")
         nom = require_text("nom de l'app", self._manifest.name or self._manifest.app_id, 64)
         try:
-            reponse = self._humain.confirm(nom, q, delai)
+            reponse = self._humain.confirm(self._manifest.app_id, nom, q, delai)
         except Exception as exc:       # noqa: BLE001 — interface en panne : pas de réponse
             return refused("REFUSED", RefusalCode.HUMAN_UNAVAILABLE,
                            f"interface humaine indisponible : {type(exc).__name__}")
@@ -1149,6 +1310,7 @@ class RobotContext:
 
     # ---- Flux de consignes (téléopération locale) -----------------------
 
+    @_conduite(leve=True)
     def stream_targets(self, kind: str, *, deadman_ms: float = 200.0,
                        max_rate_hz: float = 50.0, max_age_ms: float = 150.0,
                        max_speed: Optional[float] = None) -> TargetStream:
@@ -1159,7 +1321,7 @@ class RobotContext:
 
         deadman_ms  : au-delà, sans consigne valide homme mort tenu, arrêt
                       sûr (marche : ralentir puis s'arrêter ; bras : sur
-                      place). Dans [50, 1000].
+                      place). Dans [50, 1000] ; [50, 500] pour la marche.
         max_rate_hz : consignes acceptées par seconde au plus (au-delà :
                       RATE_LIMITED). Dans [1, 100].
         max_age_ms  : âge maximal d'une consigne à son arrivée (au-delà :
@@ -1193,6 +1355,9 @@ class RobotContext:
         if self._flux is not None and self._flux.state != "CLOSED":
             raise BusyError("un flux est déjà ouvert : le fermer d'abord")
         if params["kind"] == "arms":
+            occupe = self._bras_occupes(sauf="flux")
+            if occupe:
+                raise BusyError(occupe)
             bras = {d.joint_id: (d.limits.pos_min, d.limits.pos_max)
                     for d in self._robot.get_joint_definitions()
                     if self._group_of(d.joint_id) is JointGroup.MANIPULATION}
@@ -1202,6 +1367,8 @@ class RobotContext:
         else:
             if self._locomotion is None:
                 raise CapabilityMissingError("pas de service de locomotion sur ce robot")
+            if getattr(getattr(self._navigation, "etat", None), "name", "") == "EN_ROUTE":
+                raise BusyError("la navigation conduit le robot (go_to en cours)")
             bras = {}
             moteur = TargetStreamEngine(self, params, max_twist=self._locomotion.max_twist)
         self._flux_id += 1
@@ -1238,6 +1405,7 @@ class RobotContext:
         except Exception:              # noqa: BLE001 — modèle inconnu : aucune animation compatible
             return ""
 
+    @_conduite()
     def play_animation(self, animation, *, wait: bool = True,
                        timeout_s: Optional[float] = None) -> ActionResult:
         """Joue une animation (voir axis_os/store/sdk/animation.py) : le nom
@@ -1308,12 +1476,9 @@ class RobotContext:
                                f"l'animation : {ecarts[:3]}")
         if self._animation is not None and not self._animation.done:
             return refused("REFUSED", RefusalCode.BUSY, "une animation est déjà en cours")
-        if self._flux is not None and self._flux.kind == "arms" and self._flux.state != "CLOSED":
-            return refused("REFUSED", RefusalCode.BUSY, "un flux de consignes des bras est ouvert")
-        etat_manip = getattr(getattr(self._manipulation, "etat", None), "name", "LIBRE")
-        if etat_manip not in ("LIBRE", "ECHEC"):
-            return refused("REFUSED", RefusalCode.BUSY,
-                           f"bras occupés par la manipulation (état {etat_manip})")
+        occupe = self._bras_occupes(sauf="animation")
+        if occupe:
+            return refused("REFUSED", RefusalCode.BUSY, occupe)
         bras = [j for j in anim.joints if groupes.get(j) is JointGroup.MANIPULATION]
         lecteur = AnimationPlayer(self, anim, bras)
         self._animation = lecteur

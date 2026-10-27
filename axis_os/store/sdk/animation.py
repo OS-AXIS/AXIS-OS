@@ -325,6 +325,16 @@ class AnimationPlayer:
     (LEAD_IN_SPEED) de la posture mesurée vers la première image, puis
     l'interpolation des images. Les jambes ne sont jamais commandées.
 
+    Chaque consigne passe par un limiteur (_pas_limite) : vitesse au plus
+    ANIM_MAX_VEL et accélération au plus ANIM_MAX_ACC, mesurées pas à pas,
+    avec freinage pour s'arrêter sur la cible sans la dépasser. Pourquoi :
+    l'interpolation en ligne droite change de vitesse d'un coup à chaque
+    image clé (une revue adversariale a mesuré 162 rad/s² sur une animation
+    validée à 10 rad/s² en moyenne) ; le bras suit donc la trajectoire avec
+    un léger retard plutôt que d'accélérer au-delà de la limite. Un retard
+    du fil n'est jamais rattrapé d'un coup : le pas est borné à
+    2 × PERIOD_S.
+
     Pause si le gardien de proximité arrête le robot (une personne trop
     près) : un bras en mouvement la heurterait ; le geste reprend quand
     elle s'éloigne. Fin : PLAYED ; arrêt par stop_animation() : STOPPED
@@ -348,6 +358,9 @@ class AnimationPlayer:
         self._premiere = premiere
         self.paused = False
         self.result = None
+        # Dernière consigne envoyée et sa vitesse, par articulation (limiteur).
+        self._pos = dict(self._depart)
+        self._vit = {j: 0.0 for j in self._joints}
         self._arret = threading.Event()
         self._fini = threading.Event()
         self._fil = threading.Thread(target=self._boucle, daemon=True, name="axis-animation")
@@ -375,6 +388,26 @@ class AnimationPlayer:
                     for j in self._joints}
         return {j: self.anim.position_at(j, t - self._approche_s) for j in self._joints}
 
+    @staticmethod
+    def _pas_limite(p: float, v: float, cible: float, dt: float) -> Tuple[float, float]:
+        """Un pas de `p` vers `cible` : vitesse au plus ANIM_MAX_VEL,
+        variation de vitesse au plus ANIM_MAX_ACC × dt, et vitesse assez
+        basse pour freiner avant la cible (distance d'arrêt, pas compris,
+        au plus l'écart)."""
+        a = ANIM_MAX_ACC
+        ecart = cible - p
+        frein = a * (math.sqrt(dt * dt + 2.0 * abs(ecart) / a) - dt)
+        voulue = max(-frein, min(frein, ecart / dt))
+        voulue = max(-ANIM_MAX_VEL, min(ANIM_MAX_VEL, voulue))
+        v2 = max(v - a * dt, min(v + a * dt, voulue))
+        p2 = p + v2 * dt
+        if ecart * (cible - p2) < 0 and abs(v2) <= a * dt:
+            # La cible serait dépassée de peu, à basse vitesse : s'arrêter
+            # dessus reste dans la limite d'accélération. (Une cible qui
+            # vient à la rencontre du bras est croisée sans à-coup.)
+            p2, v2 = cible, 0.0
+        return p2, v2
+
     def _finir(self, res) -> None:
         self.result = res
         self._fini.set()
@@ -395,19 +428,30 @@ class AnimationPlayer:
                     return self._finir(refused("STOPPED", RefusalCode.CANCELLED,
                                                "animation arrêtée par l'app"))
                 maintenant = ctx.now()
-                dt, prec = max(0.0, maintenant - prec), maintenant
+                # Un retard du fil n'est pas rattrapé : au plus deux pas.
+                dt = min(max(0.0, maintenant - prec), 2 * self.PERIOD_S)
+                prec = maintenant
                 v = getattr(ctx._locomotion, "dernier_verdict", None)
                 self.paused = v is not None and v.facteur <= 0.0
-                if not self.paused:
-                    t = min(self.total_s, t + min(dt, 0.1))
+                if self.paused:
+                    # Bras figés là où ils sont : on repartira de l'arrêt.
+                    self._vit = {j: 0.0 for j in self._joints}
+                elif dt > 0.0:
+                    t = min(self.total_s, t + dt)
+                    cibles = self._cibles(t)
+                    for j in self._joints:
+                        self._pos[j], self._vit[j] = self._pas_limite(
+                            self._pos[j], self._vit[j], cibles[j], dt)
                     cmds = {j: ActuatorCommand(mode=ControlMode.POSITION, position=p)
-                            for j, p in self._cibles(t).items()}
+                            for j, p in self._pos.items()}
                     refus = [j for j, s in ctx.move_arms(cmds).items() if s != HALStatus.OK]
                     if refus:
                         return self._finir(refused(
                             "FAILED", RefusalCode.SAFETY_LIMIT,
                             f"pas refusé par le garde-fou pour {refus[:3]}"))
-                    if t >= self.total_s:
+                    arrive = all(abs(self._pos[j] - cibles[j]) < 1e-3
+                                 and abs(self._vit[j]) < 1e-3 for j in self._joints)
+                    if t >= self.total_s and arrive:
                         return self._finir(ActionResult(
                             ok=True, status="PLAYED", message=f"« {self.anim.name} » jouée",
                             data={"duration_s": round(self.total_s, 3)}))

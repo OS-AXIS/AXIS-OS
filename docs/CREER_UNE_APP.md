@@ -296,8 +296,8 @@ humain à l'installation, et est refusé pendant un arrêt d'urgence.
 | Appel | Permission | Ce que ça fait |
 |---|---|---|
 | `ctx.robot_info()`, `ctx.has_capability(nom)`, `ctx.safety_status()` | `SYSTEM_INFO` | modèle, versions, capacités et leur état, batterie (jamais inventée), arrêt d'urgence, gardien de proximité, quotas restants |
-| `ctx.go_to(x, y, theta, timeout_s=…)` | `NAVIGATION_GOTO` | va à un point de la carte, en contournant les obstacles, sous le gardien de proximité |
-| `ctx.pick(detection, size_m=…)`, `ctx.place(plateau)` | `MANIPULATION` | prend et pose un objet à deux mains |
+| `ctx.go_to(x, y, theta, timeout_s=…)` | `NAVIGATION_GOTO` + ceux de `walk` | va à un point de la carte, en contournant les obstacles, sous le gardien de proximité |
+| `ctx.pick(detection, size_m=…)`, `ctx.place(plateau)` | `MANIPULATION` + ceux des bras | prend et pose un objet à deux mains |
 | `ctx.rest_pose()` | bras | la posture de repos définie par le driver |
 | `ctx.should_stop()`, `ctx.check_cancelled()`, `ctx.report_progress(f, msg)` | `MISSION_LIFECYCLE` | arrêt coopératif, progression lue par l'OS |
 | `ctx.on_estop(f)`, `ctx.on_alert(f)`, `ctx.on_low_battery(f)` | `MISSION_LIFECYCLE`, `WATCHDOG_READ`, `SYSTEM_INFO` | callbacks, dans le processus de l'app |

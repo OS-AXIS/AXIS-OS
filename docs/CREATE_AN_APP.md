@@ -295,8 +295,8 @@ refused during an emergency stop.
 | Call | Permission | What it does |
 |---|---|---|
 | `ctx.robot_info()`, `ctx.has_capability(name)`, `ctx.safety_status()` | `SYSTEM_INFO` | model, versions, capabilities and their state, battery (never invented), emergency stop, proximity guard, quotas left |
-| `ctx.go_to(x, y, theta, timeout_s=…)` | `NAVIGATION_GOTO` | walks to a point of the map, around obstacles, under the proximity guard |
-| `ctx.pick(detection, size_m=…)`, `ctx.place(surface)` | `MANIPULATION` | grasps and puts down an object with both arms |
+| `ctx.go_to(x, y, theta, timeout_s=…)` | `NAVIGATION_GOTO` + those of `walk` | walks to a point of the map, around obstacles, under the proximity guard |
+| `ctx.pick(detection, size_m=…)`, `ctx.place(surface)` | `MANIPULATION` + those of the arms | grasps and puts down an object with both arms |
 | `ctx.rest_pose()` | arms | the rest pose defined by the driver |
 | `ctx.should_stop()`, `ctx.check_cancelled()`, `ctx.report_progress(f, msg)` | `MISSION_LIFECYCLE` | cooperative stop, progress read by the OS |
 | `ctx.on_estop(f)`, `ctx.on_alert(f)`, `ctx.on_low_battery(f)` | `MISSION_LIFECYCLE`, `WATCHDOG_READ`, `SYSTEM_INFO` | callbacks, in the app's process |

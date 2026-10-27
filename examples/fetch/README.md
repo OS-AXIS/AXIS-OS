@@ -9,6 +9,8 @@ Chaque échec est rendu avec son code de refus (voir
 python examples/fetch/test_app.py      # sur le robot simulé léger
 ```
 
-Permissions : `NAVIGATION_GOTO` et `MANIPULATION` (DANGEROUS),
-`SENSORS_CAMERA`, `ACTUATORS_READ`, `ACTUATORS_WRITE_ARMS`, `SYSTEM_INFO`,
-`MISSION_LIFECYCLE`.
+Permissions : `NAVIGATION_GOTO` et `MANIPULATION` (DANGEROUS), plus les
+droits des commandes qu'elles remplacent (`LOCOMOTION_WALK`,
+`ACTUATORS_WRITE_LEGS` pour `go_to` ; `ACTUATORS_READ`,
+`ACTUATORS_WRITE_ARMS` pour `pick`, `place` et `rest_pose`),
+`SENSORS_CAMERA`, `SYSTEM_INFO`, `MISSION_LIFECYCLE`.

@@ -87,7 +87,8 @@ def manifeste(perms, app_id="com.test.cycle", name="Cycle de vie"):
 
 def contexte(robot, perms=None, **kw):
     toutes = [Permission.MISSION_LIFECYCLE, Permission.HUMAN_CONFIRMATION,
-              Permission.WATCHDOG_READ, Permission.SYSTEM_INFO, Permission.NAVIGATION_GOTO]
+              Permission.WATCHDOG_READ, Permission.SYSTEM_INFO, Permission.NAVIGATION_GOTO,
+              Permission.LOCOMOTION_WALK, Permission.ACTUATORS_WRITE_LEGS]
     ctx = RobotContext.for_testing(robot.hal, robot.watchdog,
                                    manifeste(toutes if perms is None else perms, **kw))
     ctx._set_clock(robot.clock)
@@ -103,7 +104,7 @@ def alerte(robot, message="moteur chaud"):
 
 
 class HumainEnPanne(IHumanInterface):
-    def confirm(self, app_name, question, timeout_s):
+    def confirm(self, app_id, app_name, question, timeout_s):
         raise ConnectionError("écran débranché")
 
 
@@ -113,7 +114,7 @@ class HumainAmbigu(IHumanInterface):
     def __init__(self, valeur):
         self.valeur = valeur
 
-    def confirm(self, app_name, question, timeout_s):
+    def confirm(self, app_id, app_name, question, timeout_s):
         return self.valeur
 
 
@@ -262,9 +263,10 @@ with SimulatedRobot() as robot:
     ctx._set_human_interface(humain)
     r = ctx.ask_confirmation("Je peux\n\x1b[31mouvrir la porte ?", timeout_s=2.0)
     check("Oui : CONFIRMED", r.ok and r.status == "CONFIRMED", str(r))
-    check("L'humain voit le nom du manifeste et une question neutralisée",
-          humain.questions[0][0] == "Livreur" and "\x1b" not in humain.questions[0][1]
-          and "\n" not in humain.questions[0][1], str(humain.questions[0]))
+    check("L'humain voit l'app_id vérifié, le nom du manifeste et une question neutralisée",
+          humain.questions[0][0] == "com.test.cycle" and humain.questions[0][1] == "Livreur"
+          and "\x1b" not in humain.questions[0][2] and "\n" not in humain.questions[0][2],
+          str(humain.questions[0]))
     r = ctx.ask_confirmation("Et maintenant ?", timeout_s=2.0)
     check("Non : DECLINED/HUMAN_DECLINED", r.status == "DECLINED"
           and r.code == RefusalCode.HUMAN_DECLINED.value, str(r))

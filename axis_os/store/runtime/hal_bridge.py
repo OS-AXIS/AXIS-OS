@@ -675,8 +675,9 @@ class HALBridgeServer:
                 if not isinstance(cible, (str, dict)):
                     raise InvalidArgumentError("animation : un objet au format axis-animation")
                 res = self._ctx.play_animation(cible, wait=p["wait"], timeout_s=p.get("timeout_s"))
-                if res.ok:
-                    # Geste joué (ou lancé) : mouvement réel (facturation).
+                if res.status == "PLAYED":
+                    # Geste joué jusqu'au bout : mouvement réel (facturation).
+                    # Lancé seulement (PLAYING), il peut être arrêté aussitôt.
                     self.successful_motor_commands += 1
                 return HALResponse(cmd.request_id, True, data=res.to_json())
 
@@ -698,7 +699,8 @@ class HALBridgeServer:
                 cible = stream_target(moteur.kind, p.get("joints") if moteur.kind == "arms"
                                       else p.get("velocity"))
                 ack = self._ctx._flux_push(p["stream_id"], cible, p["deadman"], p["t"])
-                if ack.accepted:
+                # Une vitesse nulle ne fait rien bouger : pas une preuve.
+                if ack.accepted and (moteur.kind == "arms" or any(cible)):
                     # Consigne acceptée : le robot la suit (facturation, voir
                     # __init__).
                     self.successful_motor_commands += 1
@@ -735,6 +737,12 @@ class HALBridgeServer:
                     p["kind"], p.get("threshold_percent")))
 
             elif cmd.action == "poll_events":
+                # Rien à scruter sans au moins une permission d'événement.
+                if not any(self._ctx._manifest.has_permission(p) for p in (
+                        Permission.MISSION_LIFECYCLE, Permission.WATCHDOG_READ,
+                        Permission.SYSTEM_INFO)):
+                    raise SandboxPermissionError(
+                        "poll_events exige MISSION_LIFECYCLE, WATCHDOG_READ ou SYSTEM_INFO")
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx._etat_evenements(cmd.payload.get("since_index")))
 
@@ -757,6 +765,9 @@ class HALBridgeServer:
                     duree = p.get("duration_s")
                     duree = 2.0 if duree is None else duree
                     reste = getattr(self, "_reste_s", None)
+                    # Durée effective (vitesse bornée, voir
+                    # RobotContext._duree_repos) : c'est elle qu'il faut avoir.
+                    duree = self._ctx._duree_repos(duree)
                     if reste is not None and duree > reste - 0.5:
                         # Pas assez de temps restant au hook : refus, plutôt
                         # qu'un geste raccourci, donc plus rapide.
@@ -765,7 +776,7 @@ class HALBridgeServer:
                         return HALResponse(cmd.request_id, True, data=refused(
                             "TIMEOUT", RefusalCode.TIMEOUT,
                             f"il reste {max(0.0, reste):.1f} s au hook, le geste en "
-                            f"demande {duree:g}").to_json())
+                            f"demande {duree:.1f}").to_json())
                     res = self._ctx.rest_pose(duration_s=duree)
                 if res.ok:
                     # Le robot a réellement bougé (arrivé, objet tenu ou

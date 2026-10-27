@@ -70,10 +70,13 @@ class IHumanInterface(ABC):
     ctx.ask_confirmation(), et ne peut jamais y répondre elle-même."""
 
     @abstractmethod
-    def confirm(self, app_name: str, question: str, timeout_s: float) -> Optional[bool]:
-        """Pose `question` au nom de l'app `app_name` (nom tiré du
-        manifeste par l'OS). True : oui ; False : non ; None : pas de
-        réponse dans `timeout_s` secondes."""
+    def confirm(self, app_id: str, app_name: str, question: str,
+                timeout_s: float) -> Optional[bool]:
+        """Pose `question` au nom de l'app `app_id` (« com.auteur.app »,
+        vérifié par l'OS à l'installation) ; `app_name` est le nom libre de
+        son manifeste. L'interface doit montrer les deux : un nom comme
+        « AXIS-OS Sécurité » ne dit pas qui demande. True : oui ; False :
+        non ; None : pas de réponse dans `timeout_s` secondes."""
 
 
 class EventPoller:
