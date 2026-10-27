@@ -207,6 +207,8 @@ container: see [sim/README.md](sim/README.md) and `deploy/machine_gpu/`.
 
 - [Write an app for AXIS-OS, from scratch](docs/CREATE_AN_APP.md), no robot or GPU needed
   ([version française](docs/CREER_UNE_APP.md))
+- [App SDK API reference](docs/API_REFERENCE.md): every API, its permission, its refusal codes,
+  an example; [three complete example apps](examples/)
 - [What a robot needs to run AXIS-OS](docs/PREREQUIS_ROBOT.md)
 - [Integration of GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
 - [App isolation: findings and plan](docs/isolation_apps.md)

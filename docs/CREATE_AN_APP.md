@@ -77,6 +77,14 @@ pip install -r requirements.txt numpy
 export PYTHONPATH="$PWD"          # pour que « import axis_os » fonctionne
 ```
 
+Or install the development kit, the `axis-os-sdk` package (not published
+on PyPI; it installs from the repository and provides the `axis`
+command):
+
+```bash
+pip install .
+```
+
 No robot, no GPU, no 3D simulator to get started.
 
 ---
@@ -86,10 +94,17 @@ No robot, no GPU, no 3D simulator to get started.
 The command-line tool generates the skeleton of an app:
 
 ```bash
-python3 -m axis_os.cli.main init "Mon Assistant" --author "Kenzo" --email "moi@exemple.com"
+axis init "Mon Assistant" --author "Kenzo" --email "moi@exemple.com"
 cd mon_assistant
-python3 -m axis_os.cli.main simulate
+python test_app.py      # the app's test, on the light simulated robot
+axis validate           # checks the app as the OS will
+axis simulate           # a mission on the simulated G1
 ```
+
+(Without `pip install .`, write `python3 -m axis_os.cli.main` instead of
+`axis`.) The generated `app.py` already shows the habits of a good app:
+ask the robot what it can do (`ctx.has_capability`), honour a stop request
+(`ctx.should_stop`) and report progress (`ctx.report_progress`).
 
 Expected output:
 
@@ -267,6 +282,33 @@ the limitation described in § 1.
 A service missing from the robot (no camera, no microphone) is **not an
 error**: the call returns an empty list, `None` or `False`, and says so in
 the log.
+
+### SDK v1: high-level APIs
+
+Each API below is detailed — parameters, permission, refusal codes,
+example — in **[API_REFERENCE.md](API_REFERENCE.md)**. Actions that can
+fail normally return an `ActionResult` (`ok`, `status`, `code`,
+`message`): `if not r: ctx.log(r.code)`. Everything that moves the robot
+needs a DANGEROUS permission, confirmed by a human at install, and is
+refused during an emergency stop.
+
+| Call | Permission | What it does |
+|---|---|---|
+| `ctx.robot_info()`, `ctx.has_capability(name)`, `ctx.safety_status()` | `SYSTEM_INFO` | model, versions, capabilities and their state, battery (never invented), emergency stop, proximity guard, quotas left |
+| `ctx.go_to(x, y, theta, timeout_s=…)` | `NAVIGATION_GOTO` + those of `walk` | walks to a point of the map, around obstacles, under the proximity guard |
+| `ctx.pick(detection, size_m=…)`, `ctx.place(surface)` | `MANIPULATION` + those of the arms | grasps and puts down an object with both arms |
+| `ctx.rest_pose()` | arms | the rest pose defined by the driver |
+| `ctx.should_stop()`, `ctx.check_cancelled()`, `ctx.report_progress(f, msg)` | `MISSION_LIFECYCLE` | cooperative stop, progress read by the OS |
+| `ctx.on_estop(f)`, `ctx.on_alert(f)`, `ctx.on_low_battery(f)` | `MISSION_LIFECYCLE`, `WATCHDOG_READ`, `SYSTEM_INFO` | callbacks, in the app's process |
+| `ctx.ask_confirmation(question)` | `HUMAN_CONFIRMATION` | a yes/no question to the human present; the app can never answer it itself |
+| `ctx.stream_targets("arms" \| "walk")` | `TELEOP_STREAM` | local teleoperation stream under a deadman |
+| `ctx.play_animation("wave")`, `ctx.stop_animation()` | `ANIMATION_PLAY` | keyframe gestures, checked before playing |
+| `ctx.speak(text, language=…)` | `AUDIO_OUTPUT` | the robot speaks |
+| `ctx.get_setting(name)` | `APP_SETTINGS` | a setting declared in the manifest, chosen by the user |
+
+Complete, tested examples: [examples/](../examples/) — `hello_robot`
+(animation + speech), `fetch` (look_for + go_to + pick + place),
+`teleop_local` (deadman stream).
 
 ---
 
@@ -529,7 +571,8 @@ in front of it.
 
 | Level | How | Cost | What it proves |
 |---|---|---|---|
-| 1 | `python3 -m axis_os.cli.main simulate` | seconds | the app installs, starts, completes its mission |
+| 0 | `axis validate` | a second | manifest, permissions, quotas, animations, versions: what the OS will refuse |
+| 1 | `python test_app.py`: `axis_os.testing.AppTestHarness`, the light simulated robot (real navigation, locomotion, manipulation, proximity guard), or `axis simulate` | seconds | the app installs, starts, completes its mission; error cases, permissions |
 | 2 | a test like `test/test_app_assistant_ia.py`: virtual robot `UnitreeG1HAL(backend="sim")`, real services with scripted inputs | seconds | the logic, the error cases, the permissions |
 | 3 | Isaac Sim, on a GPU machine (`deploy/machine_gpu/`) | GPU hours | the physics: the robot really walks, picks up, puts down |
 
@@ -600,19 +643,19 @@ Stated plainly, so you do not waste your time:
   and data partitioning by `app_id` is not enforced by the system
   (finding 3 of [isolation_apps.md](isolation_apps.md), which also gives
   the fix plan). Only install apps whose code you have reviewed.
-- **Making the robot speak**: no `ctx.speak()`. Speech synthesis is the
-  next natural building block.
-- **Navigation, manipulation and safety state for apps**: the services
-  exist and are tested (they run the sorting demo), but are not yet
-  exposed in `ctx` (`ctx.aller_vers(poste)`, `ctx.prendre(objet)`, "am I
-  stopped by safety?"…).
+- **A real speech engine**: `ctx.speak()` goes through the
+  `ISpeechSynthesizer` interface, but AXIS-OS ships no engine (tests use a
+  fake one that records what is said).
+- **A gamepad for `stream_targets`**: the stream is local and works, but no
+  OS input service reads a real gamepad yet (an app never reads a device
+  itself). Teleoperation over the internet, video and VR are out of scope.
 - **Sandbox network filtering**: the `NETWORK_*` permissions are
   declarative for now.
 - **Online Play Store registry**: `publish` validates, without uploading.
 - **Payment**: the 70/30 split is calculated and displayed for each
   billed mission, but no real payment is connected yet.
-- **Installation via `pip`**: no package yet; you use `PYTHONPATH`
-  (§ 2).
+- **Installation from PyPI**: the `axis-os-sdk` package installs from the
+  repository (`pip install .`, § 2), but is not published.
 - **Robot-to-robot communication**: designed
   (`docs/fleet_manager_design.md`), not coded.
 

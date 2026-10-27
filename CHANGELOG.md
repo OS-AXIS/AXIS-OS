@@ -10,6 +10,126 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### SDK v1 — un kit de développement complet (API du SDK 1.0.0, 2026-10-27)
+
+Toute nouvelle API passe par `RobotContext`, par le pont JSON (un schéma
+strict par action dans `SCHEMAS_ACTIONS`), puis par les services et la HAL
+normalisée ; chacune exige une permission, déclarée et vérifiée à chaque
+appel, et a ses tests (cas normal, permission manquante, arguments
+invalides, arrêt d'urgence, capacité absente), en direct et depuis le
+processus de l'app. Référence complète : `docs/API_REFERENCE.md`.
+
+**Nouvelles API** (permission entre parenthèses ; DANGEROUS = fait bouger
+le robot, confirmée par un humain à l'installation) :
+
+- État et diagnostic : `robot_info()`, `has_capability(nom)`,
+  `safety_status()` (`SYSTEM_INFO`, NORMAL) ; batterie mesurée par le
+  driver (`IRobotHAL.get_battery`), sinon inconnue, jamais inventée.
+- Services de haut niveau : `go_to(x, y, theta, *, timeout_s)`
+  (`NAVIGATION_GOTO`, DANGEROUS), `pick(cible, *, size_m)`, `place(cible)`
+  (`MANIPULATION`, DANGEROUS), `rest_pose()` (droits de `move_to_pose` ;
+  posture définie par le driver, `IRobotHAL.get_rest_pose`).
+- Cycle de vie : `should_stop()`, `check_cancelled()`,
+  `report_progress(f, msg)`, `on_estop(cb)` (`MISSION_LIFECYCLE`, NORMAL),
+  `on_alert(cb)` (`WATCHDOG_READ`), `on_low_battery(cb)` (`SYSTEM_INFO`),
+  `ask_confirmation(question, *, timeout_s)` (`HUMAN_CONFIRMATION`,
+  NORMAL). Côté OS : `PlayStoreRuntime.request_stop(app_id, source=)`,
+  `get_progress(app_id)`, paramètre `human_interface` (`IHumanInterface`).
+- Téléopération locale : `stream_targets("arms" | "walk", ...)` →
+  `TargetStream` (`push`, `resume`, `metrics`, `close`) ; `TELEOP_STREAM`,
+  DANGEROUS, plus les droits des commandes remplacées.
+- Animations : format JSON « axis-animation » (`axis_os.store.sdk.animation`,
+  validé avant de jouer), `play_animation(nom | dict | Animation, *, wait,
+  timeout_s)`, `stop_animation()` (`ANIMATION_PLAY`, DANGEROUS, plus les
+  droits de `move_arms`) ; `wave` et `point` fournies pour le G1.
+- Parole et réglages : `speak(texte, *, language)` (`AUDIO_OUTPUT`, NORMAL)
+  par `ISpeechSynthesizer` (aucun moteur fourni ; `FakeSpeechSynthesizer`
+  pour les tests) ; réglages déclarés dans le manifeste (`SettingSpec`),
+  choisis par l'utilisateur (`PlayStoreRuntime.set_setting`), lus par
+  `get_setting(nom)` (`APP_SETTINGS`, NORMAL).
+- Versions : `ctx.api_version` ; `AppManifest.min_sdk_version` (installation
+  refusée si l'API de l'OS est plus ancienne ou d'une autre version
+  majeure).
+- Résultats : `ActionResult` (ok, status, code, message, data) et codes de
+  refus structurés (`RefusalCode`) ; les refus traversent le pont avec leur
+  code et redeviennent la même exception dans le processus de l'app
+  (`InvalidArgumentError`, `MissionCancelled`, `CapabilityMissingError`,
+  `BusyError`, en plus de `PermissionError` et `EstopActiveError`).
+
+**Nouvelles permissions** : `SYSTEM_INFO`, `MISSION_LIFECYCLE`,
+`HUMAN_CONFIRMATION`, `AUDIO_OUTPUT`, `APP_SETTINGS` (NORMAL) ;
+`NAVIGATION_GOTO`, `MANIPULATION`, `TELEOP_STREAM`, `ANIMATION_PLAY`
+(DANGEROUS).
+
+**Kit de développement** : `pyproject.toml` (paquet `axis-os-sdk` 1.0.0,
+non publié, `pip install .`, numpy seul en dépendance) ; `axis_os.testing`
+(robot simulé léger avec les vrais services de navigation, locomotion,
+manipulation et le gardien de proximité, `AppTestHarness`,
+`ScriptedHuman`) ; commande `axis` : `validate`, `animation validate`,
+`init` (gabarit qui montre `has_capability`, `should_stop`,
+`report_progress`, et un test sur le robot simulé léger), `simulate`,
+`publish --dry-run` ; trois exemples testés dans `examples/`
+(`hello_robot`, `fetch`, `teleop_local`).
+
+**Deux revues adversariales** (une app peut-elle faire bouger le robot sans
+la bonne permission, pendant un arrêt d'urgence, plus vite que les limites,
+ou sans humain quand il en faut un ?). Aucun mouvement sans permission ni
+sous arrêt d'urgence n'a été trouvé ; les constats suivants sont corrigés,
+chacun avec son test (`test/test_sdk_revue.py`, et les tests de chaque
+partie) :
+
+- R1 — `pick()` n'obtient l'exemption du gardien de proximité qu'autour d'un
+  objet vu par la perception de l'OS (moins de 10 cm, moins de 30 s) ; une
+  app pouvait nommer une « cible » là où il n'y avait rien.
+- R2, R6, R9 — Un seul écrivain des bras (prise, animation, flux) et de la
+  marche (`go_to`, flux) par app, et un seul contexte à la fois conduit le
+  robot par les API de haut niveau (sauts de 0.57 à 0.62 rad mesurés ; une
+  app détournait la navigation d'une autre). `request_stop` atteint tous les
+  hooks en cours de l'app.
+- R3 — Animations : vitesse et accélération commandées bornées pas à pas
+  (162 rad/s² mesurés sur une animation validée), retard du fil jamais
+  rattrapé d'un coup.
+- R4 — `rest_pose` : au plus 1 rad/s (6.2 rad/s mesurés), jamais les jambes.
+- R5 — Flux de marche : homme mort au plus 500 ms, le délai de la
+  locomotion.
+- R7 — Une action longue s'arrête si le processus de l'app meurt
+  (plantage, quota) ; elle roulait encore 13 s, jusqu'à 3.9 m.
+- R8 — `pick` annulé rouvre les bras et lève l'exemption ; une pose
+  commencée va à son terme.
+- R10 — Le flux de consignes s'arrête sur demande d'arrêt.
+- R11 — L'exemption de `pick` exige les mains à la hauteur de l'objet.
+- R12 — `ask_confirmation` transmet à l'interface humaine l'`app_id`
+  vérifié, pas seulement le nom libre du manifeste.
+- R13 — `go_to`, `pick` et `place` exigent aussi les droits des commandes
+  qu'ils remplacent (règle de la somme).
+- `poll_events` exige une permission d'événement ; une consigne de marche
+  nulle ou une animation seulement lancée ne comptent plus comme mouvement
+  réel pour la facturation.
+
+Ce qui reste ouvert : `SECURITY.md`, limite connue n° 8.
+
+**Changements cassants**
+
+- `go_to` exige `LOCOMOTION_WALK` et `ACTUATORS_WRITE_LEGS` en plus de
+  `NAVIGATION_GOTO` ; `pick` et `place`, `ACTUATORS_READ` et
+  `ACTUATORS_WRITE_ARMS` en plus de `MANIPULATION`.
+- `IHumanInterface.confirm(app_id, app_name, question, timeout_s)`.
+- `Detection` gagne un champ `frame` (« base » ou « world »), en dernier :
+  un appel positionnel existant reste valide.
+- `PermissionError` et `EstopActiveError` héritent désormais d'`AxisRefusal`
+  (toujours des `Exception`) et portent un `code`.
+- Dans le processus de l'app, un refus structuré de l'OS (argument
+  invalide…) lève l'exception correspondante au lieu d'un `RuntimeError`.
+- Sous arrêt d'urgence, le bac à sable sert aussi `robot_info`,
+  `has_capability`, `safety_status`, `should_stop`, `report_progress`,
+  `poll_events`, `stop_animation` et la lecture ou la fermeture d'un flux :
+  aucune ne fait bouger le robot.
+- `axis-os init` génère un test fondé sur `axis_os.testing` au lieu
+  d'IsaacSimHAL ; la commande s'appelle `axis` (`axis-os` reste accepté).
+- `NavigationService` et `ManipulationService` protègent leurs méthodes par
+  un verrou (`services.base.sous_verrou`) : une sous-classe doit appeler
+  leur `__init__`.
+
 ### Sécurité, changements cassants — ressources, identité des apps, intentions, marque IA (2026-10-21)
 
 Limite n° 8 de `SECURITY.md`, et limites n° 2, 6 et 7 en partie (ce qui

@@ -294,6 +294,17 @@ class MemoryService(IService):
             return ServiceResult(ok=False, reason=f"Clé '{key}' inconnue pour '{app_id}'")
         return ServiceResult(ok=True, value=store[full_key])
 
+    def app_usage(self, app_id: str) -> ServiceResult:
+        """Place occupée par l'espace privé de l'app `app_id` : value =
+        (nombre de clés, octets), comptés comme le quota (voir _octets)."""
+        if not self._started:
+            return ServiceResult(ok=False, reason="Service non démarré")
+        store = self._read_category("app_store")
+        prefixe = "[" + json.dumps(app_id, ensure_ascii=False) + ", "
+        siennes = [(k, v) for k, v in store.items() if k.startswith(prefixe)]
+        return ServiceResult(ok=True, value=(len(siennes),
+                                             sum(self._octets(k, v) for k, v in siennes)))
+
     @staticmethod
     def _app_key(app_id: str, key: str) -> str:
         """

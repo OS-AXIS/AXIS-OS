@@ -214,6 +214,8 @@ Sim : voir [sim/README.md](sim/README.md) et `deploy/machine_gpu/`.
 ## Pour aller plus loin
 
 - [Créer une app pour AXIS-OS, de A à Z](docs/CREER_UNE_APP.md), sans robot ni GPU
+- [Référence des API du SDK](docs/API_REFERENCE.md) (en anglais) : chaque API, sa permission,
+  ses codes de refus, un exemple ; [trois apps d'exemple complètes](examples/)
 - [Ce qu'un robot doit avoir pour faire tourner AXIS-OS](docs/PREREQUIS_ROBOT.md)
 - [Intégration de GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
 - [Isolation des apps : constat et plan](docs/isolation_apps.md)

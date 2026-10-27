@@ -51,6 +51,7 @@ Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations
+import math
 import os
 import threading
 import time
@@ -64,9 +65,22 @@ from axis_os.hal.core.types import (
 from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
 )
+from axis_os.store.sdk.lifecycle import (
+    CONFIRMATION_MAX_S, PROGRESS_MESSAGE_MAX, QUESTION_MAX, EventPoller, MissionCancelled,
+)
+from axis_os.store.sdk.animation import Animation, load_animation
 from axis_os.store.sdk.manifest import Permission
+from axis_os.store.sdk.stream import (
+    MAX_JOINTS, StreamAck, StreamMetrics, TargetStream, stream_params, stream_target,
+)
+from axis_os.store.sdk.results import (
+    EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
+    RefusalCode, RobotInfo, SafetyStatus, object_from_target, refused, require_language,
+    require_number, require_text, surface_height_from_target,
+)
 from axis_os.store.runtime.canal_ipc import (
-    Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste, MessageRefuse,
+    Booleen, Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste,
+    MessageRefuse,
     Nombre, Objet, UnParmi,
 )
 
@@ -108,7 +122,8 @@ def _serialize_detection(d) -> Dict[str, Any]:
         return None if v is None else [v.x, v.y, v.z]
     return {"label": d.label, "confidence": d.confidence,
             "bbox": list(d.bbox), "direction": _v(d.direction),
-            "position_3d": _v(d.position_3d), "timestamp_ns": d.timestamp_ns}
+            "position_3d": _v(d.position_3d), "timestamp_ns": d.timestamp_ns,
+            "frame": getattr(d, "frame", "base")}
 
 
 def _deserialize_detection(d: Dict[str, Any]):
@@ -131,6 +146,7 @@ def _deserialize_detection(d: Dict[str, Any]):
         bbox=tuple(d.get("bbox", (0, 0, 0, 0))),
         direction=_v(d.get("direction")), position_3d=_v(d.get("position_3d")),
         timestamp_ns=int(d.get("timestamp_ns", 0)),
+        frame="world" if d.get("frame") == "world" else "base",
     )
 
 
@@ -221,7 +237,56 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "log": Objet({}, facultatifs={"message": Chaine(4096)}),
     "emergency_stop": _VIDE,
     "get_recent_alerts": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
+    "robot_info": _VIDE,
+    "has_capability": Objet({"name": Chaine(64)}),
+    "safety_status": _VIDE,
+    # Bornes larges ici ; les bornes exactes sont celles de RobotContext
+    # (require_number), vérifiées à nouveau côté OS.
+    "go_to": Objet({"x": Nombre(-1e4, 1e4), "y": Nombre(-1e4, 1e4),
+                    "timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
+                   facultatifs={"theta": Nombre(-2 * math.pi, 2 * math.pi)}),
+    "pick": Objet({"center": Liste(Nombre(), 3), "size": Liste(Nombre(), 3),
+                   "timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)}),
+    "place": Objet({"timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
+                   facultatifs={"surface_height_m": Nombre(0, 2.5)}),
+    "rest_pose": Objet({}, facultatifs={"duration_s": Nombre(0, 30)}),
+    "should_stop": _VIDE,
+    "report_progress": Objet({"fraction": Nombre(0, 1),
+                              "message": Chaine(PROGRESS_MESSAGE_MAX)}),
+    "subscribe_event": Objet({"kind": UnParmi("estop", "alert", "low_battery")},
+                             facultatifs={"threshold_percent": Nombre(1, 99)}),
+    "poll_events": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
+    "ask_confirmation": Objet({"question": Chaine(QUESTION_MAX),
+                               "timeout_s": Nombre(0, CONFIRMATION_MAX_S)}),
+    # Bornes exactes : stream_params() / stream_target(), côté OS.
+    "stream_open": Objet({"kind": UnParmi("arms", "walk"), "deadman_ms": Nombre(),
+                          "max_rate_hz": Nombre(), "max_age_ms": Nombre(),
+                          "max_speed": Nombre()}),
+    "stream_push": Objet({"stream_id": Entier(0, 2 ** 31), "deadman": Booleen(),
+                          "t": Nombre()},
+                         facultatifs={"joints": Dictionnaire(Nombre(), MAX_JOINTS),
+                                      "velocity": Liste(Nombre(), 3)}),
+    "stream_resume": Objet({"stream_id": Entier(0, 2 ** 31)}),
+    "stream_metrics": Objet({"stream_id": Entier(0, 2 ** 31)}),
+    "stream_close": Objet({"stream_id": Entier(0, 2 ** 31)}),
+    # Exactement un de « name » et « animation » (vérifié par le serveur) ;
+    # le contenu de l'animation est vérifié par load_animation() puis par
+    # check_animation(), côté OS.
+    "play_animation": Objet({"wait": Booleen()},
+                            facultatifs={"name": Chaine(64), "animation": JsonLibre(),
+                                         "timeout_s": Nombre(0, RobotContext.ANIMATION_TIMEOUT_MAX_S)}),
+    "stop_animation": _VIDE,
+    "speak": Objet({"text": Chaine(RobotContext.SPEAK_MAX_CHARS), "language": Chaine(8)}),
+    "get_setting": Objet({"name": Chaine(32)}),
 }
+
+# Actions longues dont le délai est borné par le temps qui reste au hook
+# (voir HALBridgeServer.traiter) : champ du délai, valeur minimale.
+_DELAIS_BORNES = {"go_to": ("timeout_s", 0.1), "pick": ("timeout_s", 0.1),
+                  "place": ("timeout_s", 0.1), "ask_confirmation": ("timeout_s", 0.1),
+                  "play_animation": ("timeout_s", 0.1)}
+# Délai par défaut quand l'app n'en donne pas (avant la borne).
+_DELAIS_DEFAUT = {"play_animation": RobotContext.ANIMATION_TIMEOUT_MAX_S}
 
 _ENVELOPPE = Objet({"action": Chaine(64), "payload": Dictionnaire(JsonLibre(), 64),
                     "request_id": Entier(0, 2 ** 53)},
@@ -363,8 +428,18 @@ class HALBridgeServer:
             duree = payload.get("duration_s")
             duree = 3.0 if duree is None else duree
             payload = dict(payload, duration_s=max(0.0, min(duree, (reste_s - 0.5) / 2)))
+        borne = _DELAIS_BORNES.get(raw["action"])
+        if borne is not None and reste_s is not None:
+            # Une action longue rend la main avant l'échéance du quota du
+            # hook. On ne fait que RÉDUIRE le délai demandé : un délai
+            # invalide (0) reste invalide et sera refusé par RobotContext.
+            champ, mini = borne
+            demande = payload.get(champ)
+            demande = _DELAIS_DEFAUT.get(raw["action"], 2.0) if demande is None else demande
+            payload = dict(payload, **{champ: min(demande, max(mini, reste_s - 0.5))})
         cmd = HALCommand(action=raw["action"], payload=payload,
                          request_id=raw["request_id"])
+        self._reste_s = reste_s
         return asdict(self._handle(cmd))
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
@@ -572,6 +647,145 @@ class HALBridgeServer:
                     "next_index": since_index + len(alerts),
                 })
 
+            elif cmd.action == "robot_info":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.robot_info().to_json())
+
+            elif cmd.action == "has_capability":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.has_capability(cmd.payload["name"]))
+
+            elif cmd.action == "safety_status":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.safety_status().to_json())
+
+            elif cmd.action == "speak":
+                return HALResponse(cmd.request_id, True, data=self._ctx.speak(
+                    cmd.payload["text"], language=cmd.payload["language"]).to_json())
+
+            elif cmd.action == "get_setting":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.get_setting(cmd.payload["name"]))
+
+            elif cmd.action == "play_animation":
+                p = cmd.payload
+                if (p.get("name") is None) == (p.get("animation") is None):
+                    raise InvalidArgumentError("play_animation : un nom OU une animation")
+                cible = p["name"] if p.get("name") is not None else p["animation"]
+                if not isinstance(cible, (str, dict)):
+                    raise InvalidArgumentError("animation : un objet au format axis-animation")
+                res = self._ctx.play_animation(cible, wait=p["wait"], timeout_s=p.get("timeout_s"))
+                if res.status == "PLAYED":
+                    # Geste joué jusqu'au bout : mouvement réel (facturation).
+                    # Lancé seulement (PLAYING), il peut être arrêté aussitôt.
+                    self.successful_motor_commands += 1
+                return HALResponse(cmd.request_id, True, data=res.to_json())
+
+            elif cmd.action == "stop_animation":
+                return HALResponse(cmd.request_id, True, data=self._ctx.stop_animation().to_json())
+
+            elif cmd.action == "stream_open":
+                p = cmd.payload
+                flux = self._ctx.stream_targets(
+                    p["kind"], deadman_ms=p["deadman_ms"], max_rate_hz=p["max_rate_hz"],
+                    max_age_ms=p["max_age_ms"], max_speed=p["max_speed"])
+                return HALResponse(cmd.request_id, True, data={
+                    "stream_id": flux._id, "joints": list(flux.joints),
+                    "limits": flux.limits, "now": self._ctx.now()})
+
+            elif cmd.action == "stream_push":
+                p = cmd.payload
+                moteur = self._ctx._flux_moteur(p["stream_id"])
+                cible = stream_target(moteur.kind, p.get("joints") if moteur.kind == "arms"
+                                      else p.get("velocity"))
+                ack = self._ctx._flux_push(p["stream_id"], cible, p["deadman"], p["t"])
+                # Une vitesse nulle ne fait rien bouger : pas une preuve.
+                if ack.accepted and (moteur.kind == "arms" or any(cible)):
+                    # Consigne acceptée : le robot la suit (facturation, voir
+                    # __init__).
+                    self.successful_motor_commands += 1
+                return HALResponse(cmd.request_id, True,
+                                   data=dict(ack.to_json(), now=self._ctx.now()))
+
+            elif cmd.action == "stream_resume":
+                return HALResponse(cmd.request_id, True, data=self._ctx._flux_resume(
+                    cmd.payload["stream_id"]).to_json())
+
+            elif cmd.action == "stream_metrics":
+                return HALResponse(cmd.request_id, True, data=self._ctx._flux_metrics(
+                    cmd.payload["stream_id"]).to_json())
+
+            elif cmd.action == "stream_close":
+                self._ctx._flux_close(cmd.payload["stream_id"])
+                return HALResponse(cmd.request_id, True, data=None)
+
+            elif cmd.action == "should_stop":
+                # Le motif seul (estop, human, os) : check_cancelled() du
+                # client lève la même exception qu'en direct.
+                self._ctx._require(Permission.MISSION_LIFECYCLE)
+                return HALResponse(cmd.request_id, True,
+                                   data={"reason": self._ctx._motif_arret()})
+
+            elif cmd.action == "report_progress":
+                p = cmd.payload
+                self._ctx.report_progress(p["fraction"], p["message"])
+                return HALResponse(cmd.request_id, True, data=None)
+
+            elif cmd.action == "subscribe_event":
+                p = cmd.payload
+                return HALResponse(cmd.request_id, True, data=self._ctx._peut_abonner(
+                    p["kind"], p.get("threshold_percent")))
+
+            elif cmd.action == "poll_events":
+                # Rien à scruter sans au moins une permission d'événement.
+                if not any(self._ctx._manifest.has_permission(p) for p in (
+                        Permission.MISSION_LIFECYCLE, Permission.WATCHDOG_READ,
+                        Permission.SYSTEM_INFO)):
+                    raise SandboxPermissionError(
+                        "poll_events exige MISSION_LIFECYCLE, WATCHDOG_READ ou SYSTEM_INFO")
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx._etat_evenements(cmd.payload.get("since_index")))
+
+            elif cmd.action == "ask_confirmation":
+                p = cmd.payload
+                return HALResponse(cmd.request_id, True, data=self._ctx.ask_confirmation(
+                    p["question"], timeout_s=p["timeout_s"]).to_json())
+
+            elif cmd.action in ("go_to", "pick", "place", "rest_pose"):
+                p = cmd.payload
+                if cmd.action == "go_to":
+                    res = self._ctx.go_to(p["x"], p["y"], p.get("theta"),
+                                          timeout_s=p["timeout_s"])
+                elif cmd.action == "pick":
+                    res = self._ctx.pick(ObjectSpec(tuple(p["center"]), tuple(p["size"])),
+                                         timeout_s=p["timeout_s"])
+                elif cmd.action == "place":
+                    res = self._ctx.place(p.get("surface_height_m"), timeout_s=p["timeout_s"])
+                else:
+                    duree = p.get("duration_s")
+                    duree = 2.0 if duree is None else duree
+                    reste = getattr(self, "_reste_s", None)
+                    # Durée effective (vitesse bornée, voir
+                    # RobotContext._duree_repos) : c'est elle qu'il faut avoir.
+                    duree = self._ctx._duree_repos(duree)
+                    if reste is not None and duree > reste - 0.5:
+                        # Pas assez de temps restant au hook : refus, plutôt
+                        # qu'un geste raccourci, donc plus rapide.
+                        self._ctx._require(Permission.ACTUATORS_READ)
+                        self._ctx._require(Permission.ACTUATORS_WRITE_ARMS)
+                        return HALResponse(cmd.request_id, True, data=refused(
+                            "TIMEOUT", RefusalCode.TIMEOUT,
+                            f"il reste {max(0.0, reste):.1f} s au hook, le geste en "
+                            f"demande {duree:.1f}").to_json())
+                    res = self._ctx.rest_pose(duration_s=duree)
+                if res.ok:
+                    # Le robot a réellement bougé (arrivé, objet tenu ou
+                    # posé, bras au repos) : preuve de mouvement pour la
+                    # facturation, comme une commande motrice réussie (voir
+                    # __init__).
+                    self.successful_motor_commands += 1
+                return HALResponse(cmd.request_id, True, data=res.to_json())
+
             else:
                 return HALResponse(cmd.request_id, False,
                                    error=f"Action inconnue : {cmd.action}")
@@ -593,6 +807,12 @@ class HALBridgeServer:
             # interruption de sécurité, et non comme une erreur
             # applicative ordinaire (voir HALBridgeClient._call).
             return HALResponse(cmd.request_id, False, error=f"ESTOP_ACTIVE:{exc}")
+        except AxisRefusal as exc:
+            # Tout autre refus structuré (InvalidArgumentError, annulation…)
+            # traverse le pont avec son code, que le client reconvertit en
+            # la même exception (voir HALBridgeClient._call).
+            return HALResponse(cmd.request_id, False,
+                               error=f"{exc.code.value}:{exc.message}")
         except Exception as exc:
             return HALResponse(cmd.request_id, False, error=f"{type(exc).__name__}: {exc}")
 
@@ -700,6 +920,8 @@ class HALBridgeClient:
         self._alert_poll_thread: Optional[threading.Thread] = None
         self._alert_poll_stop = threading.Event()
         self._alert_poll_interval_s = alert_poll_interval_s
+        self._evenements: Optional[EventPoller] = None
+        self._decalage_horloge = 0.0
         self.__groups_cache: Optional[Dict[str, str]] = None
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
@@ -1063,6 +1285,207 @@ class HALBridgeClient:
         raw = self._call("emergency_stop", {})
         return HALStatus[raw["status"]]
 
+    # ---- État, capacités et diagnostic (voir RobotContext) -------------
+
+    def robot_info(self) -> RobotInfo:
+        return RobotInfo.from_json(self._call("robot_info", {}))
+
+    def has_capability(self, name: str) -> bool:
+        # Même refus qu'en direct, avant d'envoyer : le schéma du pont
+        # refuserait un nom qui n'est pas un texte.
+        return bool(self._call("has_capability", {"name": require_text("name", name, 64)}))
+
+    def safety_status(self) -> SafetyStatus:
+        return SafetyStatus.from_json(self._call("safety_status", {}))
+
+    # ---- Services de haut niveau (voir RobotContext) ---------------------
+    # Les arguments sont validés ici comme en direct, avant l'envoi : une
+    # app reçoit la même InvalidArgumentError dans les deux cas. L'OS les
+    # valide à nouveau de son côté.
+
+    MAX_ACTION_S = RobotContext.MAX_ACTION_S
+    api_version: str = RobotContext.api_version
+
+    def go_to(self, x: float, y: float, theta: Optional[float] = None, *,
+              timeout_s: float) -> ActionResult:
+        payload = {"x": require_number("x", x, mini=-1e4, maxi=1e4),
+                   "y": require_number("y", y, mini=-1e4, maxi=1e4),
+                   "timeout_s": require_number("timeout_s", timeout_s, mini=0.0,
+                                               maxi=self.MAX_ACTION_S, strict_min=True)}
+        if theta is not None:
+            payload["theta"] = require_number("theta", theta, mini=-2 * math.pi,
+                                              maxi=2 * math.pi)
+        return ActionResult.from_json(self._call("go_to", payload,
+                                                 duree_nominale_s=payload["timeout_s"]))
+
+    def pick(self, target, *, size_m=None, timeout_s: float = 15.0) -> ActionResult:
+        spec = object_from_target(target, size_m)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        return ActionResult.from_json(self._call("pick", {
+            "center": list(spec.center), "size": list(spec.size), "timeout_s": delai},
+            duree_nominale_s=delai))
+
+    def place(self, target=None, *, timeout_s: float = 15.0) -> ActionResult:
+        hauteur = surface_height_from_target(target)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        return ActionResult.from_json(self._call("place", {
+            "surface_height_m": hauteur, "timeout_s": delai}, duree_nominale_s=delai))
+
+    # ---- Parole et réglages (voir RobotContext) ----------------------------
+
+    SPEAK_MAX_CHARS = RobotContext.SPEAK_MAX_CHARS
+
+    def speak(self, text: str, *, language: str = "en") -> ActionResult:
+        texte = require_text("text", text, self.SPEAK_MAX_CHARS)
+        # Une durée de parole est proportionnelle au texte : environ 15
+        # caractères par seconde.
+        return ActionResult.from_json(self._call(
+            "speak", {"text": texte, "language": require_language(language)},
+            duree_nominale_s=len(texte) / 15.0))
+
+    def get_setting(self, name: str):
+        return self._call("get_setting", {"name": require_text("name", name, 32)})
+
+    # ---- Animations (voir RobotContext.play_animation) ---------------------
+
+    ANIMATION_TIMEOUT_MAX_S = RobotContext.ANIMATION_TIMEOUT_MAX_S
+
+    def play_animation(self, animation, *, wait: bool = True,
+                       timeout_s: Optional[float] = None) -> ActionResult:
+        if not isinstance(wait, bool):
+            raise InvalidArgumentError("wait doit être un booléen")
+        payload: Dict[str, Any] = {"wait": wait}
+        if timeout_s is not None:
+            payload["timeout_s"] = require_number("timeout_s", timeout_s, mini=0.0,
+                                                  maxi=self.ANIMATION_TIMEOUT_MAX_S,
+                                                  strict_min=True)
+        if isinstance(animation, str):
+            payload["name"] = require_text("name", animation, 64)
+        elif isinstance(animation, Animation):
+            payload["animation"] = animation.to_json()
+        elif isinstance(animation, dict):
+            # Format vérifié ici aussi : la même InvalidArgumentError qu'en
+            # direct, avant l'envoi.
+            payload["animation"] = load_animation(animation).to_json()
+        else:
+            raise InvalidArgumentError("animation : un nom d'animation du robot, un dict au "
+                                       "format axis-animation, ou une Animation")
+        attente = (timeout_s or self.ANIMATION_TIMEOUT_MAX_S) if wait else 0.0
+        return ActionResult.from_json(self._call("play_animation", payload,
+                                                 duree_nominale_s=attente))
+
+    def stop_animation(self) -> ActionResult:
+        return ActionResult.from_json(self._call("stop_animation", {}))
+
+    # ---- Flux de consignes (voir RobotContext.stream_targets) -------------
+    # L'heure de chaque consigne est estimée ici en heure du robot, recalée
+    # à chaque réponse (l'OS y joint son heure) : elle sert à l'OS à jeter
+    # les consignes trop vieilles.
+
+    def stream_targets(self, kind: str, *, deadman_ms: float = 200.0,
+                       max_rate_hz: float = 50.0, max_age_ms: float = 150.0,
+                       max_speed: Optional[float] = None) -> TargetStream:
+        params = stream_params(kind, deadman_ms, max_rate_hz, max_age_ms, max_speed)
+        t0 = time.monotonic()
+        rep = self._call("stream_open", params)
+        self._recaler_horloge(rep["now"], t0)
+        return TargetStream(self, rep["stream_id"], params["kind"], rep)
+
+    def _recaler_horloge(self, maintenant_os: float, t0: float) -> None:
+        self._decalage_horloge = float(maintenant_os) - (t0 + time.monotonic()) / 2.0
+
+    def _flux_push(self, stream_id: int, cible, deadman: bool, t: Optional[float]):
+        if t is None:
+            t = time.monotonic() + self._decalage_horloge
+        payload = {"stream_id": stream_id, "deadman": deadman, "t": t}
+        if isinstance(cible, dict):
+            payload["joints"] = cible
+        else:
+            payload["velocity"] = list(cible)
+        t0 = time.monotonic()
+        rep = self._call("stream_push", payload)
+        self._recaler_horloge(rep["now"], t0)
+        return StreamAck.from_json(rep)
+
+    def _flux_resume(self, stream_id: int) -> ActionResult:
+        return ActionResult.from_json(self._call("stream_resume", {"stream_id": stream_id}))
+
+    def _flux_metrics(self, stream_id: int) -> StreamMetrics:
+        return StreamMetrics.from_json(self._call("stream_metrics", {"stream_id": stream_id}))
+
+    def _flux_close(self, stream_id: int) -> None:
+        self._call("stream_close", {"stream_id": stream_id})
+
+    # ---- Cycle de vie (voir RobotContext) ---------------------------------
+
+    def _motif_arret(self) -> Optional[str]:
+        motif = self._call("should_stop", {})["reason"]
+        if motif == "estop" and self._evenements is not None:
+            self._evenements.notify_estop()
+        return motif
+
+    def should_stop(self) -> bool:
+        return self._motif_arret() is not None
+
+    def check_cancelled(self) -> None:
+        motif = self._motif_arret()
+        if motif == "estop":
+            raise EstopActiveError("arrêt d'urgence actif")
+        if motif is not None:
+            raise MissionCancelled(f"arrêt demandé ({motif})")
+
+    def report_progress(self, fraction: float, message: str = "") -> None:
+        self._call("report_progress", {
+            "fraction": require_number("fraction", fraction, mini=0.0, maxi=1.0),
+            "message": require_text("message", message, PROGRESS_MESSAGE_MAX,
+                                    allow_empty=True)})
+
+    def _abonner(self, kind: str, callback, threshold: Optional[float] = None) -> bool:
+        """Vérifie le droit auprès de l'OS, puis abonne `callback` au thread
+        des événements de ce processus (créé au premier abonnement)."""
+        if not callable(callback):
+            raise InvalidArgumentError("callback doit être une fonction")
+        payload = {"kind": kind}
+        if threshold is not None:
+            payload["threshold_percent"] = require_number("threshold_percent", threshold,
+                                                          mini=1.0, maxi=99.0)
+        if not self._call("subscribe_event", payload):
+            return False
+        if self._evenements is None:
+            self._evenements = EventPoller(
+                lambda i: self._call("poll_events", {} if i is None else {"since_index": i}),
+                self.log)
+        self._evenements.add(kind, callback, threshold)
+        return True
+
+    def on_estop(self, callback) -> None:
+        self._abonner("estop", callback)
+
+    def on_alert(self, callback) -> None:
+        self._abonner("alert", callback)
+
+    def on_low_battery(self, callback, *, threshold_percent: float = 20.0) -> bool:
+        if not callable(callback):
+            raise InvalidArgumentError("callback doit être une fonction")
+        if not self._abonner("low_battery", callback, threshold_percent):
+            self.log("on_low_battery : batterie inconnue sur ce robot — pas d'abonnement")
+            return False
+        return True
+
+    def ask_confirmation(self, question: str, *, timeout_s: float = 30.0) -> ActionResult:
+        q = require_text("question", question, QUESTION_MAX)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=CONFIRMATION_MAX_S,
+                               strict_min=True)
+        return ActionResult.from_json(self._call("ask_confirmation", {
+            "question": q, "timeout_s": delai}, duree_nominale_s=delai))
+
+    def rest_pose(self, *, duration_s: float = 2.0) -> ActionResult:
+        duree = require_number("duration_s", duration_s, mini=0.5, maxi=30.0)
+        return ActionResult.from_json(self._call("rest_pose", {"duration_s": duree},
+                                                 duree_nominale_s=duree))
+
     def get_mission_log(self) -> list:
         """
         Contrairement aux autres méthodes, le journal de mission est tenu
@@ -1108,14 +1531,16 @@ class HALBridgeClient:
             delai = self._delai(duree_nominale_s)
             resp = self._appel_canal(action, payload, req_id, delai)
         if not resp.success:
-            if resp.error and resp.error.startswith("ESTOP_ACTIVE:"):
-                raise EstopActiveError(resp.error[len("ESTOP_ACTIVE:"):])
-            if resp.error and resp.error.startswith("PERMISSION_DENIED:"):
-                # Même exception qu'en direct : une app écrite pour
-                # RobotContext se comporte de la même façon, sandboxée
-                # ou non.
-                raise SandboxPermissionError(
-                    resp.error[len("PERMISSION_DENIED:"):])
+            # Un refus structuré redevient la même exception qu'en direct
+            # (PermissionError, EstopActiveError, InvalidArgumentError…) :
+            # une app écrite pour RobotContext se comporte de la même façon,
+            # sandboxée ou non.
+            code, sep, message = (resp.error or "").partition(":")
+            classe = EXCEPTIONS_PAR_CODE.get(code) if sep else None
+            if classe is EstopActiveError and self._evenements is not None:
+                self._evenements.notify_estop()
+            if classe is not None:
+                raise classe(message)
             raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")
         return resp.data
 

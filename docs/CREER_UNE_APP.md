@@ -76,6 +76,13 @@ pip install -r requirements.txt numpy
 export PYTHONPATH="$PWD"          # pour que « import axis_os » fonctionne
 ```
 
+Ou installez le kit de développement, le paquet `axis-os-sdk` (non publié
+sur PyPI : il s'installe depuis le dépôt et fournit la commande `axis`) :
+
+```bash
+pip install .
+```
+
 Pas de robot, pas de GPU, pas de simulateur 3D pour commencer.
 
 ---
@@ -85,10 +92,18 @@ Pas de robot, pas de GPU, pas de simulateur 3D pour commencer.
 L'outil en ligne de commande génère le squelette d'une app :
 
 ```bash
-python3 -m axis_os.cli.main init "Mon Assistant" --author "Kenzo" --email "moi@exemple.com"
+axis init "Mon Assistant" --author "Kenzo" --email "moi@exemple.com"
 cd mon_assistant
-python3 -m axis_os.cli.main simulate
+python test_app.py      # le test de l'app, sur le robot simulé léger
+axis validate           # vérifie l'app comme l'OS le fera
+axis simulate           # une mission sur le G1 simulé
 ```
+
+(Sans `pip install .`, écrivez `python3 -m axis_os.cli.main` à la place
+d'`axis`.) Le `app.py` généré montre déjà les bons réflexes : demander au
+robot ce qu'il sait faire (`ctx.has_capability`), respecter une demande
+d'arrêt (`ctx.should_stop`) et rapporter sa progression
+(`ctx.report_progress`).
 
 Résultat attendu :
 
@@ -268,6 +283,33 @@ au § 1.
 Un service absent du robot (pas de caméra, pas de micro) n'est **pas une
 erreur** : l'appel rend une liste vide, `None` ou `False`, et le dit dans
 le journal.
+
+### SDK v1 : les API de haut niveau
+
+Chaque API ci-dessous est détaillée — paramètres, permission, codes de
+refus, exemple — dans **[API_REFERENCE.md](API_REFERENCE.md)** (en
+anglais). Une action qui peut normalement échouer rend un `ActionResult`
+(`ok`, `status`, `code`, `message`) : `if not r: ctx.log(r.code)`. Tout ce
+qui fait bouger le robot exige une permission DANGEROUS, confirmée par un
+humain à l'installation, et est refusé pendant un arrêt d'urgence.
+
+| Appel | Permission | Ce que ça fait |
+|---|---|---|
+| `ctx.robot_info()`, `ctx.has_capability(nom)`, `ctx.safety_status()` | `SYSTEM_INFO` | modèle, versions, capacités et leur état, batterie (jamais inventée), arrêt d'urgence, gardien de proximité, quotas restants |
+| `ctx.go_to(x, y, theta, timeout_s=…)` | `NAVIGATION_GOTO` + ceux de `walk` | va à un point de la carte, en contournant les obstacles, sous le gardien de proximité |
+| `ctx.pick(detection, size_m=…)`, `ctx.place(plateau)` | `MANIPULATION` + ceux des bras | prend et pose un objet à deux mains |
+| `ctx.rest_pose()` | bras | la posture de repos définie par le driver |
+| `ctx.should_stop()`, `ctx.check_cancelled()`, `ctx.report_progress(f, msg)` | `MISSION_LIFECYCLE` | arrêt coopératif, progression lue par l'OS |
+| `ctx.on_estop(f)`, `ctx.on_alert(f)`, `ctx.on_low_battery(f)` | `MISSION_LIFECYCLE`, `WATCHDOG_READ`, `SYSTEM_INFO` | callbacks, dans le processus de l'app |
+| `ctx.ask_confirmation(question)` | `HUMAN_CONFIRMATION` | une question oui/non à l'humain présent ; l'app ne peut jamais y répondre elle-même |
+| `ctx.stream_targets("arms" \| "walk")` | `TELEOP_STREAM` | flux de téléopération locale sous homme mort |
+| `ctx.play_animation("wave")`, `ctx.stop_animation()` | `ANIMATION_PLAY` | gestes par images clés, vérifiés avant de jouer |
+| `ctx.speak(texte, language=…)` | `AUDIO_OUTPUT` | le robot parle |
+| `ctx.get_setting(nom)` | `APP_SETTINGS` | un réglage déclaré dans le manifeste, choisi par l'utilisateur |
+
+Exemples complets et testés : [examples/](../examples/) — `hello_robot`
+(animation + parole), `fetch` (look_for + go_to + pick + place),
+`teleop_local` (flux sous homme mort).
 
 ---
 
@@ -535,7 +577,8 @@ s'arrête devant.
 
 | Niveau | Comment | Coût | Ce qu'il prouve |
 |---|---|---|---|
-| 1 | `python3 -m axis_os.cli.main simulate` | secondes | l'app s'installe, démarre, termine sa mission |
+| 0 | `axis validate` | une seconde | manifeste, permissions, quotas, animations, versions : ce que l'OS refusera |
+| 1 | `python test_app.py` : `axis_os.testing.AppTestHarness`, le robot simulé léger (vraies navigation, locomotion, manipulation, gardien de proximité), ou `axis simulate` | secondes | l'app s'installe, démarre, termine sa mission ; cas d'erreur, permissions |
 | 2 | un test comme `test/test_app_assistant_ia.py` : robot virtuel `UnitreeG1HAL(backend="sim")`, vrais services avec des entrées scriptées | secondes | la logique, les cas d'erreur, les permissions |
 | 3 | Isaac Sim, sur une machine GPU (`deploy/machine_gpu/`) | heures GPU | la physique : le robot marche, prend, pose vraiment |
 
@@ -608,19 +651,20 @@ Dit franchement, pour ne pas vous faire perdre de temps :
   système (constat 3 d'[isolation_apps.md](isolation_apps.md), qui donne
   aussi le plan de correction). N'installez que des apps dont vous avez
   relu le code.
-- **Faire parler le robot** : pas de `ctx.speak()`. La synthèse vocale est
-  la prochaine brique naturelle.
-- **Navigation, manipulation et état de sécurité pour les apps** : les
-  services existent et sont testés (ils font tourner la démo de tri), mais
-  ne sont pas encore exposés dans `ctx` (`ctx.aller_vers(poste)`,
-  `ctx.prendre(objet)`, « suis-je arrêté par la sécurité ? »…).
+- **Un vrai moteur de synthèse vocale** : `ctx.speak()` passe par
+  l'interface `ISpeechSynthesizer`, mais AXIS-OS n'en fournit aucun (les
+  tests utilisent une synthèse factice qui note ce qui est dit).
+- **Une manette pour `stream_targets`** : le flux est local et fonctionne,
+  mais aucun service d'entrée de l'OS ne lit encore une vraie manette (une
+  app ne lit jamais un périphérique elle-même). Téléopération par
+  internet, vidéo et casque VR sont hors périmètre.
 - **Filtrage réseau du bac à sable** : les permissions `NETWORK_*` sont
   déclaratives pour l'instant.
 - **Registre en ligne du Play Store** : `publish` valide, sans envoyer.
 - **Paiement** : la répartition 70/30 est calculée et affichée à chaque
   mission facturée, mais aucun paiement réel n'est encore branché.
-- **Installation par `pip`** : pas encore de paquet ; on utilise
-  `PYTHONPATH` (§ 2).
+- **Installation depuis PyPI** : le paquet `axis-os-sdk` s'installe depuis
+  le dépôt (`pip install .`, § 2), mais n'est pas publié.
 - **Communication entre robots** : conçue (`docs/fleet_manager_design.md`),
   pas codée.
 

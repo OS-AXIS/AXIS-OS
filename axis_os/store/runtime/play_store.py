@@ -371,6 +371,10 @@ class PlayStoreRuntime:
         profil: Profil,
         cles_approuvees: Optional[Union[str, os.PathLike]] = None,
         registre_apps: Optional[Union[str, os.PathLike]] = None,
+        navigation_service=None,
+        manipulation_service=None,
+        human_interface=None,
+        speech_synthesizer=None,
     ):
         """
         `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
@@ -460,6 +464,17 @@ class PlayStoreRuntime:
         services système (vision, marche, parole) transmis à chaque app
         par son RobotContext ; voir _make_ctx(). `clock` : horloge du
         robot, voir le commentaire dans le corps de cette méthode.
+
+        `navigation_service`, `manipulation_service` : services servis par
+        ctx.go_to() et ctx.pick() / place() ; None : l'app reçoit
+        CAPABILITY_MISSING. Leur tick() reste l'affaire de la boucle du
+        robot.
+
+        `human_interface` : IHumanInterface qui répond à
+        ctx.ask_confirmation() ; None : aucun humain (refus).
+
+        `speech_synthesizer` : ISpeechSynthesizer de ctx.speak() ; None :
+        pas de synthèse vocale (CAPABILITY_MISSING).
         """
         if not isinstance(profil, Profil):
             raise TypeError(
@@ -554,6 +569,23 @@ class PlayStoreRuntime:
         self._perception_service = perception_service
         self._locomotion_service = locomotion_service
         self._speech_service = speech_service
+        # Services de haut niveau, servis par ctx.go_to(), pick(), place().
+        # Ils restent tickés par la boucle du robot, jamais par une app.
+        self._navigation_service = navigation_service
+        self._manipulation_service = manipulation_service
+        # Interface humaine (IHumanInterface) : celle qui répond à
+        # ctx.ask_confirmation(). None : aucun humain, la question est
+        # refusée (HUMAN_UNAVAILABLE), jamais tenue pour acceptée.
+        self._human_interface = human_interface
+        self._speech_synthesizer = speech_synthesizer
+        # Réglages choisis par l'utilisateur, par app (set_setting).
+        self._reglages: Dict[str, Dict[str, Any]] = {}
+        # Contexte du hook en cours, par app (pour request_stop), et
+        # dernière progression rapportée (get_progress).
+        # Plusieurs hooks d'une même app peuvent tourner à la fois (stop_app
+        # pendant une mission) : une liste par app.
+        self._ctx_courants: Dict[str, List[RobotContext]] = {}
+        self._progressions: Dict[str, Any] = {}
         # Horloge du robot : simulée en simulation, réelle sur le robot.
         # Elle est transmise à la sandbox (pour mesurer les quotas) et aux
         # apps (ctx.now / ctx.sleep). C'est l'équivalent de use_sim_time
@@ -1050,6 +1082,17 @@ class PlayStoreRuntime:
                     f"différent). Mettez à jour l'app ou installez-la sur "
                     f"une version d'AXIS-OS compatible."
                 )
+                return False
+        if manifest.min_sdk_version is not None:
+            from axis_os import SemVer
+            from axis_os.store.sdk.version import API_VERSION
+            required = SemVer.parse(manifest.min_sdk_version)
+            current = SemVer.parse(API_VERSION)
+            if required.major != current.major or current < required:
+                print(
+                    f"  [ERREUR] API du SDK {current} trop ancienne ou incompatible — "
+                    f"cette app requiert l'API {required} (même version majeure, au "
+                    f"moins cette version). Mettez à jour AXIS-OS.")
                 return False
         return True
 
@@ -1783,11 +1826,53 @@ class PlayStoreRuntime:
         # pickle : un attribut changé par l'opérateur entre deux missions
         # est vu par la suivante.
         etat = etat_json(entry.app) if entry.app is not None else None
-        result = runner.run_app(entry.spec, hook, serveur=bridge_server,
-                                params=params, etat=etat,
-                                tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR,
-                                arret=arret)
+        # Échéance du hook, lue par ctx.safety_status() (temps restant).
+        ctx._set_deadline(self._clock() + entry.manifest.quota.max_runtime_s)
+        app_id = entry.manifest.app_id
+        self._ctx_courants.setdefault(app_id, []).append(ctx)
+        try:
+            result = runner.run_app(entry.spec, hook, serveur=bridge_server,
+                                    params=params, etat=etat,
+                                    tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR,
+                                    arret=arret)
+        finally:
+            # Une action longue encore servie pour ce hook (go_to abandonné
+            # après un arrêt d'urgence…) s'arrête au pas suivant.
+            ctx._fermer()
+            courants = self._ctx_courants.get(app_id, [])
+            if ctx in courants:
+                courants.remove(ctx)
+            if not courants:
+                self._ctx_courants.pop(app_id, None)
+            if ctx._progression:
+                self._progressions[app_id] = ctx._progression[-1]
         return result, bridge_server
+
+    def request_stop(self, app_id: str, *, source: str = "human") -> bool:
+        """Demande l'arrêt de la mission (ou du hook) en cours de l'app :
+        source « human » (un opérateur) ou « os ». Coopératif : l'app le
+        voit par ctx.should_stop() / check_cancelled(), et ses actions
+        longues en cours rendent la main (CANCELLED). Rend False si aucun
+        hook de l'app ne tourne. Ne remplace pas l'arrêt forcé : voir
+        emergency_stop et le quota de durée."""
+        if source not in ("human", "os"):
+            raise ValueError(f"source d'arrêt inconnue : {source!r}")
+        courants = list(self._ctx_courants.get(app_id, []))
+        for ctx in courants:
+            # Tous les hooks en cours de l'app : une demande d'arrêt ne doit
+            # pas se perdre parce qu'un autre hook a commencé entre-temps.
+            ctx._demander_arret(source)
+        return bool(courants)
+
+    def get_progress(self, app_id: str):
+        """Dernière progression rapportée par l'app (Progress : fraction,
+        message, timestamp), pendant le hook en cours ou au dernier hook ;
+        None si elle n'en a jamais rapporté."""
+        rapports = [c._progression[-1] for c in self._ctx_courants.get(app_id, [])
+                    if c._progression]
+        if rapports:
+            return max(rapports, key=lambda p: p.timestamp)
+        return self._progressions.get(app_id)
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
         """Construit le RobotContext d'une app (l'objet par lequel elle
@@ -1804,11 +1889,38 @@ class PlayStoreRuntime:
         # absent (robot sans caméra, sans jambes) donne une réponse vide
         # et explicite, jamais une erreur obscure.
         ctx._set_clock(self._clock)
+        ctx._set_os_info(self._profil.name)
         ctx._attach_services(perception=self._perception_service,
                              locomotion=self._locomotion_service,
                              speech=self._speech_service,
-                             memory=self._memory_service)
+                             memory=self._memory_service,
+                             navigation=self._navigation_service,
+                             manipulation=self._manipulation_service)
+        ctx._set_human_interface(self._human_interface)
+        ctx._set_voice(self._speech_synthesizer)
+        ctx._set_settings(self._reglages.get(manifest.app_id, {}))
         return ctx
+
+    def set_setting(self, app_id: str, name: str, value) -> bool:
+        """Réglage choisi par l'utilisateur pour une app installée, validé
+        contre la déclaration de son manifeste (type, bornes, choix). Rend
+        False, sans rien changer, si l'app ou le réglage est inconnu ou si
+        la valeur ne respecte pas la déclaration. Gardé en mémoire : vu par
+        le hook suivant de l'app."""
+        entry = self._get(app_id)
+        if entry is None:
+            return False
+        spec = next((s for s in entry.manifest.settings if s.name == name), None)
+        if spec is None:
+            print(f"  [ERREUR] réglage « {name} » non déclaré par {app_id}")
+            return False
+        try:
+            spec.check(value)
+        except ValueError as exc:
+            print(f"  [ERREUR] réglage « {name} » de {app_id} refusé : {exc}")
+            return False
+        self._reglages.setdefault(app_id, {})[name] = value
+        return True
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:
         entry = self._apps.get(app_id)

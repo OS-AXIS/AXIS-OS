@@ -297,6 +297,19 @@ class ForceTorqueData:
 
 
 @dataclass
+class BatteryState:
+    """Charge de la batterie, telle que le driver la MESURE.
+
+    Un driver qui ne sait pas lire sa batterie ne rend pas un
+    BatteryState inventé : IRobotHAL.get_battery() rend alors None, et le
+    SDK dit « inconnue » aux apps."""
+    percent:      float                  # charge restante, de 0 à 100
+    voltage:      Optional[float] = None  # tension (V), si mesurée
+    charging:     Optional[bool] = None   # en charge ? None : inconnu
+    timestamp_ns: int = field(default_factory=time.time_ns)
+
+
+@dataclass
 class CameraFrame:
     """
     Une image capturée.

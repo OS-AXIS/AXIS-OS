@@ -1,0 +1,14 @@
+{
+  "format": "axis-animation",
+  "format_version": 1,
+  "name": "point",
+  "version": "1.0.0",
+  "robots": ["G1"],
+  "description": "Pointe droit devant du bras droit tendu, tient la pose une seconde et demie, puis revient au repos. Sens mesurés sur le G1 (tangage d'épaule négatif = bras vers l'avant), voir conventions.py.",
+  "keyframes": [
+    {"t": 0.0, "positions": {"right_shoulder_pitch_joint": 0.0, "right_elbow_joint": 0.0}},
+    {"t": 1.0, "positions": {"right_shoulder_pitch_joint": -1.4, "right_elbow_joint": 0.0}},
+    {"t": 2.5, "positions": {"right_shoulder_pitch_joint": -1.4, "right_elbow_joint": 0.0}},
+    {"t": 3.5, "positions": {"right_shoulder_pitch_joint": 0.0, "right_elbow_joint": 0.0}}
+  ]
+}

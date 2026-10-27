@@ -34,10 +34,24 @@ Licence : Apache 2.0
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import functools
 from typing import Any, Optional
 
 from axis_os.hal.core.types import HALStatus
 from axis_os.store.sdk.manifest import Capability
+
+
+def sous_verrou(methode):
+    """Exécute la méthode sous `self._verrou` (un threading.RLock créé par
+    le service). Pourquoi : une app commande le service depuis le fil du
+    pont JSON pendant que la boucle du robot appelle tick() depuis le sien ;
+    sans verrou, tick() pouvait lire un chemin qu'annuler() venait
+    d'effacer."""
+    @functools.wraps(methode)
+    def sous(self, *args, **kwargs):
+        with self._verrou:
+            return methode(self, *args, **kwargs)
+    return sous
 
 
 @dataclass(frozen=True)

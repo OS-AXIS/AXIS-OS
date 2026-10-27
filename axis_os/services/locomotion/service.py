@@ -271,6 +271,27 @@ class LocomotionService(IService):
         return ServiceHealth(running=self.state is LocomotionState.RUNNING,
                              healthy=True, detail=self.state.name)
 
+    @property
+    def max_twist(self) -> Twist:
+        """Vitesse maximale acceptée sur chaque composante (celle de
+        l'adaptateur) : au-delà, une consigne est bornée."""
+        return self._adapter.max_twist
+
+    @property
+    def is_guarded(self) -> bool:
+        """Vrai si un gardien de proximité plafonne les consignes. Lecture
+        seule. (Nom choisi pour ne pas ressembler à un réglage du gardien :
+        test/test_proximite.py vérifie qu'aucune méthode publique de ce
+        service ne parle de le régler ou de le désactiver.)"""
+        return self._gardien is not None
+
+    @property
+    def is_moving(self) -> bool:
+        """Vrai si une consigne de marche non nulle, encore valide, est en
+        cours. Lecture seule."""
+        return (self._twist_t is not None and not self._twist.is_zero
+                and self._clock() - self._twist_t <= self._timeout)
+
     # ---- API des apps ----------------------------------------------------
     # Appelée par le SDK (la bibliothèque fournie aux apps), par exemple par
     # ctx.walk().
