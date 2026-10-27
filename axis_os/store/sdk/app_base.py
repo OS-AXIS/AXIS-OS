@@ -44,6 +44,10 @@ from axis_os.hal.core.types import (
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
 from .manifest import AppManifest, Permission
+from .lifecycle import (
+    CONFIRMATION_MAX_S, PROGRESS_HISTORY_MAX, PROGRESS_MESSAGE_MAX, QUESTION_MAX,
+    STOP_MARGIN_S, STOP_SOURCES, EventPoller, MissionCancelled, Progress,
+)
 from .results import (
     ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal,
     BatteryInfo, InvalidArgumentError, RefusalCode, RobotInfo, SafetyStatus,
@@ -223,6 +227,13 @@ class RobotContext:
         # Vrai une fois le hook terminé (voir _fermer()) : plus aucune action
         # longue lancée par ce contexte ne continue.
         self._ferme = False
+        # Cycle de vie (voir axis_os/store/sdk/lifecycle.py) : arrêt demandé
+        # par un humain ou par l'OS, progression rapportée, interface
+        # humaine (côté OS), thread des événements (créé au premier on_*()).
+        self._arret_demande: Optional[str] = None
+        self._progression: list = []
+        self._humain = None
+        self._evenements: Optional[EventPoller] = None
         # Horloge du robot : l'heure réelle par défaut, remplacée par
         # l'heure simulée en simulation (voir _set_clock() et now()).
         self._clock = time.monotonic
@@ -333,14 +344,46 @@ class RobotContext:
         processus de l'app a été tué : une action longue encore servie
         (go_to, move_to_pose…) s'arrête au pas suivant."""
         self._ferme = True
+        if self._evenements is not None:
+            self._evenements.stop()
+
+    def _demander_arret(self, source: str) -> None:
+        """Appelée par le runtime (PlayStoreRuntime.request_stop) : un
+        humain ou l'OS demande l'arrêt de la mission. Coopératif :
+        should_stop() devient vrai, et les actions longues en cours
+        (go_to, pick…) rendent la main avec CANCELLED."""
+        if source not in STOP_SOURCES:
+            raise ValueError(f"source d'arrêt inconnue : {source!r}")
+        self._arret_demande = source
+
+    def _set_human_interface(self, humain) -> None:
+        """Injection par le runtime de l'interface humaine (IHumanInterface),
+        côté OS seulement. None : aucun humain pour répondre."""
+        self._humain = humain
 
     def _motif_interruption(self) -> Optional[tuple]:
         """(code, message) si une action longue doit s'interrompre : arrêt
-        d'urgence, ou hook terminé ; None sinon."""
+        d'urgence, hook terminé ou arrêt demandé ; None sinon."""
         if self._watchdog.estop_fired or self._robot.estop_active:
             return RefusalCode.ESTOP_ACTIVE, "arrêt d'urgence"
         if self._ferme:
             return RefusalCode.CANCELLED, "fin du hook de l'app"
+        if self._arret_demande is not None:
+            return RefusalCode.CANCELLED, f"arrêt demandé ({self._arret_demande})"
+        return None
+
+    def _motif_arret(self) -> Optional[str]:
+        """Pourquoi la mission doit s'arrêter : « estop », « human » ou
+        « os » (hook terminé, arrêt demandé par l'OS, ou moins de
+        STOP_MARGIN_S restantes au hook) ; None sinon."""
+        if self._watchdog.estop_fired or self._robot.estop_active:
+            return "estop"
+        if self._arret_demande is not None:
+            return self._arret_demande
+        if self._ferme:
+            return "os"
+        if self._echeance is not None and self._echeance - self.now() < STOP_MARGIN_S:
+            return "os"
         return None
 
     def _set_os_info(self, profil_nom: Optional[str]) -> None:
@@ -910,6 +953,162 @@ class RobotContext:
             return ActionResult(ok=True, status="AT_REST", message="posture de repos")
         return refused("FAILED", RefusalCode.SAFETY_LIMIT,
                        "un pas vers la posture de repos a été refusé (voir le journal)")
+
+    # ---- Cycle de vie : annulation, progression, événements, humain ------
+
+    def should_stop(self) -> bool:
+        """Vrai si la mission doit s'arrêter au plus vite : arrêt demandé
+        par un humain ou par l'OS (PlayStoreRuntime.request_stop), moins
+        de STOP_MARGIN_S restantes au hook, ou arrêt d'urgence.
+
+        Coopératif : à l'app de ranger (poser l'objet, s'arrêter) et de
+        rendre la main. Cela ne remplace pas l'arrêt forcé : l'arrêt
+        d'urgence coupe tout de toute façon, et le quota de durée tue le
+        processus d'une app qui ne rend pas la main.
+        Permission : MISSION_LIFECYCLE."""
+        self._require(Permission.MISSION_LIFECYCLE)
+        return self._motif_arret() is not None
+
+    def check_cancelled(self) -> None:
+        """Lève si la mission doit s'arrêter (voir should_stop()) :
+        EstopActiveError sous arrêt d'urgence, MissionCancelled (code
+        CANCELLED) sinon. Sans effet si rien n'est demandé. L'OS note la
+        mission comme annulée. Permission : MISSION_LIFECYCLE."""
+        self._require(Permission.MISSION_LIFECYCLE)
+        motif = self._motif_arret()
+        if motif == "estop":
+            raise EstopActiveError("arrêt d'urgence actif")
+        if motif is not None:
+            raise MissionCancelled(f"arrêt demandé ({motif})")
+
+    def report_progress(self, fraction: float, message: str = "") -> None:
+        """Rapporte l'avancement de la mission : `fraction` dans [0, 1],
+        `message` court (coupé à PROGRESS_MESSAGE_MAX caractères, ses
+        caractères de contrôle remplacés par des espaces). L'OS le lit par
+        PlayStoreRuntime.get_progress() ; seules les
+        PROGRESS_HISTORY_MAX dernières valeurs sont gardées.
+        Lève InvalidArgumentError (fraction non finie, hors de [0, 1],
+        message qui n'est pas un texte). Permission : MISSION_LIFECYCLE."""
+        self._require(Permission.MISSION_LIFECYCLE)
+        f = require_number("fraction", fraction, mini=0.0, maxi=1.0)
+        m = require_text("message", message, PROGRESS_MESSAGE_MAX, allow_empty=True)
+        self._progression.append(Progress(f, m, self.now()))
+        del self._progression[:-PROGRESS_HISTORY_MAX]
+
+    def _peut_abonner(self, kind: str, threshold: Optional[float] = None) -> bool:
+        """Vérifie le droit de s'abonner à un événement (permission, et
+        batterie connue pour « low_battery ») ; rend False si l'événement
+        ne peut pas se produire sur ce robot."""
+        if kind == "estop":
+            self._require(Permission.MISSION_LIFECYCLE)
+            return True
+        if kind == "alert":
+            self._require(Permission.WATCHDOG_READ)
+            return True
+        if kind == "low_battery":
+            self._require(Permission.SYSTEM_INFO)
+            require_number("threshold_percent", threshold, mini=1.0, maxi=99.0)
+            return self._lire_batterie() is not None
+        raise InvalidArgumentError(f"événement inconnu : {kind!r}")
+
+    def _etat_evenements(self, since_index: Optional[int]) -> Dict[str, Any]:
+        """Ce que le thread des événements lit : arrêt d'urgence, alertes
+        depuis `since_index` (avec WATCHDOG_READ), charge de la batterie
+        (avec SYSTEM_INFO)."""
+        alertes, suivant = [], 0
+        if self._manifest.has_permission(Permission.WATCHDOG_READ):
+            depuis = 0 if since_index is None else since_index
+            vues = self._watchdog.get_recent_alerts(depuis)
+            suivant = depuis + len(vues)
+            if since_index is not None:
+                alertes = [{"kind": a.kind.name, "severity": a.severity.name,
+                            "message": a.message, "joint_id": a.joint_id} for a in vues]
+        pct = None
+        if self._manifest.has_permission(Permission.SYSTEM_INFO):
+            b = self._lire_batterie()
+            pct = None if b is None else float(b.percent)
+        return {"estop": bool(self._watchdog.estop_fired or self._robot.estop_active),
+                "alerts": alertes, "next_index": suivant, "battery_percent": pct}
+
+    def _abonner(self, kind: str, callback, threshold: Optional[float] = None) -> None:
+        if self._evenements is None:
+            self._evenements = EventPoller(self._etat_evenements, self.log)
+            if self._ferme:
+                self._evenements.stop()
+        self._evenements.add(kind, callback, threshold)
+
+    @staticmethod
+    def _exiger_appelable(callback) -> None:
+        if not callable(callback):
+            raise InvalidArgumentError("callback doit être une fonction")
+
+    def on_estop(self, callback) -> None:
+        """Appelle `callback()` une fois, dès qu'un arrêt d'urgence survient
+        pendant le hook : au plus EventPoller.PERIOD_S secondes après, ou
+        aussitôt qu'un appel de l'app est refusé pour cette raison. Dans le
+        processus de l'app, il reste alors peu de temps avant qu'il soit
+        arrêté (SandboxRunner.DELAI_ARRET_URGENCE_S) : un callback court,
+        qui note ou journalise. Le robot est déjà arrêté par l'OS.
+        Permission : MISSION_LIFECYCLE."""
+        self._exiger_appelable(callback)
+        self._peut_abonner("estop")
+        self._abonner("estop", callback)
+
+    def on_alert(self, callback) -> None:
+        """Appelle `callback(alerte)` pour chaque nouvelle alerte du
+        watchdog (dict : kind, severity, message, joint_id), à partir de
+        l'abonnement. Fondé sur la même lecture que subscribe_alerts().
+        Permission : WATCHDOG_READ."""
+        self._exiger_appelable(callback)
+        self._peut_abonner("alert")
+        self._abonner("alert", callback)
+
+    def on_low_battery(self, callback, *, threshold_percent: float = 20.0) -> bool:
+        """Appelle `callback(pourcentage)` quand la charge mesurée passe
+        sous `threshold_percent` (une fois par passage). Rend False, sans
+        s'abonner, si le driver ne mesure pas la batterie : l'OS n'invente
+        pas de charge. Lève InvalidArgumentError si le seuil n'est pas dans
+        [1, 99]. Permission : SYSTEM_INFO."""
+        self._exiger_appelable(callback)
+        if not self._peut_abonner("low_battery", threshold_percent):
+            self.log("on_low_battery : batterie inconnue sur ce robot — pas d'abonnement")
+            return False
+        self._abonner("low_battery", callback, float(threshold_percent))
+        return True
+
+    def ask_confirmation(self, question: str, *, timeout_s: float = 30.0) -> ActionResult:
+        """Pose une question fermée (oui/non) à l'humain présent, au nom de
+        l'app (le nom affiché vient du manifeste, jamais de l'app). BLOQUANT
+        jusqu'à la réponse ou au délai.
+
+        `status` : CONFIRMED (oui), DECLINED (non, code HUMAN_DECLINED),
+        TIMEOUT (pas de réponse), REFUSED (code HUMAN_UNAVAILABLE : aucun
+        humain pour répondre sur ce robot). Seule une réponse explicite
+        « oui » vaut confirmation : l'app ne peut jamais répondre à la
+        place de l'humain, et l'absence de réponse n'est jamais un oui.
+
+        Lève InvalidArgumentError (question vide ou qui n'est pas un texte,
+        délai hors de ]0, CONFIRMATION_MAX_S]) et EstopActiveError sous
+        arrêt d'urgence. Permission : HUMAN_CONFIRMATION."""
+        self._require(Permission.HUMAN_CONFIRMATION)
+        q = require_text("question", question, QUESTION_MAX)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=CONFIRMATION_MAX_S,
+                               strict_min=True)
+        self._require_no_estop()
+        if self._humain is None:
+            return refused("REFUSED", RefusalCode.HUMAN_UNAVAILABLE,
+                           "aucun humain pour répondre sur ce robot")
+        nom = require_text("nom de l'app", self._manifest.name or self._manifest.app_id, 64)
+        try:
+            reponse = self._humain.confirm(nom, q, delai)
+        except Exception as exc:       # noqa: BLE001 — interface en panne : pas de réponse
+            return refused("REFUSED", RefusalCode.HUMAN_UNAVAILABLE,
+                           f"interface humaine indisponible : {type(exc).__name__}")
+        if reponse is True:
+            return ActionResult(ok=True, status="CONFIRMED", message="confirmé par l'humain")
+        if reponse is False:
+            return refused("DECLINED", RefusalCode.HUMAN_DECLINED, "refusé par l'humain")
+        return refused("TIMEOUT", RefusalCode.TIMEOUT, f"pas de réponse en {delai:g} s")
 
     def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
              origine: Optional[str] = None) -> bool:

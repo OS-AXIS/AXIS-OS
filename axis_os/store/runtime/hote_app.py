@@ -214,20 +214,21 @@ def _resultat_mission(resultat, journal):
 def _executer(app, depart, client):
     """Exécute le hook demandé et rend son résultat en JSON."""
     from axis_os.store.sdk.app_base import PermissionError, EstopActiveError, MissionResult
+    from axis_os.store.sdk.lifecycle import MissionCancelled
 
     hook = depart["hook"]
     if hook == "on_start":
         try:
             pret = app.on_start(client)
             return {"pret": pret is True or bool(pret), "log": client.get_mission_log()}
-        except (PermissionError, EstopActiveError) as exc:
+        except (PermissionError, EstopActiveError, MissionCancelled) as exc:
             return {"pret": False, "log": client.get_mission_log() + [f"on_start refusé : {exc}"]}
 
     if hook == "on_stop":
         try:
             app.on_stop(client)
             return {"ok": True, "log": client.get_mission_log()}
-        except (PermissionError, EstopActiveError) as exc:
+        except (PermissionError, EstopActiveError, MissionCancelled) as exc:
             return {"ok": False, "log": client.get_mission_log() + [f"on_stop refusé : {exc}"]}
 
     # run_mission
@@ -239,6 +240,9 @@ def _executer(app, depart, client):
     except EstopActiveError as exc:
         resultat = MissionResult(success=False, mission_id="", app_id="", duration_s=0.0,
                                  error_message=f"Mission interrompue par e-stop : {exc}")
+    except MissionCancelled as exc:
+        resultat = MissionResult(success=False, mission_id="", app_id="", duration_s=0.0,
+                                 error_message=f"Mission annulée : {exc}")
     return {"mission": _resultat_mission(resultat, client.get_mission_log())}
 
 

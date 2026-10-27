@@ -65,6 +65,9 @@ from axis_os.hal.core.types import (
 from axis_os.store.sdk.app_base import (
     RobotContext, PermissionError as SandboxPermissionError, EstopActiveError
 )
+from axis_os.store.sdk.lifecycle import (
+    CONFIRMATION_MAX_S, PROGRESS_MESSAGE_MAX, QUESTION_MAX, EventPoller, MissionCancelled,
+)
 from axis_os.store.sdk.manifest import Permission
 from axis_os.store.sdk.results import (
     EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
@@ -242,12 +245,21 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "place": Objet({"timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
                    facultatifs={"surface_height_m": Nombre(0, 2.5)}),
     "rest_pose": Objet({}, facultatifs={"duration_s": Nombre(0, 30)}),
+    "should_stop": _VIDE,
+    "report_progress": Objet({"fraction": Nombre(0, 1),
+                              "message": Chaine(PROGRESS_MESSAGE_MAX)}),
+    "subscribe_event": Objet({"kind": UnParmi("estop", "alert", "low_battery")},
+                             facultatifs={"threshold_percent": Nombre(1, 99)}),
+    "poll_events": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
+    "ask_confirmation": Objet({"question": Chaine(QUESTION_MAX),
+                               "timeout_s": Nombre(0, CONFIRMATION_MAX_S)}),
 }
 
 # Actions longues dont le délai est borné par le temps qui reste au hook
 # (voir HALBridgeServer.traiter) : champ du délai, valeur minimale.
 _DELAIS_BORNES = {"go_to": ("timeout_s", 0.1), "pick": ("timeout_s", 0.1),
-                  "place": ("timeout_s", 0.1), "rest_pose": ("duration_s", 0.5)}
+                  "place": ("timeout_s", 0.1), "rest_pose": ("duration_s", 0.5),
+                  "ask_confirmation": ("timeout_s", 0.1)}
 
 _ENVELOPPE = Objet({"action": Chaine(64), "payload": Dictionnaire(JsonLibre(), 64),
                     "request_id": Entier(0, 2 ** 53)},
@@ -619,6 +631,32 @@ class HALBridgeServer:
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.safety_status().to_json())
 
+            elif cmd.action == "should_stop":
+                # Le motif seul (estop, human, os) : check_cancelled() du
+                # client lève la même exception qu'en direct.
+                self._ctx._require(Permission.MISSION_LIFECYCLE)
+                return HALResponse(cmd.request_id, True,
+                                   data={"reason": self._ctx._motif_arret()})
+
+            elif cmd.action == "report_progress":
+                p = cmd.payload
+                self._ctx.report_progress(p["fraction"], p["message"])
+                return HALResponse(cmd.request_id, True, data=None)
+
+            elif cmd.action == "subscribe_event":
+                p = cmd.payload
+                return HALResponse(cmd.request_id, True, data=self._ctx._peut_abonner(
+                    p["kind"], p.get("threshold_percent")))
+
+            elif cmd.action == "poll_events":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx._etat_evenements(cmd.payload.get("since_index")))
+
+            elif cmd.action == "ask_confirmation":
+                p = cmd.payload
+                return HALResponse(cmd.request_id, True, data=self._ctx.ask_confirmation(
+                    p["question"], timeout_s=p["timeout_s"]).to_json())
+
             elif cmd.action in ("go_to", "pick", "place", "rest_pose"):
                 p = cmd.payload
                 if cmd.action == "go_to":
@@ -774,6 +812,7 @@ class HALBridgeClient:
         self._alert_poll_thread: Optional[threading.Thread] = None
         self._alert_poll_stop = threading.Event()
         self._alert_poll_interval_s = alert_poll_interval_s
+        self._evenements: Optional[EventPoller] = None
         self.__groups_cache: Optional[Dict[str, str]] = None
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:
@@ -1184,6 +1223,69 @@ class HALBridgeClient:
         return ActionResult.from_json(self._call("place", {
             "surface_height_m": hauteur, "timeout_s": delai}, duree_nominale_s=delai))
 
+    # ---- Cycle de vie (voir RobotContext) ---------------------------------
+
+    def _motif_arret(self) -> Optional[str]:
+        motif = self._call("should_stop", {})["reason"]
+        if motif == "estop" and self._evenements is not None:
+            self._evenements.notify_estop()
+        return motif
+
+    def should_stop(self) -> bool:
+        return self._motif_arret() is not None
+
+    def check_cancelled(self) -> None:
+        motif = self._motif_arret()
+        if motif == "estop":
+            raise EstopActiveError("arrêt d'urgence actif")
+        if motif is not None:
+            raise MissionCancelled(f"arrêt demandé ({motif})")
+
+    def report_progress(self, fraction: float, message: str = "") -> None:
+        self._call("report_progress", {
+            "fraction": require_number("fraction", fraction, mini=0.0, maxi=1.0),
+            "message": require_text("message", message, PROGRESS_MESSAGE_MAX,
+                                    allow_empty=True)})
+
+    def _abonner(self, kind: str, callback, threshold: Optional[float] = None) -> bool:
+        """Vérifie le droit auprès de l'OS, puis abonne `callback` au thread
+        des événements de ce processus (créé au premier abonnement)."""
+        if not callable(callback):
+            raise InvalidArgumentError("callback doit être une fonction")
+        payload = {"kind": kind}
+        if threshold is not None:
+            payload["threshold_percent"] = require_number("threshold_percent", threshold,
+                                                          mini=1.0, maxi=99.0)
+        if not self._call("subscribe_event", payload):
+            return False
+        if self._evenements is None:
+            self._evenements = EventPoller(
+                lambda i: self._call("poll_events", {} if i is None else {"since_index": i}),
+                self.log)
+        self._evenements.add(kind, callback, threshold)
+        return True
+
+    def on_estop(self, callback) -> None:
+        self._abonner("estop", callback)
+
+    def on_alert(self, callback) -> None:
+        self._abonner("alert", callback)
+
+    def on_low_battery(self, callback, *, threshold_percent: float = 20.0) -> bool:
+        if not callable(callback):
+            raise InvalidArgumentError("callback doit être une fonction")
+        if not self._abonner("low_battery", callback, threshold_percent):
+            self.log("on_low_battery : batterie inconnue sur ce robot — pas d'abonnement")
+            return False
+        return True
+
+    def ask_confirmation(self, question: str, *, timeout_s: float = 30.0) -> ActionResult:
+        q = require_text("question", question, QUESTION_MAX)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=CONFIRMATION_MAX_S,
+                               strict_min=True)
+        return ActionResult.from_json(self._call("ask_confirmation", {
+            "question": q, "timeout_s": delai}, duree_nominale_s=delai))
+
     def rest_pose(self, *, duration_s: float = 2.0) -> ActionResult:
         duree = require_number("duration_s", duration_s, mini=0.5, maxi=30.0)
         return ActionResult.from_json(self._call("rest_pose", {"duration_s": duree},
@@ -1240,6 +1342,8 @@ class HALBridgeClient:
             # sandboxée ou non.
             code, sep, message = (resp.error or "").partition(":")
             classe = EXCEPTIONS_PAR_CODE.get(code) if sep else None
+            if classe is EstopActiveError and self._evenements is not None:
+                self._evenements.notify_estop()
             if classe is not None:
                 raise classe(message)
             raise RuntimeError(f"HAL bridge erreur [{action}]: {resp.error}")

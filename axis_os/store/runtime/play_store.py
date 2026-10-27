@@ -373,6 +373,7 @@ class PlayStoreRuntime:
         registre_apps: Optional[Union[str, os.PathLike]] = None,
         navigation_service=None,
         manipulation_service=None,
+        human_interface=None,
     ):
         """
         `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
@@ -467,6 +468,9 @@ class PlayStoreRuntime:
         ctx.go_to() et ctx.pick() / place() ; None : l'app reçoit
         CAPABILITY_MISSING. Leur tick() reste l'affaire de la boucle du
         robot.
+
+        `human_interface` : IHumanInterface qui répond à
+        ctx.ask_confirmation() ; None : aucun humain (refus).
         """
         if not isinstance(profil, Profil):
             raise TypeError(
@@ -565,6 +569,14 @@ class PlayStoreRuntime:
         # Ils restent tickés par la boucle du robot, jamais par une app.
         self._navigation_service = navigation_service
         self._manipulation_service = manipulation_service
+        # Interface humaine (IHumanInterface) : celle qui répond à
+        # ctx.ask_confirmation(). None : aucun humain, la question est
+        # refusée (HUMAN_UNAVAILABLE), jamais tenue pour acceptée.
+        self._human_interface = human_interface
+        # Contexte du hook en cours, par app (pour request_stop), et
+        # dernière progression rapportée (get_progress).
+        self._ctx_courants: Dict[str, RobotContext] = {}
+        self._progressions: Dict[str, Any] = {}
         # Horloge du robot : simulée en simulation, réelle sur le robot.
         # Elle est transmise à la sandbox (pour mesurer les quotas) et aux
         # apps (ctx.now / ctx.sleep). C'est l'équivalent de use_sim_time
@@ -1796,6 +1808,8 @@ class PlayStoreRuntime:
         etat = etat_json(entry.app) if entry.app is not None else None
         # Échéance du hook, lue par ctx.safety_status() (temps restant).
         ctx._set_deadline(self._clock() + entry.manifest.quota.max_runtime_s)
+        app_id = entry.manifest.app_id
+        self._ctx_courants[app_id] = ctx
         try:
             result = runner.run_app(entry.spec, hook, serveur=bridge_server,
                                     params=params, etat=etat,
@@ -1805,7 +1819,33 @@ class PlayStoreRuntime:
             # Une action longue encore servie pour ce hook (go_to abandonné
             # après un arrêt d'urgence…) s'arrête au pas suivant.
             ctx._fermer()
+            if self._ctx_courants.get(app_id) is ctx:
+                del self._ctx_courants[app_id]
+            if ctx._progression:
+                self._progressions[app_id] = ctx._progression[-1]
         return result, bridge_server
+
+    def request_stop(self, app_id: str, *, source: str = "human") -> bool:
+        """Demande l'arrêt de la mission (ou du hook) en cours de l'app :
+        source « human » (un opérateur) ou « os ». Coopératif : l'app le
+        voit par ctx.should_stop() / check_cancelled(), et ses actions
+        longues en cours rendent la main (CANCELLED). Rend False si aucun
+        hook de l'app ne tourne. Ne remplace pas l'arrêt forcé : voir
+        emergency_stop et le quota de durée."""
+        ctx = self._ctx_courants.get(app_id)
+        if ctx is None:
+            return False
+        ctx._demander_arret(source)
+        return True
+
+    def get_progress(self, app_id: str):
+        """Dernière progression rapportée par l'app (Progress : fraction,
+        message, timestamp), pendant le hook en cours ou au dernier hook ;
+        None si elle n'en a jamais rapporté."""
+        ctx = self._ctx_courants.get(app_id)
+        if ctx is not None and ctx._progression:
+            return ctx._progression[-1]
+        return self._progressions.get(app_id)
 
     def _make_ctx(self, manifest: AppManifest) -> RobotContext:
         """Construit le RobotContext d'une app (l'objet par lequel elle
@@ -1829,6 +1869,7 @@ class PlayStoreRuntime:
                              memory=self._memory_service,
                              navigation=self._navigation_service,
                              manipulation=self._manipulation_service)
+        ctx._set_human_interface(self._human_interface)
         return ctx
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:

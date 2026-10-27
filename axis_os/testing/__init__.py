@@ -23,9 +23,11 @@ import contextlib
 import io
 from typing import Any, Dict, Optional
 
+from axis_os.testing.humain import ScriptedHuman
 from axis_os.testing.robot_simule import SimulatedObject, SimulatedPerception, SimulatedRobot
 
-__all__ = ["AppTestHarness", "SimulatedObject", "SimulatedPerception", "SimulatedRobot"]
+__all__ = ["AppTestHarness", "ScriptedHuman", "SimulatedObject", "SimulatedPerception",
+           "SimulatedRobot"]
 
 
 class AppTestHarness:

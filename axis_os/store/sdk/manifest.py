@@ -162,6 +162,13 @@ class Permission(Enum):
     # Prendre et poser un objet (pick, place) par le service de
     # manipulation, seul écrivain des bras pendant le geste.
     MANIPULATION         = auto()
+    # Cycle de vie de la mission : savoir si l'arrêt est demandé
+    # (should_stop, check_cancelled), rapporter sa progression
+    # (report_progress), être prévenue d'un arrêt d'urgence (on_estop).
+    MISSION_LIFECYCLE    = auto()
+    # Poser une question à l'humain présent (ask_confirmation). L'app ne
+    # peut jamais y répondre elle-même.
+    HUMAN_CONFIRMATION   = auto()
 
 
 class ProtectionLevel(Enum):
@@ -236,6 +243,10 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # fermer les bras sur un objet).
     Permission.NAVIGATION_GOTO:      ProtectionLevel.DANGEROUS,
     Permission.MANIPULATION:         ProtectionLevel.DANGEROUS,
+    # NORMAL : rien ne bouge. Une question posée à l'humain ne vaut jamais
+    # réponse : c'est lui qui décide.
+    Permission.MISSION_LIFECYCLE:    ProtectionLevel.NORMAL,
+    Permission.HUMAN_CONFIRMATION:   ProtectionLevel.NORMAL,
 }
 
 
