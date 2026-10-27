@@ -622,7 +622,7 @@ class RobotContext:
         self._require(Permission.SYSTEM_INFO)
         loco = self._locomotion
         proximite, distance, raison = "unavailable", None, ""
-        if loco is not None and getattr(loco, "has_proximity_guard", False):
+        if loco is not None and getattr(loco, "is_guarded", False):
             v = getattr(loco, "dernier_verdict", None)
             if v is not None:
                 proximite = ("stopped" if v.facteur <= 0.0 else

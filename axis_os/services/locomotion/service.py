@@ -278,8 +278,11 @@ class LocomotionService(IService):
         return self._adapter.max_twist
 
     @property
-    def has_proximity_guard(self) -> bool:
-        """Vrai si un gardien de proximité plafonne les consignes."""
+    def is_guarded(self) -> bool:
+        """Vrai si un gardien de proximité plafonne les consignes. Lecture
+        seule. (Nom choisi pour ne pas ressembler à un réglage du gardien :
+        test/test_proximite.py vérifie qu'aucune méthode publique de ce
+        service ne parle de le régler ou de le désactiver.)"""
         return self._gardien is not None
 
     # ---- API des apps ----------------------------------------------------

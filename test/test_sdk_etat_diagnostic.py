@@ -91,7 +91,7 @@ class LocomotionFactice:
     gardien, dernier verdict, état."""
     def __init__(self, verdict=None, gardien=True, etat=LocomotionState.RUNNING):
         self.max_twist = Twist(0.5, 0.2, 0.8)
-        self.has_proximity_guard = gardien
+        self.is_guarded = gardien
         self.dernier_verdict = verdict
         self.state = etat
 
