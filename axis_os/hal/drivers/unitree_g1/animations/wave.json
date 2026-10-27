@@ -1,0 +1,18 @@
+{
+  "format": "axis-animation",
+  "format_version": 1,
+  "name": "wave",
+  "version": "1.0.0",
+  "robots": ["G1"],
+  "description": "Salue de la main droite : lève le bras, plie le coude, balance l'avant-bras trois fois, puis revient au repos. Sens mesurés sur le G1 (tangage d'épaule négatif = bras vers l'avant et le haut ; coude négatif = coude plié), voir conventions.py.",
+  "keyframes": [
+    {"t": 0.0, "positions": {"right_shoulder_pitch_joint": 0.0, "right_elbow_joint": 0.0, "right_shoulder_yaw_joint": 0.0}},
+    {"t": 1.0, "positions": {"right_shoulder_pitch_joint": -1.5, "right_elbow_joint": -0.9, "right_shoulder_yaw_joint": 0.0}},
+    {"t": 1.4, "positions": {"right_shoulder_yaw_joint": 0.35}},
+    {"t": 1.8, "positions": {"right_shoulder_yaw_joint": -0.35}},
+    {"t": 2.2, "positions": {"right_shoulder_yaw_joint": 0.35}},
+    {"t": 2.6, "positions": {"right_shoulder_yaw_joint": -0.35}},
+    {"t": 3.0, "positions": {"right_shoulder_pitch_joint": -1.5, "right_elbow_joint": -0.9, "right_shoulder_yaw_joint": 0.0}},
+    {"t": 4.0, "positions": {"right_shoulder_pitch_joint": 0.0, "right_elbow_joint": 0.0, "right_shoulder_yaw_joint": 0.0}}
+  ]
+}

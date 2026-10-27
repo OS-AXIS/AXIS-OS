@@ -48,6 +48,10 @@ from .lifecycle import (
     CONFIRMATION_MAX_S, PROGRESS_HISTORY_MAX, PROGRESS_MESSAGE_MAX, QUESTION_MAX,
     STOP_MARGIN_S, STOP_SOURCES, EventPoller, MissionCancelled, Progress,
 )
+from .animation import (
+    LEG_MATCH_TOL, Animation, AnimationPlayer, check_animation, load_animation,
+    load_library_animation,
+)
 from .stream import (
     BusyError, CapabilityMissingError, TargetStream, TargetStreamEngine, stream_params,
 )
@@ -240,6 +244,8 @@ class RobotContext:
         # Flux de consignes ouvert (TargetStreamEngine), un à la fois.
         self._flux: Optional[TargetStreamEngine] = None
         self._flux_id = 0
+        # Animation en cours (AnimationPlayer), une à la fois.
+        self._animation: Optional[AnimationPlayer] = None
         # Horloge du robot : l'heure réelle par défaut, remplacée par
         # l'heure simulée en simulation (voir _set_clock() et now()).
         self._clock = time.monotonic
@@ -352,6 +358,8 @@ class RobotContext:
         self._ferme = True
         if self._evenements is not None:
             self._evenements.stop()
+        if self._animation is not None:
+            self._animation.stop()
         if self._flux is not None:
             # Arrêt sûr du flux (la marche ralentit puis s'arrête), sans
             # attendre : son fil termine seul.
@@ -1200,6 +1208,131 @@ class RobotContext:
 
     def _flux_close(self, stream_id: int) -> None:
         self._flux_moteur(stream_id).close()
+
+    # ---- Animations -------------------------------------------------------
+
+    ANIMATION_TIMEOUT_MAX_S = 120.0
+
+    def _modele_robot(self) -> str:
+        try:
+            return str(self._robot.get_robot_info().get("model", ""))
+        except Exception:              # noqa: BLE001 — modèle inconnu : aucune animation compatible
+            return ""
+
+    def play_animation(self, animation, *, wait: bool = True,
+                       timeout_s: Optional[float] = None) -> ActionResult:
+        """Joue une animation (voir axis_os/store/sdk/animation.py) : le nom
+        d'une animation fournie avec le robot (« wave », « point » pour le
+        G1), un dict au format « axis-animation », ou une Animation. Un
+        chemin de fichier n'est pas accepté : l'app ne lit pas les
+        fichiers de l'OS ; elle charge les siens avec load_animation().
+
+        Tout est vérifié AVANT de jouer : format, robot compatible,
+        articulations, butées, vitesses, accélérations ; une articulation de
+        jambe exige la mention « stationary_legs_still », des jambes
+        immobiles, le robot à l'arrêt et une posture mesurée identique —
+        et l'OS ne la commande jamais. Chaque pas passe ensuite par
+        move_arms() ; le geste se met en pause si le gardien de proximité
+        arrête le robot.
+
+        wait=True : bloque jusqu'à la fin (status PLAYED), ou au délai
+        `timeout_s` (par défaut la durée du geste plus 2 s, au plus
+        ANIMATION_TIMEOUT_MAX_S ; au-delà, le geste est arrêté : TIMEOUT).
+        wait=False : rend la main aussitôt (PLAYING) ; stop_animation()
+        l'arrête. Autres issues : REFUSED (ESTOP_ACTIVE, CANCELLED,
+        SAFETY_LIMIT, BUSY), STOPPED, FAILED (SAFETY_LIMIT : un pas refusé
+        par le garde-fou).
+
+        Permissions : ANIMATION_PLAY, plus celles de move_arms()
+        (ACTUATORS_READ, ACTUATORS_WRITE_ARMS). Lève InvalidArgumentError
+        (animation invalide pour ce robot, avec la liste des problèmes) et
+        EstopActiveError."""
+        self._require(Permission.ANIMATION_PLAY)
+        if not isinstance(wait, bool):
+            raise InvalidArgumentError("wait doit être un booléen")
+        if timeout_s is not None:
+            timeout_s = require_number("timeout_s", timeout_s, mini=0.0,
+                                       maxi=self.ANIMATION_TIMEOUT_MAX_S, strict_min=True)
+        modele = self._modele_robot()
+        if isinstance(animation, str):
+            anim = load_library_animation(animation, modele)
+        elif isinstance(animation, Animation):
+            # Revalidée depuis ses données : un objet construit à la main
+            # ne passe pas sans contrôle.
+            anim = load_animation(animation.to_json())
+        elif isinstance(animation, dict):
+            anim = load_animation(animation)
+        else:
+            raise InvalidArgumentError("animation : un nom d'animation du robot, un dict au "
+                                       "format axis-animation, ou une Animation")
+        self._require(Permission.ACTUATORS_READ)
+        self._require(Permission.ACTUATORS_WRITE_ARMS)
+        self._require_no_estop()
+        defs = self._robot.get_joint_definitions()
+        groupes = {d.joint_id: self._group_of(d.joint_id) for d in defs}
+        if JointGroup.MANIPULATION not in groupes.values():
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "ce robot n'a pas de bras à animer")
+        check_animation(anim, defs, robot_model=modele)
+        jambes = [j for j in anim.joints if groupes.get(j) is JointGroup.LOCOMOTION]
+        if jambes:
+            if getattr(self._locomotion, "is_moving", False):
+                return refused("REFUSED", RefusalCode.SAFETY_LIMIT,
+                               "le robot marche : une animation qui décrit les jambes "
+                               "exige le robot à l'arrêt")
+            etat = self._robot.get_full_state()
+            ecarts = [j for j in jambes
+                      if abs(etat[j].position - anim.position_at(j, 0.0)) > LEG_MATCH_TOL]
+            if ecarts:
+                return refused("REFUSED", RefusalCode.SAFETY_LIMIT,
+                               f"posture mesurée des jambes différente de celle que décrit "
+                               f"l'animation : {ecarts[:3]}")
+        if self._animation is not None and not self._animation.done:
+            return refused("REFUSED", RefusalCode.BUSY, "une animation est déjà en cours")
+        if self._flux is not None and self._flux.kind == "arms" and self._flux.state != "CLOSED":
+            return refused("REFUSED", RefusalCode.BUSY, "un flux de consignes des bras est ouvert")
+        etat_manip = getattr(getattr(self._manipulation, "etat", None), "name", "LIBRE")
+        if etat_manip not in ("LIBRE", "ECHEC"):
+            return refused("REFUSED", RefusalCode.BUSY,
+                           f"bras occupés par la manipulation (état {etat_manip})")
+        bras = [j for j in anim.joints if groupes.get(j) is JointGroup.MANIPULATION]
+        lecteur = AnimationPlayer(self, anim, bras)
+        self._animation = lecteur
+        if not wait:
+            return ActionResult(ok=True, status="PLAYING", message=f"« {anim.name} » en cours",
+                                data={"duration_s": round(lecteur.total_s, 3)})
+        attente = timeout_s if timeout_s is not None else min(
+            self.ANIMATION_TIMEOUT_MAX_S, lecteur.total_s + 2.0)
+        debut = time.monotonic()
+        fin = debut + attente
+        while not lecteur.done:
+            maintenant = time.monotonic()
+            if maintenant >= fin or maintenant - debut >= self.ANIMATION_TIMEOUT_MAX_S:
+                break
+            lecteur.wait(0.05)
+            if lecteur.paused and timeout_s is None:
+                # En pause devant une personne : le délai par défaut ne
+                # court pas (jamais au-delà d'ANIMATION_TIMEOUT_MAX_S).
+                fin += 0.05
+        res = lecteur.result
+        if res is None:
+            lecteur.stop()
+            lecteur.wait(1.0)
+            return refused("TIMEOUT", RefusalCode.TIMEOUT,
+                           f"animation non terminée en {attente:g} s : arrêtée")
+        return res
+
+    def stop_animation(self) -> ActionResult:
+        """Arrête l'animation en cours : les bras s'arrêtent là où ils
+        sont (status STOPPED) ; IDLE s'il n'y en a pas. Permission :
+        ANIMATION_PLAY."""
+        self._require(Permission.ANIMATION_PLAY)
+        lecteur = self._animation
+        if lecteur is None or lecteur.done:
+            return ActionResult(ok=True, status="IDLE", message="aucune animation en cours")
+        lecteur.stop()
+        lecteur.wait(1.0)
+        return ActionResult(ok=True, status="STOPPED", message="animation arrêtée")
 
     def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
              origine: Optional[str] = None) -> bool:

@@ -173,6 +173,9 @@ class Permission(Enum):
     # vitesses de marche (stream_targets), sous homme mort. Exige aussi les
     # droits des commandes qu'il remplace (bras ou marche).
     TELEOP_STREAM        = auto()
+    # Jouer une animation (play_animation) : un geste des bras décrit par
+    # des images clés, vérifié par l'OS avant d'être joué.
+    ANIMATION_PLAY       = auto()
 
 
 class ProtectionLevel(Enum):
@@ -253,6 +256,7 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     Permission.HUMAN_CONFIRMATION:   ProtectionLevel.NORMAL,
     # DANGEROUS : le flux fait bouger le robot.
     Permission.TELEOP_STREAM:        ProtectionLevel.DANGEROUS,
+    Permission.ANIMATION_PLAY:       ProtectionLevel.DANGEROUS,
 }
 
 

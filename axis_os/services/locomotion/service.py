@@ -285,6 +285,13 @@ class LocomotionService(IService):
         service ne parle de le régler ou de le désactiver.)"""
         return self._gardien is not None
 
+    @property
+    def is_moving(self) -> bool:
+        """Vrai si une consigne de marche non nulle, encore valide, est en
+        cours. Lecture seule."""
+        return (self._twist_t is not None and not self._twist.is_zero
+                and self._clock() - self._twist_t <= self._timeout)
+
     # ---- API des apps ----------------------------------------------------
     # Appelée par le SDK (la bibliothèque fournie aux apps), par exemple par
     # ctx.walk().

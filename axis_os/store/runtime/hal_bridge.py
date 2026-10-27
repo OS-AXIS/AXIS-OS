@@ -68,14 +68,15 @@ from axis_os.store.sdk.app_base import (
 from axis_os.store.sdk.lifecycle import (
     CONFIRMATION_MAX_S, PROGRESS_MESSAGE_MAX, QUESTION_MAX, EventPoller, MissionCancelled,
 )
+from axis_os.store.sdk.animation import Animation, load_animation
 from axis_os.store.sdk.manifest import Permission
 from axis_os.store.sdk.stream import (
     MAX_JOINTS, StreamAck, StreamMetrics, TargetStream, stream_params, stream_target,
 )
 from axis_os.store.sdk.results import (
     EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
-    RobotInfo, SafetyStatus, object_from_target, require_number, require_text,
-    surface_height_from_target,
+    RefusalCode, RobotInfo, SafetyStatus, object_from_target, refused, require_number,
+    require_text, surface_height_from_target,
 )
 from axis_os.store.runtime.canal_ipc import (
     Booleen, Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste,
@@ -268,13 +269,22 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "stream_resume": Objet({"stream_id": Entier(0, 2 ** 31)}),
     "stream_metrics": Objet({"stream_id": Entier(0, 2 ** 31)}),
     "stream_close": Objet({"stream_id": Entier(0, 2 ** 31)}),
+    # Exactement un de « name » et « animation » (vérifié par le serveur) ;
+    # le contenu de l'animation est vérifié par load_animation() puis par
+    # check_animation(), côté OS.
+    "play_animation": Objet({"wait": Booleen()},
+                            facultatifs={"name": Chaine(64), "animation": JsonLibre(),
+                                         "timeout_s": Nombre(0, RobotContext.ANIMATION_TIMEOUT_MAX_S)}),
+    "stop_animation": _VIDE,
 }
 
 # Actions longues dont le délai est borné par le temps qui reste au hook
 # (voir HALBridgeServer.traiter) : champ du délai, valeur minimale.
 _DELAIS_BORNES = {"go_to": ("timeout_s", 0.1), "pick": ("timeout_s", 0.1),
-                  "place": ("timeout_s", 0.1), "rest_pose": ("duration_s", 0.5),
-                  "ask_confirmation": ("timeout_s", 0.1)}
+                  "place": ("timeout_s", 0.1), "ask_confirmation": ("timeout_s", 0.1),
+                  "play_animation": ("timeout_s", 0.1)}
+# Délai par défaut quand l'app n'en donne pas (avant la borne).
+_DELAIS_DEFAUT = {"play_animation": RobotContext.ANIMATION_TIMEOUT_MAX_S}
 
 _ENVELOPPE = Objet({"action": Chaine(64), "payload": Dictionnaire(JsonLibre(), 64),
                     "request_id": Entier(0, 2 ** 53)},
@@ -423,10 +433,11 @@ class HALBridgeServer:
             # invalide (0) reste invalide et sera refusé par RobotContext.
             champ, mini = borne
             demande = payload.get(champ)
-            demande = 2.0 if demande is None else demande
+            demande = _DELAIS_DEFAUT.get(raw["action"], 2.0) if demande is None else demande
             payload = dict(payload, **{champ: min(demande, max(mini, reste_s - 0.5))})
         cmd = HALCommand(action=raw["action"], payload=payload,
                          request_id=raw["request_id"])
+        self._reste_s = reste_s
         return asdict(self._handle(cmd))
 
     def _handle(self, cmd: HALCommand) -> HALResponse:
@@ -646,6 +657,22 @@ class HALBridgeServer:
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.safety_status().to_json())
 
+            elif cmd.action == "play_animation":
+                p = cmd.payload
+                if (p.get("name") is None) == (p.get("animation") is None):
+                    raise InvalidArgumentError("play_animation : un nom OU une animation")
+                cible = p["name"] if p.get("name") is not None else p["animation"]
+                if not isinstance(cible, (str, dict)):
+                    raise InvalidArgumentError("animation : un objet au format axis-animation")
+                res = self._ctx.play_animation(cible, wait=p["wait"], timeout_s=p.get("timeout_s"))
+                if res.ok:
+                    # Geste joué (ou lancé) : mouvement réel (facturation).
+                    self.successful_motor_commands += 1
+                return HALResponse(cmd.request_id, True, data=res.to_json())
+
+            elif cmd.action == "stop_animation":
+                return HALResponse(cmd.request_id, True, data=self._ctx.stop_animation().to_json())
+
             elif cmd.action == "stream_open":
                 p = cmd.payload
                 flux = self._ctx.stream_targets(
@@ -718,7 +745,18 @@ class HALBridgeServer:
                     res = self._ctx.place(p.get("surface_height_m"), timeout_s=p["timeout_s"])
                 else:
                     duree = p.get("duration_s")
-                    res = self._ctx.rest_pose(duration_s=2.0 if duree is None else duree)
+                    duree = 2.0 if duree is None else duree
+                    reste = getattr(self, "_reste_s", None)
+                    if reste is not None and duree > reste - 0.5:
+                        # Pas assez de temps restant au hook : refus, plutôt
+                        # qu'un geste raccourci, donc plus rapide.
+                        self._ctx._require(Permission.ACTUATORS_READ)
+                        self._ctx._require(Permission.ACTUATORS_WRITE_ARMS)
+                        return HALResponse(cmd.request_id, True, data=refused(
+                            "TIMEOUT", RefusalCode.TIMEOUT,
+                            f"il reste {max(0.0, reste):.1f} s au hook, le geste en "
+                            f"demande {duree:g}").to_json())
+                    res = self._ctx.rest_pose(duration_s=duree)
                 if res.ok:
                     # Le robot a réellement bougé (arrivé, objet tenu ou
                     # posé, bras au repos) : preuve de mouvement pour la
@@ -1272,6 +1310,37 @@ class HALBridgeClient:
                                strict_min=True)
         return ActionResult.from_json(self._call("place", {
             "surface_height_m": hauteur, "timeout_s": delai}, duree_nominale_s=delai))
+
+    # ---- Animations (voir RobotContext.play_animation) ---------------------
+
+    ANIMATION_TIMEOUT_MAX_S = RobotContext.ANIMATION_TIMEOUT_MAX_S
+
+    def play_animation(self, animation, *, wait: bool = True,
+                       timeout_s: Optional[float] = None) -> ActionResult:
+        if not isinstance(wait, bool):
+            raise InvalidArgumentError("wait doit être un booléen")
+        payload: Dict[str, Any] = {"wait": wait}
+        if timeout_s is not None:
+            payload["timeout_s"] = require_number("timeout_s", timeout_s, mini=0.0,
+                                                  maxi=self.ANIMATION_TIMEOUT_MAX_S,
+                                                  strict_min=True)
+        if isinstance(animation, str):
+            payload["name"] = require_text("name", animation, 64)
+        elif isinstance(animation, Animation):
+            payload["animation"] = animation.to_json()
+        elif isinstance(animation, dict):
+            # Format vérifié ici aussi : la même InvalidArgumentError qu'en
+            # direct, avant l'envoi.
+            payload["animation"] = load_animation(animation).to_json()
+        else:
+            raise InvalidArgumentError("animation : un nom d'animation du robot, un dict au "
+                                       "format axis-animation, ou une Animation")
+        attente = (timeout_s or self.ANIMATION_TIMEOUT_MAX_S) if wait else 0.0
+        return ActionResult.from_json(self._call("play_animation", payload,
+                                                 duree_nominale_s=attente))
+
+    def stop_animation(self) -> ActionResult:
+        return ActionResult.from_json(self._call("stop_animation", {}))
 
     # ---- Flux de consignes (voir RobotContext.stream_targets) -------------
     # L'heure de chaque consigne est estimée ici en heure du robot, recalée

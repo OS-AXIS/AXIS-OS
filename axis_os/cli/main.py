@@ -309,6 +309,65 @@ def cmd_publish(args: argparse.Namespace) -> int:
 #  Entrée principale
 # ─────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────
+#  axis animation validate
+# ─────────────────────────────────────────────────────────────────
+
+def _definitions_robot(modele: str):
+    """Articulations (limites normalisées) d'un modèle de robot connu
+    d'AXIS-OS, ou None."""
+    if modele.lower() != "g1":
+        return None
+    import contextlib
+    import io
+    from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
+    from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
+    from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
+    with contextlib.redirect_stdout(io.StringIO()):
+        robot = NormalizedRobotHAL(UnitreeG1HAL("validation_animation"), build_g1_normalizer())
+    return robot.get_joint_definitions()
+
+
+def valider_fichier_animation(chemin) -> list:
+    """Problèmes d'un fichier d'animation (liste vide : jouable sur chacun
+    des robots qu'il déclare et qu'AXIS-OS connaît)."""
+    from axis_os.store.sdk.animation import load_animation, validate_animation
+    from axis_os.store.sdk.results import InvalidArgumentError
+    try:
+        anim = load_animation(Path(chemin))
+    except InvalidArgumentError as exc:
+        return [str(exc)]
+    problemes = []
+    connus = 0
+    for modele in anim.robots:
+        defs = _definitions_robot(modele)
+        if defs is None:
+            continue
+        connus += 1
+        problemes += [f"[{modele}] {e}" for e in validate_animation(anim, defs, robot_model=modele)]
+    if not connus:
+        problemes.append(f"aucun des robots déclarés {list(anim.robots)} n'est connu d'AXIS-OS "
+                         f"(connus : G1)")
+    return problemes
+
+
+def cmd_animation_validate(args: argparse.Namespace) -> int:
+    """
+    axis animation validate <fichier> : vérifie une animation (format,
+    robots compatibles, articulations, butées, vitesses, accélérations,
+    jambes immobiles), exactement comme l'OS le fera avant de la jouer.
+    Code de sortie 0 si elle est jouable, 1 sinon.
+    """
+    problemes = valider_fichier_animation(args.file)
+    if problemes:
+        print(f"✗ {args.file} : animation refusée")
+        for p in problemes:
+            print(f"   - {p}")
+        return 1
+    print(f"✓ {args.file} : animation valide")
+    return 0
+
+
 def main() -> int:
     """
     Lit la ligne de commande et lance la sous-commande demandée. Sans
@@ -333,6 +392,12 @@ def main() -> int:
     p_pub = sub.add_parser("publish", help="Publie l'app sur le Play Store")
     p_pub.add_argument("--dry-run", action="store_true")
     p_pub.set_defaults(func=cmd_publish)
+
+    p_anim = sub.add_parser("animation", help="Outils pour les animations")
+    sub_anim = p_anim.add_subparsers(dest="animation_command")
+    p_anim_val = sub_anim.add_parser("validate", help="Vérifie un fichier d'animation")
+    p_anim_val.add_argument("file", help="Fichier .json au format axis-animation")
+    p_anim_val.set_defaults(func=cmd_animation_validate)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):
