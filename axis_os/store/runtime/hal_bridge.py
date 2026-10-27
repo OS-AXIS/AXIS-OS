@@ -75,8 +75,8 @@ from axis_os.store.sdk.stream import (
 )
 from axis_os.store.sdk.results import (
     EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
-    RefusalCode, RobotInfo, SafetyStatus, object_from_target, refused, require_number,
-    require_text, surface_height_from_target,
+    RefusalCode, RobotInfo, SafetyStatus, object_from_target, refused, require_language,
+    require_number, require_text, surface_height_from_target,
 )
 from axis_os.store.runtime.canal_ipc import (
     Booleen, Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste,
@@ -276,6 +276,8 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
                             facultatifs={"name": Chaine(64), "animation": JsonLibre(),
                                          "timeout_s": Nombre(0, RobotContext.ANIMATION_TIMEOUT_MAX_S)}),
     "stop_animation": _VIDE,
+    "speak": Objet({"text": Chaine(RobotContext.SPEAK_MAX_CHARS), "language": Chaine(8)}),
+    "get_setting": Objet({"name": Chaine(32)}),
 }
 
 # Actions longues dont le délai est borné par le temps qui reste au hook
@@ -656,6 +658,14 @@ class HALBridgeServer:
             elif cmd.action == "safety_status":
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.safety_status().to_json())
+
+            elif cmd.action == "speak":
+                return HALResponse(cmd.request_id, True, data=self._ctx.speak(
+                    cmd.payload["text"], language=cmd.payload["language"]).to_json())
+
+            elif cmd.action == "get_setting":
+                return HALResponse(cmd.request_id, True,
+                                   data=self._ctx.get_setting(cmd.payload["name"]))
 
             elif cmd.action == "play_animation":
                 p = cmd.payload
@@ -1310,6 +1320,21 @@ class HALBridgeClient:
                                strict_min=True)
         return ActionResult.from_json(self._call("place", {
             "surface_height_m": hauteur, "timeout_s": delai}, duree_nominale_s=delai))
+
+    # ---- Parole et réglages (voir RobotContext) ----------------------------
+
+    SPEAK_MAX_CHARS = RobotContext.SPEAK_MAX_CHARS
+
+    def speak(self, text: str, *, language: str = "en") -> ActionResult:
+        texte = require_text("text", text, self.SPEAK_MAX_CHARS)
+        # Une durée de parole est proportionnelle au texte : environ 15
+        # caractères par seconde.
+        return ActionResult.from_json(self._call(
+            "speak", {"text": texte, "language": require_language(language)},
+            duree_nominale_s=len(texte) / 15.0))
+
+    def get_setting(self, name: str):
+        return self._call("get_setting", {"name": require_text("name", name, 32)})
 
     # ---- Animations (voir RobotContext.play_animation) ---------------------
 

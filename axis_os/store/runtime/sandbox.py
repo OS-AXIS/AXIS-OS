@@ -292,7 +292,7 @@ class SandboxRunner:
     # que run_app abandonne si le processus de l'app est tué entre-temps.
     ACTIONS_LENTES = frozenset({"listen", "look_for", "describe_scene",
                                 "go_to", "pick", "place", "rest_pose",
-                                "ask_confirmation", "play_animation"})
+                                "ask_confirmation", "play_animation", "speak"})
     # Appels lents abandonnés après un arrêt d'urgence et encore en cours,
     # dans tout le processus de l'OS : tant qu'il en reste un, micro et
     # caméra sont occupés, et un nouvel appel lent est refusé.

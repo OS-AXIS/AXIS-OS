@@ -58,7 +58,8 @@ from .stream import (
 from .results import (
     ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal,
     BatteryInfo, InvalidArgumentError, RefusalCode, RobotInfo, SafetyStatus,
-    object_from_target, refused, require_number, require_text, surface_height_from_target,
+    object_from_target, refused, require_language, require_number, require_text,
+    surface_height_from_target,
 )
 
 
@@ -244,6 +245,10 @@ class RobotContext:
         # Flux de consignes ouvert (TargetStreamEngine), un à la fois.
         self._flux: Optional[TargetStreamEngine] = None
         self._flux_id = 0
+        # Synthèse vocale (ISpeechSynthesizer, côté OS) et réglages choisis
+        # par l'utilisateur pour cette app (voir _set_voice, _set_settings).
+        self._voix = None
+        self._reglages: Dict[str, Any] = {}
         # Animation en cours (AnimationPlayer), une à la fois.
         self._animation: Optional[AnimationPlayer] = None
         # Horloge du robot : l'heure réelle par défaut, remplacée par
@@ -373,6 +378,15 @@ class RobotContext:
         if source not in STOP_SOURCES:
             raise ValueError(f"source d'arrêt inconnue : {source!r}")
         self._arret_demande = source
+
+    def _set_voice(self, voix) -> None:
+        """Injection par le runtime de la synthèse vocale (côté OS)."""
+        self._voix = voix
+
+    def _set_settings(self, reglages: Dict[str, Any]) -> None:
+        """Injection par le runtime des réglages choisis par l'utilisateur
+        pour cette app (déjà validés contre sa déclaration)."""
+        self._reglages = dict(reglages)
 
     def _set_human_interface(self, humain) -> None:
         """Injection par le runtime de l'interface humaine (IHumanInterface),
@@ -608,7 +622,8 @@ class RobotContext:
         """Services système présents sur ce robot (AVAILABLE ou ABSENT)."""
         presents = {"locomotion": self._locomotion, "perception": self._perception,
                     "speech_in": self._speech, "memory": self._memory,
-                    "navigation": self._navigation, "manipulation": self._manipulation}
+                    "navigation": self._navigation, "manipulation": self._manipulation,
+                    "speech_out": self._voix}
         services = {nom: AVAILABLE if s is not None else ABSENT
                     for nom, s in presents.items()}
         services["battery"] = AVAILABLE if self._lire_batterie() is not None else ABSENT
@@ -1333,6 +1348,59 @@ class RobotContext:
         lecteur.stop()
         lecteur.wait(1.0)
         return ActionResult(ok=True, status="STOPPED", message="animation arrêtée")
+
+    # ---- Parole et réglages ----------------------------------------------
+
+    SPEAK_MAX_CHARS = 500
+
+    def speak(self, text: str, *, language: str = "en") -> ActionResult:
+        """Fait dire `text` au robot, dans `language` (code « en », « fr »,
+        « fr-FR »…). Le texte est coupé à SPEAK_MAX_CHARS caractères et ses
+        caractères de contrôle remplacés par des espaces. BLOQUANT le temps
+        de le dire.
+
+        `status` : SPOKEN, REFUSED (CAPABILITY_MISSING : pas de synthèse
+        vocale sur ce robot, ou langue non prise en charge), FAILED. Lève
+        InvalidArgumentError (texte vide ou qui n'est pas un texte, code de
+        langue invalide) et EstopActiveError sous arrêt d'urgence.
+        Permission : AUDIO_OUTPUT."""
+        self._require(Permission.AUDIO_OUTPUT)
+        texte = require_text("text", text, self.SPEAK_MAX_CHARS)
+        langue = require_language(language)
+        self._require_no_estop()
+        voix = self._voix
+        if voix is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "pas de synthèse vocale sur ce robot")
+        langues = tuple(getattr(voix, "languages", ()) or ())
+        if langue not in langues and langue.split("-")[0] not in langues:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           f"langue « {langue} » non prise en charge — {list(langues)}")
+        try:
+            dit = voix.say(texte, langue)
+        except Exception as exc:       # noqa: BLE001 — synthèse en panne : échec, pas de plantage
+            return refused("FAILED", RefusalCode.FAILED, f"synthèse vocale : {type(exc).__name__}")
+        if dit is not True:
+            return refused("FAILED", RefusalCode.FAILED, "la synthèse vocale n'a rien dit")
+        return ActionResult(ok=True, status="SPOKEN", message="dit")
+
+    def get_setting(self, name: str):
+        """Valeur d'un réglage déclaré dans le manifeste (settings) : celle
+        que l'utilisateur a choisie, sinon la valeur par défaut déclarée.
+        Lève InvalidArgumentError si le réglage n'est pas déclaré.
+        Permission : APP_SETTINGS."""
+        self._require(Permission.APP_SETTINGS)
+        nom = require_text("name", name, 32)
+        spec = next((s for s in self._manifest.settings if s.name == nom), None)
+        if spec is None:
+            raise InvalidArgumentError(f"réglage « {nom} » non déclaré dans le manifeste — "
+                                       f"déclarés : {[s.name for s in self._manifest.settings]}")
+        if nom in self._reglages:
+            try:
+                return spec.check(self._reglages[nom])
+            except ValueError:
+                pass                   # déclaration changée depuis : valeur par défaut
+        return spec.default
 
     def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
              origine: Optional[str] = None) -> bool:

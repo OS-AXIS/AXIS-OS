@@ -26,6 +26,7 @@ Licence : Apache 2.0 (open-source — SDK public)
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
@@ -133,6 +134,17 @@ def require_number(name: str, value: Any, *, mini: Optional[float] = None,
     if maxi is not None and v > maxi:
         raise InvalidArgumentError(f"{name} = {v} : au-dessus de la borne {maxi}")
     return v
+
+
+_LANGUE = re.compile(r"[a-z]{2}(-[A-Z]{2})?")
+
+
+def require_language(value: Any) -> str:
+    """Code de langue « en », « fr » ou « fr-FR » ; InvalidArgumentError
+    sinon."""
+    if not isinstance(value, str) or not _LANGUE.fullmatch(value):
+        raise InvalidArgumentError("language : un code comme « en », « fr » ou « fr-FR »")
+    return value
 
 
 def require_text(name: str, value: Any, max_len: int, *, allow_empty: bool = False) -> str:

@@ -374,6 +374,7 @@ class PlayStoreRuntime:
         navigation_service=None,
         manipulation_service=None,
         human_interface=None,
+        speech_synthesizer=None,
     ):
         """
         `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
@@ -471,6 +472,9 @@ class PlayStoreRuntime:
 
         `human_interface` : IHumanInterface qui répond à
         ctx.ask_confirmation() ; None : aucun humain (refus).
+
+        `speech_synthesizer` : ISpeechSynthesizer de ctx.speak() ; None :
+        pas de synthèse vocale (CAPABILITY_MISSING).
         """
         if not isinstance(profil, Profil):
             raise TypeError(
@@ -573,6 +577,9 @@ class PlayStoreRuntime:
         # ctx.ask_confirmation(). None : aucun humain, la question est
         # refusée (HUMAN_UNAVAILABLE), jamais tenue pour acceptée.
         self._human_interface = human_interface
+        self._speech_synthesizer = speech_synthesizer
+        # Réglages choisis par l'utilisateur, par app (set_setting).
+        self._reglages: Dict[str, Dict[str, Any]] = {}
         # Contexte du hook en cours, par app (pour request_stop), et
         # dernière progression rapportée (get_progress).
         self._ctx_courants: Dict[str, RobotContext] = {}
@@ -1870,7 +1877,30 @@ class PlayStoreRuntime:
                              navigation=self._navigation_service,
                              manipulation=self._manipulation_service)
         ctx._set_human_interface(self._human_interface)
+        ctx._set_voice(self._speech_synthesizer)
+        ctx._set_settings(self._reglages.get(manifest.app_id, {}))
         return ctx
+
+    def set_setting(self, app_id: str, name: str, value) -> bool:
+        """Réglage choisi par l'utilisateur pour une app installée, validé
+        contre la déclaration de son manifeste (type, bornes, choix). Rend
+        False, sans rien changer, si l'app ou le réglage est inconnu ou si
+        la valeur ne respecte pas la déclaration. Gardé en mémoire : vu par
+        le hook suivant de l'app."""
+        entry = self._get(app_id)
+        if entry is None:
+            return False
+        spec = next((s for s in entry.manifest.settings if s.name == name), None)
+        if spec is None:
+            print(f"  [ERREUR] réglage « {name} » non déclaré par {app_id}")
+            return False
+        try:
+            spec.check(value)
+        except ValueError as exc:
+            print(f"  [ERREUR] réglage « {name} » de {app_id} refusé : {exc}")
+            return False
+        self._reglages.setdefault(app_id, {})[name] = value
+        return True
 
     def _get(self, app_id: str) -> Optional[InstalledApp]:
         entry = self._apps.get(app_id)

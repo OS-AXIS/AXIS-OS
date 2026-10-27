@@ -212,6 +212,9 @@ class SimulatedRobot:
                                                  gardien=self.guard, horloge=self.clock)
                              if manipulation else None)
         self.perception = SimulatedPerception(self)
+        # Synthèse vocale factice : `voice.spoken` garde ce que le robot a dit.
+        from axis_os.services.speech.synthesis import FakeSpeechSynthesizer
+        self.voice = FakeSpeechSynthesizer()
         self._arret = threading.Event()
         self._fil: Optional[threading.Thread] = None
 
@@ -272,6 +275,7 @@ class SimulatedRobot:
         reglages = dict(locomotion_service=self.locomotion, perception_service=self.perception,
                         navigation_service=self.navigation,
                         manipulation_service=self.manipulation,
+                        speech_synthesizer=self.voice,
                         clock=self.clock, profil=Profil.SIMULATION,
                         confirmer_permissions=accepter_tout_SIMULATION)
         reglages.update(kw)

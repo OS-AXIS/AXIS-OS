@@ -28,7 +28,7 @@ import math
 import re
 from dataclasses import dataclass, field, fields
 from enum import Enum, auto
-from typing import Optional
+from typing import Any, Optional
 
 from axis_os.hal.core.capabilities import RobotCapability
 
@@ -176,6 +176,10 @@ class Permission(Enum):
     # Jouer une animation (play_animation) : un geste des bras décrit par
     # des images clés, vérifié par l'OS avant d'être joué.
     ANIMATION_PLAY       = auto()
+    # Parler par le haut-parleur du robot (speak).
+    AUDIO_OUTPUT         = auto()
+    # Lire les réglages de l'app choisis par l'utilisateur (get_setting).
+    APP_SETTINGS         = auto()
 
 
 class ProtectionLevel(Enum):
@@ -257,6 +261,10 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # DANGEROUS : le flux fait bouger le robot.
     Permission.TELEOP_STREAM:        ProtectionLevel.DANGEROUS,
     Permission.ANIMATION_PLAY:       ProtectionLevel.DANGEROUS,
+    # NORMAL : parler ne fait pas bouger le robot ; lire ses propres
+    # réglages non plus.
+    Permission.AUDIO_OUTPUT:         ProtectionLevel.NORMAL,
+    Permission.APP_SETTINGS:         ProtectionLevel.NORMAL,
 }
 
 
@@ -402,6 +410,88 @@ class HardwareRequirements:
     compatible_models:    list[str]  = field(default_factory=list)
 
 
+SETTING_TYPES = ("bool", "int", "float", "str", "choice")
+MAX_SETTINGS = 32
+_NOM_REGLAGE = re.compile(r"[a-z][a-z0-9_]{0,31}")
+
+
+@dataclass(frozen=True)
+class SettingSpec:
+    """Un réglage de l'app, déclaré dans son manifeste, que l'utilisateur
+    choisit (PlayStoreRuntime.set_setting) et que l'app lit
+    (ctx.get_setting).
+
+    type : « bool », « int », « float » (bornés par min et max), « str »
+    (au plus max_length caractères, sans caractère de contrôle) ou
+    « choice » (une valeur de `choices`, des textes)."""
+    name: str
+    type: str
+    default: Any
+    min: Optional[float] = None
+    max: Optional[float] = None
+    choices: tuple = ()
+    max_length: int = 64
+    description: str = ""
+
+    def problems(self) -> list:
+        """Erreurs de la déclaration (liste vide : valide)."""
+        e = []
+        if not isinstance(self.name, str) or not _NOM_REGLAGE.fullmatch(self.name):
+            e.append(f"réglage {self.name!r} : nom en minuscules, chiffres et « _ » "
+                     f"(32 caractères au plus)")
+        if self.type not in SETTING_TYPES:
+            e.append(f"réglage {self.name!r} : type parmi {SETTING_TYPES}")
+            return e
+        for borne in (self.min, self.max):
+            if borne is not None and (isinstance(borne, bool) or not isinstance(borne, (int, float))
+                                      or not math.isfinite(borne)):
+                e.append(f"réglage {self.name!r} : bornes numériques finies")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            e.append(f"réglage {self.name!r} : min plus grand que max")
+        if self.type == "choice" and (not isinstance(self.choices, tuple) or not self.choices
+                                      or len(self.choices) > 64
+                                      or not all(isinstance(c, str) and 0 < len(c) <= 64
+                                                 for c in self.choices)):
+            e.append(f"réglage {self.name!r} : choices, de 1 à 64 textes courts")
+        if type(self.max_length) is not int or not 1 <= self.max_length <= 1024:
+            e.append(f"réglage {self.name!r} : max_length entre 1 et 1024")
+        if not isinstance(self.description, str) or len(self.description) > 500 \
+                or any(not c.isprintable() for c in self.description):
+            e.append(f"réglage {self.name!r} : description de 500 caractères au plus")
+        if not e:
+            try:
+                self.check(self.default)
+            except ValueError as exc:
+                e.append(f"réglage {self.name!r} : valeur par défaut invalide — {exc}")
+        return e
+
+    def check(self, value: Any) -> Any:
+        """La valeur, si elle respecte la déclaration ; ValueError sinon."""
+        t = self.type
+        if t == "bool":
+            if not isinstance(value, bool):
+                raise ValueError("true ou false attendu")
+            return value
+        if t in ("int", "float"):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or (t == "int" and not isinstance(value, int)) or not math.isfinite(value):
+                raise ValueError(f"nombre {'entier ' if t == 'int' else ''}fini attendu")
+            if (self.min is not None and value < self.min) or \
+                    (self.max is not None and value > self.max):
+                raise ValueError(f"valeur hors de [{self.min}, {self.max}]")
+            return value
+        if not isinstance(value, str):
+            raise ValueError("texte attendu")
+        if t == "choice":
+            if value not in self.choices:
+                raise ValueError(f"valeur parmi {list(self.choices)}")
+            return value
+        if len(value) > self.max_length or any(not c.isprintable() for c in value):
+            raise ValueError(f"texte de {self.max_length} caractères au plus, sans "
+                             f"caractère de contrôle")
+        return value
+
+
 @dataclass
 class AppManifest:
     """
@@ -469,6 +559,9 @@ class AppManifest:
     # elle est plus stricte tant qu'on reste en version 0.x (même version
     # MINEUR exigée).
     sdk_version_min: Optional[str] = None
+
+    # Réglages de l'app, choisis par l'utilisateur (voir SettingSpec).
+    settings: list[SettingSpec] = field(default_factory=list)
 
     # Signature Ed25519 du code source de l'app (voir
     # axis_os/store/sdk/signing.py). Facultative et à None par défaut, pour
@@ -588,6 +681,15 @@ class AppManifest:
                 SemVer.parse(self.sdk_version_min)
             except ValueError as e:
                 errors.append(f"sdk_version_min invalide : {e}")
+        if type(self.settings) is not list or len(self.settings) > MAX_SETTINGS \
+                or any(type(s) is not SettingSpec for s in self.settings):
+            errors.append(f"settings : une liste d'au plus {MAX_SETTINGS} SettingSpec")
+        else:
+            noms = [s.name for s in self.settings]
+            if len(set(noms)) != len(noms):
+                errors.append("settings : deux réglages portent le même nom")
+            for s in self.settings:
+                errors.extend(s.problems())
         # Une app qui exige une politique apprise (Capability.AI_POLICY) doit
         # déclarer ACTUATORS_AI_DRIVEN (règle ajoutée après un audit de
         # sécurité, octobre 2026). Sinon le pilotage par IA resterait
