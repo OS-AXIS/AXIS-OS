@@ -11,7 +11,7 @@ pyzmq==27.2.0           # connecteurs VLA (ZeroMQ)
 protobuf==7.36.1        # connecteur VLACppConnector
 msgpack==1.2.3          # connecteur GR00T
 msgpack-numpy==0.4.8    # connecteur GR00T
-pillow==12.3.0          # images (perception, suivi en direct)
+pillow==13.0.0          # images (perception, suivi en direct)
 pandas==3.0.5           # conversion des épisodes VLA au format LeRobot
 pyarrow==26.0.0         # idem (fichiers parquet)
 imageio==2.38.1         # vidéos des épisodes VLA
