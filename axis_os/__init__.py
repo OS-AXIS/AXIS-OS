@@ -55,6 +55,7 @@ Politique de version adoptée (SemVer 2.0.0, MAJOR.MINOR.PATCH) :
 """
 
 from __future__ import annotations
+import re
 from dataclasses import dataclass
 
 
@@ -64,6 +65,7 @@ from dataclasses import dataclass
 # est dans CHANGELOG.md, à la racine du dépôt.
 __version__ = "0.2.0"
 
+_SEMVER_STRICT = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
 @dataclass(frozen=True, order=True)
 class SemVer:
@@ -87,8 +89,19 @@ class SemVer:
         manifeste doit être signalée clairement à l'installation, pas
         ignorée ni devinée en silence. Tout autre format lève donc
         ValueError, avec un message qui dit ce qui ne va pas.
+
+        Chiffres ASCII seulement, sans zéro en tête ni espace, signe ou
+        séparateur « _ » : int() accepte « 1_0 », « +1 », « ١ » ou « 01 », et
+        l'humain lirait alors une version pendant que l'OS en comparerait
+        une autre (le Play Store refuse en production toute version
+        antérieure à celle déjà installée).
         """
-        parts = version_string.strip().split(".")
+        if not isinstance(version_string, str) or not _SEMVER_STRICT.fullmatch(version_string):
+            raise ValueError(
+                f"Version SemVer invalide : {str(version_string)[:40]!r} — format attendu "
+                f"'MAJOR.MINOR.PATCH', chiffres ASCII sans zéro en tête (ex: '0.2.0')."
+            )
+        parts = version_string.split(".")
         if len(parts) != 3:
             raise ValueError(
                 f"Version SemVer invalide : '{version_string}' — "

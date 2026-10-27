@@ -99,7 +99,8 @@ try:
     ok = False
 except ValueError:
     ok = True
-check("Deux apps ne peuvent pas déclarer la même intention", ok)
+check("Un même nom ne peut pas être déclaré deux fois dans le même espace "
+      "(celui d'une app, ou celui de l'OS)", ok)
 
 section("3 — Une phrase mal comprise ne doit RIEN déclencher")
 

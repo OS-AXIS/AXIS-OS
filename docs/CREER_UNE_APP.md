@@ -112,7 +112,9 @@ Fichiers générés :
 ```
 mon_assistant/
 ├── app.py          ← votre code : le manifeste + 3 méthodes
-├── manifest.json   ← les métadonnées pour le Play Store
+├── manifest.json   ← les métadonnées lues par simulate et publish ; le
+│                     manifeste à livrer avec le code est
+│                     manifeste_texte(MonApp().manifest()) (« Signer son app »)
 ├── test_app.py     ← un test qui installe et lance l'app
 └── README.md
 ```
@@ -182,12 +184,12 @@ d'installer, et l'OS le fait respecter pendant l'exécution.
 
 | Champ | Rôle |
 |---|---|
-| `app_id` | identifiant unique, format `com.auteur.nom` |
+| `app_id` | identifiant unique, format `com.auteur.nom` : minuscules ASCII, chiffres et « _ » |
 | `name`, `version`, `author`, `author_email`, `description`, `category` | ce que voit l'utilisateur |
 | `permissions` | ce que l'app a le droit de faire (tableau suivant) |
 | `capabilities_required` | ce dont le robot doit être capable : `WALK`, `CAMERA_RGB`, `CAMERA_DEPTH`, `SPEECH_IN`, `GRASP_DUAL`, `NAVIGATION_MAP`, `MEMORY_PERSISTENT`… Un robot qui ne l'a pas : **installation refusée**, avec la raison |
 | `hardware` | exigences matérielles fines : `required`/`optional`, nombre minimal d'articulations, modèles compatibles |
-| `quota` | limites du bac à sable : `max_cpu_percent`, `max_memory_mb`, `max_runtime_s` (30 s par défaut : à augmenter pour une longue mission) |
+| `quota` | limites du bac à sable : `max_cpu_percent`, `max_memory_mb`, `max_runtime_s` (30 s par défaut : à augmenter pour une longue mission). Des nombres finis strictement positifs, sous les plafonds de l'OS (`PLAFONDS_QUOTAS` : 100 %, 1 024 Mo et 3 600 s en production ; 400 %, 8 192 Mo et 7 200 s en simulation et en développement) : au-delà, installation refusée. Ils sont montrés à l'utilisateur qui accepte vos permissions |
 | `max_velocity_ratio` | plafond de vitesse des bras, entre 0 et 1 |
 | `pricing_model`, `base_price_eur` | gratuit, achat unique, abonnement, ou paiement par mission. Le Play Store prend 30 % : pour toucher 1,40 €, le client paie 2,00 € |
 | `code_signature`, `developer_public_key` | signature du code (§ 11) |
@@ -204,7 +206,7 @@ sera, à juste titre, refusée par l'utilisateur.
 | `SENSORS_IMU` | lire la centrale inertielle | normal |
 | `SENSORS_CAMERA` | `look_for`, `describe_scene` | normal |
 | `SENSORS_MICROPHONE` | `listen`, `declare_intent` | normal |
-| `STORAGE_PERSISTENT` | `remember`, `recall` (mémoire propre à l'app) | normal |
+| `STORAGE_PERSISTENT` | `remember`, `recall` (mémoire propre à l'app, 1 000 clés et 1 Mio au plus) | normal |
 | `WATCHDOG_READ` | recevoir les alertes de sécurité | normal |
 | `ACTUATORS_WRITE_ARMS` / `_LEGS` / `_ALL` | commander les bras, les jambes, tout | **dangereux** |
 | `LOCOMOTION_WALK` | faire se déplacer le robot | **dangereux** |
@@ -223,8 +225,11 @@ déclarer `ACTUATORS_AI_DRIVEN`, sinon son manifest est invalide (le
 runtime ne fournit pas encore `AI_POLICY` : cette règle vaudra pour le
 futur service VLA). Déclarez `ACTUATORS_AI_DRIVEN` dès qu'une IA décide
 des mouvements : les consignes produites par `VLAAction`, `GR00TAction`
-ou `LocomotionAction` (`to_commands()`) sont refusées à l'exécution sans
-elle, et l'utilisateur doit le savoir avant d'accepter. Les
+ou `LocomotionAction` (`to_commands()`, `move_to_pose(ctx)`, et
+`walk(ctx)` pour une vitesse de marche) sont refusées à l'exécution sans
+elle, et l'utilisateur doit le savoir avant d'accepter. Passez par ces
+méthodes plutôt que de recopier les nombres du modèle dans `ctx.walk()`
+ou `ctx.move_to_pose()` : ce sont elles qui portent la marque « IA ». Les
 permissions **réservées** sont, elles, refusées à toute app qui n'est pas
 signée par la clé de la plateforme.
 
@@ -250,14 +255,14 @@ au § 1.
 | `ctx.now()`, `ctx.sleep(s)` | — | l'heure **du robot** (simulée en simulation) |
 | `ctx.look_for("a red box", frame="world")` | caméra | objets détectés, triés par confiance ; position 3D si caméra de profondeur |
 | `ctx.describe_scene()` | caméra | ce que le robot voit, en clair |
-| `ctx.declare_intent(nom, mots_cles)` | micro | ajoute du vocabulaire au robot |
+| `ctx.declare_intent(nom, mots_cles)` | micro | ajoute du vocabulaire à votre app (256 intentions au plus ; une autre app peut déclarer le même nom sans vous gêner) |
 | `ctx.listen(duree_s)` | micro | une **intention** reconnue (`.name`, `.params`, `.utterance` = la phrase), ou `None` |
-| `ctx.remember(cle, valeur)`, `ctx.recall(cle)` | stockage | mémoire qui survit au redémarrage, cloisonnée par app (un cloisonnement logique : voir la FAQ) |
+| `ctx.remember(cle, valeur)`, `ctx.recall(cle)` | stockage | mémoire qui survit au redémarrage, cloisonnée par app (un cloisonnement logique : voir la FAQ), 1 000 clés et 1 Mio au plus : au-delà, `remember` rend `False` |
 | `ctx.walk(vx, vy, wz)`, `ctx.stop_walking()` | marche | déplacement ; la consigne doit être **renouvelée** |
 | `ctx.move_to_pose({articulation: angle}, duree_s)` | bras / jambes | mouvement progressif, depuis la position réelle |
 | `ctx.move_arms(...)`, `ctx.move_legs(...)` | bras / jambes | consignes articulaires, vérifiées par le garde-fou |
 | `ctx.get_full_state()` | lecture | position et vitesse de chaque articulation |
-| `ctx.emergency_stop()` | arrêt d'urgence | arrête tout le robot |
+| `ctx.emergency_stop()` | arrêt d'urgence | arrête tout le robot, et interrompt la mission en cours |
 | `ctx.subscribe_alerts(fonction)` | alertes | être prévenu des alertes de sécurité |
 
 Un service absent du robot (pas de caméra, pas de micro) n'est **pas une
@@ -298,8 +303,17 @@ référence.
    contourner, et l'API n'en offrira pas.
 7. **Une intention vocale ne commande jamais un moteur.** `listen()` rend
    une intention ; c'est **votre code** qui décide ce qu'elle déclenche.
-   Une phrase qu'aucune app n'a déclarée ne produit rien.
-8. **Échouez en le disant.** Un `MissionResult(success=False,
+   Une phrase qu'aucune app n'a déclarée ne produit rien, et votre app ne
+   reçoit que les intentions qu'elle a déclarées elle-même.
+8. **Un arrêt d'urgence met fin à votre mission.** Dès qu'il survient,
+   tout appel à `ctx` lève `EstopActiveError`, sauf `log`,
+   `get_recent_alerts`, `stop_walking` et `emergency_stop` (vous pouvez
+   encore journaliser et arrêter la marche) ; vous avez une
+   demi-seconde pour rendre votre résultat, puis votre processus est
+   arrêté. La mission est notée « interrompue par arrêt d'urgence » et
+   n'est jamais facturée. Ne comptez pas sur ce délai pour finir un
+   travail.
+9. **Échouez en le disant.** Un `MissionResult(success=False,
    error_message="…")` clair vaut mieux qu'une app qui invente un résultat
    plausible.
 
@@ -530,20 +544,47 @@ Ne passez au niveau 3 que lorsque les niveaux 1 et 2 sont propres.
 ### Signer son app
 
 Une signature prouve que le code publié est bien le vôtre et qu'il n'a pas
-été modifié :
+été modifié. Sur un vrai robot (profil `PRODUCTION`), on signe un
+**paquet** : le code et son manifeste déclaré, ensemble. Le robot lit
+ainsi votre manifeste sans exécuter une ligne de votre code avant que
+l'utilisateur ait accepté :
 
 ```python
-from axis_os.store.sdk.signing import generate_developer_keypair, sign_app_file
+from pathlib import Path
+from axis_os.store.runtime.manifeste_json import manifeste_texte
+from axis_os.store.sdk.signing import generate_developer_keypair, sign_app_package
+from app import MonApp                  # sur VOTRE machine
 
 cles = generate_developer_keypair()     # UNE fois ; gardez private_key_b64 secrète
-signature = sign_app_file("app.py", cles.private_key_b64)
-# dans le manifeste :
-#   code_signature=signature, developer_public_key=cles.public_key_b64
+source = Path("app.py").read_text(encoding="utf-8")
+manifeste = manifeste_texte(MonApp().manifest())       # JSON, sans signature
+signature = sign_app_package(manifeste, source, cles.private_key_b64)
+# à livrer : app.py, le texte du manifeste, la signature et cles.public_key_b64
+# sur le robot :
+#   runtime.install_source(source, manifeste=manifeste, code_signature=signature,
+#                          developer_public_key=cles.public_key_b64)
 ```
 
 La clé privée ne quitte jamais votre machine et ne va **jamais** dans un
-dépôt Git. Le Play Store vérifie la signature du **fichier entier** : un
-seul caractère modifié après signature, et l'installation est refusée.
+dépôt Git. Un seul caractère modifié après signature, dans le code ou
+dans le manifeste, et l'installation est refusée. C'est le manifeste
+déclaré que le robot applique.
+
+Votre clé doit figurer dans le fichier des clés approuvées du robot. La
+**première** clé qui installe un `app_id` sur un robot le garde : une
+autre clé ne pourra plus l'installer ni le mettre à jour. Pour publier une
+nouvelle version : même clé, numéro de version **strictement** plus grand
+(`MAJEUR.MINEUR.CORRECTIF`, chiffres sans zéro en tête), puis
+`runtime.update_source(...)` avec les mêmes arguments. Un robot refuse une
+version plus ancienne que la plus récente qu'il ait installée, même après
+un redémarrage, et un autre contenu sous un numéro déjà installé : tout
+changement, même d'une ligne, demande un nouveau numéro. Une version qui
+change le modèle de prix ou augmente le prix doit être acceptée par
+l'humain qui installe. `update_source()` met à jour une app installée
+depuis le démarrage de l'OS ; après un redémarrage, la nouvelle version
+s'installe par `install_source()`, et son prix n'est alors pas comparé à
+l'ancien (`SECURITY.md`, limite n° 7). Hors production, `sign_app_file` (le code seul) reste
+accepté par `install()`.
 
 ### Publier
 

@@ -81,12 +81,25 @@ class MemoryService(IService):
     docs/architecture_services.md §6.1). Limite : le verrou couvre la
     lecture et l'écriture séparément, pas la séquence complète « lire,
     modifier, réécrire » d'une méthode publique ; deux modifications
-    simultanées de la même catégorie peuvent donc s'écraser.
+    simultanées de la même catégorie peuvent donc s'écraser. app_store(),
+    elle, fait sa séquence entière sous un second verrou, pour que son
+    quota tienne.
+
+    Quota par app de app_store() (SECURITY.md, ancienne limite n° 6) :
+    MAX_CLES_PAR_APP clés et MAX_OCTETS_PAR_APP octets au plus, mesurés en
+    JSON compact UTF-8, clés comprises. Fixé par l'OS, il est le même pour
+    toutes les apps ; l'espace « billing::<app_id> » de la facturation est
+    un espace à part, que le quota de l'app ne touche pas.
     """
+
+    MAX_CLES_PAR_APP = 1000
+    MAX_OCTETS_PAR_APP = 1 << 20        # pas plus qu'une trame du pont
 
     def __init__(self, storage_dir: Optional[Path] = None):
         self._storage_dir = storage_dir or _default_storage_dir()
         self._lock = threading.Lock()
+        # Distinct de _lock, que prennent _read_category et _write_category.
+        self._verrou_app = threading.Lock()
         self._started = False
 
     @property
@@ -220,15 +233,55 @@ class MemoryService(IService):
         ou lire les données d'un autre app_id. C'est vérifié
         explicitement par test/test_memory_service.py, et pas seulement
         supposé par construction.
+
+        Quota (voir la docstring de la classe) : une clé de plus au-delà de
+        MAX_CLES_PAR_APP, ou une écriture qui porterait l'espace de l'app
+        au-delà de MAX_OCTETS_PAR_APP, est refusée (ok=False, raison
+        explicite) et rien n'est écrit. Réécrire une clé existante sans la
+        faire grossir reste permis, même au-dessus du quota : une app peut
+        toujours réduire ses données. Une valeur qui ne s'écrit pas en JSON
+        est refusée de même.
         """
         if not self._started:
             return ServiceResult(ok=False, reason="Service non démarré")
         if not app_id or not app_id.strip():
             return ServiceResult(ok=False, reason="app_id vide")
-        store = self._read_category("app_store")
-        store[self._app_key(app_id, key)] = value
-        self._write_category("app_store", store)
+        with self._verrou_app:
+            store = self._read_category("app_store")
+            full_key = self._app_key(app_id, key)
+            try:
+                taille = self._octets(full_key, value)
+            except (TypeError, ValueError) as exc:
+                return ServiceResult(ok=False,
+                                     reason=f"valeur non enregistrable en JSON : {exc}"[:200])
+            # Même encodage que _app_key : '["<app_id>", ' ouvre toutes les clés
+            # de cette app, et seulement elles.
+            prefixe = "[" + json.dumps(app_id, ensure_ascii=False) + ", "
+            autres = [(k, v) for k, v in store.items() if k.startswith(prefixe) and k != full_key]
+            existe = full_key in store
+            if not existe and len(autres) >= self.MAX_CLES_PAR_APP:
+                return ServiceResult(ok=False, reason=(
+                    f"quota de mémoire persistante atteint : {self.MAX_CLES_PAR_APP} clés "
+                    f"au plus par app"))
+            total = taille + sum(self._octets(k, v) for k, v in autres)
+            if total > self.MAX_OCTETS_PAR_APP and (
+                    not existe or taille > self._octets(full_key, store[full_key])):
+                return ServiceResult(ok=False, reason=(
+                    f"quota de mémoire persistante atteint : {total} octets demandés, "
+                    f"{self.MAX_OCTETS_PAR_APP} au plus par app"))
+            store[full_key] = value
+            self._write_category("app_store", store)
         return ServiceResult(ok=True, value=value)
+
+    @staticmethod
+    def _octets(cle_stockee: str, valeur: Any) -> int:
+        """Taille comptée par le quota : l'entrée telle qu'écrite dans
+        app_store.json (JSON compact UTF-8, voir _write_category), soit la
+        clé stockée encodée à son tour en JSON (ses guillemets et ses barres
+        obliques inverses y sont échappés une seconde fois), « : », la
+        valeur et « , »."""
+        return len(json.dumps(cle_stockee, ensure_ascii=False).encode("utf-8")) + 2 + len(
+            json.dumps(valeur, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
     def app_load(self, app_id: str, key: str) -> ServiceResult:
         """Relit une valeur de l'espace privé de l'app `app_id`, ou rend
@@ -288,7 +341,13 @@ class MemoryService(IService):
         with self._lock:
             tmp_path = path.with_suffix(".json.tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                if category == "app_store":
+                    # Compact, comme le mesure le quota (_octets) : indenté, une
+                    # valeur très imbriquée pèserait des dizaines de fois plus.
+                    # dumps() d'un coup passe par l'encodeur C, dump() non.
+                    f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+                else:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
             # Écriture dans un fichier temporaire puis renommage
             # atomique : si le processus est interrompu en pleine
             # écriture (coupure d'alimentation, kill -9, c'est-à-dire

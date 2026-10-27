@@ -60,9 +60,9 @@ config:
   themeCSS: ".node rect, .cluster rect { rx: 14px; ry: 14px; } .edgeLabel foreignObject { overflow: visible; } .labelBkg { background: none; } .labelBkg .edgeLabel { display: inline-block; padding: 0 8px; border-radius: 999px; background: #ffffff; border: 1px solid #d2d2d7; color: #3a3a3c; } .labelBkg .edgeLabel p { background: none; margin: 0; } .labelBkg .edgeLabel:empty { display: none; } .flowchart-link { stroke: #8e8e93; stroke-width: 1.3px; } .marker { fill: #8e8e93; stroke: #8e8e93; } .edge-animation-fast { stroke: #007aff; stroke-dasharray: 0 20 !important; stroke-width: 5px; } @media (prefers-reduced-motion: reduce) { .edge-animation-fast { animation: none; } }"
 ---
 flowchart TB
-    PS("<b>Play Store</b><br/>✓ signature, obligatoire en production<br/>✓ permissions<br/>✓ confirmation des permissions DANGEROUS")
+    PS("<b>Play Store</b><br/>✓ signature, obligatoire en production<br/>✓ app_id lié à sa clé (production)<br/>✓ permissions, quotas plafonnés<br/>✓ confirmation des permissions DANGEROUS")
 
-    A("<b>App tierce</b> · RobotApp<br/>processus neuf, en sandbox<br/>quotas de CPU, de mémoire et de temps<br/>⚠ isolation incomplète, voir SECURITY.md")
+    A("<b>App tierce</b> · RobotApp<br/>processus neuf, en sandbox<br/>quotas de CPU, de mémoire et de temps<br/>arrêtée par un arrêt d'urgence<br/>⚠ isolation incomplète, voir SECURITY.md")
 
     subgraph OS["Processus d'AXIS-OS"]
         CTX("<b>RobotContext</b><br/>✓ permission de chaque appel<br/>✓ refus pendant un arrêt d'urgence<br/>✓ plafond de vitesse")

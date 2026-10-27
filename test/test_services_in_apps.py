@@ -68,7 +68,7 @@ class FakeSpeech:
         from axis_os.services.speech.service import IntentRegistry
         self.registry = IntentRegistry()
 
-    def listen(self, duration_s=3.0):
+    def listen(self, duration_s=3.0, app_id=None):
         self.ecoutes += 1
         return ServiceResult(ok=True, value=Intent(
             "aller_vers_colis", {"cible": "a cardboard box"}, 1.0,

@@ -91,6 +91,13 @@ class VLAAction:
     confidence:     Optional[float]  = None
     timestamp_ns:   int              = 0
 
+    def move_to_pose(self, ctx, duration_s: float = 2.0, step_s: float = 0.05) -> bool:
+        """Rejoint target_angles par ctx.move_to_pose(), avec la marque
+        ORIGINE_IA : l'OS exige alors ACTUATORS_AI_DRIVEN, comme pour
+        to_commands()."""
+        return ctx.move_to_pose(dict(self.target_angles), duration_s, step_s,
+                                origine=ORIGINE_IA)
+
     def to_commands(self, velocity: float = 1.0) -> Dict[str, ActuatorCommand]:
         """
         Convertit l'action en commandes HAL normalisées, en mode position,

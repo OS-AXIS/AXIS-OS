@@ -75,6 +75,14 @@ class EstopActiveError(Exception):
     move_legs(), move_all() et walk() (voir _require_no_estop()), et non
     plus une seule fois, au lancement de la mission par
     PlayStoreRuntime.run_mission(). Test : test/test_estop_interrupt.py.
+
+    Depuis, l'arrêt d'urgence interrompt aussi la mission elle-même, et un
+    on_start ou un on_stop en cours : dans le processus de l'app, tout
+    appel au robot (sauf log, stop_walking, emergency_stop et
+    get_recent_alerts) lève alors cette exception,
+    l'app a une demi-seconde pour rendre son résultat, puis son processus
+    est arrêté (voir `arret` dans SandboxRunner.run_app, et
+    test/test_arret_urgence_mission.py).
     """
     pass
 
@@ -337,8 +345,10 @@ class RobotContext:
         """Enregistre une donnée qui survit au redémarrage du robot.
 
         Rend True si la donnée est enregistrée. Rend False si le robot n'a
-        pas de mémoire persistante, ou si le service de mémoire refuse
-        (la raison est alors notée dans le journal). Permission :
+        pas de mémoire persistante, ou si le service de mémoire refuse, par
+        exemple parce que le quota de l'app est atteint
+        (MemoryService.MAX_CLES_PAR_APP clés, MAX_OCTETS_PAR_APP octets) ;
+        la raison est alors notée dans le journal. Permission :
         STORAGE_PERSISTENT.
 
         L'espace de stockage est celui de cette app : l'identifiant
@@ -383,13 +393,14 @@ class RobotContext:
         None est un résultat normal et fréquent : silence, bruit, phrase
         hors du vocabulaire déclaré (voir declare_intent()), ou robot
         sans service de parole. Une app doit traiter ce cas comme
-        ordinaire, pas comme une erreur. Permission : SENSORS_MICROPHONE.
+        ordinaire, pas comme une erreur. Seules les intentions déclarées
+        par cette app peuvent lui revenir. Permission : SENSORS_MICROPHONE.
         """
         self._require(Permission.SENSORS_MICROPHONE)
         if self._speech is None:
             self.log("listen : ce robot n'a pas de service de parole.")
             return None
-        r = self._speech.listen(duration_s)
+        r = self._speech.listen(duration_s, app_id=self._manifest.app_id)
         if r.reason:
             self.log(f"listen : {r.reason}")
         return r.value if r.ok else None
@@ -408,9 +419,12 @@ class RobotContext:
         IntentDeclaration (axis_os/services/speech/service.py).
 
         Rend True si l'intention est enregistrée. Rend False si le robot
-        n'a pas de service de parole, ou si ce nom d'intention est déjà
-        déclaré (le conflit est noté dans le journal). Permission :
-        SENSORS_MICROPHONE.
+        n'a pas de service de parole, si cette app a déjà déclaré ce nom
+        d'intention ou si elle a atteint son plafond
+        (IntentRegistry.MAX_INTENTIONS) ; la raison est notée dans le
+        journal. Les intentions d'une app sont rangées sous son app_id :
+        une autre app ne peut ni les recevoir ni en réserver le nom.
+        Permission : SENSORS_MICROPHONE.
         """
         self._require(Permission.SENSORS_MICROPHONE)
         if self._speech is None:
@@ -419,11 +433,9 @@ class RobotContext:
         try:
             self._speech.registry.register(IntentDeclaration(
                 name=name, keywords=keywords, params=params or {},
-                description=description))
+                description=description), app_id=self._manifest.app_id)
             return True
         except ValueError as exc:
-            # Déjà déclarée par une autre app : ce n'est pas une erreur
-            # de programmation, c'est un conflit à arbitrer.
             self.log(f"declare_intent : {exc}")
             return False
 
@@ -474,7 +486,8 @@ class RobotContext:
         r = self._perception.describe_scene()
         return r.value if r.ok else f"perception indisponible : {r.reason}"
 
-    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> bool:
+    def walk(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *,
+             origine: Optional[str] = None) -> bool:
         """Déclare une vitesse de déplacement. NON BLOQUANT.
 
         Pourquoi l'app ne pilote pas la marche pas à pas : une app
@@ -496,6 +509,10 @@ class RobotContext:
         le faire, le service la ramène à zéro et le robot s'arrête en
         gardant l'équilibre : la sécurité ne dépend pas de l'app.
 
+        `origine` : ORIGINE_IA quand la vitesse vient d'un modèle d'IA ;
+        c'est ce que pose LocomotionAction.walk() du SDK. Elle exige alors
+        ACTUATORS_AI_DRIVEN (voir _exiger_origine).
+
         Rend False si le service refuse (robot à terre, service arrêté,
         consigne non finie) ou si le robot ne sait pas se déplacer.
         Permissions : LOCOMOTION_WALK et ACTUATORS_WRITE_LEGS. Lève
@@ -503,6 +520,7 @@ class RobotContext:
         """
         self._require(Permission.LOCOMOTION_WALK)
         self._require(Permission.ACTUATORS_WRITE_LEGS)
+        self._exiger_origine(origine)
         self._require_no_estop()
         if self._locomotion is None:
             self.log("walk : ce robot ne sait pas se déplacer.")
@@ -586,6 +604,8 @@ class RobotContext:
         target: Dict[str, float],
         duration_s: float = 2.0,
         step_s: float = 0.05,
+        *,
+        origine: Optional[str] = None,
     ) -> bool:
         """
         Déplace progressivement les articulations vers `target` (dict
@@ -639,10 +659,15 @@ class RobotContext:
         déjà actif au début d'un pas lève EstopActiveError, comme
         `move_arms()`. L'attente entre deux pas se fait en temps réel
         (time.sleep), pas sur l'heure du robot de `sleep()`.
+
+        `origine` : ORIGINE_IA quand la cible vient d'un modèle d'IA (c'est
+        ce que posent VLAAction.move_to_pose() et LocomotionAction.move_to_pose()
+        du SDK) ; ACTUATORS_AI_DRIVEN est alors exigée avant tout
+        mouvement, et chaque pas porte la marque.
         """
-        import math as _math
         import time as _time
 
+        self._exiger_origine(origine)
         state = self.get_full_state()
         current: Dict[str, float] = {}
         for jid in target:
@@ -659,7 +684,7 @@ class RobotContext:
             for jid, target_pos in target.items():
                 interpolated = current[jid] + (target_pos - current[jid]) * fraction
                 step_commands[jid] = ActuatorCommand(
-                    mode=ControlMode.POSITION, position=interpolated,
+                    mode=ControlMode.POSITION, position=interpolated, origine=origine,
                 )
 
             arm_cmds = self._route(step_commands, JointGroup.MANIPULATION)
@@ -774,6 +799,16 @@ class RobotContext:
         if any(getattr(c, "origine", None) == ORIGINE_IA for c in commands.values()):
             self._require(Permission.ACTUATORS_AI_DRIVEN)
 
+    def _exiger_origine(self, origine: Optional[str]) -> None:
+        """Même règle que _exiger_pilotage_ia pour walk() et move_to_pose(),
+        qui reçoivent une vitesse ou une cible plutôt que des commandes.
+        Une origine inconnue est refusée plutôt qu'ignorée."""
+        if origine is None:
+            return
+        if origine != ORIGINE_IA:
+            raise ValueError(f"origine inconnue : {str(origine)[:40]!r}")
+        self._require(Permission.ACTUATORS_AI_DRIVEN)
+
     def _require(self, permission: Permission) -> None:
         """Lève PermissionError si `permission` n'est pas déclarée dans le
         manifeste de l'app. Appelée en tête de chaque méthode protégée."""
@@ -858,6 +893,10 @@ class MissionResult:
 
     Si la mission lève PermissionError ou EstopActiveError dans le
     sandbox, l'OS construit lui-même un MissionResult d'échec.
+
+    `interrompue_par_arret_urgence` n'est posé que par l'OS (PlayStoreRuntime),
+    quand un arrêt d'urgence est survenu pendant la mission ; elle est alors
+    un échec, jamais facturée.
     """
     success:          bool
     mission_id:       str
@@ -867,9 +906,12 @@ class MissionResult:
     error_message:    Optional[str]    = None
     metrics:          Dict[str, Any]   = field(default_factory=dict)
     log:              list[str]        = field(default_factory=list)
+    interrompue_par_arret_urgence: bool = False
 
     def __str__(self) -> str:
-        status = "✓ SUCCESS" if self.success else "✗ FAILED"
+        status = "✓ SUCCESS" if self.success else (
+            "✗ INTERROMPUE (arrêt d'urgence)" if self.interrompue_par_arret_urgence
+            else "✗ FAILED")
         return (f"[Mission {self.mission_id}] {status} | "
                 f"app={self.app_id} | durée={self.duration_s:.2f}s | "
                 f"items={self.items_processed}")

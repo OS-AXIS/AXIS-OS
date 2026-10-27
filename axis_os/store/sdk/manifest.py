@@ -24,12 +24,17 @@ Licence : Apache 2.0 (open-source — SDK public)
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+import math
+import re
+from dataclasses import dataclass, field, fields
 from enum import Enum, auto
 from typing import Optional
 
 from axis_os.hal.core.capabilities import RobotCapability
 
+
+
+_APP_ID = re.compile(r"[a-z][a-z0-9_]*(\.[a-z0-9_]+)+")
 
 class Permission(Enum):
     """
@@ -310,6 +315,12 @@ class ResourceQuota:
     mesures consécutives, et la surveillance du CPU et de la mémoire
     suppose que psutil (une bibliothèque de mesure des processus) soit
     installé.
+
+    Chaque valeur doit être un nombre fini strictement positif (validate)
+    et ne pas dépasser le plafond que l'OS fixe pour son profil
+    (PLAFONDS_QUOTAS dans axis_os/store/runtime/profil.py) : au-delà,
+    l'installation est refusée, la valeur n'est jamais ramenée en silence.
+    Ces quotas sont montrés à l'humain qui confirme les permissions.
     """
     max_cpu_percent: float = 50.0   # en % d'un cœur de processeur
     max_memory_mb:   int   = 256    # mémoire vive, en Mo
@@ -492,8 +503,13 @@ class AppManifest:
             v = getattr(self, champ)
             if not isinstance(v, str) or any(not c.isprintable() for c in v):
                 errors.append(f"{champ} doit être un texte sans caractère de contrôle")
-        if not self.app_id or "." not in self.app_id:
-            errors.append("app_id doit être en format 'com.author.name'")
+        # Minuscules ASCII, chiffres et « _ », en segments séparés par des
+        # points : deux app_id que l'humain lirait pareil (espace final,
+        # majuscules, lettre cyrillique, accent combinant) seraient sinon deux
+        # identités distinctes, chacune liée à sa propre clé.
+        if not isinstance(self.app_id, str) or not _APP_ID.fullmatch(self.app_id):
+            errors.append("app_id doit être en format 'com.auteur.nom' : minuscules ASCII, "
+                          "chiffres et « _ », segments séparés par des points")
         # « : » est réservé aux espaces internes de l'OS, comme « billing:: »
         # où le Play Store range l'état de facturation : sans cette règle,
         # une app d'app_id « billing::com.x.y » lisait et réécrivait par
@@ -543,6 +559,16 @@ class AppManifest:
                 "Capability.AI_POLICY exige la permission ACTUATORS_AI_DRIVEN : une "
                 "app pilotée par une politique apprise doit le déclarer, pour que "
                 "l'utilisateur le confirme à l'installation.")
+        # Un quota NaN, infini, nul, négatif ou d'un autre type désactiverait
+        # en silence le contrôle correspondant de la sandbox (toute
+        # comparaison avec NaN est fausse) ; type() exact, comme plus haut.
+        q = self.quota
+        if type(q) is not ResourceQuota or any(
+                type(getattr(q, f.name)) not in (int, float)
+                or not 0 < getattr(q, f.name) < math.inf
+                for f in fields(ResourceQuota)):
+            errors.append("quota doit être un ResourceQuota de nombres finis "
+                          "strictement positifs")
         # Signature et clé vont ensemble : voir le commentaire de
         # code_signature plus haut.
         if (self.code_signature is None) != (self.developer_public_key is None):

@@ -93,7 +93,10 @@ class IsaacSimHAL(IRobotHAL):
 
     def emergency_stop_all(self) -> HALStatus:
         """Arrêt d'urgence (e-stop) : chaque actionneur simulé reçoit son
-        propre ordre d'arrêt d'urgence."""
+        propre ordre d'arrêt d'urgence. estop_active est posé d'abord, comme
+        l'exige IRobotHAL : sans lui, un e-stop venu du Supervisor, du moniteur
+        indépendant ou d'une app restait invisible au Play Store sous Isaac."""
+        self._mark_estop_active()
         print(f"[AXIS-OS] ⚠️  E-STOP — {self.robot_id}")
         for a in self._actuators.values(): a.emergency_stop()
         return HALStatus.OK

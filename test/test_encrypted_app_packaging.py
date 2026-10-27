@@ -207,8 +207,8 @@ except AppLoadError:
 section("5 — Isolation : deux apps chargées dans le même process "
         "n'interfèrent jamais entre elles")
 
-source_a = VALID_APP_SOURCE.format(app_id="com.developer.appA_w5")
-source_b = VALID_APP_SOURCE.format(app_id="com.developer.appB_w5")
+source_a = VALID_APP_SOURCE.format(app_id="com.developer.appa_w5")
+source_b = VALID_APP_SOURCE.format(app_id="com.developer.appb_w5")
 enc_a = encrypt_app_code(source_a, kp.public_key_b64)
 enc_b = encrypt_app_code(source_b, kp.public_key_b64)
 
@@ -224,6 +224,20 @@ check("Les deux classes sont bien des types Python DIFFÉRENTS "
 runtime5 = make_runtime()
 check("Les deux s'installent ensemble sans conflit",
       runtime5.install(app_a) is True and runtime5.install(app_b) is True)
+
+# Vingt chargements à la suite, chacun gardé : chaque app a son propre
+# module, jamais celui d'une autre (un nom tiré de id() pouvait resservir
+# dès que l'objet code d'un chargement précédent était libéré).
+avant = len(sys.modules)
+apps = []
+for i in range(20):
+    src = VALID_APP_SOURCE.format(app_id=f"com.developer.serie_{i}")
+    apps.append(load_app_from_encrypted_bytes(
+        encrypt_app_code(src, kp.public_key_b64).to_bytes(), kp.private_key_b64, **signe(src)))
+noms = {type(a).__module__ for a in apps}
+check("Vingt apps chargées à la suite : vingt modules distincts, aucun écrasé",
+      len(noms) == 20 and len(sys.modules) == avant + 20
+      and all(sys.modules[type(a).__module__].__dict__[type(a).__name__] is type(a) for a in apps))
 
 # ══════════════════════════════════════════════════════════════════
 

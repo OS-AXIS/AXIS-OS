@@ -80,9 +80,10 @@ de ses limites), comme ceux
 de n'importe quelle autre source de commandes. Les passer au suiveur avec
 `set_target(..., origine=ORIGINE_IA)` : le contexte de l'app exige alors
 la permission ACTUATORS_AI_DRIVEN pour chaque pas. Les vitesses de base
-(`base_velocity`) ne sont PAS des angles : c'est à l'appelant de les
-transmettre au service de locomotion, qui les borne et les fait valider
-lui-même ; ce chemin-là ne porte pas la marque d'origine (voir
+(`base_velocity`) ne sont PAS des angles : elles vont au service de
+locomotion, qui les borne et les fait valider lui-même. Les transmettre
+par `GR00TAction.walk(ctx)`, qui porte la même marque d'origine ; une app
+qui les recopie à la main dans ctx.walk() n'est pas détectée (voir
 SECURITY.md, limite n° 2).
 
 La réponse du serveur est une donnée non fiable
@@ -142,6 +143,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
+from axis_os.hal.core.types import ORIGINE_IA
 from axis_os.store.sdk.ai.connector import IVLAConnector, VLAAction
 
 # Noms des entrées du modèle, fixés à l'entraînement (config_gr00t_g1.py) :
@@ -214,6 +216,12 @@ class GR00TAction(VLAAction):
     base_velocity: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     chunk: Dict[str, np.ndarray] = field(default_factory=dict)
     latency_s: float = 0.0
+
+    def walk(self, ctx) -> bool:
+        """Transmet base_velocity par ctx.walk(), avec la marque ORIGINE_IA :
+        l'OS exige alors ACTUATORS_AI_DRIVEN."""
+        vx, vy, wz = (float(v) for v in self.base_velocity)
+        return ctx.walk(vx, vy, wz, origine=ORIGINE_IA)
 
 
 def _verifier_bras(arm_joints: Sequence[str]) -> None:

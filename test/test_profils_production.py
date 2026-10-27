@@ -36,13 +36,14 @@ from axis_os.hal.watchdog.system import WatchdogSystem  # noqa: E402
 from axis_os.store.runtime.play_store import (  # noqa: E402
     PlayStoreRuntime, accepter_tout_SIMULATION,
 )
-from axis_os.store.runtime.profil import Profil  # noqa: E402
+from axis_os.store.runtime.manifeste_json import manifeste_texte  # noqa: E402
+from axis_os.store.runtime.profil import Profil, creer_registre_apps  # noqa: E402
 from axis_os.store.sdk.ai.connector import VLAAction  # noqa: E402
 from axis_os.store.sdk.app_base import (  # noqa: E402
     MissionResult, PermissionError as SdkPermissionError, RobotApp, RobotContext,
 )
 from axis_os.store.sdk.manifest import AppCategory, AppManifest, Permission  # noqa: E402
-from axis_os.store.sdk.signing import generate_developer_keypair, sign_app_code  # noqa: E402
+from axis_os.store.sdk.signing import generate_developer_keypair, sign_app_package  # noqa: E402
 
 FAIL = 0
 
@@ -101,6 +102,10 @@ CLES = DOSSIER / "cles_approuvees.txt"
 CLES.write_text(f"# clés de test\n{APPROUVEE.public_key_b64}  Développeur de test\n",
                 encoding="utf-8")
 os.chmod(CLES, 0o600)
+REGISTRE = DOSSIER / "registre_apps.json"
+creer_registre_apps(REGISTRE)
+REGISTRE_SANS_HUMAIN = DOSSIER / "registre_apps_sans_humain.json"
+creer_registre_apps(REGISTRE_SANS_HUMAIN)
 
 SOURCE_APP = '''
 from axis_os.hal.core.types import ActuatorCommand, ControlMode
@@ -135,13 +140,24 @@ class AppSignee(RobotApp):
                              mission_id="", app_id="", duration_s=0.0, items_processed=1)
 '''
 
+# Manifeste déclaré à côté du code, signé avec lui (le même que celui que
+# rend AppSignee.manifest()).
+MANIFESTE_APP = manifeste_texte(AppManifest(
+    app_id="com.test.signee", name="Signée", version="1.0.0", author="T",
+    author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
+    permissions=[Permission.ACTUATORS_WRITE_ARMS]))
+
 CONFIRMATIONS = []
 
 
-def confirmer_test(manifest, permissions):
+def confirmer_test(manifest, permissions, details=None):
     """Tient le rôle de l'opérateur humain : note la demande et accepte."""
     CONFIRMATIONS.append([p.name for p in permissions])
     return True
+
+
+# En production, le confirmateur reçoit la clé signataire (DetailsConfirmation).
+confirmer_test.recoit_details = True
 
 
 section("1. Le profil est obligatoire et explicite")
@@ -178,7 +194,7 @@ mauvais.write_text("pas-une-cle  Quelqu'un\n", encoding="utf-8")
 os.chmod(mauvais, 0o600)
 refuse("Fichier de clés mal formé", ValueError, profil=Profil.PRODUCTION, cles_approuvees=mauvais)
 prod, journal = runtime(profil=Profil.PRODUCTION, cles_approuvees=CLES,
-                        confirmer_permissions=confirmer_test)
+                        confirmer_permissions=confirmer_test, registre_apps=REGISTRE)
 check("Configuration complète : PRODUCTION démarre", prod is not None)
 check("… sans avertissement de profil permissif", "[PROFIL" not in journal)
 
@@ -201,17 +217,19 @@ ok, sortie = silencieux(prod.install, AppObjet())
 check("install(objet) refusé en production", ok is False and "install_source" in sortie)
 
 section("5. PRODUCTION : installation depuis la source signée")
-signature = sign_app_code(SOURCE_APP, APPROUVEE.private_key_b64)
+signature = sign_app_package(MANIFESTE_APP, SOURCE_APP, APPROUVEE.private_key_b64)
 ok, sortie = silencieux(prod.install_source, SOURCE_APP + "\n# modifié\n",
-                        code_signature=signature,
+                        manifeste=MANIFESTE_APP, code_signature=signature,
                         developer_public_key=APPROUVEE.public_key_b64, origine="modifiee")
 check("Source modifiée après signature : refusée", ok is False and "Signature invalide" in sortie)
-ok, sortie = silencieux(prod.install_source, SOURCE_APP,
-                        code_signature=sign_app_code(SOURCE_APP, INCONNUE.private_key_b64),
+ok, sortie = silencieux(prod.install_source, SOURCE_APP, manifeste=MANIFESTE_APP,
+                        code_signature=sign_app_package(MANIFESTE_APP, SOURCE_APP,
+                                                        INCONNUE.private_key_b64),
                         developer_public_key=INCONNUE.public_key_b64, origine="inconnue")
 check("Signée par une clé non approuvée : refusée", ok is False and "non approuvée" in sortie)
 modules_avant = set(sys.modules)
-ok, sortie = silencieux(prod.install_source, SOURCE_APP, code_signature=signature,
+ok, sortie = silencieux(prod.install_source, SOURCE_APP, manifeste=MANIFESTE_APP,
+                        code_signature=signature,
                         developer_public_key=APPROUVEE.public_key_b64, origine="signee")
 check("Signée par une clé approuvée : installée", ok is True, sortie[-300:])
 check("… le code de l'app n'a pas été chargé dans le processus de l'OS",
@@ -226,8 +244,10 @@ ok_start, _ = silencieux(prod.start_app, "com.test.signee")
 res, _ = silencieux(prod.run_mission, "com.test.signee", {})
 check("… démarre et bouge le bras par le pont", ok_start is True and res is not None
       and res.success, getattr(res, "error_message", None))
-prod_sans_humain, _ = runtime(profil=Profil.PRODUCTION, cles_approuvees=CLES)
-ok, sortie = silencieux(prod_sans_humain.install_source, SOURCE_APP, code_signature=signature,
+prod_sans_humain, _ = runtime(profil=Profil.PRODUCTION, cles_approuvees=CLES,
+                              registre_apps=REGISTRE_SANS_HUMAIN)
+ok, sortie = silencieux(prod_sans_humain.install_source, SOURCE_APP, manifeste=MANIFESTE_APP,
+                        code_signature=signature,
                         developer_public_key=APPROUVEE.public_key_b64, origine="signee")
 check("Sans confirmation humaine configurée : permission DANGEROUS refusée",
       ok is False and "refus par défaut" in sortie)

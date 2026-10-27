@@ -43,8 +43,9 @@ from axis_os.services.policy.setpoint_follower import SetpointFollower  # noqa: 
 from axis_os.store.runtime.hal_bridge import HALBridgeServer  # noqa: E402
 from axis_os.store.runtime.packaging import decrypt_verified_app_source  # noqa: E402
 from axis_os.store.runtime.play_store import PlayStoreRuntime  # noqa: E402
+from axis_os.store.runtime.manifeste_json import manifeste_texte  # noqa: E402
 from axis_os.store.runtime.profil import (  # noqa: E402
-    ClesApprouveesInvalides, Profil, lire_cles_approuvees,
+    ClesApprouveesInvalides, Profil, creer_registre_apps, lire_cles_approuvees,
 )
 from axis_os.store.runtime.sandbox import SandboxRunner  # noqa: E402
 from axis_os.store.sdk.app_base import (  # noqa: E402
@@ -54,7 +55,7 @@ from axis_os.store.sdk.encryption import encrypt_app_code, generate_platform_key
 from axis_os.store.sdk.manifest import (  # noqa: E402
     AppCategory, AppManifest, Permission, ResourceQuota,
 )
-from axis_os.store.sdk.signing import generate_developer_keypair, sign_app_code  # noqa: E402
+from axis_os.store.sdk.signing import generate_developer_keypair, sign_app_package  # noqa: E402
 
 FAIL = 0
 
@@ -131,7 +132,7 @@ class ParoleNotee:
     def __init__(self):
         self.durees = []
 
-    def listen(self, duree):
+    def listen(self, duree, app_id=None):
         self.durees.append(duree)
         return ServiceResult(ok=False, value=None, reason=None)
 
@@ -202,7 +203,10 @@ class AppObjet(RobotApp):
         return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
 
 
-prod, _ = silencieux(PlayStoreRuntime, r, wd, profil=Profil.PRODUCTION, cles_approuvees=vrai)
+registre = dossier / "registre_apps.json"
+creer_registre_apps(registre)
+prod, _ = silencieux(PlayStoreRuntime, r, wd, profil=Profil.PRODUCTION, cles_approuvees=vrai,
+                     registre_apps=registre)
 ok, sortie = silencieux(prod.update_app, AppObjet())
 check("update_app(objet) en production : refusé", ok is False and "PRODUCTION" in sortie)
 
@@ -221,17 +225,23 @@ class AppChiffree(RobotApp):
     def run_mission(self, ctx, params):
         return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
 '''
+# Le manifeste déclaré voyage en clair à côté du paquet chiffré, signé avec
+# le code (le même que celui que rend AppChiffree.manifest()).
+MANIFESTE = manifeste_texte(AppManifest(
+    app_id="com.test.chiffree", name="Chiffrée", version="1.0.0", author="T",
+    author_email="t@t.com", description="d", category=AppCategory.UTILITIES))
 plateforme = generate_platform_keypair()
 paquet = encrypt_app_code(SOURCE, plateforme.public_key_b64).to_bytes()
-signature = sign_app_code(SOURCE, dev.private_key_b64)
+signature = sign_app_package(MANIFESTE, SOURCE, dev.private_key_b64)
 modules_avant = set(sys.modules)
 texte = decrypt_verified_app_source(paquet, plateforme.private_key_b64,
                                     code_signature=signature,
-                                    developer_public_key=dev.public_key_b64)
+                                    developer_public_key=dev.public_key_b64,
+                                    manifeste=MANIFESTE)
 check("Déchiffré et vérifié : texte rendu, rien d'exécuté",
       texte == SOURCE and not [m for m in set(sys.modules) - modules_avant
                                if "chiffree" in m or "encrypted_app" in m])
-ok, sortie = silencieux(prod.install_source, texte, code_signature=signature,
+ok, sortie = silencieux(prod.install_source, texte, manifeste=MANIFESTE, code_signature=signature,
                         developer_public_key=dev.public_key_b64, origine="chiffree")
 check("install_source : installée", ok is True, sortie[-300:])
 check("… toujours rien de chargé dans le processus de l'OS",
@@ -317,8 +327,13 @@ except ValueError:
 SOURCE_VERSION = SOURCE.replace('category=AppCategory.UTILITIES)',
                                 'category=AppCategory.UTILITIES, sdk_version_min="\\x1b[31m9")')
 SOURCE_VERSION = SOURCE_VERSION.replace("com.test.chiffree", "com.test.version")
-ok, sortie = silencieux(prod.install_source, SOURCE_VERSION,
-                        code_signature=sign_app_code(SOURCE_VERSION, dev.private_key_b64),
+MANIFESTE_VERSION = manifeste_texte(AppManifest(
+    app_id="com.test.version", name="Chiffrée", version="1.0.0", author="T",
+    author_email="t@t.com", description="d", category=AppCategory.UTILITIES,
+    sdk_version_min="\x1b[31m9"))
+ok, sortie = silencieux(prod.install_source, SOURCE_VERSION, manifeste=MANIFESTE_VERSION,
+                        code_signature=sign_app_package(MANIFESTE_VERSION, SOURCE_VERSION,
+                                                        dev.private_key_b64),
                         developer_public_key=dev.public_key_b64, origine="version")
 check("Erreur de validate() reprenant un champ de l'app : affichée neutralisée",
       ok is False and "sdk_version_min" in sortie and "\x1b" not in sortie, sortie[-200:])

@@ -63,6 +63,7 @@ Licence : Apache 2.0
 
 from __future__ import annotations
 import base64
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
@@ -196,6 +197,65 @@ def verify_app_signature(
         return True
     except InvalidSignature:
         return False
+
+
+# ── Paquet signé : manifeste déclaré + code (format 2) ─────────────
+#
+# Pourquoi : pour lire le manifeste d'une app (identité, permissions,
+# quotas) avant de demander quoi que ce soit à l'humain, l'OS exécutait son
+# code. Avec un manifeste déclaré à côté du code et couvert par la MÊME
+# signature, l'OS lit le manifeste sans rien exécuter. Une seule signature
+# pour les deux : avec deux signatures séparées, on pourrait associer le
+# manifeste d'une version au code d'une autre, signés par la même clé.
+
+_DOMAINE_PAQUET = b"AXIS-OS-APP-V2\x00"
+
+
+def message_paquet(manifeste: str, source: str) -> bytes:
+    """Les octets exacts que signe sign_app_package(). Le préfixe contient
+    un octet nul, qu'aucun code source Python ne peut contenir : une
+    signature de paquet n'est jamais valable comme signature d'un code seul
+    (format 1, sign_app_code), ni l'inverse. La longueur du manifeste fixe
+    sans ambiguïté sa frontière avec le code."""
+    try:
+        m, s = manifeste.encode("utf-8"), source.encode("utf-8")
+    except (AttributeError, UnicodeEncodeError) as e:
+        raise SignatureError(f"manifeste ou code non encodable en UTF-8 : {e}") from None
+    return _DOMAINE_PAQUET + len(m).to_bytes(8, "big") + m + s
+
+
+def sign_app_package(manifeste: str, source: str, private_key_b64: str) -> str:
+    """Signe ensemble le manifeste déclaré (texte JSON, voir
+    manifeste_json.manifeste_texte) et le code source d'une app. C'est la
+    signature qu'exige PlayStoreRuntime.install_source()."""
+    return sign_app_code(message_paquet(manifeste, source), private_key_b64)
+
+
+def verify_app_package(manifeste: str, source: str, signature_b64: str,
+                       public_key_b64: str) -> bool:
+    """Vérifie une signature de sign_app_package() ; mêmes règles que
+    verify_app_signature() (False si elle ne correspond pas, SignatureError
+    si une donnée est malformée)."""
+    return verify_app_signature(message_paquet(manifeste, source), signature_b64,
+                                public_key_b64)
+
+
+def public_key_fingerprint(public_key_b64: str) -> str:
+    """Empreinte courte d'une clé publique, à montrer à un humain :
+    « SHA256:» suivi des 16 premiers chiffres hexadécimaux du SHA-256 des 32
+    octets de la clé, par groupes de quatre. Deux clés différentes ont, en
+    pratique, des empreintes différentes ; le nom d'auteur d'un manifeste,
+    lui, peut être recopié par n'importe qui. Lève SignatureError si la clé
+    est malformée."""
+    try:
+        octets = base64.b64decode(public_key_b64, validate=True)
+    except Exception as e:
+        raise SignatureError(f"Clé publique malformée (base64 invalide) : {e}") from e
+    if len(octets) != 32:
+        raise SignatureError(
+            f"Clé publique Ed25519 invalide — attendu 32 octets, obtenu {len(octets)}.")
+    h = hashlib.sha256(octets).hexdigest()[:16]
+    return "SHA256:" + " ".join(h[i:i + 4] for i in range(0, 16, 4))
 
 
 def sign_app_file(file_path: Union[str, Path], private_key_b64: str) -> str:

@@ -1,23 +1,26 @@
 """
 AXIS-OS — Manifeste d'app <-> JSON
 ===================================
-En production, le code d'une app n'est jamais exécuté dans le processus
-de l'OS, pas même sa méthode manifest() : le processus de l'app l'appelle
-et renvoie le manifeste en JSON par le pont (voir hote_app.py). Ce module
-fait la conversion dans les deux sens. Côté OS, le JSON reçu est vérifié
-champ par champ (SCHEMA_MANIFESTE), puis le manifeste reconstruit passe
-par AppManifest.validate() comme tout autre manifeste.
+Une app installée depuis sa source (PlayStoreRuntime.install_source, seul
+chemin en production) déclare son manifeste à côté de son code, en JSON,
+et les deux sont signés ensemble (signing.sign_app_package) : l'OS lit le
+manifeste sans exécuter une ligne de l'app. Ce module fait la conversion
+dans les deux sens. Côté OS, le JSON est vérifié champ par champ
+(SCHEMA_MANIFESTE), puis le manifeste reconstruit passe par
+AppManifest.validate() comme tout autre manifeste.
 
 Licence : Apache 2.0, comme tout le dépôt (voir LICENSE).
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 
 from axis_os.hal.core.capabilities import RobotCapability
 from axis_os.store.runtime.canal_ipc import (
-    Booleen, Chaine, Entier, Facultatif, Liste, MessageRefuse, Nombre, Objet, UnParmi,
+    TAILLE_MAX_TRAME, Booleen, Chaine, Entier, Facultatif, Liste, MessageRefuse, Nombre,
+    Objet, UnParmi, decoder,
 )
 from axis_os.store.sdk.manifest import (
     AppCategory, AppManifest, Capability, HardwareRequirements, IntentDecl, Permission,
@@ -55,8 +58,8 @@ SCHEMA_MANIFESTE = Objet({
 }, facultatifs={
     "icon_url": Chaine(2048), "website_url": Chaine(2048), "support_email": Chaine(256),
     "sdk_version_min": Chaine(64),
-    # Renvoyés pour information seulement : l'OS ne les reprend jamais
-    # (voir manifeste_depuis_json).
+    # Acceptés dans le texte, jamais repris : l'OS y met la signature et la
+    # clé qu'il a lui-même vérifiées (voir manifeste_depuis_json).
     "code_signature": Chaine(512), "developer_public_key": Chaine(512),
 })
 
@@ -90,8 +93,8 @@ def manifeste_vers_json(m: AppManifest) -> Dict[str, Any]:
 
 
 def manifeste_depuis_json(d: Any) -> AppManifest:
-    """dict JSON reçu d'un processus d'app -> AppManifest. Lève
-    MessageRefuse si le dict ne suit pas SCHEMA_MANIFESTE.
+    """dict JSON du manifeste déclaré (voir manifeste_depuis_texte) ->
+    AppManifest. Lève MessageRefuse si le dict ne suit pas SCHEMA_MANIFESTE.
 
     code_signature et developer_public_key ne sont jamais repris du JSON :
     l'appelant y met les valeurs qu'il a lui-même vérifiées, pour qu'une
@@ -122,4 +125,27 @@ def manifeste_depuis_json(d: Any) -> AppManifest:
     )
 
 
-__all__ = ["SCHEMA_MANIFESTE", "manifeste_vers_json", "manifeste_depuis_json", "MessageRefuse"]
+def manifeste_texte(m: AppManifest) -> str:
+    """Le manifeste déclaré d'une app, tel qu'on le signe avec son code
+    (signing.sign_app_package) : JSON, sans signature ni clé. À produire sur
+    la machine du développeur, par exemple manifeste_texte(MonApp().manifest())."""
+    d = manifeste_vers_json(m)
+    d.pop("code_signature", None)
+    d.pop("developer_public_key", None)
+    return json.dumps(d, ensure_ascii=False, sort_keys=True, indent=1)
+
+
+def manifeste_depuis_texte(texte: Any) -> AppManifest:
+    """Manifeste déclaré (texte JSON) -> AppManifest, sans rien exécuter.
+    Même JSON strict que le pont (canal_ipc.decoder : ni NaN, ni clé en
+    double, profondeur bornée), au plus une trame ; lève MessageRefuse."""
+    if not isinstance(texte, str):
+        raise MessageRefuse("manifeste déclaré attendu sous forme de texte JSON")
+    octets = texte.encode("utf-8")
+    if len(octets) > TAILLE_MAX_TRAME:
+        raise MessageRefuse(f"manifeste de {len(octets)} octets, au-delà de {TAILLE_MAX_TRAME}")
+    return manifeste_depuis_json(decoder(octets))
+
+
+__all__ = ["SCHEMA_MANIFESTE", "manifeste_vers_json", "manifeste_depuis_json",
+           "manifeste_texte", "manifeste_depuis_texte", "MessageRefuse"]
