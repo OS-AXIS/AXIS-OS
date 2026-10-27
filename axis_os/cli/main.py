@@ -4,29 +4,31 @@ AXIS-OS CLI
 Outil en ligne de commande (CLI, Command-Line Interface) destiné aux
 auteurs d'apps pour le Play Store d'AXIS-OS, la boutique d'apps du robot.
 Point d'entrée : python3 -m axis_os.cli.main <commande> (voir
-docs/CREER_UNE_APP.md), ou axis-os <commande> une fois la commande
-installée (voir « Installation » plus bas).
+docs/CREER_UNE_APP.md), ou axis <commande> une fois le paquet installé
+(voir « Installation » plus bas).
 
-Trois commandes couvrent la vie d'une app :
+Les commandes qui couvrent la vie d'une app :
   - init : crée le squelette d'une nouvelle app (code, manifeste, test,
     README) à partir des modèles de templates.py. Le manifeste est la
     fiche qui décrit l'app : identifiant, version, auteur, permissions ;
   - simulate : installe l'app sur un robot simulé et lui fait exécuter
     une mission, sans aucun robot réel ;
   - publish : vérifie le manifeste avant publication. L'envoi vers le
-    registre en ligne n'est pas encore branché (voir cmd_publish).
+    registre en ligne n'est pas encore branché (voir cmd_publish) ;
+  - validate : vérifie une app comme l'OS le fera (manifeste, permissions,
+    quotas, animations, versions) ;
+  - animation validate : vérifie un fichier d'animation.
 
-Usage, une fois la commande axis-os installée (sinon, remplacer
-axis-os par python3 -m axis_os.cli.main) :
-    axis-os init mon-app
-    axis-os simulate
-    axis-os publish
+Usage, une fois la commande axis installée (sinon, remplacer axis par
+python3 -m axis_os.cli.main) :
+    axis init mon-app
+    axis validate
+    axis simulate
+    axis publish --dry-run
 
-Installation : le dépôt ne fournit pas encore de pyproject.toml ni de
-setup.py, donc rien n'installe aujourd'hui la commande axis-os. Pour
-l'obtenir, il faudra déclarer dans un pyproject.toml :
-    [project.scripts]
-    axis-os = "axis_os.cli.main:main"
+Installation : pip install . à la racine du dépôt installe le paquet
+axis-os-sdk (pyproject.toml, non publié sur PyPI) et la commande axis
+(axis-os en est un autre nom).
 
 Licence : Apache 2.0
 """
@@ -155,8 +157,18 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 
     print(f"[axis-os] Simulation locale — backend={args.backend}")
 
-    # Import dynamique de l'app locale : le fichier app.py du dossier
-    # courant, chargé sous le nom de module « local_app ».
+    AppClass = _classe_app(app_file)
+    if AppClass is None:
+        print("[ERREUR] Aucune classe RobotApp concrète trouvée dans app.py")
+        return 1
+    return _simuler(AppClass, args)
+
+
+def _classe_app(app_file: Path):
+    """La classe de l'app définie dans `app_file`, ou None.
+
+    Import dynamique : le fichier est chargé sous le nom de module
+    « local_app »."""
     spec = importlib.util.spec_from_file_location("local_app", app_file)
     module = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(Path.cwd()))
@@ -167,6 +179,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     # planter `axis-os simulate` dès on_start (constaté en rédigeant
     # docs/CREER_UNE_APP.md).
     sys.modules["local_app"] = module
+    sys.path.insert(0, str(app_file.resolve().parent))
     spec.loader.exec_module(module)
 
     from axis_os.store.sdk.app_base import RobotApp
@@ -182,12 +195,12 @@ def cmd_simulate(args: argparse.Namespace) -> int:
         and obj is not RobotApp
         and obj.__module__ == "local_app"
     ]
-    if not app_classes:
-        print("[ERREUR] Aucune classe RobotApp concrète trouvée dans app.py")
-        return 1
+    return app_classes[0] if app_classes else None
 
-    AppClass = app_classes[0]
 
+def _simuler(AppClass, args: argparse.Namespace) -> int:
+    """Suite de cmd_simulate : installe l'app sur un G1 simulé et lui fait
+    exécuter une mission."""
     from axis_os.hal.drivers.isaac_sim.hal import IsaacSimHAL
     from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
     from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
@@ -351,6 +364,130 @@ def valider_fichier_animation(chemin) -> list:
     return problemes
 
 
+def cmd_validate(args: argparse.Namespace) -> int:
+    """
+    axis validate [dossier] : vérifie une app avant de la publier, comme
+    l'OS le fera à l'installation et à l'exécution — manifeste (champs,
+    réglages), permissions (et les droits qu'une API de haut niveau exige en
+    plus), capacités, quotas (plafonds de l'OS en production), animations
+    du dossier animations/, versions (min_sdk_version face à l'API du SDK,
+    sdk_version_min face à AXIS-OS). Code de sortie 0 si tout est bon, 1
+    sinon.
+    """
+    from dataclasses import fields
+    from axis_os import SemVer, __version__ as version_os
+    from axis_os.store.runtime.profil import PLAFONDS_QUOTAS, Profil
+    from axis_os.store.sdk.manifest import PERMISSION_LEVELS, Permission, ProtectionLevel
+    from axis_os.store.sdk.version import API_VERSION
+
+    dossier = Path(args.path)
+    app_file = dossier / "app.py"
+    erreurs, notes = [], []
+    if not app_file.exists():
+        print(f"✗ {app_file} introuvable")
+        return 1
+    try:
+        AppClass = _classe_app(app_file)
+        manifeste = AppClass().manifest() if AppClass is not None else None
+    except Exception as exc:          # noqa: BLE001 — rapporté, pas de trace
+        print(f"✗ app.py ne se charge pas : {type(exc).__name__}: {exc}")
+        return 1
+    if manifeste is None:
+        print("✗ aucune classe RobotApp dans app.py")
+        return 1
+
+    # Manifeste.
+    erreurs += [f"manifeste : {e}" for e in manifeste.validate()]
+    # Permissions : celles qu'une API de haut niveau exige en plus de la
+    # sienne (elle n'a jamais plus de droits que les commandes qu'elle
+    # remplace).
+    perms = set(manifeste.permissions)
+    exigences = {
+        Permission.ANIMATION_PLAY: (Permission.ACTUATORS_READ, Permission.ACTUATORS_WRITE_ARMS),
+    }
+    for perm, besoins in exigences.items():
+        manque = [b.name for b in besoins if perm in perms and b not in perms]
+        if manque:
+            erreurs.append(f"permissions : {perm.name} exige aussi {manque}")
+    if Permission.TELEOP_STREAM in perms:
+        bras = {Permission.ACTUATORS_READ, Permission.ACTUATORS_WRITE_ARMS} <= perms
+        marche = {Permission.LOCOMOTION_WALK, Permission.ACTUATORS_WRITE_LEGS} <= perms
+        if not (bras or marche):
+            erreurs.append("permissions : TELEOP_STREAM exige aussi les droits des bras "
+                           "(ACTUATORS_READ, ACTUATORS_WRITE_ARMS) ou de la marche "
+                           "(LOCOMOTION_WALK, ACTUATORS_WRITE_LEGS)")
+    dangereuses = sorted(p.name for p in perms
+                         if PERMISSION_LEVELS.get(p) is ProtectionLevel.DANGEROUS)
+    if dangereuses:
+        notes.append(f"permissions DANGEROUS (confirmées par un humain à l'installation) : "
+                     f"{dangereuses}")
+    # Quotas : plafonds du profil le plus strict.
+    plafond = PLAFONDS_QUOTAS[Profil.PRODUCTION]
+    for f in fields(plafond):
+        demande = getattr(manifeste.quota, f.name)
+        if demande > getattr(plafond, f.name):
+            erreurs.append(f"quota {f.name} = {demande:g} : au-delà du plafond de production "
+                           f"({getattr(plafond, f.name):g})")
+    # Capacités matérielles : celles du G1, le robot de référence.
+    try:
+        import contextlib
+        import io
+        from axis_os.hal.drivers.unitree_g1.robot import UnitreeG1HAL
+        with contextlib.redirect_stdout(io.StringIO()):
+            caps = UnitreeG1HAL("validation").get_capabilities()
+        absentes = [c.name for c in manifeste.hardware.required if not caps.has(c)]
+        if absentes:
+            notes.append(f"capacités requises absentes du G1 : {absentes}")
+    except Exception:                 # noqa: BLE001 — note facultative
+        pass
+    # Versions.
+    try:
+        SemVer.parse(manifeste.version)
+    except ValueError as exc:
+        erreurs.append(f"version : {exc}")
+    if manifeste.min_sdk_version is not None:
+        try:
+            requise, api = SemVer.parse(manifeste.min_sdk_version), SemVer.parse(API_VERSION)
+            if requise.major != api.major or api < requise:
+                erreurs.append(f"min_sdk_version {requise} : l'API du SDK est en {api}")
+        except ValueError:
+            pass                      # déjà signalé par validate()
+    else:
+        notes.append(f"min_sdk_version absent : conseillé (API du SDK : {API_VERSION})")
+    if manifeste.sdk_version_min is not None:
+        try:
+            if not SemVer.parse(manifeste.sdk_version_min).is_compatible_with(
+                    SemVer.parse(version_os)):
+                erreurs.append(f"sdk_version_min {manifeste.sdk_version_min} incompatible "
+                               f"avec AXIS-OS {version_os}")
+        except ValueError:
+            pass
+    # manifest.json, s'il existe : mêmes app_id et version que le code.
+    fichier = dossier / "manifest.json"
+    if fichier.exists():
+        try:
+            declare = json.loads(fichier.read_text())
+            for champ in ("app_id", "version"):
+                if declare.get(champ) != getattr(manifeste, champ):
+                    erreurs.append(f"manifest.json : {champ} = {declare.get(champ)!r}, "
+                                   f"le code dit {getattr(manifeste, champ)!r}")
+        except (OSError, ValueError) as exc:
+            erreurs.append(f"manifest.json illisible : {exc}")
+    # Animations de l'app.
+    for anim in sorted((dossier / "animations").glob("*.json")):
+        erreurs += [f"animation {anim.name} : {p}" for p in valider_fichier_animation(anim)]
+
+    for n in notes:
+        print(f"  · {n}")
+    if erreurs:
+        print(f"✗ {manifeste.app_id} : {len(erreurs)} problème(s)")
+        for e in erreurs:
+            print(f"   - {e}")
+        return 1
+    print(f"✓ {manifeste.app_id} {manifeste.version} : prête (API du SDK {API_VERSION})")
+    return 0
+
+
 def cmd_animation_validate(args: argparse.Namespace) -> int:
     """
     axis animation validate <fichier> : vérifie une animation (format,
@@ -374,7 +511,7 @@ def main() -> int:
     sous-commande, affiche l'aide et renvoie 1. Le nombre renvoyé devient
     le code de sortie du processus (sys.exit en bas du fichier).
     """
-    parser = argparse.ArgumentParser(prog="axis-os",
+    parser = argparse.ArgumentParser(prog="axis",
         description="CLI AXIS-OS — développement d'apps Play Store")
     sub = parser.add_subparsers(dest="command")
 
@@ -392,6 +529,10 @@ def main() -> int:
     p_pub = sub.add_parser("publish", help="Publie l'app sur le Play Store")
     p_pub.add_argument("--dry-run", action="store_true")
     p_pub.set_defaults(func=cmd_publish)
+
+    p_val = sub.add_parser("validate", help="Vérifie une app avant publication")
+    p_val.add_argument("path", nargs="?", default=".", help="Dossier de l'app (défaut : .)")
+    p_val.set_defaults(func=cmd_validate)
 
     p_anim = sub.add_parser("animation", help="Outils pour les animations")
     sub_anim = p_anim.add_subparsers(dest="animation_command")

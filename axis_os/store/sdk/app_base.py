@@ -44,6 +44,7 @@ from axis_os.hal.core.types import (
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
 from .manifest import AppManifest, Permission
+from .version import API_VERSION
 from .lifecycle import (
     CONFIRMATION_MAX_S, PROGRESS_HISTORY_MAX, PROGRESS_MESSAGE_MAX, QUESTION_MAX,
     STOP_MARGIN_S, STOP_SOURCES, EventPoller, MissionCancelled, Progress,
@@ -674,7 +675,6 @@ class RobotContext:
         c'est de la lecture seule."""
         self._require(Permission.SYSTEM_INFO)
         import axis_os
-        from .version import API_VERSION
         info = self._robot.get_robot_info()
         twist = getattr(self._locomotion, "max_twist", None)
         limits = {
@@ -747,6 +747,10 @@ class RobotContext:
             proximity=proximite, proximity_distance_m=distance, proximity_reason=raison,
             fall_detected=chute, time_remaining_s=reste,
             storage_keys_remaining=cles, storage_bytes_remaining=octets)
+
+    # Version de l'API du SDK que sert cet OS (SemVer, voir
+    # axis_os/store/sdk/version.py et AppManifest.min_sdk_version).
+    api_version: str = API_VERSION
 
     # ---- Services de haut niveau : navigation, manipulation, repos -----
 

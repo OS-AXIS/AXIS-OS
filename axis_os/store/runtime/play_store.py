@@ -1081,6 +1081,17 @@ class PlayStoreRuntime:
                     f"une version d'AXIS-OS compatible."
                 )
                 return False
+        if manifest.min_sdk_version is not None:
+            from axis_os import SemVer
+            from axis_os.store.sdk.version import API_VERSION
+            required = SemVer.parse(manifest.min_sdk_version)
+            current = SemVer.parse(API_VERSION)
+            if required.major != current.major or current < required:
+                print(
+                    f"  [ERREUR] API du SDK {current} trop ancienne ou incompatible — "
+                    f"cette app requiert l'API {required} (même version majeure, au "
+                    f"moins cette version). Mettez à jour AXIS-OS.")
+                return False
         return True
 
     def _cle_approuvee(self, cle: Optional[str]) -> bool:

@@ -563,6 +563,13 @@ class AppManifest:
     # Réglages de l'app, choisis par l'utilisateur (voir SettingSpec).
     settings: list[SettingSpec] = field(default_factory=list)
 
+    # Version minimale de l'API du SDK (axis_os.store.sdk.version.API_VERSION,
+    # distincte de la version d'AXIS-OS de sdk_version_min) dont l'app a
+    # besoin, au format SemVer. L'installation est refusée si l'API de l'OS
+    # est plus ancienne, ou d'une autre version MAJEURE. None : aucune
+    # exigence.
+    min_sdk_version: Optional[str] = None
+
     # Signature Ed25519 du code source de l'app (voir
     # axis_os/store/sdk/signing.py). Facultative et à None par défaut, pour
     # ne jamais casser une app écrite avant l'introduction de ce mécanisme.
@@ -681,6 +688,12 @@ class AppManifest:
                 SemVer.parse(self.sdk_version_min)
             except ValueError as e:
                 errors.append(f"sdk_version_min invalide : {e}")
+        if self.min_sdk_version is not None:
+            from axis_os import SemVer
+            try:
+                SemVer.parse(self.min_sdk_version)
+            except ValueError as e:
+                errors.append(f"min_sdk_version invalide : {e}")
         if type(self.settings) is not list or len(self.settings) > MAX_SETTINGS \
                 or any(type(s) is not SettingSpec for s in self.settings):
             errors.append(f"settings : une liste d'au plus {MAX_SETTINGS} SettingSpec")

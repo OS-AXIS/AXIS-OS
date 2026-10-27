@@ -58,6 +58,7 @@ SCHEMA_MANIFESTE = Objet({
 }, facultatifs={
     "icon_url": Chaine(2048), "website_url": Chaine(2048), "support_email": Chaine(256),
     "sdk_version_min": Chaine(64),
+    "min_sdk_version": Chaine(64),
     # Absents du texte quand l'app n'en déclare pas : le texte d'un
     # manifeste signé avant leur ajout reste identique, donc sa signature
     # valide.
@@ -99,6 +100,7 @@ def manifeste_vers_json(m: AppManifest) -> Dict[str, Any]:
         "support_email": m.support_email, "sdk_version_min": m.sdk_version_min,
         "code_signature": m.code_signature, "developer_public_key": m.developer_public_key,
         **({"settings": [_reglage_vers_json(s) for s in m.settings]} if m.settings else {}),
+        **({"min_sdk_version": m.min_sdk_version} if m.min_sdk_version is not None else {}),
     }
 
 
@@ -152,6 +154,7 @@ def manifeste_depuis_json(d: Any) -> AppManifest:
                               max_length=64 if s["max_length"] is None else s["max_length"],
                               description=s["description"] or "")
                   for s in (v["settings"] or [])],
+        min_sdk_version=v["min_sdk_version"],
     )
 
 

@@ -44,6 +44,9 @@ from axis_os.store.sdk.manifest import (
 )
 from axis_os.store.sdk.app_base import RobotApp, RobotContext, MissionResult
 
+# Nombre d'étapes de la mission d'exemple.
+STEPS = 5
+
 
 class {class_name}(RobotApp):
 
@@ -58,9 +61,14 @@ class {class_name}(RobotApp):
             category=AppCategory.UTILITIES,
             permissions=[
                 Permission.ACTUATORS_READ,
-                # Ajoutez les permissions dont votre app a besoin
+                Permission.SYSTEM_INFO,        # has_capability, robot_info
+                Permission.MISSION_LIFECYCLE,  # should_stop, report_progress
+                # Ajoutez les permissions dont votre app a besoin (voir
+                # docs/API_REFERENCE.md : chaque API dit la sienne).
             ],
             hardware=HardwareRequirements(min_dof=0),
+            # Version de l'API du SDK dont l'app a besoin (ctx.api_version).
+            min_sdk_version="1.0.0",
             pricing_model=PricingModel.FREE,
             max_velocity_ratio=0.5,
             requires_human_supervision=True,
@@ -72,15 +80,28 @@ class {class_name}(RobotApp):
 
     def run_mission(self, ctx: RobotContext, params: dict) -> MissionResult:
         ctx.log("Mission démarrée")
+        # Demander au robot ce qu'il sait faire, plutôt que de le supposer.
+        if not ctx.has_capability("arms"):
+            return MissionResult(success=False, mission_id="", app_id="",
+                                 duration_s=0.0, error_message="ce robot n'a pas de bras")
 
-        # ── Votre logique métier ici ──────────────────────────
+        done = 0
+        for step in range(STEPS):
+            # Un humain ou l'OS peut demander l'arrêt : on range et on rend
+            # la main (l'arrêt d'urgence, lui, coupe tout de toute façon).
+            if ctx.should_stop():
+                break
+            # ── Votre logique métier ici ──────────────────────
+            done += 1
+            ctx.report_progress(done / STEPS, f"étape {{done}}/{{STEPS}}")
+            ctx.sleep(0.1)
 
         return MissionResult(
-            success=True,
+            success=done == STEPS,
             mission_id="",
             app_id=self.manifest().app_id,
             duration_s=0.0,
-            items_processed=0,
+            items_processed=done,
         )
 
     def on_stop(self, ctx: RobotContext) -> None:
@@ -108,36 +129,19 @@ Tests pour {app_name}
 import sys
 sys.path.insert(0, ".")
 
-from axis_os.hal.drivers.isaac_sim.hal import IsaacSimHAL
-from axis_os.hal.core.kinematic_normalizer import build_g1_normalizer
-from axis_os.hal.core.normalized_robot import NormalizedRobotHAL
-from axis_os.hal.watchdog.system import WatchdogSystem
-from axis_os.hal.watchdog.config import WatchdogConfig
-from axis_os.store.runtime.play_store import PlayStoreRuntime, accepter_tout_SIMULATION
-from axis_os.store.runtime.profil import Profil
+from axis_os.testing import AppTestHarness
 from app import {class_name}
 
 
 def test_app():
-    hal = IsaacSimHAL(robot_id="test_{app_id_short}")
-    hal.initialize_all()
-    norm = NormalizedRobotHAL(hal, build_g1_normalizer())
-    wd   = WatchdogSystem(hal, WatchdogConfig.simulation())
-    wd.start()
-
-    # Test en SIMULATION : permissions DANGEROUS accordées explicitement.
-    # Sur un vrai robot, elles exigent une confirmation humaine.
-    runtime = PlayStoreRuntime(norm, wd, confirmer_permissions=accepter_tout_SIMULATION,
-                               profil=Profil.SIMULATION)
-    assert runtime.install({class_name}())
-    assert runtime.start_app("{app_id}")
-
-    result = runtime.run_mission("{app_id}", params={{}})
-    assert result is not None
-    print(f"Résultat : {{result}}")
-
-    wd.stop()
-    hal.shutdown_all()
+    # Robot simulé léger (axis_os.testing) : l'app tourne comme sur un
+    # robot, dans son processus, sous ses permissions. En SIMULATION, les
+    # permissions DANGEROUS sont accordées sans humain ; sur un vrai
+    # robot, elles exigent sa confirmation.
+    with AppTestHarness({class_name}()) as h:
+        result = h.run({{}})
+        assert result is not None and result.success, result
+        assert h.runtime.get_progress("{app_id}").fraction == 1.0
     print("✓ Test passé")
 
 
@@ -153,8 +157,10 @@ App AXIS-OS générée par `axis-os init`.
 ## Développement
 
 ```bash
-axis-os simulate    # teste dans le simulateur
-axis-os publish      # publie sur le Play Store
+python test_app.py   # teste sur le robot simulé léger
+axis validate        # vérifie l'app comme l'OS le fera
+axis simulate        # mission sur le G1 simulé
+axis publish --dry-run
 ```
 
 ## Structure

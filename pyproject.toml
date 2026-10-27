@@ -1,0 +1,44 @@
+# Paquet du kit de développement des apps AXIS-OS (« axis-os-sdk »).
+#
+# Il n'est PAS publié sur PyPI : il s'installe depuis ce dépôt,
+#     pip install .            (ou pip install -e . pour développer)
+# et fournit le SDK (axis_os.store.sdk), le robot simulé léger
+# (axis_os.testing) et la commande « axis » (validate, animation validate,
+# init, simulate, publish --dry-run).
+#
+# La version suit SemVer et vaut celle de l'API du SDK
+# (axis_os/store/sdk/version.py, API_VERSION) : test/test_sdk_devkit.py
+# vérifie que les deux restent égales. Elle est distincte de la version
+# d'AXIS-OS (axis_os/__init__.py).
+#
+# Dépendances minimales : numpy seul, pour les services et le robot
+# simulé. Le reste (cryptography pour les apps signées, psutil pour les
+# quotas CPU et mémoire, modèles d'IA…) est facultatif : voir les extras.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "axis-os-sdk"
+version = "1.0.0"
+description = "Kit de développement des apps AXIS-OS : SDK, robot simulé léger, outils en ligne de commande"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# Signature et chiffrement des apps, quotas CPU et mémoire du sandbox.
+store = ["cryptography>=42.0.0", "pyhpke==0.6.5", "psutil>=5.9.0"]
+
+[project.scripts]
+axis = "axis_os.cli.main:main"
+axis-os = "axis_os.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["axis_os*"]
+
+[tool.setuptools.package-data]
+"axis_os.hal.drivers.unitree_g1" = ["animations/*.json", "animations/*.md"]
+"axis_os.hal.drivers.unitree_g1.urdf" = ["*.urdf", "*.txt", "*.md"]

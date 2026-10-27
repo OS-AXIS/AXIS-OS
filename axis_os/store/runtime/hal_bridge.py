@@ -1293,6 +1293,7 @@ class HALBridgeClient:
     # valide à nouveau de son côté.
 
     MAX_ACTION_S = RobotContext.MAX_ACTION_S
+    api_version: str = RobotContext.api_version
 
     def go_to(self, x: float, y: float, theta: Optional[float] = None, *,
               timeout_s: float) -> ActionResult:
