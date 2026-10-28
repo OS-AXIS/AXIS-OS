@@ -217,6 +217,7 @@ Sim : voir [sim/README.md](sim/README.md) et `deploy/machine_gpu/`.
 - [Référence des API du SDK](docs/API_REFERENCE.md) (en anglais) : chaque API, sa permission,
   ses codes de refus, un exemple ; [quatre apps d'exemple complètes](examples/), dont « suis-moi »
 - [Ce qu'un robot doit avoir pour faire tourner AXIS-OS](docs/PREREQUIS_ROBOT.md)
+- [Première mise en route d'un robot (conception)](docs/PREMIERE_MISE_EN_ROUTE.md)
 - [Intégration de GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
 - [Isolation des apps : constat et plan](docs/isolation_apps.md)
 - [Glossaire français-anglais des termes du code](docs/GLOSSARY.md)
