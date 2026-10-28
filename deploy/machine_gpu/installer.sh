@@ -121,14 +121,46 @@ fi
 # l'étape 6 et gh pour le clonage de l'étape 3.
 sudo usermod -aG docker "$USER" 2>/dev/null || true
 command -v git-lfs >/dev/null || sudo apt-get install -y -qq git-lfs
-command -v gh >/dev/null || sudo apt-get install -y -qq gh || true
+# ffmpeg : la version réduite de la vidéo (recuperer_t1.sh).
+command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg
+# gh récent, depuis le dépôt apt officiel de GitHub (cli.github.com). Le gh
+# d'Ubuntu 22.04 (2.4) ne retrouve pas les releases brouillons (download,
+# upload) et ne connaît pas --git-protocol (constaté le 2026-10-28). La clé
+# du dépôt n'est installée que si son empreinte est l'une de celles publiées
+# par GitHub (docs/install_linux.md du dépôt cli/cli), vérifiées le
+# 2026-10-28 : la clé en service depuis 2026 et l'ancienne, expirée.
+GH_EMPREINTES="7F38BBB59D064DBCB3D84D725612B36462313325 2C6106201985B60E6C7AC87323F3D4EA75716059"
+gh_recent() {
+  command -v gh >/dev/null \
+    && dpkg --compare-versions "$(gh --version | head -1 | awk '{print $3}')" ge 2.40
+}
+if ! gh_recent; then
+  CLE=$(mktemp)
+  curl -fsSL -o "$CLE" https://cli.github.com/packages/githubcli-archive-keyring.gpg
+  # Empreinte de chaque clé principale du trousseau : toutes doivent être
+  # connues, sinon on n'installe rien.
+  TROUVEES=$(gpg --show-keys --with-colons "$CLE" 2>/dev/null \
+    | awk -F: '$1 == "pub" {p = 1; next} $1 == "fpr" && p {print $10; p = 0}')
+  [ -n "$TROUVEES" ] || { echo "ÉCHEC : clé du dépôt de gh illisible."; exit 1; }
+  for f_ in $TROUVEES; do
+    case " $GH_EMPREINTES " in
+      *" $f_ "*) ;;
+      *) echo "ÉCHEC : clé inattendue pour le dépôt de gh ($f_). Vérifier sur"
+         echo "  https://github.com/cli/cli/blob/trunk/docs/install_linux.md"; exit 1 ;;
+    esac
+  done
+  sudo install -d -m 755 /etc/apt/keyrings
+  sudo install -m 644 "$CLE" /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  rm -f "$CLE"
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  sudo apt-get update -qq && sudo apt-get install -y -qq gh
+  gh_recent || { echo "ÉCHEC : gh récent non installé ($(gh --version 2>/dev/null | head -1))."; exit 1; }
+fi
 
 etape "3/9 Dépôt AXIS-OS"
 if [ ! -d "$DEPOT/.git" ]; then
-  # Le gh d'Ubuntu 22.04 est ancien et ne connaît pas l'option
-  # --git-protocol (constaté) : on retente alors sans elle.
-  gh auth status >/dev/null 2>&1 || gh auth login --web --git-protocol https \
-    || gh auth login --web
+  gh auth status >/dev/null 2>&1 || gh auth login --web --git-protocol https
   gh repo clone OS-AXIS/AXIS-OS "$DEPOT"
 else
   git -C "$DEPOT" pull --ff-only origin main

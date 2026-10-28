@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Copie dans ~/videos la vidéo et le journal du dernier test de la
 # démonstration de tri de colis (dite « T1 », lancée par lancer_t1.sh), et
-# dit si le test est terminé ou encore en cours. Le test tourne dans le
+# dit si le test est terminé ou encore en cours. Une fois le test fini, il
+# en fait aussi une version réduite de la vidéo (540p) et un .zip avec le
+# journal, faciles à télécharger. Le test tourne dans le
 # conteneur Docker d'Isaac Sim (le simulateur de robotique de NVIDIA) : ses
 # fichiers n'en sortent que par « docker cp ».
 CONTENEUR="isim-isaac-sim-1"
@@ -23,4 +25,18 @@ if sudo docker exec "$CONTENEUR" test -f /isaac-sim/videos/t1.fini; then
     && echo "Vidéo : $HOME/videos/t1_tri_usine.mp4"
   echo "--- bilan ---"
   sed -n '/RÉSULTATS T1/,/Résultats :/p' "$HOME/videos/t1_$H.log" 2>/dev/null
+  # Version réduite, prête à télécharger : 540 lignes, quelques Mo (sans
+  # son, images ré-encodées en H.264 de qualité moyenne), archivée avec le
+  # journal (et le détail de l'évaluation, s'il y en a un) dans un .zip.
+  if [ -f "$HOME/videos/t1_tri_usine.mp4" ]; then
+    command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg
+    PETITE="$HOME/videos/t1_${H}_540p.mp4"
+    ffmpeg -y -loglevel error -i "$HOME/videos/t1_tri_usine.mp4" -vf "scale=-2:540" \
+      -c:v libx264 -preset veryfast -crf 30 -r 20 -an -movflags +faststart "$PETITE" \
+      && echo "Vidéo réduite : $PETITE ($(du -h "$PETITE" | cut -f1))"
+    ( cd "$HOME/videos" && python3 -m zipfile -c "t1_$H.zip" "t1_$H.log" \
+        $( [ -f "$PETITE" ] && basename "$PETITE" ) \
+        $( [ -f eval_vla.json ] && echo eval_vla.json ) ) \
+      && echo "À télécharger : $HOME/videos/t1_$H.zip ($(du -h "$HOME/videos/t1_$H.zip" | cut -f1))"
+  fi
 fi

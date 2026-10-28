@@ -198,6 +198,50 @@ Ce qui n'a jamais tourné sur GPU, donc à surveiller au premier essai :
 - **Silhouettes cinématiques** déplacées à chaque pas : si PhysX s'en
   plaint, passer à des cibles cinématiques.
 
+## Prise mesurée (2026-10-28) — prête, PAS ENCORE VALIDÉE SUR GPU
+
+Constat du banc `evaluer_vla.sh 5 1 --prise` (RTX PRO 6000) : réflexes
+2/5. Trois « prise non confirmée » : mains 6 cm devant le centre du
+carton, qui l'effleuraient sans serrer (serrage vers une posture fixe, sans
+mesure) ; mains refermées dans le vide sur un carton hors de portée ;
+avant-bras appuyés sur le plateau ; carton tenu loin du buste, penché de
+~30° pendant le transport.
+
+Ce qui change (`axis_os/services/manipulation/`, `prise.py`,
+`cinematique.py`), quand le robot donne ses mesures (`MesuresBras`) :
+
+| Étape | Ce que fait la prise | Refus ou échec, avec sa raison |
+|---|---|---|
+| Portée | cinématique de l'URDF : les mains atteignent-elles le milieu des faces ? | « hors de portée des bras » (OUT_OF_REACH), rien ne bouge |
+| Distance à la table | la façade s'arrête à la distance où les avant-bras passent à 3 cm du plateau au moins (à partir de 0,29 m) | « avant-bras à X cm du plateau » |
+| Placement | mains au milieu des faces (2,5 cm en profondeur, 3 cm en hauteur), 2 corrections au plus | « mains mal placées », « contact inattendu » (effort > 10 N·m) |
+| Fermeture | chaque bras jusqu'au contact (hausse du couple ≥ 1,5 N·m, ou main qui ne suit plus), ralentie près du contact attendu | « rien entre les mains » (2 cm au-delà de la largeur), « ce n'est pas lui » (contact 5 cm trop tôt) |
+| Serrage | +5 N·m visés, pas adapté à la raideur mesurée, jamais au-delà de 10 N·m (et de la moitié du couple max du garde-fou) | « serrage insuffisant », « serrage refusé » (effort absent, NaN, périmé) |
+| Levage | 4 cm, phase à part ; le carton a-t-il suivi ? | sinon reposer, desserrer, recommencer une fois ; « prise NON confirmée (2 essais) » |
+| Transport | carton contre le buste (face arrière à 10 cm du bassin), serrage gardé le long du chemin, couple surveillé | penché de plus de 15° : base arrêtée, une correction ; encore penché : arrêt propre, intervention |
+
+Validation GPU à faire, dans cet ordre :
+
+| Étape | Commande | Ce qu'on regarde |
+|---|---|---|
+| 1 | `bash deploy/machine_gpu/evaluer_vla.sh 5 1 --reflexes` | réflexes seuls, vidéo temps réel ; bandeau : mode, carton, phase, bras |
+| 2 | `bash deploy/machine_gpu/recuperer_t1.sh` | vidéo 540p et journal dans un .zip |
+| 3 | `bash deploy/machine_gpu/evaluer_vla.sh 20 2 --reflexes` | taux de réussite, échecs par raison, inclinaison max, contact des avant-bras (`~/videos/eval_vla.json`) |
+
+Ce qui n'a pas pu être vérifié sans Isaac Sim (à surveiller au premier
+essai) :
+- **Le couple mesuré** : `get_applied_joint_efforts()` (celui que lit le
+  garde-fou) donne-t-il bien l'effort du serrage au roulis d'épaule ? S'il
+  reste nul, le contact n'est vu qu'au retard de la main, et le serrage
+  finit en « serrage insuffisant » (sûr, mais raté).
+- **Les seuils** : hausse de 1,5 N·m pour le contact (le poids des bras
+  qui bougent peut la donner seul), 5 N·m de serrage pour tenir un carton
+  de ce poids, 3,5 cm de rayon d'avant-bras.
+- **La demi-épaisseur des mains** (4,5 cm, déduite du banc : mains à
+  0,331 m sur un carton de 0,24 m) et l'écart entre la cinématique de
+  l'URDF et le bras simulé.
+- **L'inclinaison** du carton porté contre le buste en marchant.
+
 ## Budget GPU
 
 L'essentiel du développement se fait **sans rendu**, bien plus vite. Le

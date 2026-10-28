@@ -1053,7 +1053,7 @@ class RobotContext:
         """Code d'un refus du service de manipulation, d'après sa raison."""
         if raison.startswith(("prise refusée", "plateau trop haut", "dépose impossible")):
             return RefusalCode.OUT_OF_REACH
-        if raison.startswith("exemption refusée"):
+        if raison.startswith(("exemption refusée", "serrage refusé", "levage interrompu")):
             return RefusalCode.SAFETY_LIMIT
         if raison.startswith("occupé"):
             return RefusalCode.BUSY
@@ -1107,11 +1107,15 @@ class RobotContext:
             # suivi d'une personne n'en a jamais, pas même pendant un geste.
             return refused("REFUSED", RefusalCode.BUSY,
                            "le robot suit une personne : stop_follow() d'abord")
+        from axis_os.services.manipulation.service import Etat, Objet
+        if manip.etat not in (Etat.LIBRE, Etat.PRET):
+            # Les bras tiennent déjà un objet (ou font un geste) : occupé,
+            # avant même de chercher la cible (l'objet porté a bougé).
+            return refused("REFUSED", RefusalCode.BUSY, f"occupé : {manip.etat.name}")
         if not self._cible_vue(spec.center):
             return refused("REFUSED", RefusalCode.SAFETY_LIMIT,
                            "aucun objet vu à cet endroit par la perception de l'OS : "
                            "le chercher d'abord avec look_for(..., \"world\")")
-        from axis_os.services.manipulation.service import Etat, Objet
         largeur, profondeur, hauteur = spec.size
         r = manip.prendre(Objet(spec.center, largeur, profondeur, hauteur))
         if not r.ok:

@@ -116,6 +116,20 @@ pre = INSTALLER[INSTALLER.find("Pré-télécharge OWL-ViT"):]
 check("Le pré-téléchargement passe la révision et use_safetensors=True",
       "revision=r" in pre and "use_safetensors=True" in pre)
 
+section("5 — gh récent depuis le dépôt officiel, clé vérifiée ; vidéo réduite")
+gh = INSTALLER[INSTALLER.find("GH_EMPREINTES="):INSTALLER.find('etape "3/9')]
+check("installer.sh : gh depuis cli.github.com, plus le gh d'Ubuntu",
+      "https://cli.github.com/packages stable main" in gh
+      and "apt-get install -y -qq gh || true" not in INSTALLER)
+check("… empreinte de la clé comparée AVANT de l'installer dans les trousseaux d'apt",
+      0 <= gh.find("GH_EMPREINTES") < gh.find("gpg --show-keys") < gh.find("clé inattendue")
+      < gh.find("/etc/apt/keyrings/githubcli-archive-keyring.gpg"))
+check("… et la version installée est vérifiée (2.40 au moins)",
+      "ge 2.40" in gh and gh.count("gh_recent") >= 3)
+RECUP_T1 = (RACINE / "deploy/machine_gpu/recuperer_t1.sh").read_text(encoding="utf-8")
+check("recuperer_t1.sh : vidéo réduite en 540p, zippée avec le journal",
+      'scale=-2:540' in RECUP_T1 and "zipfile -c" in RECUP_T1 and 't1_$H.log' in RECUP_T1)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

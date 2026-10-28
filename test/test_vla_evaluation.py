@@ -2,6 +2,7 @@
 Évaluation VLA contre réflexes (axis_os/vla/evaluation.py) — sans GPU : vrai
 VLAService, connecteur GR00T, façade et physique factices.
 """
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -145,7 +146,7 @@ class FausseFacade:
 
 
 def monter(n=3, modes=("reflexes", "vla"), repere=True, duree_max_s=45.0, avec_loco=False,
-           **kw_vla):
+           mesures_prise=None, **kw_vla):
     m = Monde()
     con = FauxConnecteur()
     loco = FauxLoco(m)
@@ -163,7 +164,8 @@ def monter(n=3, modes=("reflexes", "vla"), repere=True, duree_max_s=45.0, avec_l
         carton_souleve=m.souleve, carton_au_sol=lambda: m.au_sol,
         arret_securite=lambda: m.arret, halt=lambda: loco.halt(),
         compteurs=lambda: {"refus": m.refus, "arrets": m.arrets},
-        journal=lambda s: None, duree_max_s=duree_max_s, roulis=ROULIS)
+        journal=lambda s: None, duree_max_s=duree_max_s, roulis=ROULIS,
+        mesures_prise=mesures_prise)
     return m, con, vla, f, ev
 
 
@@ -344,6 +346,55 @@ d = Path(tempfile.mkdtemp())
 ecrire(res, str(d / "eval.json"))
 check("Résultats écrits en JSON", (d / "eval.json").exists())
 print(texte_bilan(bl))
+
+section("7 — Compteurs du VLA propres à chaque essai, total à part ; mesures de la prise")
+relevé = {}
+m, con, vla, f, ev = monter(2, mesures_prise=lambda: relevé["f"]())
+
+
+def mesures_7():
+    # Carton soulevé : 8° (22° pour le carton 1 aux réflexes) ; posé : 40°,
+    # qui ne compte pas. Avant-bras sur le plateau pendant le carton 0 aux
+    # réflexes (3 mm), à 4 cm sinon.
+    lev = m.souleve()
+    return {"inclinaison_deg": (22.0 if ev.k == 2 else 8.0) if lev else 40.0,
+            "garde_avant_bras_m": 0.003 if (ev.k == 0 and lev) else 0.04}
+
+
+relevé["f"] = mesures_7
+tourner(m, ev)
+inf = [r["vla"]["inferences"] for r in ev.resultats if r["mode"] == "vla"]
+total = ev.vla_total()
+check(f"Inférences du VLA par essai ({inf}) : leur somme est le total ({total['inferences']}), "
+      f"aucune n'est un cumul", sum(inf) == total["inferences"]
+      and all(0 < x < total["inferences"] for x in inf))
+check("… de même pour les pas du VLA ; la latence maximale est celle de l'essai",
+      sum(r["vla"]["ticks"] for r in ev.resultats if r["mode"] == "vla") == total["ticks"]
+      and all(r["vla"]["latence_max_s"] <= total["latence_max_s"]
+              for r in ev.resultats if r["mode"] == "vla"))
+r0, r2 = ev.resultats[0], ev.resultats[2]
+check("Inclinaison maximale relevée carton soulevé seulement (8° puis 22°, pas 40°)",
+      r0["inclinaison_max_deg"] == 8.0 and r2["inclinaison_max_deg"] == 22.0)
+check("Avant-bras sur le plateau : garde minimale et pas en contact, par essai",
+      r0["garde_min_avant_bras_cm"] == 0.3 and r0["contacts_avant_bras"] > 0
+      and r2["garde_min_avant_bras_cm"] == 4.0 and r2["contacts_avant_bras"] == 0)
+b7 = bilan(ev.resultats)["par_mode"]["reflexes"]
+check("Bilan : inclinaison max 22°, contact des avant-bras dans 1 essai sur 2",
+      b7["inclinaison_max_deg"] == 22.0 and b7["essais_avec_contact_avant_bras"] == 1
+      and b7["garde_min_avant_bras_cm"] == 0.3)
+check("… et dans le texte du bilan", "penché au plus de 22.0°" in texte_bilan(bilan(ev.resultats)))
+ecrire(ev.resultats, str(d / "eval7.json"), vla_total=total)
+j7 = json.loads((d / "eval7.json").read_text(encoding="utf-8"))
+check("JSON : total du VLA à part, compteurs par essai dans chaque essai",
+      j7["vla_total"]["inferences"] == total["inferences"]
+      and [e["vla"]["inferences"] for e in j7["essais"] if e["mode"] == "vla"] == inf)
+m, con, vla, f, ev = monter(1, modes=("reflexes",))
+f.prendre = lambda colis: (False, "prise refusée — hors de portée des bras : objet à 0.56 m "
+                                  "devant le bassin et +0.18 m en hauteur")
+tourner(m, ev)
+check("Échec de la prise : la raison du service, détaillée et regroupée",
+      bilan(ev.resultats)["par_mode"]["reflexes"]["echecs"]
+      == {"prise refusée — hors de portée des bras": 1})
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

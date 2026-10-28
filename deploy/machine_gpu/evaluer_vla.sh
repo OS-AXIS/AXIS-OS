@@ -17,6 +17,13 @@
 #       bash evaluer_vla.sh                    20 cartons, avec vidéo
 #       bash evaluer_vla.sh 5 1                essai rapide, vidéo en temps réel
 #       bash evaluer_vla.sh 20 2 --modes vla   le VLA seul
+#       bash evaluer_vla.sh 20 1 --reflexes    la prise des réflexes seule, sans
+#                                              modèle ni serveur GR00T
+#
+# Pour chaque essai, le détail (~/videos/eval_vla.json) donne aussi la
+# raison d'un échec, l'inclinaison maximale du carton soulevé et la garde
+# des avant-bras au-dessus du plateau (contact : moins de 5 mm) ; le
+# résumé de fin les reprend par mode.
 #
 # Déroulement :
 # 1. Démarre en arrière-plan le serveur GR00T (le programme de NVIDIA qui
@@ -66,10 +73,13 @@ CARTONS="${1:-20}"; ACC="${2:-2}"; shift $(( $# > 2 ? 2 : $# )) || true
 # « entrainer_vla.sh … prise ». Les réflexes amènent le robot jusqu'au
 # carton, puis le VLA ne fait que la prise. Ce mode est comparé aux réflexes
 # complets (approche comprise).
+# Option « --reflexes » : les réflexes seuls (la prise codée), sans modèle.
 MODELES="$HOME/vla_gr00t_g1"
 EXTRA=()
+REFLEXES=0
 for a in "$@"; do
   if [ "$a" = "--prise" ]; then MODELES="$HOME/vla_gr00t_g1_prise"; EXTRA+=(--modes reflexes,vla_prise)
+  elif [ "$a" = "--reflexes" ]; then REFLEXES=1; EXTRA+=(--modes reflexes)
   else EXTRA+=("$a"); fi
 done
 set -- "${EXTRA[@]}"
@@ -77,6 +87,7 @@ CONTENEUR="isim-isaac-sim-1"
 PORT=5555
 export PATH="$HOME/.local/bin:$PATH"
 
+if [ "$REFLEXES" = 0 ]; then
 # ---- le modèle : dernier point de sauvegarde ------------------------------
 # sort -V trie les numéros comme des nombres (checkpoint-900 avant
 # checkpoint-1000). Sans point de sauvegarde, on essaie le dossier lui-même.
@@ -137,6 +148,7 @@ done
 pret || { echo "ÉCHEC : serveur pas prêt après 5 min."; tail -20 "$HOME/vla_serveur.log";
            pkill -f run_gr00t_server || true; exit 1; }
 echo "Serveur GR00T prêt sur 127.0.0.1:$PORT."
+fi
 
 # ---- 2. client dans le conteneur Isaac Sim --------------------------------
 if [ "$(sudo docker inspect -f '{{.State.Running}}' "$CONTENEUR" 2>/dev/null)" != "true" ]; then
@@ -150,6 +162,7 @@ fi
 # d'Isaac Sim est cassé (« No module named pip._vendor.idna.core »). Dans ce
 # cas, on copie les paquets depuis l'environnement de GR00T, qui les a déjà
 # et utilise la même version de Python (3.12).
+if [ "$REFLEXES" = 0 ]; then
 importe() { sudo docker exec "$CONTENEUR" /isaac-sim/python.sh -c \
   "import zmq, msgpack, msgpack_numpy" >/dev/null 2>&1; }
 # Versions épinglées (version exacte imposée, pour une installation
@@ -174,6 +187,7 @@ fi
 importe || { echo "ÉCHEC : pyzmq/msgpack introuvables dans le conteneur."; \
              pkill -f run_gr00t_server || true; exit 1; }
 echo "Client GR00T prêt dans le conteneur."
+fi
 
 # ---- 3. évaluation ---------------------------------------------------------
 # Le premier argument de lancer_t1.sh (la durée simulée, ici « 60 ») est
@@ -183,5 +197,21 @@ bash "$HOME/AXIS-OS/deploy/machine_gpu/lancer_t1.sh" 60 "$ACC" \
   --evaluer-vla "tcp://127.0.0.1:$PORT" --episodes "$CARTONS" "$@" || true
 sudo docker cp "$CONTENEUR:/isaac-sim/videos/eval_vla.json" "$HOME/videos/eval_vla.json" 2>/dev/null \
   && echo "Détail essai par essai : ~/videos/eval_vla.json"
-pkill -f run_gr00t_server || true
-echo "Serveur GR00T arrêté. Pense à sauvegarder le modèle (sauvegarder_modele_vla.sh) avant Destroy."
+# Résumé par mode : réussites, échecs par raison, inclinaison maximale du
+# carton soulevé, avant-bras au plus près du plateau.
+python3 - "$HOME/videos/eval_vla.json" <<'PY' || true
+import json, sys
+b = json.load(open(sys.argv[1], encoding="utf-8"))["bilan"]["par_mode"]
+for m, s in b.items():
+    print(f"  {m} : {s['reussis']}/{s['essais']} réussis")
+    for r, n in sorted(s["echecs"].items(), key=lambda kv: -kv[1]):
+        print(f"      échec ×{n} : {r}")
+    if "inclinaison_max_deg" in s:
+        print(f"      carton penché au plus de {s['inclinaison_max_deg']}° ; avant-bras à "
+              f"{s['garde_min_avant_bras_cm']} cm du plateau au plus près ; contact avec le "
+              f"plateau dans {s['essais_avec_contact_avant_bras']} essai(s)")
+PY
+if [ "$REFLEXES" = 0 ]; then
+  pkill -f run_gr00t_server || true
+  echo "Serveur GR00T arrêté. Pense à sauvegarder le modèle (sauvegarder_modele_vla.sh) avant Destroy."
+fi

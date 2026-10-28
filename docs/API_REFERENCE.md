@@ -216,14 +216,23 @@ otherwise `REFUSED`/`SAFETY_LIMIT`. The manipulation service only closes
 the arms if the object is between the hands, asks the proximity guard for
 a bounded exemption around it, then checks the object followed before
 reporting it held. The hands must also be within the object's height
-(otherwise `OUT_OF_REACH`). If the grasp is cancelled (stop requested, end
+(otherwise `OUT_OF_REACH`). When the robot reports its arm joint torques
+(the simulated robot of `axis_os.testing`, the Isaac Sim T1 scene), the
+grasp is *measured*: reach checked with the arms' kinematics (URDF), hands
+placed at the middle of two opposite faces, arms closed until contact
+(torque rise or hand stopped), a bounded extra squeeze (never above
+10 N·m, nor half the joint safety guard's torque limit), a short lift
+that must be followed by the object (one retry), then the object brought
+against the torso. Missing, non-finite or stale torque data: no squeeze
+(`SAFETY_LIMIT`). Nothing in between the hands at the expected width:
+no squeeze (`OUT_OF_REACH`). If the grasp is cancelled (stop requested, end
 of the hook, the app's process gone), the arms reopen gradually and the
 exemption is lifted: the gesture never goes on without the app.
 
 | `status` | `code` |
 |---|---|
 | `HELD` | — |
-| `REFUSED` | `OUT_OF_REACH` (move closer with `go_to`), `BUSY` (the arms are busy: grasp, animation, arm stream), `SAFETY_LIMIT` (object not seen), `CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED` |
+| `REFUSED` | `OUT_OF_REACH` (move closer with `go_to`), `BUSY` (the arms are busy: grasp, animation, arm stream), `SAFETY_LIMIT` (object not seen; arm torque data missing or invalid), `CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED` |
 | `FAILED` | `FAILED` — grasp not confirmed: the arms reopen gradually |
 | `TIMEOUT` | `TIMEOUT` |
 

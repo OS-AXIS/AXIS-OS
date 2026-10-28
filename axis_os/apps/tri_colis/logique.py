@@ -181,6 +181,14 @@ class TriColis:
                              "le robot ; merci de dégager le passage")
             return
         self._bloque_s, self._blocage_signale = 0.0, False
+        if self.etat in ("LIVRER", "RAMENER") and self.robot.manipulation() == "ECHEC":
+            # Le colis en main n'est plus tenu comme il faut (penché malgré
+            # la correction) : on ne marche pas avec, on appelle un humain.
+            self._alerte("colis mal tenu pendant le transport — arrêt propre, "
+                         "intervention requise")
+            self.termine = True
+            self._aller("ARRET")
+            return
         self._temps_etat += dt
         # Chaque état a sa méthode : CHERCHER -> _etat_chercher(), etc.
         getattr(self, "_etat_" + self.etat.lower())()

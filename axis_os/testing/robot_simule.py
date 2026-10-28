@@ -45,6 +45,8 @@ from axis_os.services.locomotion.proximite import GardienProximite
 from axis_os.services.locomotion.service import (
     BaseState, ILocomotionAdapter, LocomotionService, Twist,
 )
+from axis_os.services.manipulation.cinematique import ModeleBras
+from axis_os.services.manipulation.prise import MesuresBras
 from axis_os.services.manipulation.service import Etat, ManipulationService
 from axis_os.services.navigation.service import Carte, NavigationService, Pose2D
 from axis_os.services.navigation.site_map import SiteMap
@@ -368,6 +370,15 @@ class SimulatedRobot:
     """
 
     PEOPLE_EVERY = 5
+    # Hauteur du bassin du G1 debout (m) : mains à 0,90 m en posture de port.
+    PELVIS_HEIGHT_M = 0.72
+    # Raideur simulée du roulis d'épaule en contact (N·m/rad), demi-épaisseur
+    # d'une main (m), couple de repos (N·m, le poids du bras).
+    KP_ROULIS = 40.0
+    DEMI_MAIN_M = 0.045
+    COUPLE_REPOS_NM = 0.4
+    _BRAS = ("left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_elbow_joint",
+             "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_elbow_joint")
     STATION_RADIUS_M = 0.30
 
     def __init__(self, *, carte: Optional[Carte] = None,
@@ -422,9 +433,25 @@ class SimulatedRobot:
                                             zones=self.zone_guard, thermique=self.health)
         self.navigation = NavigationService(self.carte, self._pose2d, self.locomotion,
                                             horloge=self.clock, site_map=self.site_map)
+        # Bras : cinématique de l'URDF, contact avec l'objet, efforts mesurés
+        # (voir _envoyer) : la prise mesurée du service de manipulation.
+        self.modele_bras = ModeleBras()
+        self._limites_couple = {d.joint_id: d.limits.torque_max
+                                for d in self.raw_hal.get_joint_definitions()}
+        self.effort_fault: Optional[str] = None
+        self._consignes_roulis: Dict[str, float] = {}
+        self._suivre_consignes_roulis()
+        self.object_tilt_deg: Optional[float] = None
+        self._decalage_prise: Optional[float] = None
+        self.forearm_table_contacts = 0
+        mesures = MesuresBras(self.modele_bras, self._angles_bras, self._efforts_bras,
+                              lambda: self.PELVIS_HEIGHT_M,
+                              couple_max={j: self._limites_couple[j] for j in self._BRAS},
+                              inclinaison=self._inclinaison)
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
                                                  self._vers_robot, self._prise_tient,
-                                                 gardien=self.guard, horloge=self.clock)
+                                                 gardien=self.guard, horloge=self.clock,
+                                                 mesures=mesures)
                              if manipulation else None)
         self.perception = SimulatedPerception(self)
         # Personnes : les VRAIS services de détection-suivi et de suivi, sur
@@ -570,6 +597,8 @@ class SimulatedRobot:
                 except Exception as exc:        # noqa: BLE001 — noté pour le test
                     if len(self.errors) < 100:
                         self.errors.append(f"{service.service_id} : {exc!r}"[:300])
+            if self.manipulation is not None:
+                self._contact()
             self._porter()
             self.ticks += 1
             self._arret.wait(max(0.0, self._dt / self._echelle - (time.monotonic() - t0)))
@@ -630,9 +659,108 @@ class SimulatedRobot:
 
     def _envoyer(self, cibles: Dict[str, float]) -> Dict[str, HALStatus]:
         """Cibles des bras (convention brute du G1, celle des postures de la
-        manipulation) -> articulations, à travers leurs garde-fous."""
-        return self.raw_hal.send_joint_commands(
+        manipulation) -> articulations, à travers leurs garde-fous ; puis le
+        contact : une main ne traverse pas l'objet qu'elle touche, et le
+        roulis d'épaule mesure alors l'effort du serrage."""
+        statuts = self.raw_hal.send_joint_commands(
             {j: ActuatorCommand(mode=ControlMode.POSITION, position=v) for j, v in cibles.items()})
+        self._contact()
+        return statuts
+
+    def _suivre_consignes_roulis(self) -> None:
+        """Retient la dernière consigne acceptée de chaque roulis d'épaule,
+        d'où qu'elle vienne (manipulation, move_to_pose, posture de repos) :
+        c'est elle que le contact compare à la position réelle."""
+        for j in ("left_shoulder_roll_joint", "right_shoulder_roll_joint"):
+            act = self.raw_hal.get_actuator(j)
+            envoi = act.send_command
+
+            def enveloppe(command, defer_publish=False, _envoi=envoi, _j=j):
+                st = _envoi(command, defer_publish)
+                if st is HALStatus.OK and command.position is not None:
+                    self._consignes_roulis[_j] = float(command.position)
+                return st
+            act.send_command = enveloppe
+
+    def _angles_bras(self) -> Dict[str, float]:
+        etat = self.raw_hal.get_full_state()
+        return {j: etat[j].position for j in self._BRAS if j in etat}
+
+    def _efforts_bras(self) -> Dict[str, Tuple[float, float]]:
+        """{articulation: (couple mesuré, âge de la mesure)} ; effort_fault
+        simule un capteur en panne : « absent », « nan » ou « stale »."""
+        etat = self.raw_hal.get_full_state()
+        maintenant = time.time_ns()
+        sortie = {j: (etat[j].torque, (maintenant - etat[j].timestamp_ns) / 1e9)
+                  for j in self._BRAS if j in etat}
+        if self.effort_fault == "absent":
+            sortie.pop("left_shoulder_roll_joint", None)
+        elif self.effort_fault == "nan":
+            sortie["left_shoulder_roll_joint"] = (float("nan"), 0.0)
+        elif self.effort_fault == "stale":
+            sortie["right_shoulder_roll_joint"] = (sortie["right_shoulder_roll_joint"][0], 5.0)
+        return sortie
+
+    def _objet_entre_les_mains(self, q: Dict[str, float]):
+        """L'objet dont une main toucherait une face, à ces angles."""
+        g, d = (self._vers_monde_bassin(p) for p in self.modele_bras.mains(q))
+        milieu = (g + d) / 2.0
+        for o in self.objects:
+            w, prof, h = o.size
+            c = self._vers_robot(o.position)
+            m = self._vers_robot(milieu)
+            if abs(m[0] - c[0]) < prof / 2.0 + 0.02 and abs(milieu[2] - o.position[2]) \
+                    < h / 2.0 + 0.02 and abs(m[1] - c[1]) < w / 2.0:
+                return o
+        return None
+
+    def _vers_monde_bassin(self, p) -> np.ndarray:
+        """Point du repère du bassin -> repère monde."""
+        return self._vers_monde(float(p[0]), float(p[1]), float(p[2]) + self.PELVIS_HEIGHT_M)
+
+    def _contact(self) -> None:
+        """Chaque roulis d'épaule s'arrête où sa main touche la face de
+        l'objet ; au-delà de la consigne, le couple monte (raideur
+        KP_ROULIS). Sans contact, la main suit sa consigne, couple de repos."""
+        etat = self.raw_hal.get_full_state()
+        q = {j: etat[j].position for j in self._BRAS if j in etat}
+        o = self._objet_entre_les_mains(q)
+        for cote, j, signe in (("left", "left_shoulder_roll_joint", 1.0),
+                               ("right", "right_shoulder_roll_joint", -1.0)):
+            act = self.raw_hal.get_actuator(j)
+            cmd = self._consignes_roulis.get(j, act._position)
+            reel = cmd
+            if o is not None:
+                chaine = self.modele_bras.gauche if cote == "left" else self.modele_bras.droite
+                c = self._vers_robot(o.position)
+
+                def penetre(r):
+                    q2 = dict(q)
+                    q2[j] = r
+                    main = chaine.main(q2)
+                    return signe * (float(main[1]) - c[1]) < o.size[0] / 2.0 + self.DEMI_MAIN_M
+                if penetre(cmd):
+                    ouvert = cmd + signe * 0.6
+                    if not penetre(ouvert):
+                        lo, hi = cmd, ouvert         # lo pénètre, hi non
+                        for _ in range(30):
+                            mid = (lo + hi) / 2.0
+                            lo, hi = (mid, hi) if penetre(mid) else (lo, mid)
+                        reel = hi
+            act._position = reel
+            act._torque = signe * (self.COUPLE_REPOS_NM + self.KP_ROULIS * signe * (reel - cmd)) \
+                if reel != cmd else signe * self.COUPLE_REPOS_NM
+
+    def _inclinaison(self) -> Optional[float]:
+        """Inclinaison de l'objet tenu (degrés) : 5° par cm de décalage des
+        mains par rapport à son milieu, en profondeur, au moment de la prise
+        (le carton tenu du bout des mains bascule) ; object_tilt_deg la
+        remplace si un test la fixe."""
+        if self.held is None:
+            return None
+        if self.object_tilt_deg is not None:
+            return float(self.object_tilt_deg)
+        return 500.0 * abs(self._decalage_prise or 0.0)
 
     def _pose_xyc(self):
         return self.x, self.y, self.heading
@@ -661,26 +789,36 @@ class SimulatedRobot:
         return np.array([self.x + c * xr - s * yr, self.y + s * xr + c * yr, z])
 
     def _mains(self):
-        """Position des mains dans le repère monde, d'après les angles
-        mesurés des épaules : le roulis écarte les mains (33 cm à 0.20 rad,
-        valeur de Postures), le tangage les lève (6 cm pour 0.20 rad)."""
-        etat = self.raw_hal.get_full_state()
-        roulis = etat["left_shoulder_roll_joint"].position
-        tangage = etat["left_shoulder_pitch_joint"].position
-        ecart = min(0.80, max(0.05, 0.33 + (roulis - 0.20)))
-        z = 0.90 + (-0.30 - tangage) * 0.30
-        return (self._vers_monde(0.30, ecart / 2, z), self._vers_monde(0.30, -ecart / 2, z))
+        """Position des mains dans le repère monde : cinématique de l'URDF,
+        sur les angles mesurés des bras (33 cm entre elles, 0,29 m devant le
+        bassin et 0,90 m de haut en posture de port)."""
+        g, d = self.modele_bras.mains(self._angles_bras())
+        return self._vers_monde_bassin(g), self._vers_monde_bassin(d)
 
     def _prise_tient(self) -> bool:
-        """Vérification de prise : l'objet visé est-il entre les mains, et
-        la prise doit-elle réussir ? Si oui, il est porté."""
+        """Vérification de prise : l'objet visé est-il serré entre les mains
+        (les deux roulis en contact, serrés d'au moins 2 N·m), à mi-hauteur
+        et à mi-profondeur (4 cm près), et la prise doit-elle réussir ? Si
+        oui, il est porté. Une main du bout des doigts ne le tient pas."""
         objet = self.manipulation.objet if self.manipulation is not None else None
         if objet is None or not self.grasp_succeeds:
             return False
+        if self.held is not None:
+            return True
         proche = min(self.objects, default=None,
                      key=lambda o: math.dist(o.position, objet.centre))
         if proche is None or math.dist(proche.position, objet.centre) > 0.15:
             return False
+        etat = self.raw_hal.get_full_state()
+        serre = all(abs(etat[j].torque) - self.COUPLE_REPOS_NM >= 2.0
+                    for j in ("left_shoulder_roll_joint", "right_shoulder_roll_joint"))
+        g, d = self._mains()
+        m = self._vers_robot((g + d) / 2.0)
+        c = self._vers_robot(proche.position)
+        if not serre or abs(m[0] - c[0]) > 0.04 or abs((g[2] + d[2]) / 2.0 - proche.position[2]) \
+                > proche.size[2] / 2.0 + 0.02:
+            return False
+        self._decalage_prise = float(m[0] - c[0])
         self.held = proche
         return True
 
