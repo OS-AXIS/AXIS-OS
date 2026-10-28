@@ -199,7 +199,7 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
         q, _ = resoudre(modele, *cibles_mains(c, largeur, 0.0, r.demi_main_m), depart)
         if q is None:
             continue
-        g = garde_plateau(modele, q, plateau, bord, r.rayon_avant_bras_m)
+        g = garde_plateau(modele, {**depart, **q}, plateau, bord, r.rayon_avant_bras_m)
         meilleure_garde = max(meilleure_garde, g)
         if g >= r.marge_plateau_m:
             return float(d), ""

@@ -455,6 +455,7 @@ class ManipulationService(IService):
         self.inclinaison_max = 0.0
         self._corrections_inclinaison = 0
         self.effort_max_mesure = 0.0
+        self._fixes: Dict[str, float] = {}
 
     def _vers_bassin(self, p_monde) -> np.ndarray:
         """Point du repère monde -> repère du bassin (x, y du robot ; z
@@ -464,10 +465,42 @@ class ManipulationService(IService):
         return np.array([float(r[0]), float(r[1]), float(p[2]) - float(self.mesures.bassin_z())])
 
     def _lacet_relatif(self, objet: Objet) -> float:
+        """Écart (rad) entre les faces de l'objet et les axes du robot,
+        replié dans [-π/4, π/4]. Le lacet de l'objet est donné dans le repère
+        monde ; un carton tourné d'un quart de tour a les mêmes faces, et sa
+        largeur, par définition, est prise entre les mains : les faces serrées
+        sont celles qui regardent les mains. Constaté sur GPU (2026-10-28) :
+        sans ce repli, un carton aligné sur le monde, devant un robot tourné
+        d'un quart de tour (scène T1), donnait -90°, et les « faces » visées
+        étaient l'avant et l'arrière du carton (l'une à 0,49 m) : tout était
+        « hors de portée »."""
         c = np.asarray(objet.centre, dtype=float)
         a = self._vers_robot(c)
         b = self._vers_robot(c + np.array([math.cos(objet.lacet), math.sin(objet.lacet), 0.0]))
-        return math.atan2(float(b[1] - a[1]), float(b[0] - a[0]))
+        brut = math.atan2(float(b[1] - a[1]), float(b[0] - a[0]))
+        return (brut + math.pi / 4) % (math.pi / 2) - math.pi / 4
+
+    def _articulations_fixes(self) -> Dict[str, float]:
+        """Angles mesurés des articulations de la chaîne que la cinématique
+        inverse ne commande pas (taille, lacet d'épaule, poignets) : la
+        portée se calcule sur le bras tel qu'il est."""
+        try:
+            brut = self.mesures.positions()
+        except Exception:                 # noqa: BLE001 — capteur en panne : zéro
+            return {}
+        sortie = {}
+        for j, v in (brut.items() if isinstance(brut, dict) else ()):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            if j not in self._q and math.isfinite(v):
+                sortie[j] = v
+        return sortie
+
+    def _graine(self, q: Dict[str, float]) -> Dict[str, float]:
+        """Départ d'une cinématique inverse : `q`, plus les articulations fixes mesurées."""
+        return {**self._fixes, **q}
 
     def _planifier(self, objet: Objet) -> Tuple[bool, str]:
         """Portée et distance au plateau (prise mesurée) : rend (True, "") et
@@ -480,19 +513,22 @@ class ManipulationService(IService):
             return False, f"position du robot illisible ({type(exc).__name__})"
         if not np.all(np.isfinite(centre)) or not math.isfinite(lacet):
             return False, "position de l'objet ou du robot non finie"
+        self._fixes = self._articulations_fixes()
         q_ouvert, _ = resoudre(modele, *cibles_mains(centre, objet.largeur, lacet,
-                                                    r.demi_main_m + r.jeu_ouverture_m), self._q)
+                                                    r.demi_main_m + r.jeu_ouverture_m),
+                               self._graine(self._q))
         q_contact, _ = resoudre(modele, *cibles_mains(centre, objet.largeur, lacet,
-                                                     r.demi_main_m), self._q)
+                                                     r.demi_main_m), self._graine(self._q))
         q_vide, _ = resoudre(modele, *cibles_mains(centre, objet.largeur, lacet,
-                                                  r.demi_main_m - r.penetration_max_m), self._q)
+                                                  r.demi_main_m - r.penetration_max_m),
+                             self._graine(self._q))
         if q_ouvert is None or q_contact is None or q_vide is None:
             return False, (f"hors de portée des bras : objet à {centre[0]:.2f} m devant le "
                            f"bassin et {centre[2]:+.2f} m en hauteur, les mains n'atteignent "
                            f"pas le milieu de ses faces")
         plateau = float(centre[2]) - objet.hauteur / 2.0
         bord = float(centre[0]) - objet.profondeur / 2.0 - objet.bord_m
-        garde = garde_plateau(modele, q_contact, plateau, max(r.bord_min_m, bord),
+        garde = garde_plateau(modele, self._graine(q_contact), plateau, max(r.bord_min_m, bord),
                               r.rayon_avant_bras_m)
         if garde < r.marge_plateau_m:
             return False, (f"avant-bras à {100 * garde:.1f} cm du plateau (il faut "
@@ -588,7 +624,7 @@ class ManipulationService(IService):
         self._corrections += 1
         self.stats["corrections_placement"] = self.stats.get("corrections_placement", 0) + 1
         cg, cd = (c - e for c, e in zip(plan["cibles"], erreurs))
-        q, _ = resoudre(self.mesures.modele, cg, cd, self._q)
+        q, _ = resoudre(self.mesures.modele, cg, cd, self._graine(self._q))
         if q is None:
             self._echouer("prise refusée — hors de portée des bras pour corriger les mains")
             return
@@ -694,8 +730,8 @@ class ManipulationService(IService):
         # Objet tenu : 0,5 mm près, car l'écart des mains EST le serrage (un
         # écart de 3 mm, sur un objet raide, ferait varier l'effort de plusieurs N·m).
         demi = np.array([0.0, ecart / 2.0, 0.0])
-        q, _ = resoudre(self.mesures.modele, centre_mains + demi, centre_mains - demi, depart,
-                        tol=0.0005)
+        q, _ = resoudre(self.mesures.modele, centre_mains + demi, centre_mains - demi,
+                        self._graine(depart), tol=0.0005)
         return q
 
     def _raideur(self, cote: str, hausse: float) -> float:
@@ -1016,7 +1052,8 @@ class ManipulationService(IService):
         plateau ; la plus courte à partir de `d_min`. (None, raison) s'il
         n'y en a aucune."""
         z = float(objet.centre[2]) - float(self.mesures.bassin_z())
-        port = posture_bras(self.p.roulis_ouvert, self.p.tangage_port, self.p.coude)
+        port = {**self._articulations_fixes(),
+                **posture_bras(self.p.roulis_ouvert, self.p.tangage_port, self.p.coude)}
         return distance_ideale(self.mesures.modele, objet.largeur, objet.profondeur,
                                objet.hauteur, z, port, bord_m=objet.bord_m, reglages=self.r,
                                distances=np.arange(d_min, 0.45, 0.005))

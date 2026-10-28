@@ -5,8 +5,10 @@ Cinématique directe : la position des points d'un bras (épaule, coude,
 poignet, main) à partir des angles de ses articulations, dans le repère du
 bassin (x devant, y à gauche, z en haut). Cinématique inverse : les angles
 qui mettent la main en un point donné, avec les trois articulations qui
-font la prise à deux bras (tangage et roulis d'épaule, coude) ; le lacet
-d'épaule et les poignets restent à zéro.
+font la prise à deux bras (tangage et roulis d'épaule, coude) ; les autres
+articulations de la chaîne (taille, lacet d'épaule, poignets) gardent la
+valeur donnée au départ, mesurée sur le robot (zéro si on ne la donne pas).
+La chaîne va du bassin au repère de la main (rubber_hand), main comprise.
 
 Les angles sont BRUTS, dans la convention de l'URDF, comme les postures du
 service de manipulation (voir Postures). Les origines, rotations et axes
@@ -118,10 +120,15 @@ class ChaineBras:
                 ) -> Tuple[Optional[Dict[str, float]], float]:
         """Angles (tangage, roulis, coude) qui mettent la main en `cible`
         (repère du bassin), en partant de `depart` ; moindres carrés amortis,
-        dans les bornes de l'URDF. Rend (angles, erreur en m) ; angles None
-        si la main n'y arrive pas à `tol` près."""
+        dans les bornes de l'URDF. Les autres articulations de la chaîne
+        restent à leur valeur dans `depart` (0 si absente ou non finie).
+        Rend (angles des trois articulations, erreur en m) ; angles None si
+        la main n'y arrive pas à `tol` près."""
         noms = (self.tangage, self.roulis, self.coude)
-        q = {n: float(depart.get(n, 0.0)) for n in noms}
+        q = {}
+        for nom in self.bornes:
+            v = depart.get(nom, 0.0)
+            q[nom] = float(v) if v is not None and math.isfinite(float(v)) else 0.0
         cible = np.asarray(cible, dtype=float)
         erreur = math.inf
         for _ in range(iterations):
@@ -138,7 +145,7 @@ class ChaineBras:
             for i, n in enumerate(noms):
                 lo, hi = self.bornes[n]
                 q[n] = min(hi, max(lo, q[n] + float(np.clip(dq[i], -0.3, 0.3))))
-        return (q if erreur < tol else None), erreur
+        return ({n: q[n] for n in noms} if erreur < tol else None), erreur
 
     def avant_bras(self, q: Dict[str, float], n: int = 8) -> List[np.ndarray]:
         """Points de l'avant-bras, du coude à la main (repère du bassin)."""
