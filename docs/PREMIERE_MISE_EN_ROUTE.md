@@ -139,17 +139,33 @@ tests). Briques déjà présentes :
 - profils simulation, développement et production ;
 - arrêt d'urgence logiciel, garde-fou articulaire, gardien de proximité ;
 - signatures, permissions et bac à sable des apps ;
-- SDK 1.1 : `go_to`, `follow`, `speak` (factice), etc. ;
-- carte simple (`Carte`, obstacles écrits dans le code), sans SLAM.
+- SDK 1.2 : `go_to` (aussi vers un lieu nommé), `follow`, `speak`
+  (factice), `where_am_i`, `notify`, `battery`, `thermal_status`, etc. ;
+- carte simple (`Carte`, obstacles écrits dans le code), sans SLAM ;
+- carte du sens (`SiteMap`) : lieux nommés, station de charge, zones
+  interdites et lentes appliquées par l'OS à toute marche, versionnée,
+  écrite par l'administrateur par l'API de l'OS (pas encore d'éditeur) ;
+- lieux requis par une app : l'installation est refusée tant qu'ils
+  manquent sur la carte (l'OS ne propose pas encore de les placer) ;
+- tâches planifiées (`MissionScheduler`), retour à la station de charge
+  (`EnergyService`), santé matérielle et protection thermique
+  (`HardwareHealthService`, garde-fou articulaire), notifications vers
+  l'opérateur (canal factice), rapports de plantage.
 
 Manquants pour qu'un robot réel démarre seul :
 
 - **le point d'entrée du service** : `deploy/systemd/axis-os.service` lance
-  `python -m axis_os.main`, qui n'existe pas encore ;
+  `python -m axis_os.main`, qui n'existe pas encore ; c'est lui qui devra
+  démarrer l'ordonnanceur des tâches planifiées et le service d'énergie
+  (aujourd'hui démarrés par les tests) ;
+- la lecture de la batterie du G1 réel (`get_battery` rend « inconnue » :
+  le service d'énergie ne fait alors rien) et l'accostage réel à la station ;
+- le vrai canal des notifications (écran du robot, téléphone) ;
 - l'interface du robot et l'assistant de configuration ;
 - la génération des secrets, le Wi-Fi temporaire, l'annonce mDNS ;
 - la voix réelle (`speak` est factice) ;
-- le SLAM, l'éditeur de carte, les lieux nommés et les zones ;
+- le SLAM et l'éditeur de carte (lieux et zones se publient aujourd'hui par
+  l'API de l'OS) ;
 - le serveur du site et le jumelage ;
 - la validation sur un vrai robot (pilote G1 en DDS écrit mais jamais testé).
 

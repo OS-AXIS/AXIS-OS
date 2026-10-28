@@ -47,6 +47,12 @@ from axis_os.services.locomotion.service import (
 )
 from axis_os.services.manipulation.service import Etat, ManipulationService
 from axis_os.services.navigation.service import Carte, NavigationService, Pose2D
+from axis_os.services.navigation.site_map import SiteMap
+from axis_os.services.notifications import FakeNotificationSink, NotificationCenter
+from axis_os.services.health import HardwareHealthService
+from axis_os.services.network import FakeNetworkProbe
+from axis_os.services.sounds import FakeSoundPlayer
+from axis_os.services.navigation.zones import GardienZones
 from axis_os.services.people.appearance import appearance_descriptor, synthetic_person_image
 from axis_os.services.people.detector import IPersonDetector, PersonDetection
 from axis_os.services.people.follow import FollowService
@@ -227,13 +233,19 @@ class _TranscriptionSimulee(ISpeechRecognizer):
 
 class _HALSimulee(UnitreeG1HAL):
     """Le G1 simulé, avec une batterie dont le test fixe la charge (None :
-    le driver ne la mesure pas, comme le G1 simulé ordinaire)."""
+    le driver ne la mesure pas, comme le G1 simulé ordinaire), et des
+    capteurs de température simulés (SimulatedRobot.set_motor_temperature) :
+    leur valeur est celle du monde simulé, donc une mesure."""
     batterie: Optional[float] = None
+    en_charge: bool = False
 
     def get_battery(self) -> Optional[BatteryState]:
         if self.batterie is None:
             return None
-        return BatteryState(percent=float(self.batterie), charging=False)
+        return BatteryState(percent=float(self.batterie), charging=self.en_charge)
+
+    def measures_motor_temperature(self) -> bool:
+        return True
 
 
 class _BaseGlissante(ILocomotionAdapter):
@@ -341,6 +353,14 @@ class SimulatedRobot:
     speech           : avec un service de parole ; hear() lui fait entendre
                        une phrase.
     seed             : graine du bruit des mesures simulées.
+    site_map         : carte du sens (lieux nommés, zones) ; par défaut une
+                       carte vide, que le test complète par publish().
+    battery_drain_per_s, battery_drain_per_m : décharge de la batterie (en
+                       points de % par seconde du robot, et par mètre
+                       parcouru), si battery_percent est connu.
+    charge_per_s     : recharge (points de % par seconde) quand le robot est
+                       à moins de STATION_RADIUS_M de la station de charge de
+                       la carte du sens (pas d'accostage : être là suffit).
     time_scale       : le temps du robot passe `time_scale` fois plus vite
                        que le temps réel (2 : un essai de 20 s en dure 10).
                        Tout ce qui mesure le temps du robot (services, apps
@@ -348,6 +368,7 @@ class SimulatedRobot:
     """
 
     PEOPLE_EVERY = 5
+    STATION_RADIUS_M = 0.30
 
     def __init__(self, *, carte: Optional[Carte] = None,
                  start: Tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -355,7 +376,9 @@ class SimulatedRobot:
                  objects=(), battery_percent: Optional[float] = None,
                  grasp_succeeds: bool = True, tick_hz: float = 50.0,
                  max_twist: Twist = Twist(0.4, 0.2, 0.8), people=(),
-                 speech: bool = False, seed: int = 0, time_scale: float = 1.0):
+                 speech: bool = False, seed: int = 0, time_scale: float = 1.0,
+                 site_map: Optional[SiteMap] = None, battery_drain_per_s: float = 0.0,
+                 battery_drain_per_m: float = 0.0, charge_per_s: float = 1.0):
         if time_scale == 1.0:
             self.clock = time.monotonic
         else:
@@ -387,10 +410,18 @@ class SimulatedRobot:
         self.guard = (GardienProximite(self._scan, self._pose_xyc,
                                        obstacles=self.carte.obstacles, horloge=self.clock)
                       if proximity_guard else None)
+        self.site_map = site_map if site_map is not None else SiteMap()
+        self.zone_guard = GardienZones(self.site_map, self._pose_xyc)
+        self._decharge = (float(battery_drain_per_s), float(battery_drain_per_m))
+        self._recharge = float(charge_per_s)
+        # Santé matérielle : températures des moteurs (simulées), statut
+        # thermique, qui bride la marche.
+        self.health = HardwareHealthService(self.hal, clock=self.clock)
         self.locomotion = LocomotionService(self.adapter, self._etat_base, self._envoyer,
-                                            clock=self.clock, gardien=self.guard)
+                                            clock=self.clock, gardien=self.guard,
+                                            zones=self.zone_guard, thermique=self.health)
         self.navigation = NavigationService(self.carte, self._pose2d, self.locomotion,
-                                            horloge=self.clock)
+                                            horloge=self.clock, site_map=self.site_map)
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
                                                  self._vers_robot, self._prise_tient,
                                                  gardien=self.guard, horloge=self.clock)
@@ -410,6 +441,13 @@ class SimulatedRobot:
         # Synthèse vocale factice : `voice.spoken` garde ce que le robot a dit.
         from axis_os.services.speech.synthesis import FakeSpeechSynthesizer
         self.voice = FakeSpeechSynthesizer()
+        # Notifications vers l'opérateur : `notification_sink.delivered`
+        # garde celles que l'opérateur a reçues.
+        self.notification_sink = FakeNotificationSink()
+        self.notifications = NotificationCenter(self.notification_sink, horloge=self.clock)
+        # Sons de l'OS (`sounds.played`) et réseau (`network.state`), factices.
+        self.sounds = FakeSoundPlayer()
+        self.network = FakeNetworkProbe("online")
         self._arret = threading.Event()
         self._fil: Optional[threading.Thread] = None
 
@@ -498,6 +536,9 @@ class SimulatedRobot:
                         speech_synthesizer=self.voice, speech_service=self.speech,
                         people_service=self.people_service,
                         follow_service=self.follow_service,
+                        site_map=self.site_map, notifications=self.notifications,
+                        hardware_health=self.health, sound_player=self.sounds,
+                        network_probe=self.network,
                         clock=self.clock, profil=Profil.SIMULATION,
                         confirmer_permissions=accepter_tout_SIMULATION)
         reglages.update(kw)
@@ -516,7 +557,8 @@ class SimulatedRobot:
             for p in list(self.people):
                 p._avancer(self._t_mesure - t_prec)
             t_prec = self._t_mesure
-            services = [self.follow_service, self.navigation, self.locomotion,
+            self._batterie(self._t_mesure)
+            services = [self.health, self.follow_service, self.navigation, self.locomotion,
                         self.manipulation]
             if self.ticks % self.PEOPLE_EVERY == 0:
                 services.insert(0, self.people_service)
@@ -533,6 +575,41 @@ class SimulatedRobot:
             self._arret.wait(max(0.0, self._dt / self._echelle - (time.monotonic() - t0)))
 
     # ---- base, capteurs et mains simulés ----------------------------------
+
+    def set_motor_temperature(self, joint: str, celsius: float) -> None:
+        """Température que mesure le capteur simulé du moteur `joint`."""
+        self.raw_hal.get_actuator(joint)._temperature = float(celsius)
+
+    @property
+    def battery_percent(self) -> Optional[float]:
+        return self.raw_hal.batterie
+
+    @battery_percent.setter
+    def battery_percent(self, v: Optional[float]) -> None:
+        self.raw_hal.batterie = v
+
+    @property
+    def charging(self) -> bool:
+        return self.raw_hal.en_charge
+
+    def _batterie(self, t: float) -> None:
+        """Décharge (temps, distance) ou recharge à la station."""
+        hal = self.raw_hal
+        prec = getattr(self, "_t_batterie", None)
+        pos = (self.x, self.y)
+        self._t_batterie, pos_prec = t, getattr(self, "_pos_batterie", pos)
+        self._pos_batterie = pos
+        if hal.batterie is None or prec is None:
+            return
+        dt = max(0.0, t - prec)
+        station = self.site_map.current.station()
+        hal.en_charge = (station is not None and not self.hal.estop_active and
+                         math.hypot(station.x - self.x, station.y - self.y) <= self.STATION_RADIUS_M)
+        if hal.en_charge:
+            hal.batterie = min(100.0, hal.batterie + self._recharge * dt)
+        else:
+            d = math.hypot(pos[0] - pos_prec[0], pos[1] - pos_prec[1])
+            hal.batterie = max(0.0, hal.batterie - self._decharge[0] * dt - self._decharge[1] * d)
 
     def _avancer(self, twist: Twist) -> None:
         """Intègre la vitesse de la base depuis le pas précédent. Sous

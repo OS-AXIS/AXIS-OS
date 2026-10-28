@@ -56,6 +56,8 @@ class RefusalCode(str, Enum):
     STREAM_STOPPED = "STREAM_STOPPED"           # flux arrêté : reprise explicite exigée
     TARGET_LOST = "TARGET_LOST"                 # personne suivie perdue, ou numéro inconnu
     DEADMAN = "DEADMAN"                         # homme mort : plus de nouvelles de l'app
+    FORBIDDEN_ZONE = "FORBIDDEN_ZONE"           # destination dans une zone interdite
+    RATE_LIMITED_APP = "RATE_LIMITED_APP"       # trop d'appels de l'app (notifications, sons)
 
 
 class AxisRefusal(Exception):
@@ -183,16 +185,59 @@ AVAILABLE, DEGRADED, ABSENT = "available", "degraded", "absent"
 @dataclass
 class BatteryInfo:
     """Batterie, telle que le driver la mesure. `known` faux : le robot ne
-    sait pas la lire, et `percent` est None (jamais une valeur inventée)."""
+    sait pas la lire, et `percent` est None (jamais une valeur inventée).
+    Chaque autre champ est None tant que le driver ne le mesure pas :
+    tension (V), courant (A, positif en décharge), température (°C), état
+    de santé (%), cycles de charge."""
     known: bool
     percent: Optional[float] = None
     charging: Optional[bool] = None
     voltage: Optional[float] = None
+    current_a: Optional[float] = None
+    temperature_c: Optional[float] = None
+    health_percent: Optional[float] = None
+    cycles: Optional[int] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"known": self.known, "percent": self.percent, "charging": self.charging,
+                "voltage": self.voltage, "current_a": self.current_a,
+                "temperature_c": self.temperature_c, "health_percent": self.health_percent,
+                "cycles": self.cycles}
 
     @classmethod
     def from_json(cls, d: Dict[str, Any]) -> "BatteryInfo":
         return cls(known=d.get("known") is True, percent=d.get("percent"),
-                   charging=d.get("charging"), voltage=d.get("voltage"))
+                   charging=d.get("charging"), voltage=d.get("voltage"),
+                   current_a=d.get("current_a"), temperature_c=d.get("temperature_c"),
+                   health_percent=d.get("health_percent"), cycles=d.get("cycles"))
+
+
+@dataclass(frozen=True)
+class MotorHealth:
+    """Santé d'une articulation (ctx.motors_health()), telle que le driver
+    la mesure : None = inconnue. `critical_c` : température où l'OS refuse
+    toute commande à cette articulation ; `margin_c` : ce qui reste avant ;
+    `status` : « normal », « hot », « throttled », « critical » ou
+    « unknown »."""
+    joint: str
+    temperature_c: Optional[float]
+    critical_c: float
+    margin_c: Optional[float]
+    torque_nm: Optional[float]
+    current_a: Optional[float]
+    status: str
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"joint": self.joint, "temperature_c": self.temperature_c,
+                "critical_c": self.critical_c, "margin_c": self.margin_c,
+                "torque_nm": self.torque_nm, "current_a": self.current_a,
+                "status": self.status}
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "MotorHealth":
+        return cls(str(d.get("joint", "")), d.get("temperature_c"),
+                   float(d.get("critical_c", 0.0)), d.get("margin_c"), d.get("torque_nm"),
+                   d.get("current_a"), str(d.get("status", "unknown")))
 
 
 @dataclass
@@ -220,9 +265,7 @@ class RobotInfo:
                 "os_version": self.os_version, "sdk_api_version": self.sdk_api_version,
                 "profile": self.profile, "capabilities": dict(self.capabilities),
                 "services": dict(self.services), "limits": dict(self.limits),
-                "battery": {"known": self.battery.known, "percent": self.battery.percent,
-                            "charging": self.battery.charging,
-                            "voltage": self.battery.voltage}}
+                "battery": self.battery.to_json()}
 
     @classmethod
     def from_json(cls, d: Dict[str, Any]) -> "RobotInfo":
@@ -245,7 +288,13 @@ class SafetyStatus:
     « unavailable » (pas de gardien sur ce robot, ou pas encore de mesure).
     `fall_detected` : None si le robot ne marche pas. Les quotas restants
     sont None quand ils ne s'appliquent pas (pas de mémoire persistante,
-    hors d'une mission)."""
+    hors d'une mission).
+
+    `thermal` : statut thermique des moteurs (« normal », « hot »,
+    « throttled », « critical », « unknown »). `compute` : température (°C)
+    et charge (%) du processeur, et de la carte graphique si elle existe
+    (cpu_temperature_c, cpu_load_percent, gpu_present, gpu_temperature_c,
+    gpu_load_percent ; None = non mesuré) ; {} sans service de santé."""
     estop_active: bool
     proximity: str
     proximity_distance_m: Optional[float]
@@ -254,6 +303,8 @@ class SafetyStatus:
     time_remaining_s: Optional[float]
     storage_keys_remaining: Optional[int]
     storage_bytes_remaining: Optional[int]
+    thermal: str = "unknown"
+    compute: Dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> Dict[str, Any]:
         return {"estop_active": self.estop_active, "proximity": self.proximity,
@@ -262,7 +313,8 @@ class SafetyStatus:
                 "fall_detected": self.fall_detected,
                 "time_remaining_s": self.time_remaining_s,
                 "storage_keys_remaining": self.storage_keys_remaining,
-                "storage_bytes_remaining": self.storage_bytes_remaining}
+                "storage_bytes_remaining": self.storage_bytes_remaining,
+                "thermal": self.thermal, "compute": dict(self.compute)}
 
     @classmethod
     def from_json(cls, d: Dict[str, Any]) -> "SafetyStatus":
@@ -273,7 +325,9 @@ class SafetyStatus:
                    fall_detected=d.get("fall_detected"),
                    time_remaining_s=d.get("time_remaining_s"),
                    storage_keys_remaining=d.get("storage_keys_remaining"),
-                   storage_bytes_remaining=d.get("storage_bytes_remaining"))
+                   storage_bytes_remaining=d.get("storage_bytes_remaining"),
+                   thermal=str(d.get("thermal", "unknown")),
+                   compute=dict(d.get("compute") or {}))
 
 
 # ─── Personnes (people, person_in_front) ─────────────────────────────────
@@ -307,6 +361,87 @@ class PersonInfo:
         return cls(person_id=int(d["person_id"]), distance_m=float(d["distance_m"]),
                    bearing_rad=float(d["bearing_rad"]), seen_for_s=float(d["seen_for_s"]),
                    confidence=float(d["confidence"]))
+
+
+# ─── Position, lieux et zones (where_am_i, places, zones) ─────────────────
+
+@dataclass(frozen=True)
+class Location:
+    """Où est le robot (ctx.where_am_i()). `known` faux : la localisation ne
+    répond pas, et tout le reste vaut None. `uncertainty_m` : None quand la
+    localisation ne la connaît pas (l'odométrie seule), jamais inventée.
+    `timestamp` : heure du robot de la mesure. `zones` : noms des zones de
+    la carte où se trouve le robot."""
+    known: bool
+    x: Optional[float] = None
+    y: Optional[float] = None
+    heading: Optional[float] = None
+    uncertainty_m: Optional[float] = None
+    timestamp: Optional[float] = None
+    nearest_place: Optional[str] = None
+    nearest_place_distance_m: Optional[float] = None
+    zones: tuple = ()
+    map_version: Optional[int] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        d = {k: getattr(self, k) for k in ("known", "x", "y", "heading", "uncertainty_m",
+                                           "timestamp", "nearest_place",
+                                           "nearest_place_distance_m", "map_version")}
+        d["zones"] = list(self.zones)
+        return d
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "Location":
+        return cls(known=d.get("known") is True, x=d.get("x"), y=d.get("y"),
+                   heading=d.get("heading"), uncertainty_m=d.get("uncertainty_m"),
+                   timestamp=d.get("timestamp"), nearest_place=d.get("nearest_place"),
+                   nearest_place_distance_m=d.get("nearest_place_distance_m"),
+                   zones=tuple(d.get("zones") or ()), map_version=d.get("map_version"))
+
+
+@dataclass(frozen=True)
+class PlaceInfo:
+    """Un lieu nommé de la carte du site (lecture seule). `kind` : « place »,
+    ou « charging_station » pour la station de charge."""
+    name: str
+    x: float
+    y: float
+    heading: Optional[float]
+    kind: str
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"name": self.name, "x": self.x, "y": self.y, "heading": self.heading,
+                "kind": self.kind}
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "PlaceInfo":
+        return cls(str(d["name"]), float(d["x"]), float(d["y"]), d.get("heading"),
+                   str(d["kind"]))
+
+
+@dataclass(frozen=True)
+class ZoneInfo:
+    """Une zone de la carte du site (lecture seule) : `kind` « forbidden »
+    (le robot n'y entre jamais), « slow » (vitesse plafonnée à
+    max_speed_mps) ou « named »."""
+    name: str
+    kind: str
+    polygon: tuple
+    max_speed_mps: Optional[float] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"name": self.name, "kind": self.kind,
+                "polygon": [list(p) for p in self.polygon], "max_speed_mps": self.max_speed_mps}
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "ZoneInfo":
+        return cls(str(d["name"]), str(d["kind"]),
+                   tuple((float(a), float(b)) for a, b in d["polygon"]), d.get("max_speed_mps"))
+
+    def contains(self, x: float, y: float) -> bool:
+        """Le point (x, y), repère monde, est-il dans la zone ?"""
+        from axis_os.services.navigation.site_map import point_in_polygon
+        return point_in_polygon(x, y, self.polygon)
 
 
 # ─── Objets à saisir (pick, place) ───────────────────────────────────────

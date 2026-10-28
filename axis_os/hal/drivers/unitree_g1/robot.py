@@ -557,6 +557,11 @@ class UnitreeG1HAL(IRobotHAL):
             "dof":              str(len(self._joint_defs)),
         }
 
+    def measures_motor_temperature(self) -> bool:
+        """Le G1 réel lit la température de chaque moteur (MotorState_) ;
+        le simulé rend une valeur fixe, qui n'est pas une mesure."""
+        return self._backend == "dds"
+
     def get_rest_pose(self) -> Dict[str, float]:
         """Posture de repos du G1 : bras le long du corps, à la position
         zéro du fabricant (celle où le driver démarre, à l'intérieur des

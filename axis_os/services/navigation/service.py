@@ -67,6 +67,9 @@ class Pose2D:
     y: float
     cap: float = 0.0                 # radians, 0 = axe x du monde
     horodatage: float = 0.0          # secondes, horloge du robot
+    # Incertitude de la position (m, un écart type), si la localisation la
+    # connaît ; None : inconnue (l'odométrie seule ne la donne pas).
+    incertitude_m: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -131,10 +134,15 @@ class Planificateur:
     la carte sans la modifier.
     """
 
+    MARGE_ZONES = 0.25
+
     def __init__(self, carte: Carte, rayon_robot: float = 0.30,
-                 marge: float = 0.10):
+                 marge: float = 0.10, interdites: Sequence = ()):
+        """interdites : zones interdites de la carte du sens (site_map.py),
+        élargies comme les obstacles : le chemin ne les approche jamais."""
         self.carte = carte
         self.gonflement = rayon_robot + marge
+        self.interdites = list(interdites)
         r = carte.resolution
         self.nx = int(math.ceil((carte.xmax - carte.xmin) / r))
         self.ny = int(math.ceil((carte.ymax - carte.ymin) / r))
@@ -183,6 +191,12 @@ class Planificateur:
         if not (c.xmin + self.gonflement <= x <= c.xmax - self.gonflement
                 and c.ymin + self.gonflement <= y <= c.ymax - self.gonflement):
             return False                     # les bords de la carte sont des murs
+        # Plus large que pour un obstacle : le gardien de zones (zones.py)
+        # refuse d'approcher une zone interdite à moins de son rayon, en
+        # anticipant le mouvement ; un chemin qui la frôlerait l'arrêterait.
+        if any(z.distance(x, y) < self.gonflement + self.MARGE_ZONES
+               for z in getattr(self, "interdites", ())):
+            return False
         return not any(o.contient(x, y, self.gonflement)
                        for o in list(c.obstacles) + getattr(self, "temporaires", []))
 
@@ -454,7 +468,8 @@ class NavigationService(IService):
                  attente_contournement_s: float = 4.0,
                  passage_min_m: float = 1.1,
                  duree_obstacle_temp_s: float = 60.0,
-                 obstacles_temp_max: int = 4):
+                 obstacles_temp_max: int = 4,
+                 site_map=None):
         """
         pose_max_age_s : âge maximal de la pose (s) ; au-delà, arrêt.
         ecart_replanif_m : écart au chemin (m) au-delà duquel on replanifie.
@@ -480,6 +495,11 @@ class NavigationService(IService):
         duree_obstacle_temp_s : durée après laquelle un obstacle temporaire
         est oublié. obstacles_temp_max : nombre maximal d'obstacles
         temporaires à la fois ; au-delà, on n'en ajoute plus.
+
+        site_map : carte du sens (site_map.py) : ses lieux sont des
+        destinations (aller_vers("quai 3")), ses zones interdites des
+        obstacles du planificateur. Une nouvelle version publiée en route
+        fait replanifier.
         """
         self.carte = carte
         self._pose = source_pose
@@ -487,7 +507,10 @@ class NavigationService(IService):
         self._horloge = horloge
         self._age_max = pose_max_age_s
         self._ecart_max = ecart_replanif_m
-        self.planif = Planificateur(carte, rayon_robot, marge)
+        self._site = site_map
+        self._rayon, self._marge_plan = rayon_robot, marge
+        self._version_site = site_map.version if site_map is not None else None
+        self.planif = Planificateur(carte, rayon_robot, marge, self._interdites())
         self.suiveur = suiveur or Suiveur()
         self.etat = EtatNavigation.INACTIF
         self.chemin: Optional[List[Tuple[float, float]]] = None
@@ -532,6 +555,31 @@ class NavigationService(IService):
                              healthy=self.etat is not EtatNavigation.ECHEC,
                              detail=self.raison or self.etat.name)
 
+    def pose(self) -> Pose2D:
+        """Pose du robot, telle que la localisation la donne (lecture)."""
+        return self._pose()
+
+    @property
+    def site_map(self):
+        """Carte du sens (site_map.py), ou None."""
+        return self._site
+
+    def _interdites(self):
+        return self._site.current.forbidden() if self._site is not None else []
+
+    def _suivre_carte_du_site(self) -> bool:
+        """Reconstruit le planificateur si une nouvelle version de la carte
+        du sens a été publiée ; rend True dans ce cas."""
+        if self._site is None or self._site.version == self._version_site:
+            return False
+        self._version_site = self._site.version
+        temporaires = list(self.planif.temporaires)
+        self.planif = Planificateur(self.carte, self._rayon, self._marge_plan,
+                                    self._interdites())
+        for o in temporaires:
+            self.planif.bloquer(o)
+        return True
+
     # ---- API offerte aux apps -------------------------------------------
 
     @sous_verrou
@@ -542,6 +590,11 @@ class NavigationService(IService):
         chemin."""
         if not self._demarre:
             return ServiceResult(ok=False, reason="service non démarré")
+        self._suivre_carte_du_site()
+        if isinstance(destination, str) and self._site is not None \
+                and self._site.current.place(destination) is not None:
+            lieu = self._site.current.place(destination)
+            destination = Pose2D(lieu.x, lieu.y, lieu.heading)
         if isinstance(destination, str):
             if destination not in self.carte.postes:
                 return ServiceResult(ok=False, reason=(
@@ -658,6 +711,10 @@ class NavigationService(IService):
         s'est trop écarté du chemin, puis envoie la consigne de vitesse."""
         if self.etat is not EtatNavigation.EN_ROUTE:
             return ServiceResult(ok=True, value=self.etat)
+        if self._suivre_carte_du_site():
+            r = self._planifier(premiere=False)
+            if not r.ok:
+                return r
         p = self._pose()
         self._surveiller_obstacle(p)
         if self._horloge() - p.horodatage > self._age_max:

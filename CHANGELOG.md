@@ -10,6 +10,93 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Autonomie sur une journée (API du SDK 1.2.0, 2026-10-28)
+
+Le chemin ne change pas : `RobotContext`, pont JSON (schéma strict par
+action), services, HAL normalisée ; permission vérifiée à chaque appel,
+refus structurés, aucun mouvement sous arrêt d'urgence. Rien n'est contourné
+ni affaibli ; le garde-fou articulaire devient plus strict.
+
+**Nouvelles API** :
+- `where_am_i()`, `places()`, `zones()`, `on_enter_zone()`,
+  `on_exit_zone()` (`LOCATION`, NORMAL, montrée à l'installation) ;
+  `go_to("quai 3")` accepte un nom de lieu ; code `FORBIDDEN_ZONE` ;
+  manifeste : `required_places` (installation refusée si un lieu manque) ;
+- `notify(title, message, priority=info|warning|urgent)`
+  (`NOTIFICATIONS`, NORMAL) : texte borné et neutralisé, source imposée
+  par l'OS, refus d'un texte qui se présente comme l'OS, 6 par minute dont
+  2 urgentes (`RATE_LIMITED_APP`) ;
+- manifeste : `triggers` (`TriggerSpec` : `daily`, `interval`,
+  `battery_below`, `zone_enter`), permission `SCHEDULED_MISSIONS`
+  (DANGEROUS, déclencheurs montrés à l'installation) ;
+- `battery()`, `motors_health()`, `thermal_status()`,
+  `on_thermal_change()` (`HARDWARE_HEALTH`, NORMAL) ; `safety_status()`
+  donne aussi le statut thermique et le processeur (et la carte
+  graphique) ;
+- `play_sound(name, volume=…)` (`AUDIO_OUTPUT` : sons de l'OS, volume
+  plafonné à 0,8, 20 par minute) ; `network_status()` (`SYSTEM_INFO`).
+
+**Côté OS** :
+- carte du sens (`axis_os/services/navigation/site_map.py`) : lieux nommés,
+  station de charge, zones interdites, lentes et simples ; versionnée,
+  vérifiée en entier, écrite par l'administrateur seulement ; un lieu à
+  moins de 0,7 m d'une zone interdite est refusé (inatteignable) ;
+- gardien de zones (`zones.py`) sur le service de locomotion : toute marche
+  respecte les zones interdites et lentes ; le planificateur les contourne
+  et replanifie quand la carte change ;
+- centre de notifications (`INotificationSink`, `FakeNotificationSink`) ;
+- ordonnanceur des tâches planifiées (`axis_os/store/runtime/scheduler.py`) :
+  une mission à la fois, collisions départagées, aucun rattrapage, rien
+  sous arrêt d'urgence, après une chute, hors des heures permises ou quand
+  un service bloque les missions, réarmement de 300 s par déclencheur et
+  par app, désactivable par l'humain, journal ;
+- service d'énergie (`axis_os/services/energy.py`) : sous 20 %, missions
+  refusées, mission en cours arrêtée (coopératif puis forcé), retour à la
+  station par la navigation ; sous 8 %, arrêt sur place ; notifications ;
+- santé matérielle (`axis_os/services/health.py`) : statut thermique,
+  bridage de la marche, mesure absente ou périmée = critique ; sous
+  température critique, missions arrêtées et refusées ;
+- `PlayStoreRuntime` : `add_mission_blocker`, `running_apps`, `force_stop`,
+  `stop_all_hooks`, `crash_reports` (rapports de plantage sans message,
+  paramètres ni secret) ; `start_app` refusé sous un bloqueur ;
+- HAL : `measures_motor_temperature()` ; `BatteryState` gagne `current`,
+  `temperature`, `health_percent`, `cycles` (None si non mesurés).
+
+**Protection thermique (JointSafetyGuard, plus stricte)** : elle
+n'utilisait pas `temperature_max` (seuil fixe de 80 °C, avertissement à
+65 °C inutilisé) et ignorait une température NaN. Désormais : seuil
+critique = le plus bas de 80 °C et de `temperature_max` ; de 65 °C à ce
+seuil, vitesse, couple et écart de position commandés plafonnés (jusqu'à
+50 %, `THERMAL_DERATING`) ; température non finie = commande refusée.
+
+**Kit de développement** : `axis_os.testing` simule la batterie qui se vide
+et la station qui recharge, les températures des moteurs, les
+notifications, les sons et le réseau ; exemple `examples/night_patrol`.
+
+**Revues adversariales** (`test/test_autonomie_revue.py`, chaque constat
+avec son essai, 7 vérifications en échec sur le code d'avant) :
+- A1 : le bridage thermique laissait passer les commandes en position (le
+  G1), dont le couple vient du PD ; l'écart de position est désormais
+  bridé aussi ;
+- A2 : huit intervalles décalés d'une même app donnaient 65 lancements en
+  une heure ; réarmement de 300 s par app ;
+- A3 : un `on_stop` lancé pendant le retour à la station emmenait le robot
+  ailleurs ; tout hook en cours pendant un blocage est désormais arrêté
+  (coopératif, puis forcé) ;
+- A4 : un capteur qui oscille autour du seuil critique faisait 50 entrées
+  en « critical » en 25 s ; hystérésis de 2 °C, une alerte par minute ;
+- B1 : un nom d'app avec « ] » imitait la fin du préfixe imposé ;
+- B2 : un nom de classe d'exception écrit par l'app pouvait porter une
+  donnée personnelle dans un rapport ; seuls les types standard restent.
+
+**Comportements qui changent** : un lieu à moins de 0,7 m d'une zone
+interdite est refusé par la carte ; une température moteur NaN, ou au-delà
+d'une `temperature_max` inférieure à 80 °C, fait refuser les commandes ; un
+moteur entre 65 °C et son seuil critique refuse les commandes trop rapides,
+trop fortes ou trop éloignées ; `SafetyStatus` et `BatteryInfo` ont de
+nouveaux champs (à la fin, avec une valeur par défaut). Voir `SECURITY.md`,
+limite connue n° 10.
+
 ### Suivi d'une personne (« suis-moi »), sans reconnaissance faciale (API du SDK 1.1.0, 2026-10-28)
 
 Aucune reconnaissance faciale, aucun gabarit de visage, aucune donnée

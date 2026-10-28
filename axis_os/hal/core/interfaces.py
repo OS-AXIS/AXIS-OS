@@ -427,6 +427,16 @@ class IRobotHAL(ABC):
         """
         return None
 
+    def measures_motor_temperature(self) -> bool:
+        """
+        Vrai si la température rendue dans ActuatorFeedback est mesurée par
+        un capteur (ou par le simulateur qui en simule un). Faux par défaut :
+        une valeur fixe ou estimée n'est pas une mesure, et le SDK dit alors
+        « inconnue » aux apps (motors_health). Le garde-fou articulaire,
+        lui, applique ses seuils à toute valeur rendue.
+        """
+        return False
+
     def get_rest_pose(self) -> Optional[Dict[str, float]]:
         """
         Posture de repos sûre, définie par le driver (jamais par une app) :

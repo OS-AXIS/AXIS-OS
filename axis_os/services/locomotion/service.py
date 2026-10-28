@@ -50,6 +50,10 @@ service ne commande jamais un actionneur directement.
 
 Si un gardien de proximité est fourni (proximite.py), il plafonne en plus
 chaque consigne selon la distance aux obstacles : voir LocomotionService.
+Puis le gardien de zones (axis_os/services/navigation/zones.py) refuse
+d'entrer dans une zone interdite et plafonne la vitesse en zone lente, et la
+protection thermique (axis_os/services/health/thermal.py) réduit la vitesse
+d'un robot qui chauffe. Chacun ne peut que réduire la consigne.
 """
 from __future__ import annotations
 
@@ -189,6 +193,8 @@ class LocomotionService(IService):
         command_timeout_s: float = 0.5,
         clock: Callable[[], float] = time.monotonic,
         gardien=None,
+        zones=None,
+        thermique=None,
     ):
         """
         adapter           : traduction vitesse -> articulations, fournie par
@@ -216,6 +222,15 @@ class LocomotionService(IService):
                             la sécurité des humains autour du robot. Son
                             dernier verdict reste lisible dans
                             dernier_verdict.
+        zones             : GardienZones (axis_os/services/navigation/
+                            zones.py), facultatif : zones interdites et
+                            lentes de la carte du site, appliquées à toute
+                            consigne après le gardien de proximité. Dernier
+                            verdict dans dernier_verdict_zones.
+        thermique         : objet qui rend facteur_marche() dans [0, 1]
+                            (ThermalService, axis_os/services/health/
+                            thermal.py) : la vitesse est multipliée par ce
+                            facteur quand le robot chauffe.
         """
         self._adapter = adapter
         self._read_state = read_state
@@ -223,7 +238,10 @@ class LocomotionService(IService):
         self._timeout = command_timeout_s
         self._clock = clock
         self._gardien = gardien
+        self._zones = zones
+        self._thermique = thermique
         self.dernier_verdict = None
+        self.dernier_verdict_zones = None
         # Consigne en cours et instant de sa réception (None : aucune).
         self._twist = Twist()
         self._twist_t: Optional[float] = None
@@ -409,6 +427,22 @@ class LocomotionService(IService):
                 # par le même facteur, la direction du mouvement est gardée.
                 twist = Twist(twist.vx * v.facteur, twist.vy * v.facteur,
                               twist.wz * v.facteur)
+        if self._zones is not None and not twist.is_zero:
+            vz = self._zones.limiter(twist.vx, twist.vy, twist.wz)
+            self.dernier_verdict_zones = vz
+            # Jamais plus vite que la consigne déjà retenue.
+            twist = Twist(math.copysign(min(abs(vz.vx), abs(twist.vx)), twist.vx),
+                          math.copysign(min(abs(vz.vy), abs(twist.vy)), twist.vy),
+                          math.copysign(min(abs(vz.wz), abs(twist.wz)), twist.wz))
+        if self._thermique is not None and not twist.is_zero:
+            try:
+                f = float(self._thermique.facteur_marche())
+            except Exception:                  # noqa: BLE001 — dans le doute, arrêt
+                f = 0.0
+            f = f if math.isfinite(f) else 0.0
+            f = max(0.0, min(1.0, f))
+            if f < 1.0:
+                twist = Twist(twist.vx * f, twist.vy * f, twist.wz * f)
         targets = self._adapter.step(st, twist)
         statuses = self._send(targets)
         # Consignes articulaires refusées par le HAL gardé (statut autre que

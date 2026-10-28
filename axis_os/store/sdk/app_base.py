@@ -32,7 +32,7 @@ Licence : Apache 2.0 (open-source — SDK public)
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import functools
 import math
 import secrets
@@ -46,6 +46,9 @@ from axis_os.hal.core.types import (
     JointGroup, infer_joint_group, ORIGINE_IA,
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
+from axis_os.services.notifications import MESSAGE_MAX, PRIORITIES, TITLE_MAX
+from axis_os.services.network import STATES as NETWORK_STATES
+from axis_os.services.sounds import MAX_VOLUME, SOUNDS
 from .manifest import AppManifest, Permission
 from .version import API_VERSION
 from .lifecycle import (
@@ -61,9 +64,9 @@ from .stream import (
 )
 from .results import (
     ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal,
-    BatteryInfo, InvalidArgumentError, PersonInfo, RefusalCode, RobotInfo, SafetyStatus,
-    object_from_target, refused, require_int, require_language, require_number,
-    require_text, surface_height_from_target,
+    BatteryInfo, InvalidArgumentError, Location, MotorHealth, PersonInfo, PlaceInfo, RefusalCode,
+    RobotInfo, SafetyStatus, ZoneInfo, object_from_target, refused, require_int,
+    require_language, require_number, require_text, surface_height_from_target,
 )
 
 
@@ -276,6 +279,16 @@ class RobotContext:
         # voir axis_os/services/people/.
         self._people = None
         self._suivi = None
+        # Autonomie (SDK 1.2) : carte du sens du site (lieux, zones), centre
+        # de notifications, sons, état du réseau, santé du matériel.
+        self._site = None
+        self._notifications = None
+        self._sons = None
+        self._sons_joues: list = []           # instants des sons joués (débit)
+        self._reseau = None
+        self._sante = None
+        # Raison d'un arrêt forcé par l'OS (PlayStoreRuntime.force_stop).
+        self._arret_force: Optional[str] = None
         # Objets vus par la perception de l'OS pour cette app, dans le
         # repère monde : (instant, (x, y, z)). pick() n'accepte qu'une cible
         # proche de l'un d'eux (voir _cible_vue).
@@ -392,7 +405,9 @@ class RobotContext:
 
     def _attach_services(self, perception=None, locomotion=None,
                          speech=None, memory=None, navigation=None,
-                         manipulation=None, people=None, follow=None) -> None:
+                         manipulation=None, people=None, follow=None, site_map=None,
+                         notifications=None, sounds=None, network=None,
+                         health=None) -> None:
         """Injection des services par le runtime.
 
         Méthode privée (préfixe _), donc hors de la surface publique que
@@ -407,6 +422,11 @@ class RobotContext:
         self._manipulation = manipulation
         self._people = people
         self._suivi = follow
+        self._site = site_map
+        self._notifications = notifications
+        self._sons = sounds
+        self._reseau = network
+        self._sante = health
 
     def _fermer(self) -> None:
         """Appelée par le runtime à la fin de chaque hook, même si le
@@ -805,7 +825,8 @@ class RobotContext:
         de proximité (« clear », « slowing », « stopped » ou
         « unavailable »), chute détectée (None si le robot ne marche pas),
         et quotas restants : durée du hook en cours (secondes du robot),
-        clés et octets de mémoire persistante.
+        clés et octets de mémoire persistante, statut thermique des moteurs,
+        température et charge du processeur (et de la carte graphique).
 
         Permission : SYSTEM_INFO. Servie aussi pendant un arrêt d'urgence."""
         self._require(Permission.SYSTEM_INFO)
@@ -830,11 +851,15 @@ class RobotContext:
                 n, taille = r.value
                 cles = max(0, self._memory.MAX_CLES_PAR_APP - n)
                 octets = max(0, self._memory.MAX_OCTETS_PAR_APP - taille)
+        thermique, calcul = "unknown", {}
+        if self._sante is not None:
+            thermique, calcul = str(self._sante.thermal_status()), dict(self._sante.compute())
         return SafetyStatus(
             estop_active=bool(self._watchdog.estop_fired or self._robot.estop_active),
             proximity=proximite, proximity_distance_m=distance, proximity_reason=raison,
             fall_detected=chute, time_remaining_s=reste,
-            storage_keys_remaining=cles, storage_bytes_remaining=octets)
+            storage_keys_remaining=cles, storage_bytes_remaining=octets,
+            thermal=thermique, compute=calcul)
 
     # Version de l'API du SDK que sert cet OS (SemVer, voir
     # axis_os/store/sdk/version.py et AppManifest.min_sdk_version).
@@ -849,12 +874,41 @@ class RobotContext:
     # Pas d'attente d'une action longue (secondes du robot).
     _PAS_ATTENTE_S = 0.02
 
+    def _lieu(self, nom) -> Tuple[float, float, Optional[float]]:
+        """(x, y, cap) d'un lieu nommé de la carte du site, ou
+        InvalidArgumentError (nom inconnu, ou pas de carte)."""
+        nom = require_text("place", nom, 64).strip()
+        lieu = self._site.current.place(nom) if self._site is not None else None
+        if lieu is None:
+            connus = [p.name for p in self._site.current.places] if self._site is not None else []
+            raise InvalidArgumentError(f"lieu inconnu : {nom!r} — lieux de la carte : {connus}")
+        return lieu.x, lieu.y, lieu.heading
+
+    def _point_interdit(self, x: float, y: float) -> Optional[str]:
+        """Nom de la zone interdite où le robot, posé en (x, y), toucherait,
+        ou None."""
+        if self._site is None:
+            return None
+        from axis_os.services.navigation.zones import GardienZones
+        rayon = GardienZones(self._site, lambda: (x, y, 0.0)).rayon
+        for z in self._site.current.forbidden():
+            if z.distance(x, y) < rayon:
+                return z.name
+        return None
+
     @_conduite()
-    def go_to(self, x: float, y: float, theta: Optional[float] = None, *,
+    def go_to(self, x, y: Optional[float] = None, theta: Optional[float] = None, *,
               timeout_s: float) -> ActionResult:
         """Va au point (x, y) de la carte (mètres, repère monde), et s'y
-        oriente selon `theta` (radians) s'il est donné. BLOQUANT : rend la
-        main à l'arrivée, ou dès que l'issue est connue.
+        oriente selon `theta` (radians) s'il est donné ; ou, si `x` est un
+        texte, au lieu nommé de la carte du site qui porte ce nom
+        (go_to("quai 3", timeout_s=60)), orienté selon son cap. BLOQUANT :
+        rend la main à l'arrivée, ou dès que l'issue est connue.
+
+        Une destination dans une zone interdite (ou trop près pour que le
+        robot y tienne sans la toucher) est refusée : REFUSED,
+        FORBIDDEN_ZONE. En route, le robot n'entre jamais dans une zone
+        interdite et respecte la vitesse des zones lentes.
 
         Le service de navigation planifie un chemin qui contourne les
         obstacles de la carte, puis le suit par des consignes de vitesse au
@@ -882,6 +936,10 @@ class RobotContext:
         # Jamais plus de droits que la commande remplacée : ceux de walk().
         self._require(Permission.LOCOMOTION_WALK)
         self._require(Permission.ACTUATORS_WRITE_LEGS)
+        if isinstance(x, str):
+            if y is not None or theta is not None:
+                raise InvalidArgumentError("go_to(nom_du_lieu) : sans y ni theta")
+            x, y, theta = self._lieu(x)
         x = require_number("x", x, mini=-1e4, maxi=1e4)
         y = require_number("y", y, mini=-1e4, maxi=1e4)
         if theta is not None:
@@ -893,6 +951,10 @@ class RobotContext:
         if nav is None:
             return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
                            "pas de service de navigation sur ce robot")
+        interdite = self._point_interdit(x, y)
+        if interdite is not None:
+            return refused("REFUSED", RefusalCode.FORBIDDEN_ZONE,
+                           f"destination dans la zone interdite « {interdite} »")
         if self._flux is not None and self._flux.kind == "walk" and self._flux.state != "CLOSED":
             # Un seul écrivain de la marche : le flux de l'app, ou la
             # navigation, jamais les deux.
@@ -1186,6 +1248,138 @@ class RobotContext:
         return refused("FAILED", RefusalCode.SAFETY_LIMIT,
                        "un pas vers la posture de repos a été refusé (voir le journal)")
 
+    # ---- Position, lieux et zones ---------------------------------------
+
+    def where_am_i(self) -> Location:
+        """Où est le robot : position (x, y, en m) et cap (rad) sur la carte,
+        incertitude si la localisation la connaît (None sinon : l'odométrie
+        seule ne la donne pas), heure du robot de la mesure, lieu nommé le
+        plus proche et sa distance, zones où il se trouve. Source : la
+        localisation du service de navigation. Location(known=False) si elle
+        ne répond pas. Permission : LOCATION."""
+        self._require(Permission.LOCATION)
+        nav = self._navigation
+        try:
+            p = nav.pose() if nav is not None else None
+        except Exception:                    # noqa: BLE001 — localisation en panne
+            p = None
+        if p is None or not all(math.isfinite(v) for v in (p.x, p.y, p.cap)):
+            return Location(known=False)
+        proche, d, zones, version = None, None, (), None
+        if self._site is not None:
+            carte = self._site.current
+            version = carte.version
+            np_ = carte.nearest_place(p.x, p.y)
+            if np_ is not None:
+                proche, d = np_[0].name, round(np_[1], 3)
+            zones = tuple(z.name for z in carte.zones_at(p.x, p.y))
+        inc = getattr(p, "incertitude_m", None)
+        return Location(known=True, x=round(p.x, 4), y=round(p.y, 4), heading=round(p.cap, 4),
+                        uncertainty_m=None if inc is None else float(inc),
+                        timestamp=float(p.horodatage), nearest_place=proche,
+                        nearest_place_distance_m=d, zones=zones, map_version=version)
+
+    def places(self) -> list:
+        """Lieux nommés de la carte du site (PlaceInfo), en lecture seule ;
+        [] sans carte. Permission : LOCATION."""
+        self._require(Permission.LOCATION)
+        if self._site is None:
+            return []
+        return [PlaceInfo(p.name, p.x, p.y, p.heading, p.kind) for p in self._site.current.places]
+
+    def zones(self) -> list:
+        """Zones de la carte du site (ZoneInfo), en lecture seule ; [] sans
+        carte. Permission : LOCATION."""
+        self._require(Permission.LOCATION)
+        if self._site is None:
+            return []
+        return [ZoneInfo(z.name, z.kind, z.polygon, z.max_speed_mps)
+                for z in self._site.current.zones]
+
+    def _zone_connue(self, name) -> str:
+        nom = require_text("name", name, 64).strip()
+        if self._site is None or not any(z.name == nom for z in self._site.current.zones):
+            connues = [z.name for z in self._site.current.zones] if self._site is not None else []
+            raise InvalidArgumentError(f"zone inconnue : {nom!r} — zones de la carte : {connues}")
+        return nom
+
+    def on_enter_zone(self, name: str, callback) -> None:
+        """Appelle `callback(name)` quand le robot entre dans la zone `name`
+        de la carte du site. Lève InvalidArgumentError pour une zone
+        inconnue. Permission : LOCATION."""
+        self._exiger_appelable(callback)
+        self._peut_abonner("zone_enter", zone=name)
+        self._abonner("zone_enter", callback, zone=self._zone_connue(name))
+
+    def on_exit_zone(self, name: str, callback) -> None:
+        """Appelle `callback(name)` quand le robot sort de la zone `name`.
+        Permission : LOCATION."""
+        self._exiger_appelable(callback)
+        self._peut_abonner("zone_exit", zone=name)
+        self._abonner("zone_exit", callback, zone=self._zone_connue(name))
+
+    # ---- Santé matérielle --------------------------------------------------
+
+    def battery(self) -> BatteryInfo:
+        """Batterie détaillée, telle que le driver la mesure : charge, en
+        charge ou non, tension, courant, température, état de santé,
+        cycles ; None pour tout ce qu'il ne mesure pas, et known=False s'il
+        ne la lit pas du tout. Servie sous arrêt d'urgence (lecture seule).
+        Permission : HARDWARE_HEALTH."""
+        self._require(Permission.HARDWARE_HEALTH)
+        try:
+            b = self._lire_batterie()
+        except Exception:                    # noqa: BLE001 — capteur en panne : inconnue
+            b = None
+        if b is None or not math.isfinite(float(b.percent)):
+            return BatteryInfo(known=False)
+
+        def mesure(nom):
+            v = getattr(b, nom, None)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) \
+                and math.isfinite(v) else None
+        cycles = getattr(b, "cycles", None)
+        return BatteryInfo(known=True, percent=float(b.percent),
+                           charging=b.charging if isinstance(b.charging, bool) else None,
+                           voltage=mesure("voltage"), current_a=mesure("current"),
+                           temperature_c=mesure("temperature"),
+                           health_percent=mesure("health_percent"),
+                           cycles=cycles if isinstance(cycles, int)
+                           and not isinstance(cycles, bool) else None)
+
+    def motors_health(self) -> list:
+        """Santé de chaque articulation (MotorHealth) : température mesurée,
+        température critique et marge avant elle, couple et courant mesurés,
+        statut. None pour ce que le driver ne mesure pas ; [] sans service
+        de santé sur ce robot. Lecture seule. Permission : HARDWARE_HEALTH."""
+        self._require(Permission.HARDWARE_HEALTH)
+        if self._sante is None:
+            return []
+        return [MotorHealth(m.joint, m.temperature_c, m.critical_c, m.margin_c, m.torque_nm,
+                            m.current_a, m.status) for m in self._sante.motors()]
+
+    def thermal_status(self) -> str:
+        """Statut thermique du robot : « normal », « hot » (chaud),
+        « throttled » (bridé : l'OS réduit vitesses et couples),
+        « critical » (plus aucun mouvement, la mission est arrêtée) ou
+        « unknown » (le driver ne mesure pas la température, ou pas de
+        service de santé). Permission : HARDWARE_HEALTH."""
+        self._require(Permission.HARDWARE_HEALTH)
+        if self._sante is None:
+            return "unknown"
+        return str(self._sante.thermal_status())
+
+    def on_thermal_change(self, callback) -> bool:
+        """Appelle `callback(statut)` à chaque changement du statut
+        thermique. Rend False, sans s'abonner, sans service de santé sur ce
+        robot. Permission : HARDWARE_HEALTH."""
+        self._exiger_appelable(callback)
+        if not self._peut_abonner("thermal"):
+            self.log("on_thermal_change : pas de service de santé sur ce robot")
+            return False
+        self._abonner("thermal", callback)
+        return True
+
     # ---- Personnes : présence et suivi (« suis-moi ») ----------------------
 
     # Attente des premières pistes quand le service « personnes » ne
@@ -1413,7 +1607,8 @@ class RobotContext:
         self._progression.append(Progress(f, m, self.now()))
         del self._progression[:-PROGRESS_HISTORY_MAX]
 
-    def _peut_abonner(self, kind: str, threshold: Optional[float] = None) -> bool:
+    def _peut_abonner(self, kind: str, threshold: Optional[float] = None,
+                      zone: Optional[str] = None) -> bool:
         """Vérifie le droit de s'abonner à un événement (permission, et
         batterie connue pour « low_battery ») ; rend False si l'événement
         ne peut pas se produire sur ce robot."""
@@ -1427,6 +1622,13 @@ class RobotContext:
             self._require(Permission.SYSTEM_INFO)
             require_number("threshold_percent", threshold, mini=1.0, maxi=99.0)
             return self._lire_batterie() is not None
+        if kind in ("zone_enter", "zone_exit"):
+            self._require(Permission.LOCATION)
+            self._zone_connue(zone)
+            return True
+        if kind == "thermal":
+            self._require(Permission.HARDWARE_HEALTH)
+            return self._sante is not None
         raise InvalidArgumentError(f"événement inconnu : {kind!r}")
 
     def _etat_evenements(self, since_index: Optional[int]) -> Dict[str, Any]:
@@ -1449,15 +1651,23 @@ class RobotContext:
         if self._manifest.has_permission(Permission.MISSION_LIFECYCLE) \
                 or self._manifest.has_permission(Permission.SYSTEM_INFO):
             estop = bool(self._watchdog.estop_fired or self._robot.estop_active)
+        zones = None
+        if self._manifest.has_permission(Permission.LOCATION) and self._site is not None:
+            loc = self.where_am_i()
+            zones = list(loc.zones) if loc.known else None
+        thermique = None
+        if self._manifest.has_permission(Permission.HARDWARE_HEALTH) and self._sante is not None:
+            thermique = self._sante.thermal_status()
         return {"estop": estop, "alerts": alertes, "next_index": suivant,
-                "battery_percent": pct}
+                "battery_percent": pct, "zones": zones, "thermal": thermique}
 
-    def _abonner(self, kind: str, callback, threshold: Optional[float] = None) -> None:
+    def _abonner(self, kind: str, callback, threshold: Optional[float] = None,
+                 zone: Optional[str] = None) -> None:
         if self._evenements is None:
             self._evenements = EventPoller(self._etat_evenements, self.log)
             if self._ferme:
                 self._evenements.stop()
-        self._evenements.add(kind, callback, threshold)
+        self._evenements.add(kind, callback, threshold, zone=zone)
 
     @staticmethod
     def _exiger_appelable(callback) -> None:
@@ -1778,6 +1988,88 @@ class RobotContext:
         if dit is not True:
             return refused("FAILED", RefusalCode.FAILED, "la synthèse vocale n'a rien dit")
         return ActionResult(ok=True, status="SPOKEN", message="dit")
+
+    NOTIFY_PRIORITIES = PRIORITIES
+    NOTIFY_TITLE_MAX, NOTIFY_MESSAGE_MAX = TITLE_MAX, MESSAGE_MAX
+
+    def notify(self, title: str, message: str, *, priority: str = "info") -> ActionResult:
+        """Prévient l'opérateur. `priority` : « info », « warning »
+        (avertissement) ou « urgent ». Titre (80 caractères) et message (500)
+        coupés, caractères de contrôle remplacés. L'opérateur voit toujours
+        la source, mise par l'OS : « [app <nom> · <app_id>] ». Permis sous
+        arrêt d'urgence (ce n'est pas un mouvement).
+
+        `status` : SENT, REFUSED (RATE_LIMITED_APP : plus de 6 notifications
+        par minute, ou de 2 urgentes ; CAPABILITY_MISSING : aucun canal de
+        notification sur ce robot), FAILED (le canal ne l'a pas prise).
+        Lève InvalidArgumentError (texte vide, priorité inconnue, texte qui
+        se présente comme l'OS). Permission : NOTIFICATIONS."""
+        self._require(Permission.NOTIFICATIONS)
+        titre = require_text("title", title, self.NOTIFY_TITLE_MAX)
+        texte = require_text("message", message, self.NOTIFY_MESSAGE_MAX)
+        if priority not in self.NOTIFY_PRIORITIES:
+            raise InvalidArgumentError(f"priority : une parmi {list(self.NOTIFY_PRIORITIES)} "
+                                       f"(reçu {str(priority)[:40]!r})")
+        centre = self._notifications
+        if centre is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "aucun canal de notification sur ce robot")
+        ok, code, explication = centre.from_app(self._manifest.app_id, self._manifest.name,
+                                                titre, texte, priority)
+        if ok:
+            return ActionResult(ok=True, status="SENT", message=explication)
+        if code == "INVALID_ARGUMENT":
+            raise InvalidArgumentError(explication)
+        if code == "RATE_LIMITED_APP":
+            return refused("REFUSED", RefusalCode.RATE_LIMITED_APP, explication)
+        return refused("FAILED", RefusalCode.FAILED, explication)
+
+    SOUNDS, SOUND_MAX_VOLUME = SOUNDS, MAX_VOLUME
+    SOUNDS_PER_MIN = 20
+
+    def play_sound(self, name: str, *, volume: float = 0.5) -> ActionResult:
+        """Joue un son de l'OS : « beep », « alert » ou « confirmation ».
+        `volume` dans [0, 1], plafonné par l'OS à SOUND_MAX_VOLUME ; au plus
+        SOUNDS_PER_MIN sons par minute (RATE_LIMITED_APP au-delà).
+
+        `status` : PLAYED, REFUSED (CAPABILITY_MISSING : pas de haut-parleur ;
+        RATE_LIMITED_APP), FAILED. Lève InvalidArgumentError (son inconnu,
+        volume hors bornes) et EstopActiveError sous arrêt d'urgence.
+        Permission : AUDIO_OUTPUT."""
+        self._require(Permission.AUDIO_OUTPUT)
+        if name not in self.SOUNDS:
+            raise InvalidArgumentError(f"son inconnu : {str(name)[:40]!r} — sons : "
+                                       f"{list(self.SOUNDS)}")
+        v = min(require_number("volume", volume, mini=0.0, maxi=1.0), self.SOUND_MAX_VOLUME)
+        self._require_no_estop()
+        if self._sons is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING, "pas de haut-parleur")
+        t = self.now()
+        self._sons_joues = [x for x in self._sons_joues if t - x < 60.0]
+        if len(self._sons_joues) >= self.SOUNDS_PER_MIN:
+            return refused("REFUSED", RefusalCode.RATE_LIMITED_APP,
+                           f"{self.SOUNDS_PER_MIN} sons par minute au plus")
+        self._sons_joues.append(t)
+        try:
+            ok = self._sons.play(name, v) is True
+        except Exception as exc:             # noqa: BLE001 — haut-parleur en panne
+            return refused("FAILED", RefusalCode.FAILED, f"son : {type(exc).__name__}")
+        if not ok:
+            return refused("FAILED", RefusalCode.FAILED, "le son n'a pas été joué")
+        return ActionResult(ok=True, status="PLAYED", message=f"{name} à {v:g}")
+
+    def network_status(self) -> str:
+        """État du réseau : « online », « local_only » (réseau local
+        seulement), « offline » ou « unknown » (rien de lisible). Aucune
+        connexion n'est ouverte pour le savoir. Permission : SYSTEM_INFO."""
+        self._require(Permission.SYSTEM_INFO)
+        if self._reseau is None:
+            return "unknown"
+        try:
+            etat = self._reseau.status()
+        except Exception:                    # noqa: BLE001
+            return "unknown"
+        return etat if etat in NETWORK_STATES else "unknown"
 
     def get_setting(self, name: str):
         """Valeur d'un réglage déclaré dans le manifeste (settings) : celle

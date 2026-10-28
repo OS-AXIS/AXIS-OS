@@ -286,7 +286,7 @@ Un service absent du robot (pas de caméra, pas de micro) n'est **pas une
 erreur** : l'appel rend une liste vide, `None` ou `False`, et le dit dans
 le journal.
 
-### SDK v1 : les API de haut niveau
+### SDK v1 : les API de haut niveau (API 1.2)
 
 Chaque API ci-dessous est détaillée — paramètres, permission, codes de
 refus, exemple — dans **[API_REFERENCE.md](API_REFERENCE.md)** (en
@@ -310,10 +310,22 @@ humain à l'installation, et est refusé pendant un arrêt d'urgence.
 | `ctx.get_setting(nom)` | `APP_SETTINGS` | un réglage déclaré dans le manifeste, choisi par l'utilisateur |
 | `ctx.people()`, `ctx.person_in_front()` | `PEOPLE_DETECT` | les personnes autour : un numéro temporaire, une distance, une direction. Aucune reconnaissance faciale, aucune identité, aucune image gardée |
 | `ctx.follow(numero)`, `ctx.follow_status()`, `ctx.stop_follow()` | `PEOPLE_FOLLOW` + `PEOPLE_DETECT` + ceux de `walk` | l'OS suit la personne : garde ses distances (1,5 m), lentement, jamais en arrière, sous le gardien de proximité ; `LOST` plutôt que la mauvaise personne. Non bloquant : appeler `follow_status()` régulièrement (homme mort) |
+| `ctx.where_am_i()`, `ctx.places()`, `ctx.zones()`, `ctx.on_enter_zone(nom, f)`, `ctx.on_exit_zone(nom, f)` | `LOCATION` | la position du robot sur la carte du site, les lieux nommés et les zones (en lecture : c'est l'administrateur du site qui les écrit). `go_to("quai 3")` va à un lieu. L'OS tient le robot hors des zones interdites et lent dans les zones lentes, quoi que fasse l'app |
+| `ctx.notify(titre, message, priority="info" \| "warning" \| "urgent")` | `NOTIFICATIONS` | prévient l'opérateur ; l'OS montre quelle app l'envoie, une app ne peut jamais se faire passer pour l'OS ; 6 par minute |
+| `ctx.play_sound("beep" \| "alert" \| "confirmation")`, `ctx.network_status()` | `AUDIO_OUTPUT`, `SYSTEM_INFO` | un son de l'OS (volume plafonné) ; en ligne, réseau local seul, hors ligne |
+| `ctx.battery()`, `ctx.motors_health()`, `ctx.thermal_status()`, `ctx.on_thermal_change(f)` | `HARDWARE_HEALTH` | batterie détaillée, températures des moteurs et marges, statut thermique (`normal`, `hot` : chaud, `throttled` : bridé, `critical` : critique) — ce que le driver mesure, `None` sinon |
+| `triggers=[TriggerSpec(...)]` et `required_places=[...]` dans le manifeste | `SCHEDULED_MISSIONS` | l'OS lance la mission chaque jour à 22:00, toutes les heures, quand la batterie baisse ou quand le robot entre dans une zone — une mission à la fois, jamais pendant un arrêt d'urgence, sans rattrapage en rafale |
+
+L'OS fait aussi ce qu'aucune app ne peut empêcher : sous 20 % de batterie,
+il termine la mission (d'abord poliment, puis de force) et ramène le robot
+à la station de charge ; quand un moteur chauffe trop, il ralentit le
+robot, puis l'arrête ; quand une app plante, il garde un rapport pour
+l'administrateur, sans donnée personnelle.
 
 Exemples complets et testés : [examples/](../examples/) — `hello_robot`
 (animation + parole), `fetch` (look_for + go_to + pick + place),
-`teleop_local` (flux sous homme mort), `follow_me` (« suis-moi » à la voix).
+`teleop_local` (flux sous homme mort), `follow_me` (« suis-moi » à la voix),
+`night_patrol` (ronde planifiée entre des lieux nommés).
 
 ---
 
@@ -671,6 +683,10 @@ Dit franchement, pour ne pas vous faire perdre de temps :
   le dépôt (`pip install .`, § 2), mais n'est pas publié.
 - **Communication entre robots** : conçue (`docs/fleet_manager_design.md`),
   pas codée.
+- **Un vrai canal de notification, un éditeur de carte, un vrai
+  accostage** : `notify` aboutit à un canal factice dans les tests ; lieux
+  et zones se publient par l'API de l'OS ; « à la station de charge » veut
+  dire « à moins de 0,3 m d'elle » sur le robot simulé.
 
 ---
 

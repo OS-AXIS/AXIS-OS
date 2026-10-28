@@ -285,7 +285,7 @@ A service missing from the robot (no camera, no microphone) is **not an
 error**: the call returns an empty list, `None` or `False`, and says so in
 the log.
 
-### SDK v1: high-level APIs
+### SDK v1: high-level APIs (API 1.2)
 
 Each API below is detailed — parameters, permission, refusal codes,
 example — in **[API_REFERENCE.md](API_REFERENCE.md)**. Actions that can
@@ -309,10 +309,22 @@ refused during an emergency stop.
 | `ctx.get_setting(name)` | `APP_SETTINGS` | a setting declared in the manifest, chosen by the user |
 | `ctx.people()`, `ctx.person_in_front()` | `PEOPLE_DETECT` | the people around: a temporary number, a distance, a direction. No face recognition, no identity, no image kept |
 | `ctx.follow(person_id)`, `ctx.follow_status()`, `ctx.stop_follow()` | `PEOPLE_FOLLOW` + `PEOPLE_DETECT` + those of `walk` | the OS follows the person: keeps its distance (1.5 m), slowly, never backwards, under the proximity guard; `LOST` rather than the wrong person. Non-blocking: call `follow_status()` regularly (dead man) |
+| `ctx.where_am_i()`, `ctx.places()`, `ctx.zones()`, `ctx.on_enter_zone(name, f)`, `ctx.on_exit_zone(name, f)` | `LOCATION` | the robot's position on the site map, the named places and zones (read only: the site administrator writes them). `go_to("dock 3")` goes to a place. The OS keeps the robot out of forbidden zones and slow in slow zones, whatever the app does |
+| `ctx.notify(title, message, priority="info" \| "warning" \| "urgent")` | `NOTIFICATIONS` | tells the operator; the OS shows which app sent it, an app can never pass for the OS; 6 per minute |
+| `ctx.play_sound("beep" \| "alert" \| "confirmation")`, `ctx.network_status()` | `AUDIO_OUTPUT`, `SYSTEM_INFO` | an OS sound (volume capped); online, local network only, offline |
+| `ctx.battery()`, `ctx.motors_health()`, `ctx.thermal_status()`, `ctx.on_thermal_change(f)` | `HARDWARE_HEALTH` | battery details, motor temperatures and margins, thermal status (`normal`, `hot`, `throttled`, `critical`) — what the driver measures, `None` otherwise |
+| `triggers=[TriggerSpec(...)]` and `required_places=[...]` in the manifest | `SCHEDULED_MISSIONS` | the OS starts the mission every day at 22:00, every hour, when the battery drops, or when the robot enters a zone — one mission at a time, never during an emergency stop, no burst catch-up |
+
+The OS also does things no app can stop: below 20 % battery it ends the
+mission (cooperatively, then by force) and drives the robot back to the
+charging station; when a motor is too hot it slows the robot, then stops
+it; when an app crashes it keeps a report for the administrator, with no
+personal data.
 
 Complete, tested examples: [examples/](../examples/) — `hello_robot`
 (animation + speech), `fetch` (look_for + go_to + pick + place),
-`teleop_local` (deadman stream), `follow_me` ("follow me" by voice).
+`teleop_local` (deadman stream), `follow_me` ("follow me" by voice),
+`night_patrol` (a scheduled round between named places).
 
 ---
 
@@ -662,6 +674,10 @@ Stated plainly, so you do not waste your time:
   repository (`pip install .`, § 2), but is not published.
 - **Robot-to-robot communication**: designed
   (`docs/fleet_manager_design.md`), not coded.
+- **A real notification channel, a map editor, real docking**: `notify`
+  goes to a fake sink in tests; places and zones are published through the
+  OS's API; "at the charging station" means "within 0.3 m of it" in the
+  simulated robot.
 
 ---
 

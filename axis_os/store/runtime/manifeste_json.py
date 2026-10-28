@@ -23,8 +23,8 @@ from axis_os.store.runtime.canal_ipc import (
     Objet, UnParmi, decoder,
 )
 from axis_os.store.sdk.manifest import (
-    SETTING_TYPES, AppCategory, AppManifest, Capability, HardwareRequirements, IntentDecl,
-    Permission, PricingModel, ResourceQuota, SettingSpec,
+    SETTING_TYPES, TRIGGER_KINDS, AppCategory, AppManifest, Capability, HardwareRequirements,
+    IntentDecl, Permission, PricingModel, ResourceQuota, SettingSpec, TriggerSpec,
 )
 
 
@@ -68,6 +68,10 @@ SCHEMA_MANIFESTE = Objet({
                                          "choices": Liste(Chaine(64), 64),
                                          "max_length": Entier(1, 1024),
                                          "description": Chaine(500)}), 32),
+    "required_places": Liste(Chaine(64), 32),
+    "triggers": Liste(Objet({"name": Chaine(32), "kind": UnParmi(*TRIGGER_KINDS)},
+                            facultatifs={"at": Chaine(5), "every_s": Nombre(),
+                                         "percent": Nombre(), "zone": Chaine(64)}), 8),
     # Acceptés dans le texte, jamais repris : l'OS y met la signature et la
     # clé qu'il a lui-même vérifiées (voir manifeste_depuis_json).
     "code_signature": Chaine(512), "developer_public_key": Chaine(512),
@@ -101,7 +105,17 @@ def manifeste_vers_json(m: AppManifest) -> Dict[str, Any]:
         "code_signature": m.code_signature, "developer_public_key": m.developer_public_key,
         **({"settings": [_reglage_vers_json(s) for s in m.settings]} if m.settings else {}),
         **({"min_sdk_version": m.min_sdk_version} if m.min_sdk_version is not None else {}),
+        **({"required_places": list(m.required_places)} if m.required_places else {}),
+        **({"triggers": [_declencheur_vers_json(t) for t in m.triggers]} if m.triggers else {}),
     }
+
+
+def _declencheur_vers_json(t: TriggerSpec) -> Dict[str, Any]:
+    d = {"name": t.name, "kind": t.kind}
+    for champ in ("at", "every_s", "percent", "zone"):
+        if getattr(t, champ) is not None:
+            d[champ] = getattr(t, champ)
+    return d
 
 
 def _reglage_vers_json(s: SettingSpec) -> Dict[str, Any]:
@@ -155,6 +169,10 @@ def manifeste_depuis_json(d: Any) -> AppManifest:
                               description=s["description"] or "")
                   for s in (v["settings"] or [])],
         min_sdk_version=v["min_sdk_version"],
+        required_places=list(v["required_places"] or []),
+        triggers=[TriggerSpec(name=t["name"], kind=t["kind"], at=t["at"], every_s=t["every_s"],
+                              percent=t["percent"], zone=t["zone"])
+                  for t in (v["triggers"] or [])],
     )
 
 

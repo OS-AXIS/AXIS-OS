@@ -1,5 +1,5 @@
 """
-Les quatre exemples du SDK (examples/) : chacun lance son propre test, dans
+Les cinq exemples du SDK (examples/) : chacun lance son propre test, dans
 un processus à part (chaque exemple a son app.py), sur le robot simulé
 léger, et passe `axis validate`. Un exemple qui ne marche plus est un
 exemple qui trompe : il échoue ici.
@@ -19,7 +19,7 @@ def check(label, cond, detail=""):
         FAIL += 1
 
 
-for nom in ("hello_robot", "fetch", "teleop_local", "follow_me"):
+for nom in ("hello_robot", "fetch", "teleop_local", "follow_me", "night_patrol"):
     test = RACINE / "examples" / nom / "test_app.py"
     r = subprocess.run([sys.executable, str(test)], cwd=RACINE, capture_output=True,
                        text=True, timeout=300)

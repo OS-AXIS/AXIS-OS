@@ -307,6 +307,11 @@ class BatteryState:
     voltage:      Optional[float] = None  # tension (V), si mesurée
     charging:     Optional[bool] = None   # en charge ? None : inconnu
     timestamp_ns: int = field(default_factory=time.time_ns)
+    # Champs facultatifs, None tant que le driver ne les mesure pas.
+    current:       Optional[float] = None  # courant (A), positif en décharge
+    temperature:   Optional[float] = None  # température de la batterie (°C)
+    health_percent: Optional[float] = None  # état de santé, de 0 à 100
+    cycles:        Optional[int] = None    # cycles de charge
 
 
 @dataclass

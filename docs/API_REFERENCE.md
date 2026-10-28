@@ -1,6 +1,6 @@
 # AXIS-OS App SDK — API reference
 
-SDK API version **1.1.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
+SDK API version **1.2.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
 Guides: [CREATE_AN_APP.md](CREATE_AN_APP.md) (English) ·
 [CREER_UNE_APP.md](CREER_UNE_APP.md) (français). Examples:
 [examples/](../examples/).
@@ -15,9 +15,13 @@ Guides: [CREATE_AN_APP.md](CREATE_AN_APP.md) (English) ·
 6. [Animations](#6-animations) — format, `play_animation`, `stop_animation`
 7. [Speech and settings](#7-speech-and-settings) — `speak`, `get_setting`
 8. [People: presence and following](#8-people-presence-and-following) — `people`, `person_in_front`, `follow`, `follow_status`, `stop_follow`
-9. [Low-level APIs](#9-low-level-apis) — joints, walking, perception, voice, memory
-10. [Versions](#10-versions) — `api_version`, `min_sdk_version`
-11. [Testing and tools](#11-testing-and-tools) — `axis_os.testing`, the `axis` command
+9. [Position, places and zones](#9-position-places-and-zones) — `where_am_i`, `places`, `zones`, `go_to(place)`, `on_enter_zone`, `on_exit_zone`, `required_places`
+10. [Notifications, sounds and network](#10-notifications-sounds-and-network) — `notify`, `play_sound`, `network_status`
+11. [Scheduled missions](#11-scheduled-missions) — `triggers`, the scheduler's rules
+12. [Energy and hardware health](#12-energy-and-hardware-health) — return to the charging station, `battery`, `motors_health`, `thermal_status`, `on_thermal_change`, crash reports
+13. [Low-level APIs](#13-low-level-apis) — joints, walking, perception, voice, memory
+14. [Versions](#14-versions) — `api_version`, `min_sdk_version`
+15. [Testing and tools](#15-testing-and-tools) — `axis_os.testing`, the `axis` command
 
 ---
 
@@ -113,6 +117,8 @@ app sees the same exception in its process as in a direct test.
 | `STREAM_STOPPED` | the stream is stopped: call `resume()` |
 | `TARGET_LOST` | the followed person was lost, or the person number is unknown |
 | `DEADMAN` | the app stopped giving news (`follow_status`) within `deadman_s` |
+| `FORBIDDEN_ZONE` | the goal is inside a forbidden zone of the site map |
+| `RATE_LIMITED_APP` | too many notifications or sounds from this app |
 
 ### Emergency stop
 
@@ -122,7 +128,8 @@ stops). In the app's process, the OS then stops the process within 0.5 s;
 only calls that move nothing are still served (`log`, `robot_info`,
 `has_capability`, `safety_status`, `should_stop`, `report_progress`,
 `stop_walking`, `stop_animation`, `follow_status`, `stop_follow`, the
-stream's `metrics` and `close`…).
+stream's `metrics` and `close`, `notify`, `where_am_i`, `places`, `zones`,
+`battery`, `motors_health`, `thermal_status`, `network_status`…).
 
 ---
 
@@ -157,8 +164,10 @@ Permission: `SYSTEM_INFO`. `True` if the hardware capability (`"arms"`,
 Permission: `SYSTEM_INFO`. `estop_active`, `proximity` (`clear`, `slowing`,
 `stopped`, or `unavailable` without a guard or a reading yet) with its distance and reason, `fall_detected`,
 `time_remaining_s` in the current hook, remaining persistent storage
-(`storage_keys_remaining`, `storage_bytes_remaining`). Still served during
-an emergency stop.
+(`storage_keys_remaining`, `storage_bytes_remaining`), `thermal` (the
+motors' thermal status, see [section 12](#12-energy-and-hardware-health)) and
+`compute` (CPU temperature and load, GPU if present; `None` when not
+measured). Still served during an emergency stop.
 
 ---
 
@@ -173,8 +182,9 @@ the joint guard and the emergency stop.
 
 Permissions: `NAVIGATION_GOTO` (DANGEROUS), plus those of `walk`
 (`LOCOMOTION_WALK`, `ACTUATORS_WRITE_LEGS`). Walks to `(x, y)` on the map
-(world frame, metres), around the map's obstacles, then turns to `theta`
-(radians) if given. A still obstacle on the path is avoided when another way
+(world frame, metres), around the map's obstacles and the site map's
+forbidden zones, then turns to `theta` (radians) if given. `x` may also be
+the name of a place of the site map (see [section 9](#9-position-places-and-zones)). A still obstacle on the path is avoided when another way
 exists; a person stops the robot (proximity guard).
 
 | `status` | `code` | When |
@@ -182,7 +192,7 @@ exists; a person stops the robot (proximity guard).
 | `ARRIVED` | — | arrived |
 | `BLOCKED` | `BLOCKED` | no path, or goal inside an obstacle or off the map |
 | `TIMEOUT` | `TIMEOUT` or `PROXIMITY_GUARD` | deadline passed (the guard held the robot) |
-| `REFUSED` | `ESTOP_ACTIVE`, `CANCELLED`, `SAFETY_LIMIT` (fall), `CAPABILITY_MISSING`, `BUSY` (a walk stream is open) | interrupted, or no navigation |
+| `REFUSED` | `ESTOP_ACTIVE`, `CANCELLED`, `SAFETY_LIMIT` (fall), `CAPABILITY_MISSING`, `BUSY` (a walk stream is open), `FORBIDDEN_ZONE` | interrupted, no navigation, or goal in a forbidden zone |
 
 The robot is stopped for every outcome but `ARRIVED`. Raises
 `InvalidArgumentError` (NaN, infinite, coordinates beyond ±10 km, `theta`
@@ -573,7 +583,216 @@ if person and ctx.follow(person.person_id, deadman_s=2.0):
 
 ---
 
-## 9. Low-level APIs
+## 9. Position, places and zones
+
+The OS keeps a **site map** (`axis_os/services/navigation/site_map.py`) on top
+of the geometric map: **named places** (a point and an optional heading; one
+of them may be the *charging station*) and **zones** (polygons):
+
+| Zone kind | What the OS does |
+|---|---|
+| `forbidden` | the robot never enters it — for **every** walking command: `walk`, `go_to`, `follow`, a `"walk"` stream. The path planner goes around it, and a zone guard on the locomotion service cuts any translation that would bring the robot within its radius of the zone. |
+| `slow` | walking speed capped to the zone's `max_speed_mps` inside it and just before entering it |
+| `named` | a name only (for `on_enter_zone` / `on_exit_zone`) |
+
+Only the site administrator writes the map, through the OS
+(`SiteMap.publish(places, zones, author=...)`, `rollback(version)`): every
+publication is checked as a whole (unique names, finite numbers, valid
+polygons, no place inside a forbidden zone or within 0.7 m of one) and gets a
+new version number; previous versions are kept. **Apps only read it**: no
+bridge action writes the map.
+
+### `ctx.where_am_i() -> Location`
+
+Permission: `LOCATION` (NORMAL — shown at install: *"this app knows the
+robot's position on the site map"*). `known`, `x`, `y` (m), `heading` (rad),
+`uncertainty_m` (`None` when the localization does not provide it — odometry
+alone does not), `timestamp` (robot time of the measurement),
+`nearest_place` and `nearest_place_distance_m`, `zones` (names of the zones
+the robot is in), `map_version`. `Location(known=False)` when the
+localization does not answer: a position is never invented. Still served
+during an emergency stop.
+
+### `ctx.places() -> list[PlaceInfo]` · `ctx.zones() -> list[ZoneInfo]`
+
+Permission: `LOCATION`. Read only. `PlaceInfo`: `name`, `x`, `y`,
+`heading`, `kind` (`place` or `charging_station`). `ZoneInfo`: `name`,
+`kind` (`forbidden`, `slow`, `named`), `polygon`, `max_speed_mps`,
+`contains(x, y)`. Empty lists without a site map.
+
+### `ctx.go_to(place, *, timeout_s)`
+
+`go_to` also accepts the name of a place: `ctx.go_to("dock 3",
+timeout_s=60)` goes there and turns to the place's heading. An unknown name
+raises `InvalidArgumentError`. A goal inside a forbidden zone is refused
+before planning: `REFUSED` / `FORBIDDEN_ZONE`.
+
+### `ctx.on_enter_zone(name, callback)` · `ctx.on_exit_zone(name, callback)`
+
+Permission: `LOCATION`. `callback(name)` when the robot enters (leaves) the
+zone. An unknown zone raises `InvalidArgumentError`.
+
+### Required places (manifest)
+
+`AppManifest.required_places` (up to 32 names): installation is refused,
+with a clear message, if one of them is missing from the site map
+(*"Lieu(x) requis absent(s) de la carte du site : [...] — l'administrateur
+doit les placer"*). A `zone_enter` trigger's zone must exist too.
+
+---
+
+## 10. Notifications, sounds and network
+
+### `ctx.notify(title, message, *, priority="info") -> ActionResult`
+
+Permission: `NOTIFICATIONS` (NORMAL). Tells the operator. `priority`:
+`"info"`, `"warning"` or `"urgent"`. Title cut to 80 characters, message to
+500, control characters replaced. **The operator always sees who sent it**:
+the OS adds the source itself (`[app <name> · <app_id>]`); a text that
+presents itself as the OS (*"AXIS-OS"*, also in full-width or with
+invisible characters) raises `InvalidArgumentError`, and an app name that
+imitates the OS is shown as its `app_id`. At most 6 notifications per
+minute per app, 2 of them urgent: beyond, `REFUSED` / `RATE_LIMITED_APP`.
+Allowed during an emergency stop (it moves nothing).
+
+| `status` | `code` | When |
+|---|---|---|
+| `SENT` | — | delivered |
+| `REFUSED` | `RATE_LIMITED_APP`, `CAPABILITY_MISSING` (no notification channel) | |
+| `FAILED` | `FAILED` | the channel did not take it |
+
+The OS side is an `INotificationSink` (`axis_os/services/notifications.py`);
+today `FakeNotificationSink` for the tests, the robot's screen or a phone
+later.
+
+### `ctx.play_sound(name, *, volume=0.5) -> ActionResult`
+
+Permission: `AUDIO_OUTPUT`. One of the OS's sounds: `"beep"`, `"alert"`,
+`"confirmation"` — an app plays no file of its own. `volume` in [0, 1],
+capped by the OS to 0.8; at most 20 sounds per minute (`RATE_LIMITED_APP`).
+`status`: `PLAYED`, `REFUSED` (`CAPABILITY_MISSING`: no speaker), `FAILED`.
+Raises `InvalidArgumentError` and `EstopActiveError`.
+
+### `ctx.network_status() -> str`
+
+Permission: `SYSTEM_INFO`. `"online"` (a route to the outside exists),
+`"local_only"`, `"offline"`, or `"unknown"`. No connection is opened to find
+out.
+
+---
+
+## 11. Scheduled missions
+
+An app may declare **triggers** in its manifest; the OS then starts its
+mission itself (`params == {"trigger": "<name>"}`), through the Play Store
+exactly as a human would: sandbox, quotas, permissions, emergency stop,
+mission lock. Permission: `SCHEDULED_MISSIONS` (DANGEROUS, confirmed by a
+human at install, where every trigger is shown in plain words).
+
+```python
+from axis_os.store.sdk.manifest import TriggerSpec
+
+triggers=[TriggerSpec("evening_round", "daily", at="22:00"),
+          TriggerSpec("tour", "interval", every_s=3600),
+          TriggerSpec("low", "battery_below", percent=40),
+          TriggerSpec("arrival", "zone_enter", zone="dock")]
+```
+
+At most 8 triggers; an interval of at least 300 s; `percent` in [5, 95].
+The rules (`axis_os/store/runtime/scheduler.py`, `MissionScheduler`):
+
+1. Only installed **and started** apps have active triggers. An app cannot
+   add or change one at run time.
+2. **One mission at a time.** A trigger that fires during any mission is
+   skipped (`busy`), never queued: it fires again at its next occurrence.
+3. **Two triggers due together**: one is started, in this order — battery,
+   zone, daily, interval, then `app_id` and trigger name; the others are
+   skipped (`collision`).
+4. **No catch-up**: an occurrence more than 120 s late (robot off, OS busy)
+   is `missed` and never started later; an interval restarts from now.
+5. Nothing is started during an **emergency stop** or after a **fall**,
+   outside the **hours allowed by the administrator**
+   (`set_allowed_hours("06:00", "23:00")`, may wrap midnight), while an OS
+   service blocks missions (return to the charging station, motor too hot),
+   or for an app or trigger a **human disabled** (`set_enabled`,
+   `set_paused`).
+6. The same trigger never fires twice within 300 s (a zone border crossed
+   ten times starts one mission); a battery trigger re-arms once the charge
+   is 5 points above its threshold. An unknown battery never fires.
+
+Every decision is in `MissionScheduler.journal`, for the administrator.
+
+---
+
+## 12. Energy and hardware health
+
+### The OS's energy service
+
+`axis_os/services/energy.py` (`EnergyService`), thresholds set by the
+administrator (`set_thresholds(return_percent=20, critical_percent=8)`):
+
+- **below the return threshold**, not charging: no new mission and no app
+  start; the running mission is asked to stop (`should_stop()`), then
+  force-stopped after a grace period (its process is killed, the mission
+  returns *"Arrêt forcé par l'OS : …"*); then the OS drives the robot to the
+  charging station with the navigation — forbidden and slow zones, proximity
+  guard, thermal derating all apply. Missions stay refused until the charge
+  is back above the resume threshold (return + 10 by default). No station on
+  the map, or the way blocked after several tries: the operator is told
+  (urgent).
+- **below the critical threshold**: everything stops where it is, balanced,
+  and the operator is told (urgent).
+- Unknown battery: nothing is invented; the service does nothing.
+
+An app cannot prevent the return: it has no process left to command with.
+
+### `ctx.battery() -> BatteryInfo`
+
+Permission: `HARDWARE_HEALTH` (NORMAL). As measured by the driver:
+`known`, `percent`, `charging`, `voltage`, `current_a`, `temperature_c`,
+`health_percent`, `cycles` — each `None` when the driver does not measure
+it, `known=False` when it cannot read the battery at all.
+
+### `ctx.motors_health() -> list[MotorHealth]`
+
+Permission: `HARDWARE_HEALTH`. Read only. Per joint: `temperature_c`,
+`critical_c` (where the OS refuses any command to that joint), `margin_c`,
+`torque_nm`, `current_a` (only if the driver really measures it), `status`.
+`temperature_c` is `None` when the driver does not *measure* motor
+temperature (`IRobotHAL.measures_motor_temperature()`): a fixed or estimated
+value is not a measurement. Empty without a health service.
+
+### `ctx.thermal_status() -> str` · `ctx.on_thermal_change(callback) -> bool`
+
+Permission: `HARDWARE_HEALTH`. The robot's worst joint:
+
+| Status | Temperature (for an 80 °C joint) | What the OS does |
+|---|---|---|
+| `normal` | below 55 °C | — |
+| `hot` | 55 to 65 °C | — |
+| `throttled` | 65 to 80 °C | walking slowed (down to 50 %), the joint guard refuses commanded velocity and torque beyond the same share of their maximum; warning notification |
+| `critical` | 80 °C or more, **or a non-finite or stale reading** | no walking, no command to that joint, the running mission is stopped (cooperative, then forced), new missions refused; urgent notification |
+| `unknown` | the driver does not measure it | — |
+
+The critical temperature is the lower of 80 °C and the joint's
+`temperature_max` (never higher). `on_thermal_change(callback)` calls
+`callback(status)` on every change; it returns `False` without a health
+service.
+
+`safety_status()` also gives `thermal` and `compute`: CPU temperature and
+load, GPU presence, temperature and load (`None` when not measured).
+
+### Crash reports
+
+When an app crashes, exceeds a quota or hangs, the OS keeps a report for the
+administrator (`PlayStoreRuntime.crash_reports()`): app, version, hook,
+cause, quota, duration, time and the exception **type** — never its message,
+the stack, the mission parameters or the app's log, which may hold what the
+app saw or heard. No app can read them.
+
+---
+
+## 13. Low-level APIs
 
 | API | Permission | |
 |---|---|---|
@@ -594,7 +813,7 @@ if person and ctx.follow(person.person_id, deadman_s=2.0):
 
 ---
 
-## 10. Versions
+## 14. Versions
 
 - `ctx.api_version` — the SDK API version this OS serves (SemVer).
 - `AppManifest.min_sdk_version` — the minimum SDK API version the app needs.
@@ -607,7 +826,7 @@ on PyPI) has the version of the API.
 
 ---
 
-## 11. Testing and tools
+## 15. Testing and tools
 
 ### `axis_os.testing`
 
@@ -626,7 +845,13 @@ with AppTestHarness(MyApp(), objects=[SimulatedObject("red box", (1.2, 0.0, 0.9)
 
 - `SimulatedRobot(carte=None, start=(0, 0, 0), proximity_guard=True,
   manipulation=True, objects=(), battery_percent=None, grasp_succeeds=True,
-  people=(), speech=False, seed=0, time_scale=1.0)` — `add_person(x, y,
+  people=(), speech=False, seed=0, time_scale=1.0, site_map=None,
+  battery_drain_per_s=0.0, battery_drain_per_m=0.0, charge_per_s=1.0)` —
+  the battery drains and recharges within 0.3 m of the site map's charging
+  station (no real docking); `set_motor_temperature(joint, celsius)` sets
+  what a motor's simulated sensor measures; `notification_sink.delivered`,
+  `sounds.played`, `network.state` (fakes); `health` (the hardware health
+  service); `add_person(x, y,
   torso=..., legs=...)` (returns a `SimulatedPerson`, seen by the proximity
   guard and the simulated camera), `clear_people()`, `hear(text,
   after_s=0)` (with `speech=True`), `set_battery(percent)`, `fall()`,

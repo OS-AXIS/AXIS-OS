@@ -90,6 +90,7 @@ class SafetyErrorKind(Enum):
     CURRENT_OVERLOAD              = auto()
     INVALID_LIMITS_CONFIG         = auto()
     ACCELERATION_LIMIT              = auto()
+    THERMAL_DERATING                  = auto()
 
 
 @dataclass
@@ -185,6 +186,34 @@ def validate_limits(joint_id: str, limits: JointLimits) -> LimitsValidationResul
     return LimitsValidationResult(valid=(len(errors) == 0), errors=errors)
 
 
+def seuils_thermiques(limits: JointLimits) -> tuple:
+    """(début du bridage, seuil critique), en °C, d'une articulation. Le
+    seuil critique est le plus bas de JointSafetyGuard.TEMPERATURE_CRITICAL_C
+    et de limits.temperature_max : une limite déclarée plus basse rend le
+    garde-fou plus strict, jamais plus permissif. Le bridage commence
+    THERMAL_DERATING_SPAN_C plus bas."""
+    critique = JointSafetyGuard.TEMPERATURE_CRITICAL_C
+    tmax = limits.temperature_max
+    if math.isfinite(tmax) and 0.0 < tmax < critique:
+        critique = tmax
+    return critique - JointSafetyGuard.THERMAL_DERATING_SPAN_C, critique
+
+
+def facteur_thermique(temperature: float, limits: JointLimits) -> float:
+    """Part des vitesses et couples maximaux permise à cette température :
+    1 sous le début du bridage, puis jusqu'à THERMAL_DERATING_MIN au seuil
+    critique, 0 au-delà ou pour une température non finie."""
+    if not math.isfinite(temperature):
+        return 0.0
+    debut, critique = seuils_thermiques(limits)
+    if temperature >= critique:
+        return 0.0
+    if temperature <= debut:
+        return 1.0
+    mini = JointSafetyGuard.THERMAL_DERATING_MIN
+    return 1.0 - (1.0 - mini) * (temperature - debut) / (critique - debut)
+
+
 class JointSafetyGuard:
     """
     Garde-fou de sécurité d'une seule articulation (joint). Chaque IActuator
@@ -200,14 +229,21 @@ class JointSafetyGuard:
     Le gardien accepte ou refuse une commande ; il ne la modifie jamais.
     """
 
-    # Seuils de température moteur, en degrés Celsius, communs à toutes les
-    # articulations. Au seuil critique, toute commande est refusée et le
-    # retour du moteur est signalé (voir check_feedback_health). Le seuil
-    # d'avertissement n'est utilisé par aucun contrôle de ce fichier. Ces
-    # seuils fixes sont indépendants de limits.temperature_max, dont ce
-    # fichier vérifie seulement qu'elle est finie.
+    # Seuils de température moteur, en degrés Celsius. Au seuil critique
+    # (le plus bas de TEMPERATURE_CRITICAL_C et de limits.temperature_max,
+    # voir seuils_thermiques), toute commande est refusée et le retour du
+    # moteur est signalé (voir check_feedback_health). Avant, ce seuil
+    # était fixe et limits.temperature_max n'était pas lue.
+    # Entre le début du bridage (THERMAL_DERATING_SPAN_C sous le seuil
+    # critique, 65 °C pour 80 °C : TEMPERATURE_WARNING_C) et le seuil
+    # critique, vitesse, couple et écart de position commandés sont
+    # plafonnés à une part de vel_max, torque_max et position_delta_max qui
+    # descend jusqu'à THERMAL_DERATING_MIN : la commande qui dépasse est
+    # refusée (THERMAL_DERATING), jamais réduite.
     TEMPERATURE_CRITICAL_C = 80.0
     TEMPERATURE_WARNING_C  = 65.0
+    THERMAL_DERATING_SPAN_C = 15.0
+    THERMAL_DERATING_MIN = 0.5
 
     def __init__(self, joint_id: str, limits: JointLimits, strict_init: bool = True,
                 motion_tracker: Optional[MotionStateTracker] = None,
@@ -270,8 +306,8 @@ class JointSafetyGuard:
         Renvoie (True, None) si la commande est acceptée, sinon
         (False, violation) pour la première règle enfreinte. Ordre des
         contrôles : valeurs invalides, position, écart de position,
-        vitesse, couple, courant, gains d'impédance, température,
-        accélération.
+        vitesse, couple, courant, gains d'impédance, température (critique,
+        non finie, bridage), accélération.
         """
 
         # Valeurs NaN ou infinies, signalées par la revue extérieure
@@ -413,17 +449,48 @@ class JointSafetyGuard:
                     return False, v
 
         # Température mesurée : à partir du seuil critique, toute commande
-        # est refusée. Une température non finie est ignorée ici ;
-        # check_feedback_health() la signale comme valeur invalide.
-        if feedback is not None and math.isfinite(feedback.temperature):
-            if feedback.temperature >= self.TEMPERATURE_CRITICAL_C:
+        # est refusée ; entre le début du bridage et lui, vitesse et couple
+        # commandés sont plafonnés (voir TEMPERATURE_CRITICAL_C). Une
+        # température non finie est un danger, pas une absence de donnée :
+        # la commande est refusée (avant, elle était ignorée ici).
+        if feedback is not None:
+            temp = feedback.temperature
+            debut, critique = seuils_thermiques(self.limits)
+            if not math.isfinite(temp):
+                v = SafetyViolation(
+                    joint_id=self.joint_id, rule="TEMPERATURE_UNKNOWN",
+                    value=temp, limit=critique, kind=SafetyErrorKind.INVALID_VALUE,
+                )
+                self._record_violation(v)
+                return False, v
+            if temp >= critique:
                 v = SafetyViolation(
                     joint_id=self.joint_id, rule="TEMPERATURE_CRITICAL",
-                    value=feedback.temperature, limit=self.TEMPERATURE_CRITICAL_C,
+                    value=temp, limit=critique,
                     kind=SafetyErrorKind.TEMPERATURE_CRITICAL,
                 )
                 self._record_violation(v)
                 return False, v
+            if temp > debut:
+                k = facteur_thermique(temp, self.limits)
+                bornes = [(command.velocity, self.limits.vel_max),
+                          (command.torque, self.limits.torque_max)]
+                # En position (le G1), le couple vient du PD du moteur et
+                # croît avec l'écart : c'est lui qu'il faut brider.
+                if (self.limits.position_delta_max is not None
+                        and command.position is not None
+                        and math.isfinite(feedback.position)):
+                    bornes.append((command.position - feedback.position,
+                                   self.limits.position_delta_max))
+                for val, maxi in bornes:
+                    if val is not None and abs(val) > maxi * k:
+                        v = SafetyViolation(
+                            joint_id=self.joint_id, rule="THERMAL_DERATING",
+                            value=abs(val), limit=maxi * k,
+                            kind=SafetyErrorKind.THERMAL_DERATING,
+                        )
+                        self._record_violation(v)
+                        return False, v
 
         # Accélération (slew rate) : la commande est bloquée, jamais
         # lissée. C'est une décision de conception arrêtée : le gardien
@@ -477,10 +544,11 @@ class JointSafetyGuard:
                 ))
                 return violations  # retour inexploitable : on s'arrête là
 
-        if feedback.temperature >= self.TEMPERATURE_CRITICAL_C:
+        critique = seuils_thermiques(self.limits)[1]
+        if feedback.temperature >= critique:
             violations.append(SafetyViolation(
                 joint_id=self.joint_id, rule="TEMPERATURE_CRITICAL",
-                value=feedback.temperature, limit=self.TEMPERATURE_CRITICAL_C,
+                value=feedback.temperature, limit=critique,
                 kind=SafetyErrorKind.TEMPERATURE_CRITICAL,
             ))
         # Couple mesuré au-delà de 110 % de torque_max : signe qu'un moteur
