@@ -655,6 +655,10 @@ class PlayStoreRuntime:
         # app_id en cours de mise à jour (update_source, update_app) : son
         # démarrage est refusé tant que la mise à jour n'est pas finie.
         self._maj_en_cours: Optional[str] = None
+        # Services de l'OS qui interdisent toute nouvelle mission tant
+        # qu'ils le disent (retour à la station de charge…) : voir
+        # add_mission_blocker.
+        self._bloqueurs: List[Callable[[], Optional[str]]] = []
         print(f"\n[PlayStore] Runtime démarré | id={self._id} | robot={robot.robot_id}")
 
     # ── Installation ──────────────────────────────────────────────
@@ -1453,6 +1457,13 @@ class PlayStoreRuntime:
                 error_message="Robot en état E-STOP — aucune mission autorisée.",
             )
 
+        bloque = self.mission_blocked_reason()
+        if bloque is not None:
+            mission_id = str(uuid.uuid4())[:8].upper()
+            print(f"  [SECURITY] Mission {mission_id} refusée : {bloque} — {app_id}")
+            return MissionResult(success=False, mission_id=mission_id, app_id=app_id,
+                                 duration_s=0.0, error_message=f"Mission refusée : {bloque}.")
+
         # Verrou global de mission (raison expliquée dans __init__).
         # acquire(blocking=False) : un appel concurrent est refusé tout de
         # suite avec un résultat explicite, jamais mis en attente en
@@ -1853,6 +1864,23 @@ class PlayStoreRuntime:
         if self._memory_service is not None:
             available.add(Capability.MEMORY_PERSISTENT)
         return available
+
+    def add_mission_blocker(self, fn: Callable[[], Optional[str]]) -> None:
+        """Ajoute un service de l'OS qui peut refuser toute nouvelle mission :
+        `fn()` rend la raison du refus, ou None. Côté OS seulement."""
+        self._bloqueurs.append(fn)
+
+    def mission_blocked_reason(self) -> Optional[str]:
+        """Pourquoi aucune mission ne peut démarrer maintenant (un bloqueur
+        de l'OS le dit), ou None. Un bloqueur en panne bloque."""
+        for fn in list(self._bloqueurs):
+            try:
+                motif = fn()
+            except Exception as exc:         # noqa: BLE001 — dans le doute, bloquer
+                return f"vérification impossible ({type(exc).__name__})"
+            if motif:
+                return str(motif)
+        return None
 
     def _estop_actif(self) -> bool:
         """Vrai si un arrêt d'urgence est actif. Deux sources : le Watchdog
