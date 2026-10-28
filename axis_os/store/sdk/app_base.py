@@ -1347,8 +1347,9 @@ class RobotContext:
     def follow_status(self) -> ActionResult:
         """État du suivi lancé par follow(), et battement de l'homme mort :
         FOLLOWING (ok, avec data : phase « following », « waiting »,
-        « searching » ou « holding », distance_m, bearing_rad,
-        reacquisitions…), sinon l'issue du dernier suivi, sinon IDLE.
+        « searching », « holding » ou « verifying », distance_m,
+        bearing_rad, reacquisitions…), sinon l'issue du dernier suivi, sinon
+        IDLE.
         Servi aussi pendant un arrêt d'urgence. Permission : PEOPLE_FOLLOW."""
         self._require(Permission.PEOPLE_FOLLOW)
         if self._suivi is None:

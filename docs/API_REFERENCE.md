@@ -525,8 +525,11 @@ following gets **no** exemption from the proximity guard.
   guard has priority anyway). It never switches to another person by
   itself: if the other person looks similar (clothing), or if that cannot
   be told, following ends with `LOST` rather than risk following the wrong
-  one. A short re-identification after an occlusion is reported in
-  `data["reacquisitions"]`.
+  one; same if a lookalike passes where the hidden person could be. After
+  a short re-identification (an occlusion), the robot holds still for one
+  second (`verifying`) and ends with `LOST` if another similar person is
+  visible; each one is reported in `data["reacquisitions"]`. See the known
+  limit n° 9 in [SECURITY.md](../SECURITY.md).
 - **Dead man**: the app must call `follow_status()` at least every
   `deadman_s` seconds (in [0.3, 2]); otherwise `DEADMAN`.
 - Following also stops at the end of the hook that started it, on
@@ -545,7 +548,8 @@ returns `False`, `go_to`/`pick`/`place` return `BUSY`, and
 
 Permission: `PEOPLE_FOLLOW`. Also the dead man's heartbeat. While following:
 `FOLLOWING` (`ok`), with `data`: `phase` (`following`, `waiting`,
-`searching`, `holding`), `person_id`, `distance_m`, `bearing_rad`,
+`searching`, `holding`, `verifying` — still for one second after a
+re-identification), `person_id`, `distance_m`, `bearing_rad`,
 `target_distance_m`, `reacquisitions`, `elapsed_s`. Afterwards, the outcome
 of the last follow: `STOPPED_BY_APP` (`ok`), `LOST` (`TARGET_LOST`),
 `TIMEOUT`, `ESTOP` (`ESTOP_ACTIVE`), `CANCELLED`, `DEADMAN`, `FALLEN`

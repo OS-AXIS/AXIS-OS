@@ -173,6 +173,29 @@ reason AXIS-OS is **not ready for a real robot**.
    validated only between keyframes, on average. The teleoperation stream
    is local; no OS input service reads a real gamepad yet.
 
+9. **Following a person ("follow me"): what the OS cannot guarantee.**
+   Re-identification after an occlusion relies on clothing colours (never
+   the face): a person dressed the same way who appears exactly where the
+   hidden person was expected, while the real one stays hidden, can be
+   taken for her. The OS refuses every ambiguous case it can see (two
+   similar people, a lookalike near the hidden person, a jump no human can
+   make), holds the robot still for one second after each re-identification,
+   and reports each one to the app (`reacquisitions`); an app that must be
+   certain should ask the person to confirm. The distance comes from the
+   depth camera, or from the camera geometry when the feet are visible: on
+   a slope or stairs it can be wrong, which is why the lidar's nearest
+   obstacle ahead also limits the approach, and the proximity guard stays in
+   charge below its stop distance. The target distance must exceed the
+   distance at which the guard *stops* the robot (1.04 m with the default
+   guard, so at least 1.29 m), not the distance at which it starts slowing
+   it down (2.0 m): following at 1.5 m therefore happens inside the guard's
+   slowdown zone, which caps the speed further. The dead man is
+   `follow_status()`: an app that keeps calling it from a thread while its
+   logic is stuck keeps the follow alive until `timeout_s` or the end of
+   the hook. RT-DETR's accuracy on people seen from behind, crouching or
+   partly hidden has not been measured yet on the robot; the Isaac Sim
+   script `sim/validation/test_isaac_f1_suivi_personne.py` has not been run.
+
 ## Resolved limits
 
 Weaknesses that earlier versions of this page listed, and what fixed them
@@ -411,6 +434,31 @@ réel**.
    accélérations ne sont validées qu'entre deux images, en moyenne. Le flux
    de téléopération est local ; aucun service d'entrée de l'OS ne lit
    encore une vraie manette.
+
+9. **Suivi d'une personne (« suis-moi ») : ce que l'OS ne peut pas
+   garantir.** La ré-identification après une occultation repose sur les
+   couleurs des vêtements (jamais le visage) : une personne habillée pareil
+   qui apparaît exactement là où la personne cachée était attendue, pendant
+   que la vraie reste cachée, peut être prise pour elle. L'OS refuse chaque
+   cas ambigu qu'il voit (deux personnes semblables, un sosie près de la
+   personne cachée, un saut qu'aucun humain ne peut faire), tient le robot
+   immobile une seconde après chaque reprise et la signale à l'app
+   (`reacquisitions`) ; une app qui doit en être sûre demande à la
+   personne de confirmer. La distance vient de la caméra de profondeur, ou
+   de la géométrie de la caméra quand les pieds sont visibles : sur une
+   pente ou un escalier, elle peut être fausse ; c'est pourquoi l'obstacle
+   le plus proche vu par le lidar devant le robot borne aussi l'approche,
+   et le gardien de proximité reste maître sous sa distance d'arrêt. La
+   distance cible doit dépasser la distance où le gardien *arrête* le robot
+   (1,04 m avec le gardien par défaut, soit 1,29 m au moins), pas celle où
+   il commence à le ralentir (2,0 m) : suivre à 1,5 m se fait donc dans la
+   zone de ralentissement du gardien, qui plafonne encore la vitesse.
+   L'homme mort est `follow_status()` : une app qui l'appelle depuis un
+   fil pendant que sa logique est bloquée garde le suivi en vie jusqu'à
+   `timeout_s` ou la fin du hook. La précision de RT-DETR sur des personnes
+   vues de dos, accroupies ou en partie cachées n'a pas encore été mesurée
+   sur le robot ; le script Isaac Sim
+   `sim/validation/test_isaac_f1_suivi_personne.py` n'a pas été exécuté.
 
 ## Limites résolues
 

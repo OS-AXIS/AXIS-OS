@@ -57,9 +57,15 @@ MIN_HITS = 2
 # LOW et HIGH, ignorées en dessous.
 HIGH_SCORE = 0.5
 LOW_SCORE = 0.25
-# Association : rayon de base autour de la position prédite (m), allongé du
-# chemin qu'un humain peut faire pendant le temps sans mesure.
-GATE_M = 0.8
+# Association : une détection n'est rattachée à une piste que si elle est
+# plausible pour le filtre (distance de Mahalanobis, c'est-à-dire l'écart
+# rapporté à l'incertitude de la prédiction, sous MAHALANOBIS_GATE : 99 %
+# des vraies mesures), et toujours à moins de GATE_MAX_M. Pourquoi pas un
+# simple rayon : une revue adversariale a montré qu'un rayon qui grandit avec
+# le temps sans mesure laissait une personne habillée pareil, apparue à 1 m
+# d'une personne cachée, prendre son numéro.
+MAHALANOBIS_GATE = 9.21
+GATE_MIN_M = 0.35
 GATE_MAX_M = 2.0
 HUMAN_MAX_SPEED = 2.0          # m/s : un pas rapide
 # Apparences trop différentes pour la même personne (association).
@@ -78,8 +84,9 @@ ACCEL_SIGMA = 1.5
 
 
 def mesure_sigma(portee_m: float) -> float:
-    """Écart type (m) d'une position mesurée à `portee_m` de la caméra."""
-    return 0.10 + 0.05 * max(0.0, portee_m)
+    """Écart type (m) d'une position mesurée à `portee_m` de la caméra
+    (une caméra de profondeur : quelques pour cent de la distance)."""
+    return 0.05 + 0.03 * max(0.0, portee_m)
 
 
 @dataclass
@@ -109,6 +116,8 @@ class Track:
     bbox: Optional[Tuple[float, float, float, float]] = None
     reid_count: int = 0
     last_reid: Optional[float] = None
+    # Dernière position mesurée (et non prédite).
+    last_xy: Optional[Tuple[float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -183,23 +192,37 @@ class PersonTracker:
             return True, 0.0
         return d <= seuil, d
 
+    @staticmethod
+    def _mahalanobis2(tr: Track, o: Observation) -> float:
+        """Carré de l'écart entre la mesure et la position prédite, rapporté
+        à leur incertitude commune."""
+        S = tr.cov[:2, :2] + (mesure_sigma(o.range_m) ** 2) * np.eye(2)
+        e = np.asarray(o.xy, dtype=float) - tr.state[:2]
+        return float(e @ np.linalg.solve(S, e))
+
     def _associer(self, pistes: List[Track], obs: List[Observation], idx: List[int],
                   t: float) -> List[Tuple[int, int]]:
-        """Appariement glouton par coût croissant (distance à la position
-        prédite, plus l'écart d'apparence), sous les deux portes. Rend des
+        """Appariement glouton par coût croissant (écart rapporté à
+        l'incertitude, plus l'écart d'apparence), sous les portes. Rend des
         couples (indice de piste dans `pistes`, indice d'observation)."""
         couples = []
         for a, tr in enumerate(pistes):
-            porte = min(GATE_MAX_M, GATE_M + HUMAN_MAX_SPEED * max(0.0, t - tr.last_seen))
             for i in idx:
                 o = obs[i]
                 d = math.hypot(o.xy[0] - tr.state[0], o.xy[1] - tr.state[1])
-                if d > porte:
+                m2 = self._mahalanobis2(tr, o)
+                if d > GATE_MAX_M or (d > GATE_MIN_M and m2 > MAHALANOBIS_GATE):
+                    continue
+                # Porte physique : un humain ne parcourt pas plus que ça
+                # depuis sa dernière mesure.
+                if tr.last_xy is not None and math.hypot(
+                        o.xy[0] - tr.last_xy[0], o.xy[1] - tr.last_xy[1]) > \
+                        HUMAN_MAX_SPEED * max(0.0, t - tr.last_seen) + 2 * mesure_sigma(o.range_m):
                     continue
                 ok, da = self._apparence_compatible(tr, o, APPEARANCE_GATE)
                 if not ok:
                     continue
-                couples.append((d / porte + 0.5 * da, a, i))
+                couples.append((m2 / MAHALANOBIS_GATE + 0.5 * da, a, i))
         couples.sort()
         prises_a, prises_i, out = set(), set(), []
         for _, a, i in couples:
@@ -217,8 +240,14 @@ class PersonTracker:
         def candidat(tr: Track, o: Observation, seuil: float) -> Optional[float]:
             if tr.appearance is None or o.appearance is None:
                 return None              # sans apparence : jamais de reprise
-            portee = HUMAN_MAX_SPEED * max(0.0, t - tr.last_seen) + 0.5
-            if math.hypot(o.xy[0] - tr.state[0], o.xy[1] - tr.state[1]) > portee:
+            dt = max(0.0, t - tr.last_seen)
+            # Portée humaine depuis la dernière position vue, ET continuité :
+            # près de l'endroit où la personne devait réapparaître (la
+            # prédiction du filtre, tr.state).
+            vue = tr.last_xy if tr.last_xy is not None else tr.state[:2]
+            if math.hypot(o.xy[0] - vue[0], o.xy[1] - vue[1]) > HUMAN_MAX_SPEED * dt + 0.5:
+                return None
+            if math.hypot(o.xy[0] - tr.state[0], o.xy[1] - tr.state[1]) > 0.7 + 1.0 * dt:
                 return None
             d = appearance_distance(tr.appearance, o.appearance)
             return d if d is not None and d <= seuil else None
@@ -278,6 +307,7 @@ class PersonTracker:
             tr.last_seen = tr.last_t = t
             tr.score = o.score
             tr.bbox = o.bbox
+            tr.last_xy = o.xy
 
         for tr, i in mesurees:
             o = obs[i]
@@ -287,6 +317,7 @@ class PersonTracker:
                 tr.last_seen = t
                 tr.score = o.score
                 tr.bbox = o.bbox
+                tr.last_xy = o.xy
             if not tr.confirmed and tr.hits >= MIN_HITS:
                 tr.confirmed = True
                 self.stats["tracks_confirmed"] += 1
@@ -309,7 +340,7 @@ class PersonTracker:
                        cov=self._neuve_cov(o), first_seen=t, last_seen=t, last_t=t,
                        appearance=(None if o.appearance is None
                                    else np.asarray(o.appearance, dtype=float).copy()),
-                       score=o.score, bbox=o.bbox)
+                       score=o.score, bbox=o.bbox, last_xy=o.xy)
             self._next_id += 1
             self._tracks[tr.track_id] = tr
             self.stats["tracks_created"] += 1

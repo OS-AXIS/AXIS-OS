@@ -10,6 +10,66 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Suivi d'une personne (« suis-moi »), sans reconnaissance faciale (API du SDK 1.1.0, 2026-10-28)
+
+Aucune reconnaissance faciale, aucun gabarit de visage, aucune donnée
+biométrique ; aucune image ni découpe de personne écrite sur disque ou dans
+un journal. Le suivi passe par le service de locomotion, donc par le
+gardien de proximité et le garde-fou des articulations, sans aucune
+exemption.
+
+**Nouvelles API** :
+- `people()`, `person_in_front(max_distance_m)` (`PEOPLE_DETECT`, NORMAL,
+  montrée à l'humain à l'installation : « cette app détecte la présence de
+  personnes ») : des `PersonInfo` (numéro temporaire, distance, direction,
+  durée, confiance), rien d'autre ;
+- `follow(person_id, *, distance_m=1.5, timeout_s=60, deadman_s=1)`,
+  non bloquant, `follow_status()` (aussi battement de l'homme mort),
+  `stop_follow()` (`PEOPLE_FOLLOW`, DANGEROUS, plus `PEOPLE_DETECT` et les
+  droits de `walk`) ; issues `STOPPED_BY_APP`, `LOST`, `TIMEOUT`, `ESTOP`,
+  `CANCELLED`, `DEADMAN`, `FALLEN` ; nouveaux codes `TARGET_LOST` et
+  `DEADMAN`.
+
+**Côté OS** (`axis_os/services/people/`) : `PeopleService` (détection à la
+demande, position au sol par la profondeur ou la géométrie de la caméra,
+suivi multi-personnes par filtre de Kalman et association à la ByteTrack,
+ré-identification courte par les couleurs des vêtements, mémoire bornée,
+mesures) et `FollowService` (distance cible au-delà de la zone où le gardien
+arrête le robot, 0,25 m/s au plus, jamais en arrière, jamais dans un
+obstacle de la carte, recherche bornée, jamais de changement de cible).
+Détecteur réel : RT-DETR R18 (`PekingU/rtdetr_r18vd`, Apache 2.0, révision
+épinglée, safetensors) ; secours : OWL-ViT. `GardienProximite.distance_arret()`
+(lecture seule).
+
+**Kit de développement** : `axis_os.testing` simule des personnes qui
+marchent (`SimulatedPerson`), cachées par les obstacles et les autres, un
+micro (`hear()`) et un temps accéléré (`time_scale`) ; exemple
+`examples/follow_me` ; script Isaac Sim F1 (non exécuté).
+
+**Revues adversariales** (`test/test_suivi_revue.py`, chaque constat avec
+son essai, en échec sur le code d'avant) :
+- A1 : une personne habillée pareil, apparue à 1 m de la personne suivie
+  cachée, prenait son numéro (porte d'association en simple rayon) ; portes
+  statistique (Mahalanobis) et physique (vitesse humaine) désormais ;
+- A2 : un sosie passé près de la personne cachée rendait la reprise
+  ambiguë sans le dire ; désormais LOST ;
+- A3 : une reprise par l'apparence repartait aussitôt ; désormais une
+  seconde d'immobilité (« verifying »), LOST si un sosie est visible, et la
+  reprise est signalée à l'app ;
+- A4 : une pose du robot non finie donnait une petite rotation ; désormais
+  l'arrêt ;
+- B1 : l'OS gardait en vie le contexte d'une app terminée (dernière issue) ;
+  référence faible désormais.
+Limite connue n° 9 de `SECURITY.md`.
+
+**Changements cassants** : aucun pour une app existante. `stop_walking()`
+arrête aussi un suivi en cours ; `walk()` rend `False` pendant un suivi ;
+`SimulatedRobot.people` contient des `SimulatedPerson` (et non plus des
+couples (x, y)), et `add_person()` en rend une (la personne est aussi vue par
+la caméra simulée) ; `PlayStoreRuntime` reçoit
+`people_service` et `follow_service` ; la version de l'API du SDK passe à
+1.1.0.
+
 ### SDK v1 — un kit de développement complet (API du SDK 1.0.0, 2026-10-27)
 
 Toute nouvelle API passe par `RobotContext`, par le pont JSON (un schéma

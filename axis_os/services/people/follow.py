@@ -28,8 +28,13 @@ Règles, chacune testée (test/test_suivi_personne.py) :
   - une autre personne passe tout près : le robot s'immobilise ; si elle
     ressemble à la personne suivie (ou si on ne peut pas le savoir), le
     suivi s'arrête avec LOST plutôt que de risquer de suivre la mauvaise
-    personne. Le suivi ne change JAMAIS de cible ; il rend LOST quand il
-    doute ;
+    personne. Même règle si une personne qui lui ressemble passe près de là
+    où elle devait être pendant qu'elle était cachée. Le suivi ne change
+    JAMAIS de cible ; il rend LOST quand il doute ;
+  - reprise après une absence (ré-identification par l'apparence) : le
+    robot reste immobile VERIFY_S (phase « verifying ») et rend LOST si une
+    autre personne d'apparence proche est visible ; chaque reprise est
+    comptée dans le statut (reacquisitions), l'app est donc prévenue ;
   - arrêt d'urgence, homme mort de l'app (plus de nouvelles depuis
     deadman_s), fin ou mort de l'app, demande d'arrêt : arrêt immédiat ;
   - à la fin du suivi, quelle qu'en soit l'issue, l'apparence de référence
@@ -40,6 +45,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
@@ -91,6 +97,7 @@ class FollowService(IService):
     MISMATCH_CYCLES = 3
     DEADMAN_MIN_S, DEADMAN_MAX_S = 0.3, 2.0
     ANTICIPATION_M = 0.4
+    VERIFY_S = 1.0
 
     def __init__(self, people, locomotion, gardien=None, *,
                  source_pose: Optional[Callable[[], Tuple[float, float, float]]] = None,
@@ -109,7 +116,9 @@ class FollowService(IService):
         self._demarre = False
         self._proprio = None
         self._issue: Optional[FollowOutcome] = None
-        self._issue_proprio = None
+        # Propriétaire de la dernière issue, en référence faible : l'OS ne
+        # garde pas en vie le contexte d'une app terminée.
+        self._issue_proprio = lambda: None
         self.stats = {"follows": 0, "lost": 0, "identity_doubts": 0, "reacquisitions": 0,
                       "max_vx": 0.0, "max_abs_wz": 0.0, "map_stops": 0}
         self._raz()
@@ -133,6 +142,8 @@ class FollowService(IService):
         self._debut = 0.0
         self._mesure: Optional[Tuple[float, float]] = None
         self._a_bouge = False
+        self._verif_jusqua: Optional[float] = None
+        self._doute_perte = False
 
     # ---- IService ------------------------------------------------------------
 
@@ -244,7 +255,7 @@ class FollowService(IService):
         la dernière issue de ce propriétaire, ou None."""
         if self._cible is not None and owner is self._proprio:
             self._finir(status, code, message)
-        return self._issue if owner is self._issue_proprio else None
+        return self._issue if owner is self._issue_proprio() else None
 
     @sous_verrou
     def status(self, owner) -> dict:
@@ -257,7 +268,7 @@ class FollowService(IService):
                     "bearing_rad": None if d is None else round(d[1], 3),
                     "target_distance_m": self._distance, "reacquisitions": self._reprises,
                     "elapsed_s": round(self._horloge() - self._debut, 3)}
-        if self._issue is not None and owner is self._issue_proprio:
+        if self._issue is not None and owner is self._issue_proprio():
             i = self._issue
             return {"status": i.status, "code": i.code, "message": i.message,
                     "person_id": i.person_id, "reacquisitions": i.reacquisitions,
@@ -273,7 +284,8 @@ class FollowService(IService):
         self._loco.halt()
         self._issue = FollowOutcome(status, code, message, self._cible, self._reprises,
                                     self._a_bouge)
-        self._issue_proprio = self._proprio
+        self._issue_proprio = (weakref.ref(self._proprio) if self._proprio is not None
+                               else (lambda: None))
         if status == "LOST":
             self.stats["lost"] += 1
         self._reference = None
@@ -406,6 +418,9 @@ class FollowService(IService):
             perdue_depuis = t - cible.last_seen
             if perdue_depuis > self.SEARCH_S:
                 return self._perdue(f"personne non vue depuis {perdue_depuis:.1f} s")
+            if not self._doute_perte and self._sosie_pendant_absence(cible, t, perdue_depuis):
+                self._doute_perte = True
+                self.stats["identity_doubts"] += 1
             self._avance = False
             if perdue_depuis <= self.HOLD_S:
                 self._loco.halt()
@@ -430,7 +445,23 @@ class FollowService(IService):
                 d = appearance_distance(cible.appearance, self._reference)
                 if d is None or d > REID_THRESHOLD:
                     return self._perdue("reprise sans apparence vérifiable")
+                if self._doute_perte:
+                    return self._perdue("identité incertaine : une personne d'apparence proche "
+                                        "était là pendant l'absence")
+                self._verif_jusqua = t + self.VERIFY_S
+            self._doute_perte = False
         self._reid_vus = cible.reid_count
+        if self._verif_jusqua is not None:
+            # Reprise : immobile le temps de vérifier qu'aucune autre
+            # personne d'apparence proche n'est visible.
+            if not self._identite_claire(cible, t):
+                return self._perdue("identité incertaine après la reprise")
+            if t < self._verif_jusqua:
+                self._loco.halt()
+                self._avance = False
+                self._phase = "verifying"
+                return ServiceResult(ok=True, value="verifying")
+            self._verif_jusqua = None
         if nouveau_cycle:
             d = appearance_distance(cible.appearance, self._reference)
             if d is not None and d > self.MISMATCH:
@@ -449,6 +480,9 @@ class FollowService(IService):
             self._loco.halt()
             return ServiceResult(ok=False, reason="position du robot inconnue")
         d_vue, cap = rel
+        if not (math.isfinite(d_vue) and math.isfinite(cap)):
+            self._loco.halt()
+            return ServiceResult(ok=False, reason="position non finie")
         self._mesure = rel
         d_lidar = self._distance_lidar_avant()
         d = d_vue if d_lidar is None else min(d_vue, d_lidar)
@@ -476,6 +510,22 @@ class FollowService(IService):
         rx, ry, cap = self._pose()
         b = math.atan2(y - ry, x - rx) - cap
         return math.hypot(x - rx, y - ry), (b + math.pi) % (2 * math.pi) - math.pi
+
+    def _sosie_pendant_absence(self, cible, t: float, absence: float) -> bool:
+        """Vrai si une autre personne visible, d'apparence proche de la
+        référence (ou inconnue), se trouve là où la personne suivie a pu
+        aller pendant son absence."""
+        from .tracker import HUMAN_MAX_SPEED
+        portee = HUMAN_MAX_SPEED * absence + 0.5
+        for s in self._people.snapshots():
+            if s.track_id == cible.track_id or not self._people.is_visible(s, t):
+                continue
+            if math.hypot(s.x - cible.x, s.y - cible.y) > portee:
+                continue
+            d = appearance_distance(s.appearance, self._reference)
+            if d is None or d <= self.SIMILAR:
+                return True
+        return False
 
     def _identite_claire(self, cible, t: float) -> bool:
         """Vrai si la personne suivie ressemble à la référence ET se
