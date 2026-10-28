@@ -213,6 +213,18 @@ class GardienProximite:
         """Retire l'exemption en cours : la surveillance reprend partout."""
         self._exemption = None
 
+    def distance_arret(self) -> float:
+        """Distance (m) en deçà de laquelle le gardien tient le robot à
+        l'arrêt : d_arret, ou plus loin quand le plafond de vitesse tombe sous
+        la vitesse minimale de marche (voir evaluer), et au moins d_reprise.
+        Lecture seule : un service qui garde ses distances (le suivi d'une
+        personne, axis_os/services/people/follow.py) s'adapte au gardien,
+        jamais l'inverse."""
+        c = self.c
+        bande = (c.d_arret + (self._v_min / self._v_max) * (c.d_ralenti - c.d_arret)
+                 if self._v_max > 0 else c.d_ralenti)
+        return max(c.d_arret, c.d_reprise, bande)
+
     @property
     def arrete(self) -> bool:
         """Vrai si le gardien tient le robot à l'arrêt.
