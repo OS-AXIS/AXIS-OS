@@ -284,6 +284,9 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "stop_animation": _VIDE,
     "speak": Objet({"text": Chaine(RobotContext.SPEAK_MAX_CHARS), "language": Chaine(8)}),
     "get_setting": Objet({"name": Chaine(32)}),
+    "notify": Objet({"title": Chaine(RobotContext.NOTIFY_TITLE_MAX),
+                     "message": Chaine(RobotContext.NOTIFY_MESSAGE_MAX),
+                     "priority": UnParmi(*RobotContext.NOTIFY_PRIORITIES)}),
     "where_am_i": _VIDE,
     "places": _VIDE,
     "zones": _VIDE,
@@ -683,6 +686,11 @@ class HALBridgeServer:
             elif cmd.action == "get_setting":
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.get_setting(cmd.payload["name"]))
+
+            elif cmd.action == "notify":
+                p = cmd.payload
+                return HALResponse(cmd.request_id, True, data=self._ctx.notify(
+                    p["title"], p["message"], priority=p["priority"]).to_json())
 
             elif cmd.action == "where_am_i":
                 return HALResponse(cmd.request_id, True, data=self._ctx.where_am_i().to_json())
@@ -1411,6 +1419,18 @@ class HALBridgeClient:
 
     def get_setting(self, name: str):
         return self._call("get_setting", {"name": require_text("name", name, 32)})
+
+    NOTIFY_PRIORITIES = RobotContext.NOTIFY_PRIORITIES
+    NOTIFY_TITLE_MAX = RobotContext.NOTIFY_TITLE_MAX
+    NOTIFY_MESSAGE_MAX = RobotContext.NOTIFY_MESSAGE_MAX
+
+    def notify(self, title: str, message: str, *, priority: str = "info") -> ActionResult:
+        if priority not in self.NOTIFY_PRIORITIES:
+            raise InvalidArgumentError(f"priority : une parmi {list(self.NOTIFY_PRIORITIES)}")
+        return ActionResult.from_json(self._call("notify", {
+            "title": require_text("title", title, self.NOTIFY_TITLE_MAX),
+            "message": require_text("message", message, self.NOTIFY_MESSAGE_MAX),
+            "priority": priority}))
 
     # ---- Personnes (voir RobotContext.people, follow) ----------------------
 

@@ -48,6 +48,7 @@ from axis_os.services.locomotion.service import (
 from axis_os.services.manipulation.service import Etat, ManipulationService
 from axis_os.services.navigation.service import Carte, NavigationService, Pose2D
 from axis_os.services.navigation.site_map import SiteMap
+from axis_os.services.notifications import FakeNotificationSink, NotificationCenter
 from axis_os.services.navigation.zones import GardienZones
 from axis_os.services.people.appearance import appearance_descriptor, synthetic_person_image
 from axis_os.services.people.detector import IPersonDetector, PersonDetection
@@ -418,6 +419,10 @@ class SimulatedRobot:
         # Synthèse vocale factice : `voice.spoken` garde ce que le robot a dit.
         from axis_os.services.speech.synthesis import FakeSpeechSynthesizer
         self.voice = FakeSpeechSynthesizer()
+        # Notifications vers l'opérateur : `notification_sink.delivered`
+        # garde celles que l'opérateur a reçues.
+        self.notification_sink = FakeNotificationSink()
+        self.notifications = NotificationCenter(self.notification_sink, horloge=self.clock)
         self._arret = threading.Event()
         self._fil: Optional[threading.Thread] = None
 
@@ -506,7 +511,7 @@ class SimulatedRobot:
                         speech_synthesizer=self.voice, speech_service=self.speech,
                         people_service=self.people_service,
                         follow_service=self.follow_service,
-                        site_map=self.site_map,
+                        site_map=self.site_map, notifications=self.notifications,
                         clock=self.clock, profil=Profil.SIMULATION,
                         confirmer_permissions=accepter_tout_SIMULATION)
         reglages.update(kw)

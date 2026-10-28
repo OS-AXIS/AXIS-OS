@@ -46,6 +46,7 @@ from axis_os.hal.core.types import (
     JointGroup, infer_joint_group, ORIGINE_IA,
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
+from axis_os.services.notifications import MESSAGE_MAX, PRIORITIES, TITLE_MAX
 from .manifest import AppManifest, Permission
 from .version import API_VERSION
 from .lifecycle import (
@@ -1915,6 +1916,41 @@ class RobotContext:
         if dit is not True:
             return refused("FAILED", RefusalCode.FAILED, "la synthèse vocale n'a rien dit")
         return ActionResult(ok=True, status="SPOKEN", message="dit")
+
+    NOTIFY_PRIORITIES = PRIORITIES
+    NOTIFY_TITLE_MAX, NOTIFY_MESSAGE_MAX = TITLE_MAX, MESSAGE_MAX
+
+    def notify(self, title: str, message: str, *, priority: str = "info") -> ActionResult:
+        """Prévient l'opérateur. `priority` : « info », « warning »
+        (avertissement) ou « urgent ». Titre (80 caractères) et message (500)
+        coupés, caractères de contrôle remplacés. L'opérateur voit toujours
+        la source, mise par l'OS : « [app <nom> · <app_id>] ». Permis sous
+        arrêt d'urgence (ce n'est pas un mouvement).
+
+        `status` : SENT, REFUSED (RATE_LIMITED_APP : plus de 6 notifications
+        par minute, ou de 2 urgentes ; CAPABILITY_MISSING : aucun canal de
+        notification sur ce robot), FAILED (le canal ne l'a pas prise).
+        Lève InvalidArgumentError (texte vide, priorité inconnue, texte qui
+        se présente comme l'OS). Permission : NOTIFICATIONS."""
+        self._require(Permission.NOTIFICATIONS)
+        titre = require_text("title", title, self.NOTIFY_TITLE_MAX)
+        texte = require_text("message", message, self.NOTIFY_MESSAGE_MAX)
+        if priority not in self.NOTIFY_PRIORITIES:
+            raise InvalidArgumentError(f"priority : une parmi {list(self.NOTIFY_PRIORITIES)} "
+                                       f"(reçu {str(priority)[:40]!r})")
+        centre = self._notifications
+        if centre is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "aucun canal de notification sur ce robot")
+        ok, code, explication = centre.from_app(self._manifest.app_id, self._manifest.name,
+                                                titre, texte, priority)
+        if ok:
+            return ActionResult(ok=True, status="SENT", message=explication)
+        if code == "INVALID_ARGUMENT":
+            raise InvalidArgumentError(explication)
+        if code == "RATE_LIMITED_APP":
+            return refused("REFUSED", RefusalCode.RATE_LIMITED_APP, explication)
+        return refused("FAILED", RefusalCode.FAILED, explication)
 
     def get_setting(self, name: str):
         """Valeur d'un réglage déclaré dans le manifeste (settings) : celle
