@@ -180,6 +180,13 @@ class Permission(Enum):
     AUDIO_OUTPUT         = auto()
     # Lire les réglages de l'app choisis par l'utilisateur (get_setting).
     APP_SETTINGS         = auto()
+    # Savoir qui est présent autour du robot : des numéros temporaires, des
+    # distances et des directions (people, person_in_front). Jamais une
+    # identité, jamais une image : AXIS-OS ne reconnaît personne.
+    PEOPLE_DETECT        = auto()
+    # Faire suivre une personne par le robot (follow, stop_follow). Exige
+    # aussi PEOPLE_DETECT et les droits de walk.
+    PEOPLE_FOLLOW        = auto()
 
 
 class ProtectionLevel(Enum):
@@ -265,7 +272,30 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     # réglages non plus.
     Permission.AUDIO_OUTPUT:         ProtectionLevel.NORMAL,
     Permission.APP_SETTINGS:         ProtectionLevel.NORMAL,
+    # NORMAL : rien ne bouge, et aucune identité n'est connue. Mais l'humain
+    # doit le savoir : voir PERMISSION_NOTICES, montré à l'installation.
+    Permission.PEOPLE_DETECT:        ProtectionLevel.NORMAL,
+    # DANGEROUS : le robot marche vers une personne.
+    Permission.PEOPLE_FOLLOW:        ProtectionLevel.DANGEROUS,
 }
+
+# Ce que l'humain doit lire à l'installation, quel que soit le niveau de la
+# permission (PlayStoreRuntime.install l'affiche, et confirmer_au_terminal
+# avant sa question). Pourquoi : PEOPLE_DETECT est NORMAL, donc accordée
+# sans question, mais savoir qu'une app observe les personnes présentes
+# n'est pas un détail.
+PERMISSION_NOTICES: dict[Permission, str] = {
+    Permission.PEOPLE_DETECT: ("cette app détecte la présence de personnes autour du robot "
+                               "(des numéros temporaires, des distances, des directions ; "
+                               "jamais leur identité ni leur visage)"),
+    Permission.PEOPLE_FOLLOW: "cette app peut faire marcher le robot derrière une personne",
+}
+
+
+def permission_notices(manifest: "AppManifest") -> list[str]:
+    """Avis à montrer à l'humain pour les permissions de `manifest`."""
+    return [PERMISSION_NOTICES[p] for p in dict.fromkeys(manifest.permissions)
+            if p in PERMISSION_NOTICES]
 
 
 def get_protection_level(permission: Permission) -> ProtectionLevel:

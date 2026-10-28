@@ -54,6 +54,8 @@ class RefusalCode(str, Enum):
     RATE_LIMITED = "RATE_LIMITED"               # consignes de flux trop rapprochées
     OUT_OF_BOUNDS = "OUT_OF_BOUNDS"             # consigne de flux hors des bornes
     STREAM_STOPPED = "STREAM_STOPPED"           # flux arrêté : reprise explicite exigée
+    TARGET_LOST = "TARGET_LOST"                 # personne suivie perdue, ou numéro inconnu
+    DEADMAN = "DEADMAN"                         # homme mort : plus de nouvelles de l'app
 
 
 class AxisRefusal(Exception):
@@ -137,6 +139,17 @@ def require_number(name: str, value: Any, *, mini: Optional[float] = None,
 
 
 _LANGUE = re.compile(r"[a-z]{2}(-[A-Z]{2})?")
+
+
+def require_int(name: str, value: Any, *, mini: int, maxi: int) -> int:
+    """Rend `value`, un entier (pas un booléen) dans [mini, maxi], ou lève
+    InvalidArgumentError."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidArgumentError(f"{name} doit être un entier (reçu : "
+                                   f"{type(value).__name__})")
+    if not mini <= value <= maxi:
+        raise InvalidArgumentError(f"{name} = {value} : hors de [{mini}, {maxi}]")
+    return int(value)
 
 
 def require_language(value: Any) -> str:
@@ -261,6 +274,39 @@ class SafetyStatus:
                    time_remaining_s=d.get("time_remaining_s"),
                    storage_keys_remaining=d.get("storage_keys_remaining"),
                    storage_bytes_remaining=d.get("storage_bytes_remaining"))
+
+
+# ─── Personnes (people, person_in_front) ─────────────────────────────────
+
+@dataclass(frozen=True)
+class PersonInfo:
+    """Une personne vue par le robot, telle qu'une app la voit : un numéro
+    temporaire, sa distance et sa direction par rapport au robot, et depuis
+    combien de temps elle est vue. Rien d'autre : ni image, ni apparence, ni
+    position dans le site, ni identité.
+
+    person_id  : numéro temporaire, valable tant que la personne reste vue
+                 (puis oublié, jamais réutilisé) ;
+    distance_m : distance horizontale au centre du robot (m) ;
+    bearing_rad: direction (rad), 0 droit devant, positive vers la gauche ;
+    seen_for_s : depuis combien de temps elle est suivie (s) ;
+    confidence : confiance du détecteur, dans [0, 1]."""
+    person_id: int
+    distance_m: float
+    bearing_rad: float
+    seen_for_s: float
+    confidence: float
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"person_id": self.person_id, "distance_m": self.distance_m,
+                "bearing_rad": self.bearing_rad, "seen_for_s": self.seen_for_s,
+                "confidence": self.confidence}
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "PersonInfo":
+        return cls(person_id=int(d["person_id"]), distance_m=float(d["distance_m"]),
+                   bearing_rad=float(d["bearing_rad"]), seen_for_s=float(d["seen_for_s"]),
+                   confidence=float(d["confidence"]))
 
 
 # ─── Objets à saisir (pick, place) ───────────────────────────────────────

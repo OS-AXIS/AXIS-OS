@@ -1,6 +1,6 @@
 # AXIS-OS App SDK — API reference
 
-SDK API version **1.0.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
+SDK API version **1.1.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
 Guides: [CREATE_AN_APP.md](CREATE_AN_APP.md) (English) ·
 [CREER_UNE_APP.md](CREER_UNE_APP.md) (français). Examples:
 [examples/](../examples/).
@@ -14,9 +14,10 @@ Guides: [CREATE_AN_APP.md](CREATE_AN_APP.md) (English) ·
 5. [Local teleoperation](#5-local-teleoperation) — `stream_targets`, `TargetStream`
 6. [Animations](#6-animations) — format, `play_animation`, `stop_animation`
 7. [Speech and settings](#7-speech-and-settings) — `speak`, `get_setting`
-8. [Low-level APIs](#8-low-level-apis) — joints, walking, perception, voice, memory
-9. [Versions](#9-versions) — `api_version`, `min_sdk_version`
-10. [Testing and tools](#10-testing-and-tools) — `axis_os.testing`, the `axis` command
+8. [People: presence and following](#8-people-presence-and-following) — `people`, `person_in_front`, `follow`, `follow_status`, `stop_follow`
+9. [Low-level APIs](#9-low-level-apis) — joints, walking, perception, voice, memory
+10. [Versions](#10-versions) — `api_version`, `min_sdk_version`
+11. [Testing and tools](#11-testing-and-tools) — `axis_os.testing`, the `axis` command
 
 ---
 
@@ -54,11 +55,11 @@ on top of its own permission, `go_to` also requires the rights of `walk`,
 `stream_targets("walk")` those of `walk`, and so on.
 
 One context drives the robot at a time through the high-level APIs: while
-an app has a `go_to`, a grasp, a rest pose, an animation or a stream in
-progress, another app's hook (an `on_start` during a mission, say) gets
-`BUSY`. Within one app, the arms have one writer at a time (grasp,
-animation or arm stream), and walking has one too (`go_to` or a walk
-stream).
+an app has a `go_to`, a grasp, a rest pose, an animation, a stream or a
+`follow` in progress, another app's hook (an `on_start` during a mission,
+say) gets `BUSY`. Within one app, the arms have one writer at a time (grasp,
+animation or arm stream), and walking has one too (`go_to`, a walk stream
+or `follow`).
 
 ### Results
 
@@ -110,6 +111,8 @@ app sees the same exception in its process as in a direct test.
 | `RATE_LIMITED` | stream targets too frequent |
 | `OUT_OF_BOUNDS` | stream target beyond the stream's limits |
 | `STREAM_STOPPED` | the stream is stopped: call `resume()` |
+| `TARGET_LOST` | the followed person was lost, or the person number is unknown |
+| `DEADMAN` | the app stopped giving news (`follow_status`) within `deadman_s` |
 
 ### Emergency stop
 
@@ -118,7 +121,8 @@ During an emergency stop, every API that moves the robot is refused
 stops). In the app's process, the OS then stops the process within 0.5 s;
 only calls that move nothing are still served (`log`, `robot_info`,
 `has_capability`, `safety_status`, `should_stop`, `report_progress`,
-`stop_walking`, `stop_animation`, the stream's `metrics` and `close`…).
+`stop_walking`, `stop_animation`, `follow_status`, `stop_follow`, the
+stream's `metrics` and `close`…).
 
 ---
 
@@ -465,7 +469,107 @@ against the declaration. `ctx.get_setting(name)` — permission
 
 ---
 
-## 8. Low-level APIs
+## 8. People: presence and following
+
+AXIS-OS detects people and follows one on request. **It never recognizes
+anyone**: no face recognition, no face template, no biometric data. An app
+only ever sees a temporary number, a distance and a direction. No image or
+crop of a person is written to disk or to a log; appearance descriptors
+(clothing colours, never the head) live only in memory and are erased at the
+end of each follow, or a few seconds after the person was last seen. The
+people service only looks while an app asks (within the last 10 s).
+
+The detector is a model the OS loads (default: RT-DETR R18,
+`PekingU/rtdetr_r18vd`, Apache-2.0, pinned revision, safetensors only — see
+[THIRD_PARTY.md](../THIRD_PARTY.md)); tests use fake detections.
+
+### `ctx.people() -> list[PersonInfo]`
+
+Permission: `PEOPLE_DETECT` (NORMAL — but shown to the human at install:
+*"this app detects the presence of people"*). The people visible now,
+nearest first. `PersonInfo`: `person_id` (temporary number, kept while the
+person stays visible, never reused), `distance_m` (to the robot's centre),
+`bearing_rad` (0 straight ahead, positive to the left), `seen_for_s`,
+`confidence`. A person whose distance cannot be estimated (no depth camera
+and feet outside the image) is not listed. Empty list when the robot cannot
+detect people.
+
+### `ctx.person_in_front(max_distance_m=3.0) -> PersonInfo | None`
+
+Permission: `PEOPLE_DETECT`. The nearest person within ±0.35 rad of the
+robot's axis and within `max_distance_m` (in ]0, 8]): "the one in front of
+me". Raises `InvalidArgumentError`.
+
+### `ctx.follow(person_id, *, distance_m=1.5, timeout_s=60.0, deadman_s=1.0) -> ActionResult`
+
+Permission: `PEOPLE_FOLLOW` (DANGEROUS), plus the rights of the APIs it
+replaces: `PEOPLE_DETECT`, `LOCOMOTION_WALK`, `ACTUATORS_WRITE_LEGS`.
+**Non-blocking**: returns `FOLLOWING` as soon as following starts; the OS
+runs the loop at the locomotion rate. Every command goes through the
+locomotion service, hence through the proximity guard and the joint guard:
+following gets **no** exemption from the proximity guard.
+
+- **Distance**: the robot keeps `distance_m`, at least the distance under
+  which the proximity guard stops it plus a margin
+  (`FollowService.distance_min`, 1.29 m with the default guard), at most
+  3 m. Below: `InvalidArgumentError`. The distance used is the shorter of
+  the camera's (the followed person) and the lidar's (the nearest obstacle
+  ahead).
+- **Speed**: at most 0.25 m/s (navigation: 0.30), slower when closing in;
+  never backwards, never sideways; turns on the spot when the person is
+  far to the side. It never drives into an obstacle of the site map.
+- **The person stops**: the robot stops at the target distance.
+- **The person disappears**: the robot stops, then searches by turning on
+  the spot, for 5 s at most after it last saw the person; then `LOST`.
+- **Someone else passes close by**: the robot holds still (the proximity
+  guard has priority anyway). It never switches to another person by
+  itself: if the other person looks similar (clothing), or if that cannot
+  be told, following ends with `LOST` rather than risk following the wrong
+  one. A short re-identification after an occlusion is reported in
+  `data["reacquisitions"]`.
+- **Dead man**: the app must call `follow_status()` at least every
+  `deadman_s` seconds (in [0.3, 2]); otherwise `DEADMAN`.
+- Following also stops at the end of the hook that started it, on
+  `stop_follow()`, `stop_walking()` (from any app), emergency stop, or a
+  stop request.
+
+Refusals: `REFUSED` with `TARGET_LOST` (unknown number, or person no longer
+visible), `BUSY` (`go_to`, a walk stream, a grasp in progress, or another
+app driving), `CAPABILITY_MISSING` (no people detection, no follow service,
+or **no proximity guard**: the OS follows no one without it). Raises
+`InvalidArgumentError` and `EstopActiveError`. While following, `walk()`
+returns `False`, `go_to`/`pick`/`place` return `BUSY`, and
+`stream_targets("walk")` raises `BusyError`.
+
+### `ctx.follow_status() -> ActionResult`
+
+Permission: `PEOPLE_FOLLOW`. Also the dead man's heartbeat. While following:
+`FOLLOWING` (`ok`), with `data`: `phase` (`following`, `waiting`,
+`searching`, `holding`), `person_id`, `distance_m`, `bearing_rad`,
+`target_distance_m`, `reacquisitions`, `elapsed_s`. Afterwards, the outcome
+of the last follow: `STOPPED_BY_APP` (`ok`), `LOST` (`TARGET_LOST`),
+`TIMEOUT`, `ESTOP` (`ESTOP_ACTIVE`), `CANCELLED`, `DEADMAN`, `FALLEN`
+(`SAFETY_LIMIT`), with `data["moved"]`. Otherwise `IDLE`. Served during an
+emergency stop.
+
+### `ctx.stop_follow() -> ActionResult`
+
+Permission: `PEOPLE_FOLLOW`. Stops following (the robot stops, balanced) and
+returns `STOPPED_BY_APP`, or the outcome if it had already ended, or `IDLE`.
+Never refused during an emergency stop: stopping is always allowed.
+
+```python
+person = ctx.person_in_front()
+if person and ctx.follow(person.person_id, deadman_s=2.0):
+    while ctx.follow_status().status == "FOLLOWING":
+        intent = ctx.listen(0.5)
+        if intent and intent.name == "stop":
+            ctx.stop_follow()
+```
+
+---
+
+## 9. Low-level APIs
 
 | API | Permission | |
 |---|---|---|
@@ -486,7 +590,7 @@ against the declaration. `ctx.get_setting(name)` — permission
 
 ---
 
-## 9. Versions
+## 10. Versions
 
 - `ctx.api_version` — the SDK API version this OS serves (SemVer).
 - `AppManifest.min_sdk_version` — the minimum SDK API version the app needs.
@@ -499,7 +603,7 @@ on PyPI) has the version of the API.
 
 ---
 
-## 10. Testing and tools
+## 11. Testing and tools
 
 ### `axis_os.testing`
 
@@ -517,9 +621,16 @@ with AppTestHarness(MyApp(), objects=[SimulatedObject("red box", (1.2, 0.0, 0.9)
 ```
 
 - `SimulatedRobot(carte=None, start=(0, 0, 0), proximity_guard=True,
-  manipulation=True, objects=(), battery_percent=None, grasp_succeeds=True)`
-  — `add_person(x, y)`, `clear_people()`, `set_battery(percent)`, `fall()`,
-  `pose`, `voice.spoken`, `make_runtime(**kw)`.
+  manipulation=True, objects=(), battery_percent=None, grasp_succeeds=True,
+  people=(), speech=False, seed=0, time_scale=1.0)` — `add_person(x, y,
+  torso=..., legs=...)` (returns a `SimulatedPerson`, seen by the proximity
+  guard and the simulated camera), `clear_people()`, `hear(text,
+  after_s=0)` (with `speech=True`), `set_battery(percent)`, `fall()`,
+  `pose`, `voice.spoken`, `make_runtime(**kw)`. `time_scale=2` runs robot
+  time twice as fast as real time.
+- `SimulatedPerson(x, y, *, torso, legs)` — `.walk_to(x, y, speed_mps)`,
+  `.wait(seconds)` (chainable). Hidden from the camera by map obstacles and
+  by nearer people.
 - `AppTestHarness(app, robot=None, *, runtime=None, **robot_kw)` — installs,
   starts, `run(params)`, stops. The app runs exactly as on a robot: in its
   own process, through the bridge, under its permissions and quotas.

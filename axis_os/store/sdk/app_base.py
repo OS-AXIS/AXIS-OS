@@ -61,9 +61,9 @@ from .stream import (
 )
 from .results import (
     ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal,
-    BatteryInfo, InvalidArgumentError, RefusalCode, RobotInfo, SafetyStatus,
-    object_from_target, refused, require_language, require_number, require_text,
-    surface_height_from_target,
+    BatteryInfo, InvalidArgumentError, PersonInfo, RefusalCode, RobotInfo, SafetyStatus,
+    object_from_target, refused, require_int, require_language, require_number,
+    require_text, surface_height_from_target,
 )
 
 
@@ -272,6 +272,10 @@ class RobotContext:
         self._memory = None
         self._navigation = None
         self._manipulation = None
+        # Personnes : détection (PeopleService) et suivi (FollowService),
+        # voir axis_os/services/people/.
+        self._people = None
+        self._suivi = None
         # Objets vus par la perception de l'OS pour cette app, dans le
         # repère monde : (instant, (x, y, z)). pick() n'accepte qu'une cible
         # proche de l'un d'eux (voir _cible_vue).
@@ -388,7 +392,7 @@ class RobotContext:
 
     def _attach_services(self, perception=None, locomotion=None,
                          speech=None, memory=None, navigation=None,
-                         manipulation=None) -> None:
+                         manipulation=None, people=None, follow=None) -> None:
         """Injection des services par le runtime.
 
         Méthode privée (préfixe _), donc hors de la surface publique que
@@ -401,6 +405,8 @@ class RobotContext:
         self._memory = memory
         self._navigation = navigation
         self._manipulation = manipulation
+        self._people = people
+        self._suivi = follow
 
     def _fermer(self) -> None:
         """Appelée par le runtime à la fin de chaque hook, même si le
@@ -415,6 +421,10 @@ class RobotContext:
             # Arrêt sûr du flux (la marche ralentit puis s'arrête), sans
             # attendre : son fil termine seul.
             self._flux.close(attendre_s=0.0)
+        if self._suivi is not None:
+            # Le suivi ne survit pas au hook qui l'a lancé.
+            self._suivi.arreter(self, "CANCELLED", RefusalCode.CANCELLED.value,
+                                "fin du hook de l'app")
 
     def _conduit_encore(self) -> bool:
         """Vrai si ce contexte conduit encore le robot : hook pas terminé, et
@@ -423,7 +433,24 @@ class RobotContext:
             return False
         return (self._actions_en_cours > 0
                 or (self._flux is not None and self._flux.state != "CLOSED")
-                or (self._animation is not None and not self._animation.done))
+                or (self._animation is not None and not self._animation.done)
+                or self._suit())
+
+    def _suit(self) -> bool:
+        """Vrai si ce contexte fait suivre une personne au robot."""
+        return self._suivi is not None and self._suivi.owner() is self
+
+    def _marche_occupee(self) -> Optional[str]:
+        """Raison pour laquelle la marche est déjà commandée par une API de
+        haut niveau (navigation, suivi d'une personne, flux de marche), ou
+        None."""
+        if getattr(getattr(self._navigation, "etat", None), "name", "") == "EN_ROUTE":
+            return "la navigation conduit le robot (go_to en cours)"
+        if self._suivi is not None and self._suivi.active:
+            return "le robot suit une personne (follow en cours)"
+        if self._flux is not None and self._flux.kind == "walk" and self._flux.state != "CLOSED":
+            return "un flux de marche est ouvert"
+        return None
 
     def _demander_arret(self, source: str) -> None:
         """Appelée par le runtime (PlayStoreRuntime.request_stop) : un
@@ -870,6 +897,9 @@ class RobotContext:
             # Un seul écrivain de la marche : le flux de l'app, ou la
             # navigation, jamais les deux.
             return refused("REFUSED", RefusalCode.BUSY, "un flux de marche est ouvert")
+        if self._suivi is not None and self._suivi.active:
+            return refused("REFUSED", RefusalCode.BUSY,
+                           "le robot suit une personne : stop_follow() d'abord")
         from axis_os.services.navigation.service import EtatNavigation, Pose2D
         # cap None : le suiveur ne s'aligne sur aucun cap à l'arrivée.
         r = nav.aller_vers(Pose2D(x, y, theta))
@@ -1010,6 +1040,11 @@ class RobotContext:
         occupe = self._bras_occupes(sauf="manipulation")
         if occupe:
             return refused("REFUSED", RefusalCode.BUSY, occupe)
+        if self._suivi is not None and self._suivi.active:
+            # Une prise demande une exemption au gardien de proximité ; le
+            # suivi d'une personne n'en a jamais, pas même pendant un geste.
+            return refused("REFUSED", RefusalCode.BUSY,
+                           "le robot suit une personne : stop_follow() d'abord")
         if not self._cible_vue(spec.center):
             return refused("REFUSED", RefusalCode.SAFETY_LIMIT,
                            "aucun objet vu à cet endroit par la perception de l'OS : "
@@ -1067,6 +1102,9 @@ class RobotContext:
         if manip is None:
             return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
                            "pas de service de manipulation sur ce robot")
+        if self._suivi is not None and self._suivi.active:
+            return refused("REFUSED", RefusalCode.BUSY,
+                           "le robot suit une personne : stop_follow() d'abord")
         from axis_os.services.manipulation.service import Etat
         r = manip.poser(hauteur)
         if not r.ok:
@@ -1147,6 +1185,191 @@ class RobotContext:
             return ActionResult(ok=True, status="AT_REST", message="posture de repos")
         return refused("FAILED", RefusalCode.SAFETY_LIMIT,
                        "un pas vers la posture de repos a été refusé (voir le journal)")
+
+    # ---- Personnes : présence et suivi (« suis-moi ») ----------------------
+
+    # Attente des premières pistes quand le service « personnes » ne
+    # regardait pas encore (secondes du robot).
+    PEOPLE_WARMUP_S = 1.0
+    # Demi-angle du cône « devant le robot » de person_in_front (rad).
+    FRONT_HALF_ANGLE = 0.35
+    PEOPLE_RANGE_MAX_M = 8.0
+
+    def _personnes_visibles(self) -> list:
+        """Personnes visibles maintenant (PersonInfo), de la plus proche à la
+        plus lointaine. Réveille le service s'il ne regardait pas."""
+        svc = self._people
+        if svc.demander():
+            from axis_os.services.people.tracker import MIN_HITS
+            debut, fin = svc.stats["cycles"], self.now() + self.PEOPLE_WARMUP_S
+            while svc.stats["cycles"] < debut + MIN_HITS + 1 and self.now() < fin \
+                    and self._motif_interruption() is None:
+                self.sleep(self._PAS_ATTENTE_S)
+        t = self.now()
+        vues = []
+        for snap in svc.snapshots():
+            rel = svc.relative(snap) if svc.is_visible(snap, t) else None
+            if rel is None:
+                continue
+            vues.append(PersonInfo(person_id=snap.track_id, distance_m=round(rel[0], 3),
+                                   bearing_rad=round(rel[1], 3),
+                                   seen_for_s=round(max(0.0, t - snap.first_seen), 2),
+                                   confidence=round(float(snap.score), 3)))
+        return sorted(vues, key=lambda p: p.distance_m)
+
+    def people(self) -> list:
+        """Personnes visibles autour du robot, de la plus proche à la plus
+        lointaine : une liste de PersonInfo (numéro temporaire, distance,
+        direction, depuis combien de temps elle est vue). Jamais une
+        identité, une image ou une apparence.
+
+        Le numéro reste le même tant que la personne est vue ; il est oublié
+        peu après qu'elle a disparu, et à la fin de chaque suivi. Une
+        personne dont la distance ne peut pas être estimée (pas de caméra
+        de profondeur et pieds hors de l'image) n'est pas listée.
+
+        Liste vide si le robot ne détecte pas les personnes (la raison est
+        notée dans le journal). Permission : PEOPLE_DETECT."""
+        self._require(Permission.PEOPLE_DETECT)
+        if self._people is None:
+            self.log("people : ce robot ne détecte pas les personnes.")
+            return []
+        return self._personnes_visibles()
+
+    def person_in_front(self, max_distance_m: float = 3.0) -> Optional[PersonInfo]:
+        """La personne la plus proche dans l'axe du robot (à moins de
+        FRONT_HALF_ANGLE de part et d'autre) et à moins de `max_distance_m`,
+        ou None : « celle qui est devant moi ».
+
+        Lève InvalidArgumentError si `max_distance_m` n'est pas dans
+        ]0, PEOPLE_RANGE_MAX_M]. Permission : PEOPLE_DETECT."""
+        self._require(Permission.PEOPLE_DETECT)
+        portee = require_number("max_distance_m", max_distance_m, mini=0.0,
+                                maxi=self.PEOPLE_RANGE_MAX_M, strict_min=True)
+        if self._people is None:
+            self.log("person_in_front : ce robot ne détecte pas les personnes.")
+            return None
+        devant = [p for p in self._personnes_visibles()
+                  if abs(p.bearing_rad) <= self.FRONT_HALF_ANGLE and p.distance_m <= portee]
+        return min(devant, key=lambda p: p.distance_m, default=None)
+
+    @staticmethod
+    def _resultat_suivi(etat: Dict[str, Any]) -> ActionResult:
+        """État du FollowService -> ActionResult."""
+        statut = etat.get("status", "IDLE")
+        data = {k: v for k, v in etat.items() if k not in ("status", "code", "message")}
+        if statut == "FOLLOWING":
+            return ActionResult(ok=True, status=statut, message=f"suit ({etat.get('phase')})",
+                                data=data)
+        if statut == "STOPPED_BY_APP":
+            return ActionResult(ok=True, status=statut, message=etat.get("message", ""),
+                                data=data)
+        if statut == "IDLE":
+            return ActionResult(ok=False, status="IDLE", message="aucun suivi")
+        return refused(statut, RefusalCode(etat.get("code") or RefusalCode.FAILED.value),
+                       etat.get("message", ""), **data)
+
+    @_conduite()
+    def follow(self, person_id: int, *, distance_m: float = 1.5, timeout_s: float = 60.0,
+               deadman_s: float = 1.0) -> ActionResult:
+        """Fait suivre au robot la personne `person_id` (un numéro rendu par
+        people() ou person_in_front()). NON BLOQUANT : rend FOLLOWING dès
+        que le suivi commence ; l'OS fait le reste, à la cadence de la
+        locomotion.
+
+        L'app doit ensuite appeler follow_status() au moins toutes les
+        `deadman_s` secondes (homme mort, dans [0.3, 2]) : sinon l'OS arrête
+        le suivi (DEADMAN). Le suivi s'arrête aussi à la fin du hook qui l'a
+        lancé, sur stop_follow(), stop_walking(), arrêt d'urgence ou demande
+        d'arrêt.
+
+        Le robot garde `distance_m` (1.5 m par défaut) : au moins la distance
+        où le gardien de proximité l'arrêterait, plus une marge (voir
+        FollowService.distance_min), au plus 3 m ; une distance plus faible
+        lève InvalidArgumentError. Il marche lentement (0.25 m/s au plus),
+        ralentit en approchant, ne recule jamais, s'immobilise si quelqu'un
+        passe tout près, et cherche en tournant sur place la personne
+        perdue, quelques secondes au plus. Il ne change jamais de personne :
+        dans le doute, le suivi rend LOST. Toujours sous le gardien de
+        proximité, sans exemption.
+
+        Issue (follow_status, stop_follow) : STOPPED_BY_APP, LOST
+        (TARGET_LOST), TIMEOUT, ESTOP (ESTOP_ACTIVE), CANCELLED, DEADMAN,
+        FALLEN (SAFETY_LIMIT). Refus : REFUSED avec TARGET_LOST (numéro
+        inconnu ou personne plus visible), BUSY (le robot fait déjà autre
+        chose), CAPABILITY_MISSING (pas de détection, de suivi ou de gardien
+        de proximité sur ce robot).
+
+        Lève InvalidArgumentError et EstopActiveError (arrêt d'urgence
+        actif). Permissions : PEOPLE_FOLLOW, et celles des API qu'il
+        remplace : PEOPLE_DETECT, LOCOMOTION_WALK et ACTUATORS_WRITE_LEGS."""
+        self._require(Permission.PEOPLE_FOLLOW)
+        # Jamais plus de droits que les API remplacées : voir les personnes,
+        # et marcher.
+        self._require(Permission.PEOPLE_DETECT)
+        self._require(Permission.LOCOMOTION_WALK)
+        self._require(Permission.ACTUATORS_WRITE_LEGS)
+        from axis_os.services.people.follow import FollowService
+        pid = require_int("person_id", person_id, mini=1, maxi=2 ** 31)
+        distance = require_number("distance_m", distance_m, mini=0.0,
+                                  maxi=FollowService.DISTANCE_MAX, strict_min=True)
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        homme_mort = require_number("deadman_s", deadman_s, mini=FollowService.DEADMAN_MIN_S,
+                                    maxi=FollowService.DEADMAN_MAX_S)
+        self._require_no_estop()
+        suivi = self._suivi
+        if suivi is None or self._people is None or self._locomotion is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "ce robot ne sait pas suivre une personne")
+        dmin = suivi.distance_min
+        if dmin is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "pas de gardien de proximité : l'OS ne suit personne sans lui")
+        if distance < dmin:
+            raise InvalidArgumentError(
+                f"distance_m = {distance} m : trop près. Le gardien de proximité arrête le "
+                f"robot en deçà de {dmin - FollowService.MARGE_GARDIEN_M:.2f} m ; la distance "
+                f"de suivi doit être d'au moins {dmin} m")
+        occupe = None if self._suit() else self._marche_occupee()
+        etat_manip = getattr(getattr(self._manipulation, "etat", None), "name", "LIBRE")
+        if occupe is None and etat_manip not in ("LIBRE", "ECHEC"):
+            occupe = f"bras occupés par la manipulation (état {etat_manip})"
+        if occupe:
+            return refused("REFUSED", RefusalCode.BUSY, occupe)
+        issue = suivi.suivre(pid, distance_m=distance, timeout_s=delai, deadman_s=homme_mort,
+                             owner=self, interruption=self._motif_interruption)
+        if issue is not None:
+            return refused(issue.status, RefusalCode(issue.code), issue.message)
+        return ActionResult(ok=True, status="FOLLOWING", message=f"suit la personne n° {pid}",
+                            data={"person_id": pid, "distance_m": distance})
+
+    def follow_status(self) -> ActionResult:
+        """État du suivi lancé par follow(), et battement de l'homme mort :
+        FOLLOWING (ok, avec data : phase « following », « waiting »,
+        « searching » ou « holding », distance_m, bearing_rad,
+        reacquisitions…), sinon l'issue du dernier suivi, sinon IDLE.
+        Servi aussi pendant un arrêt d'urgence. Permission : PEOPLE_FOLLOW."""
+        self._require(Permission.PEOPLE_FOLLOW)
+        if self._suivi is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "ce robot ne sait pas suivre une personne")
+        self._suivi.battement(self)
+        return self._resultat_suivi(self._suivi.status(self))
+
+    def stop_follow(self) -> ActionResult:
+        """Arrête le suivi (le robot s'arrête en équilibre) et rend son
+        issue : STOPPED_BY_APP, ou celle du suivi s'il avait déjà fini
+        (LOST, TIMEOUT…), ou IDLE. Jamais refusé sous arrêt d'urgence :
+        s'arrêter est toujours permis. Permission : PEOPLE_FOLLOW."""
+        self._require(Permission.PEOPLE_FOLLOW)
+        if self._suivi is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING,
+                           "ce robot ne sait pas suivre une personne")
+        issue = self._suivi.arreter(self)
+        if issue is None:
+            return ActionResult(ok=False, status="IDLE", message="aucun suivi en cours")
+        return self._resultat_suivi(self._suivi.status(self))
 
     # ---- Cycle de vie : annulation, progression, événements, humain ------
 
@@ -1369,6 +1592,8 @@ class RobotContext:
                 raise CapabilityMissingError("pas de service de locomotion sur ce robot")
             if getattr(getattr(self._navigation, "etat", None), "name", "") == "EN_ROUTE":
                 raise BusyError("la navigation conduit le robot (go_to en cours)")
+            if self._suivi is not None and self._suivi.active:
+                raise BusyError("le robot suit une personne (follow en cours)")
             bras = {}
             moteur = TargetStreamEngine(self, params, max_twist=self._locomotion.max_twist)
         self._flux_id += 1
@@ -1610,6 +1835,10 @@ class RobotContext:
         if self._locomotion is None:
             self.log("walk : ce robot ne sait pas se déplacer.")
             return False
+        if self._suivi is not None and self._suivi.active:
+            # Un seul écrivain de la marche : le suivi tient les jambes.
+            self.log("walk : refusé, le robot suit une personne (stop_follow() d'abord).")
+            return False
         r = self._locomotion.set_velocity(vx, vy, wz)
         if r.reason:
             self.log(f"walk : {r.reason}")
@@ -1619,12 +1848,20 @@ class RobotContext:
         """Arrêt en équilibre (vitesse nulle). Ce n'est pas un arrêt
         d'urgence : voir emergency_stop().
 
+        Arrête aussi un suivi de personne en cours (follow), de quelque app
+        qu'il vienne : s'arrêter l'emporte toujours.
+
         Rend False si le robot ne sait pas se déplacer ou si le service
         refuse. Permission : LOCOMOTION_WALK seule ; contrairement à
         walk(), aucune vérification d'e-stop n'est faite ici."""
         self._require(Permission.LOCOMOTION_WALK)
         if self._locomotion is None:
             return False
+        if self._suivi is not None and self._suivi.active:
+            # S'arrêter l'emporte toujours : un suivi en cours, de quelque
+            # app qu'il vienne, s'arrête aussi.
+            self._suivi.arreter(self._suivi.owner(), "STOPPED_BY_APP", None,
+                                "arrêté par stop_walking()")
         return bool(self._locomotion.halt().ok)
 
     def move_arms(self, commands: Dict[str, ActuatorCommand]) -> Dict[str, HALStatus]:

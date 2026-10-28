@@ -223,6 +223,8 @@ sera, à juste titre, refusée par l'utilisateur.
 | `SENSORS_MICROPHONE` | `listen`, `declare_intent` | normal |
 | `STORAGE_PERSISTENT` | `remember`, `recall` (mémoire propre à l'app, 1 000 clés et 1 Mio au plus) | normal |
 | `WATCHDOG_READ` | recevoir les alertes de sécurité | normal |
+| `PEOPLE_DETECT` | `people`, `person_in_front` : des numéros temporaires, des distances, des directions — jamais une identité (montrée à l'humain à l'installation : « cette app détecte la présence de personnes ») | normal |
+| `PEOPLE_FOLLOW` | `follow`, `follow_status`, `stop_follow` (exige aussi `PEOPLE_DETECT` et les droits de `walk`) | **dangereux** |
 | `ACTUATORS_WRITE_ARMS` / `_LEGS` / `_ALL` | commander les bras, les jambes, tout | **dangereux** |
 | `LOCOMOTION_WALK` | faire se déplacer le robot | **dangereux** |
 | `EMERGENCY_STOP` | déclencher l'arrêt d'urgence | **dangereux** |
@@ -306,10 +308,12 @@ humain à l'installation, et est refusé pendant un arrêt d'urgence.
 | `ctx.play_animation("wave")`, `ctx.stop_animation()` | `ANIMATION_PLAY` | gestes par images clés, vérifiés avant de jouer |
 | `ctx.speak(texte, language=…)` | `AUDIO_OUTPUT` | le robot parle |
 | `ctx.get_setting(nom)` | `APP_SETTINGS` | un réglage déclaré dans le manifeste, choisi par l'utilisateur |
+| `ctx.people()`, `ctx.person_in_front()` | `PEOPLE_DETECT` | les personnes autour : un numéro temporaire, une distance, une direction. Aucune reconnaissance faciale, aucune identité, aucune image gardée |
+| `ctx.follow(numero)`, `ctx.follow_status()`, `ctx.stop_follow()` | `PEOPLE_FOLLOW` + `PEOPLE_DETECT` + ceux de `walk` | l'OS suit la personne : garde ses distances (1,5 m), lentement, jamais en arrière, sous le gardien de proximité ; `LOST` plutôt que la mauvaise personne. Non bloquant : appeler `follow_status()` régulièrement (homme mort) |
 
 Exemples complets et testés : [examples/](../examples/) — `hello_robot`
 (animation + parole), `fetch` (look_for + go_to + pick + place),
-`teleop_local` (flux sous homme mort).
+`teleop_local` (flux sous homme mort), `follow_me` (« suis-moi » à la voix).
 
 ---
 

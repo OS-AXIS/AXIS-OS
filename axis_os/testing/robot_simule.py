@@ -47,6 +47,11 @@ from axis_os.services.locomotion.service import (
 )
 from axis_os.services.manipulation.service import Etat, ManipulationService
 from axis_os.services.navigation.service import Carte, NavigationService, Pose2D
+from axis_os.services.people.appearance import appearance_descriptor, synthetic_person_image
+from axis_os.services.people.detector import IPersonDetector, PersonDetection
+from axis_os.services.people.follow import FollowService
+from axis_os.services.people.service import PeopleService
+from axis_os.services.speech.service import ISpeechRecognizer, SpeechService
 
 
 @dataclass
@@ -58,6 +63,166 @@ class SimulatedObject:
     position: Tuple[float, float, float]
     size: Tuple[float, float, float] = (0.24, 0.20, 0.20)
     confidence: float = 0.9
+
+
+class SimulatedPerson:
+    """Une personne du monde simulé : sa position au sol (m, repère monde),
+    les couleurs de son haut et de son bas (RGB, ce que voit l'apparence),
+    et un trajet scripté, parcouru à la cadence du robot simulé.
+
+        p = SimulatedPerson(2.0, 0.0, torso=(200, 30, 30))
+        p.walk_to(4.0, 0.0, speed_mps=0.4).wait(3.0).walk_to(4.0, 2.0)
+
+    Elle est vue par le lidar du gardien de proximité (une colonne de 0.2 à
+    1.7 m), et par la caméra simulée si elle est dans son champ, à portée,
+    et pas cachée par un obstacle de la carte ou par une autre personne."""
+
+    RADIUS_M = 0.25
+
+    def __init__(self, x: float, y: float, *, torso=(40, 60, 200), legs=(40, 40, 40)):
+        self.x, self.y = float(x), float(y)
+        self.torso, self.legs = tuple(torso), tuple(legs)
+        self._etapes: List[tuple] = []
+        self._attente: Optional[float] = None
+
+    def walk_to(self, x: float, y: float, speed_mps: float = 0.5) -> "SimulatedPerson":
+        self._etapes.append(("to", float(x), float(y), float(speed_mps)))
+        return self
+
+    def wait(self, seconds: float) -> "SimulatedPerson":
+        self._etapes.append(("wait", float(seconds)))
+        return self
+
+    @property
+    def moving(self) -> bool:
+        return bool(self._etapes)
+
+    def _avancer(self, dt: float) -> None:
+        while self._etapes and dt > 0:
+            e = self._etapes[0]
+            if e[0] == "wait":
+                reste = e[1] - dt
+                if reste > 0:
+                    self._etapes[0] = ("wait", reste)
+                    return
+                dt = -reste
+                self._etapes.pop(0)
+                continue
+            _, tx, ty, v = e
+            d = math.hypot(tx - self.x, ty - self.y)
+            pas = v * dt
+            if pas >= d:
+                self.x, self.y = tx, ty
+                dt -= d / v if v > 0 else dt
+                self._etapes.pop(0)
+            else:
+                self.x += (tx - self.x) * pas / d
+                self.y += (ty - self.y) * pas / d
+                return
+
+
+class SimulatedPersonDetector(IPersonDetector):
+    """Détecteur de personnes simulé : la caméra de la tête voit les
+    personnes de son champ (FOV_RAD), à moins de RANGE_M, que ni un obstacle
+    de la carte ni une personne plus proche ne cache. La position est
+    bruitée (comme une vraie mesure) ; l'apparence est calculée par le même
+    code que sur une vraie image, à partir d'une silhouette synthétique."""
+
+    FOV_RAD = 1.2
+    RANGE_M = 6.0
+
+    def __init__(self, robot: "SimulatedRobot", seed: int = 0):
+        self._robot = robot
+        self._rng = np.random.default_rng(seed)
+
+    @property
+    def needs_frame(self) -> bool:
+        return False
+
+    def _cachee(self, p: SimulatedPerson) -> bool:
+        rx, ry = self._robot.x, self._robot.y
+        for o in self._robot.carte.obstacles:
+            if (o.zmax is None or o.zmax > 1.0) and _segment_coupe_rectangle(
+                    rx, ry, p.x, p.y, o):
+                return True
+        d = math.hypot(p.x - rx, p.y - ry)
+        for q in self._robot.people:
+            if q is p or math.hypot(q.x - rx, q.y - ry) >= d:
+                continue
+            # Distance de q à la ligne de vue robot -> p.
+            ux, uy = (p.x - rx) / d, (p.y - ry) / d
+            t = (q.x - rx) * ux + (q.y - ry) * uy
+            if 0 < t < d and abs(-(q.x - rx) * uy + (q.y - ry) * ux) < SimulatedPerson.RADIUS_M:
+                return True
+        return False
+
+    def detect(self, frame) -> List[PersonDetection]:
+        out = []
+        for p in list(self._robot.people):
+            rel = self._robot._vers_robot((p.x, p.y, 0.0))
+            d = math.hypot(rel[0], rel[1])
+            if d > self.RANGE_M or d < 0.2 or abs(math.atan2(rel[1], rel[0])) > self.FOV_RAD / 2:
+                continue
+            if self._cachee(p):
+                continue
+            sigma = 0.03 + 0.02 * d
+            image = synthetic_person_image(p.torso, p.legs, noise=6.0, rng=self._rng)
+            apparence = appearance_descriptor(image, (0, 0, image.shape[1], image.shape[0]))
+            out.append(PersonDetection(
+                bbox=(0.0, 0.0, 40.0, 100.0), score=0.9,
+                position_world=(p.x + float(self._rng.normal(0, sigma)),
+                                p.y + float(self._rng.normal(0, sigma)), 0.0),
+                appearance=tuple(float(v) for v in apparence)))
+        return out
+
+
+def _segment_coupe_rectangle(x0, y0, x1, y1, o) -> bool:
+    """Le segment (x0, y0) -> (x1, y1) traverse-t-il le rectangle `o` ?"""
+    n = max(2, int(math.hypot(x1 - x0, y1 - y0) / 0.05))
+    return any(o.contient(x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n)
+               for k in range(1, n))
+
+
+class _MicroSimule:
+    """Micro du robot simulé : capture() rend dès qu'une phrase entendue
+    (SimulatedRobot.hear) est due, sinon à la fin de la durée demandée."""
+
+    def __init__(self, robot: "SimulatedRobot"):
+        self._robot = robot
+        self._ok = False
+
+    def initialize(self) -> HALStatus:
+        self._ok = True
+        return HALStatus.OK
+
+    def shutdown(self) -> HALStatus:
+        self._ok = False
+        return HALStatus.OK
+
+    def is_healthy(self) -> bool:
+        return self._ok
+
+    def capture(self, duration_s: float):
+        from axis_os.hal.core.types import AudioChunk
+        fin = self._robot.clock() + max(0.0, duration_s)
+        while self._robot.clock() < fin and not self._robot._phrase_due():
+            time.sleep(0.005)
+        return AudioChunk(sample_rate=16000, channels=1, sample_width=2, data=b"")
+
+
+class _TranscriptionSimulee(ISpeechRecognizer):
+    """Rend la prochaine phrase due (confiance 1), ou rien (silence)."""
+
+    def __init__(self, robot: "SimulatedRobot"):
+        self._robot = robot
+
+    def transcribe(self, audio):
+        texte = self._robot._prendre_phrase()
+        return (texte, 1.0) if texte else ("", 0.0)
+
+    @property
+    def language(self) -> str:
+        return "fr"
 
 
 class _HALSimulee(UnitreeG1HAL):
@@ -160,6 +325,8 @@ class SimulatedPerception:
 class SimulatedRobot:
     """Robot simulé léger (voir l'en-tête du module).
 
+    Les personnes sont détectées un pas sur PEOPLE_EVERY (10 Hz à 50 Hz).
+
     carte            : la carte du site (Carte) ; par défaut une pièce vide
                        de 10 m sur 10 m, centrée sur l'origine.
     start            : pose de départ (x, y, cap), repère monde.
@@ -169,15 +336,32 @@ class SimulatedRobot:
     objects          : objets du monde (SimulatedObject).
     battery_percent  : charge de la batterie, ou None (inconnue).
     grasp_succeeds   : faux pour simuler une prise qui ne tient pas.
+    people           : personnes du monde (SimulatedPerson), vues par le
+                       gardien de proximité et par la caméra simulée.
+    speech           : avec un service de parole ; hear() lui fait entendre
+                       une phrase.
+    seed             : graine du bruit des mesures simulées.
+    time_scale       : le temps du robot passe `time_scale` fois plus vite
+                       que le temps réel (2 : un essai de 20 s en dure 10).
+                       Tout ce qui mesure le temps du robot (services, apps
+                       par ctx.now() et ctx.sleep()) suit cette horloge.
     """
+
+    PEOPLE_EVERY = 5
 
     def __init__(self, *, carte: Optional[Carte] = None,
                  start: Tuple[float, float, float] = (0.0, 0.0, 0.0),
                  proximity_guard: bool = True, manipulation: bool = True,
                  objects=(), battery_percent: Optional[float] = None,
                  grasp_succeeds: bool = True, tick_hz: float = 50.0,
-                 max_twist: Twist = Twist(0.4, 0.2, 0.8)):
-        self.clock = time.monotonic
+                 max_twist: Twist = Twist(0.4, 0.2, 0.8), people=(),
+                 speech: bool = False, seed: int = 0, time_scale: float = 1.0):
+        if time_scale == 1.0:
+            self.clock = time.monotonic
+        else:
+            t0 = time.monotonic()
+            self.clock = lambda: t0 + (time.monotonic() - t0) * time_scale
+        self._echelle = float(time_scale)
         self.carte = carte or Carte(-5.0, -5.0, 5.0, 5.0)
         with contextlib.redirect_stdout(io.StringIO()):
             self.raw_hal = _HALSimulee(f"g1_simule_{id(self):x}")
@@ -187,7 +371,7 @@ class SimulatedRobot:
         self.watchdog = WatchdogSystem(self.hal)
         self.x, self.y, self.heading = (float(v) for v in start)
         self.fallen = False
-        self.people: List[Tuple[float, float]] = []
+        self.people: List[SimulatedPerson] = list(people)
         self.objects: List[SimulatedObject] = list(objects)
         self.held: Optional[SimulatedObject] = None
         self.grasp_succeeds = grasp_succeeds
@@ -212,6 +396,17 @@ class SimulatedRobot:
                                                  gardien=self.guard, horloge=self.clock)
                              if manipulation else None)
         self.perception = SimulatedPerception(self)
+        # Personnes : les VRAIS services de détection-suivi et de suivi, sur
+        # un détecteur simulé (pas d'image, pas de modèle).
+        self.people_service = PeopleService(SimulatedPersonDetector(self, seed),
+                                            source_pose=self._pose_xyc, horloge=self.clock)
+        self.follow_service = FollowService(self.people_service, self.locomotion, self.guard,
+                                            source_pose=self._pose_xyc, horloge=self.clock,
+                                            navigation=self.navigation)
+        self._phrases: List[Tuple[float, str]] = []
+        self._verrou_phrases = threading.Lock()
+        self.speech = (SpeechService(_MicroSimule(self), _TranscriptionSimulee(self))
+                       if speech else None)
         # Synthèse vocale factice : `voice.spoken` garde ce que le robot a dit.
         from axis_os.services.speech.synthesis import FakeSpeechSynthesizer
         self.voice = FakeSpeechSynthesizer()
@@ -220,9 +415,30 @@ class SimulatedRobot:
 
     # ---- monde -----------------------------------------------------------
 
-    def add_person(self, x: float, y: float) -> None:
-        """Une personne debout en (x, y), que voit le gardien de proximité."""
-        self.people.append((float(x), float(y)))
+    def add_person(self, x: float, y: float, **kw) -> SimulatedPerson:
+        """Une personne debout en (x, y), que voient le gardien de proximité
+        et la caméra (voir SimulatedPerson pour `kw` et pour la faire
+        marcher)."""
+        p = SimulatedPerson(x, y, **kw)
+        self.people.append(p)
+        return p
+
+    def hear(self, text: str, after_s: float = 0.0) -> None:
+        """Le micro entendra `text` dans `after_s` secondes du robot (exige
+        speech=True)."""
+        with self._verrou_phrases:
+            self._phrases.append((self.clock() + max(0.0, after_s), str(text)))
+            self._phrases.sort()
+
+    def _phrase_due(self) -> bool:
+        with self._verrou_phrases:
+            return bool(self._phrases) and self._phrases[0][0] <= self.clock()
+
+    def _prendre_phrase(self) -> str:
+        with self._verrou_phrases:
+            if self._phrases and self._phrases[0][0] <= self.clock():
+                return self._phrases.pop(0)[1]
+            return ""
 
     def clear_people(self) -> None:
         self.people.clear()
@@ -248,6 +464,10 @@ class SimulatedRobot:
         if self.manipulation is not None:
             self.manipulation.start()
         self.perception.start()
+        self.people_service.start()
+        self.follow_service.start()
+        if self.speech is not None:
+            self.speech.start()
         self._arret.clear()
         self._fil = threading.Thread(target=self._boucle, daemon=True, name="robot-simule")
         self._fil.start()
@@ -275,7 +495,9 @@ class SimulatedRobot:
         reglages = dict(locomotion_service=self.locomotion, perception_service=self.perception,
                         navigation_service=self.navigation,
                         manipulation_service=self.manipulation,
-                        speech_synthesizer=self.voice,
+                        speech_synthesizer=self.voice, speech_service=self.speech,
+                        people_service=self.people_service,
+                        follow_service=self.follow_service,
                         clock=self.clock, profil=Profil.SIMULATION,
                         confirmer_permissions=accepter_tout_SIMULATION)
         reglages.update(kw)
@@ -283,13 +505,22 @@ class SimulatedRobot:
             return PlayStoreRuntime(self.hal, self.watchdog, **reglages)
 
     def _boucle(self) -> None:
-        """La boucle du robot : navigation, locomotion, manipulation, puis
-        l'objet porté suit les mains. Une exception d'un service est notée
-        dans `errors`, sans arrêter la boucle."""
+        """La boucle du robot : les personnes bougent ; détection des
+        personnes (à 10 Hz), suivi, navigation, locomotion, manipulation,
+        puis l'objet porté suit les mains. Une exception d'un service est
+        notée dans `errors`, sans arrêter la boucle."""
+        t_prec = self.clock()
         while not self._arret.is_set():
             t0 = time.monotonic()
             self._t_mesure = self.clock()
-            for service in (self.navigation, self.locomotion, self.manipulation):
+            for p in list(self.people):
+                p._avancer(self._t_mesure - t_prec)
+            t_prec = self._t_mesure
+            services = [self.follow_service, self.navigation, self.locomotion,
+                        self.manipulation]
+            if self.ticks % self.PEOPLE_EVERY == 0:
+                services.insert(0, self.people_service)
+            for service in services:
                 if service is None:
                     continue
                 try:
@@ -299,7 +530,7 @@ class SimulatedRobot:
                         self.errors.append(f"{service.service_id} : {exc!r}"[:300])
             self._porter()
             self.ticks += 1
-            self._arret.wait(max(0.0, self._dt - (time.monotonic() - t0)))
+            self._arret.wait(max(0.0, self._dt / self._echelle - (time.monotonic() - t0)))
 
     # ---- base, capteurs et mains simulés ----------------------------------
 
@@ -337,8 +568,8 @@ class SimulatedRobot:
         et chaque personne, en colonne de 0.2 à 1.7 m."""
         pts = [(self.x + 3.0 * math.cos(a), self.y + 3.0 * math.sin(a), 0.0)
                for a in np.linspace(0.0, 2 * math.pi, 8, endpoint=False)]
-        for px, py in self.people:
-            pts += [(px, py, z) for z in (0.2, 0.9, 1.7)]
+        for p in list(self.people):
+            pts += [(p.x, p.y, z) for z in (0.2, 0.9, 1.7)]
         return np.asarray(pts, dtype=float), self._t_mesure
 
     def _vers_robot(self, p) -> np.ndarray:

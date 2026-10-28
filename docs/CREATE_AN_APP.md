@@ -223,6 +223,8 @@ user.
 | `SENSORS_MICROPHONE` | `listen`, `declare_intent` | normal |
 | `STORAGE_PERSISTENT` | `remember`, `recall` (memory private to the app, at most 1,000 keys and 1 MiB) | normal |
 | `WATCHDOG_READ` | receive safety alerts | normal |
+| `PEOPLE_DETECT` | `people`, `person_in_front`: temporary numbers, distances, directions — never an identity (shown to the human at install: "this app detects the presence of people") | normal |
+| `PEOPLE_FOLLOW` | `follow`, `follow_status`, `stop_follow` (also needs `PEOPLE_DETECT` and the rights of `walk`) | **dangerous** |
 | `ACTUATORS_WRITE_ARMS` / `_LEGS` / `_ALL` | command the arms, the legs, everything | **dangerous** |
 | `LOCOMOTION_WALK` | make the robot move around | **dangerous** |
 | `EMERGENCY_STOP` | trigger the emergency stop | **dangerous** |
@@ -305,10 +307,12 @@ refused during an emergency stop.
 | `ctx.play_animation("wave")`, `ctx.stop_animation()` | `ANIMATION_PLAY` | keyframe gestures, checked before playing |
 | `ctx.speak(text, language=…)` | `AUDIO_OUTPUT` | the robot speaks |
 | `ctx.get_setting(name)` | `APP_SETTINGS` | a setting declared in the manifest, chosen by the user |
+| `ctx.people()`, `ctx.person_in_front()` | `PEOPLE_DETECT` | the people around: a temporary number, a distance, a direction. No face recognition, no identity, no image kept |
+| `ctx.follow(person_id)`, `ctx.follow_status()`, `ctx.stop_follow()` | `PEOPLE_FOLLOW` + `PEOPLE_DETECT` + those of `walk` | the OS follows the person: keeps its distance (1.5 m), slowly, never backwards, under the proximity guard; `LOST` rather than the wrong person. Non-blocking: call `follow_status()` regularly (dead man) |
 
 Complete, tested examples: [examples/](../examples/) — `hello_robot`
 (animation + speech), `fetch` (look_for + go_to + pick + place),
-`teleop_local` (deadman stream).
+`teleop_local` (deadman stream), `follow_me` ("follow me" by voice).
 
 ---
 

@@ -13,4 +13,4 @@ ses méthodes, leurs codes de refus), au format SemVer
 Licence : Apache 2.0 (open-source — SDK public)
 """
 
-API_VERSION = "1.0.0"
+API_VERSION = "1.1.0"
