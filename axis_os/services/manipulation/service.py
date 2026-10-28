@@ -438,6 +438,7 @@ class ManipulationService(IService):
         self._compte_contact = {"left": 0, "right": 0}
         self._tau0: Dict[str, float] = {}
         self._delta = {"left": 0.0, "right": 0.0}
+        self._prec_serrage: Dict[str, Tuple[float, float]] = {}
         self._t_phase: Optional[float] = None
         self._sous = ""
         self._q_serre: Optional[Dict[str, float]] = None
@@ -497,7 +498,8 @@ class ManipulationService(IService):
             return False, (f"avant-bras à {100 * garde:.1f} cm du plateau (il faut "
                            f"{100 * r.marge_plateau_m:.0f}) : changer la distance à la table")
         self._plan = {"centre": centre, "lacet": lacet, "q_ouvert": q_ouvert,
-                      "q_vide": q_vide, "largeur": objet.largeur, "garde": garde,
+                      "q_contact": q_contact, "q_vide": q_vide, "largeur": objet.largeur,
+                      "garde": garde,
                       "cibles": cibles_mains(centre, objet.largeur, lacet,
                                              r.demi_main_m + r.jeu_ouverture_m)}
         return True, ""
@@ -544,6 +546,7 @@ class ManipulationService(IService):
             self._echouer(f"serrage refusé — {raison}")
             return False
         self._tau0 = dict(tau)
+        self._prec_serrage = {}
         self._contact = {"left": None, "right": None}
         self._compte_contact = {"left": 0, "right": 0}
         self._delta = {"left": 0.0, "right": 0.0}
@@ -622,7 +625,10 @@ class ManipulationService(IService):
                 self._echouer("prise refusée — rien entre les mains : serrage dans le vide "
                               "évité (aucun contact à la largeur attendue)")
                 return
-            pas = s * r.vitesse_fermeture * min(dt, 0.05)
+            # Près du contact attendu, on ralentit : le dépassement d'un pas
+            # (avant que le contact soit vu) reste petit, même objet raide.
+            loin = s * (self._plan["q_contact"][j] - self._q[j]) > r.zone_contact_rad
+            pas = s * (r.vitesse_fermeture if loin else r.vitesse_contact) * min(dt, 0.05)
             q[j] = self._q[j] + pas if s * (limite - (self._q[j] + pas)) > 0 else limite
         self._ecrire_q(q)
         if all(v is not None for v in self._contact.values()):
@@ -652,13 +658,20 @@ class ManipulationService(IService):
         for cote, j in self._ROULIS.items():
             s, hausse = self._FERME[cote], abs(tau[j] - self._tau0[j])
             if abs(tau[j]) > self._limite_effort(j):
-                # Au-dessus de la limite : on desserre, jamais plus fort.
-                self._delta[cote] = max(0.0, self._delta[cote] - 2 * r.vitesse_serrage * dt)
+                # Au-dessus de la limite : on desserre, jamais plus fort, au
+                # besoin en deçà du contact (objet très raide).
+                self._delta[cote] = max(-r.serrage_max_rad,
+                                        self._delta[cote] - 2 * r.vitesse_serrage * min(dt, 0.05))
                 self.stats["serrages_limites"] = self.stats.get("serrages_limites", 0) + 1
                 prets = False
             elif hausse < r.effort_serrage_nm and self._delta[cote] < r.serrage_max_rad:
-                self._delta[cote] = min(r.serrage_max_rad,
-                                        self._delta[cote] + r.vitesse_serrage * min(dt, 0.05))
+                pas = r.vitesse_serrage * min(dt, 0.05)
+                raideur = self._raideur(cote, hausse)
+                # Pas réduit pour arriver à l'effort visé sans le dépasser ;
+                # petit tant que la raideur n'est pas mesurée.
+                pas = min(pas, max(0.002, (r.effort_serrage_nm - hausse) / raideur)
+                          if raideur > 0.0 else 0.004)
+                self._delta[cote] = min(r.serrage_max_rad, self._delta[cote] + pas)
                 prets = False
             q[j] = self._contact[cote] + s * self._delta[cote]
         self._ecrire_q(q)
@@ -678,9 +691,49 @@ class ManipulationService(IService):
 
     def _ik_mains(self, centre_mains: np.ndarray, ecart: float, depart: Dict[str, float]
                   ) -> Optional[Dict[str, float]]:
+        # Objet tenu : 0,5 mm près, car l'écart des mains EST le serrage (un
+        # écart de 3 mm, sur un objet raide, ferait varier l'effort de plusieurs N·m).
         demi = np.array([0.0, ecart / 2.0, 0.0])
-        q, _ = resoudre(self.mesures.modele, centre_mains + demi, centre_mains - demi, depart)
+        q, _ = resoudre(self.mesures.modele, centre_mains + demi, centre_mains - demi, depart,
+                        tol=0.0005)
         return q
+
+    def _raideur(self, cote: str, hausse: float) -> float:
+        """Raideur mesurée (N·m/rad) entre deux pas du serrage : hausse du
+        couple sur l'avance de la consigne ; 0 si elle n'est pas encore
+        connue."""
+        prec = self._prec_serrage.get(cote)
+        self._prec_serrage[cote] = (self._delta[cote], hausse)
+        if prec is None or self._delta[cote] - prec[0] < 1e-4:
+            return 0.0
+        return max(0.0, (hausse - prec[1]) / (self._delta[cote] - prec[0]))
+
+    def _garder_sous_la_limite(self, dt: float) -> None:
+        """Objet tenu : un roulis au-delà de sa limite d'effort desserre un
+        peu à chaque pas (jamais plus fort que la limite, même pour tenir).
+        Effort illisible : rien ne change ici, et aucun serrage de plus
+        (voir _surveiller_inclinaison)."""
+        tau, raison = self._efforts()
+        if tau is None:
+            # Jamais « tout va bien » : la façade et l'app le voient.
+            if not self.raison.startswith("effort illisible"):
+                self.stats["efforts_illisibles"] = self.stats.get("efforts_illisibles", 0) + 1
+            self.raison = f"effort illisible pendant le port ({raison}) : serrage figé"
+            return
+        if self.raison.startswith("effort illisible"):
+            self.raison = ""
+        pas = 2 * self.r.vitesse_serrage * min(dt, 0.05)
+        q = None
+        for cote, j in self._ROULIS.items():
+            if abs(tau[j]) > self._limite_effort(j) and self._delta[cote] > -self.r.serrage_max_rad:
+                self._delta[cote] -= pas
+                self.stats["serrages_limites"] = self.stats.get("serrages_limites", 0) + 1
+                if self.etat is Etat.TENU:      # consigne fixe : on la corrige ici
+                    q = dict(self._q) if q is None else q
+                    q[j] -= self._FERME[cote] * pas
+        if q is not None:
+            self._ecrire_q(q)
+            self._q_tenu = dict(q)
 
     def _q_mains(self, centre_mains: np.ndarray, ecart: float) -> Optional[Dict[str, float]]:
         """Bras qui mettent les mains de part et d'autre de `centre_mains`
@@ -818,8 +871,13 @@ class ManipulationService(IService):
             return
         self._corrections_inclinaison += 1
         self.stats["corrections_inclinaison"] = self.stats.get("corrections_inclinaison", 0) + 1
-        for cote in self._delta:
-            self._delta[cote] = min(self.r.serrage_max_rad, self._delta[cote] + 0.05)
+        # Serrer un peu plus, seulement avec un effort lisible et de la
+        # marge sous la limite (2 N·m) ; sinon, ramener plus près suffit.
+        tau, _ = self._efforts()
+        if tau is not None and all(abs(tau[j]) + 2.0 <= self._limite_effort(j)
+                                   for j in self._ROULIS.values()):
+            for cote in self._delta:
+                self._delta[cote] = min(self.r.serrage_max_rad, self._delta[cote] + 0.05)
         self._ramener(plus_pres=0.02)
 
     def _pas_mesure(self, dt: float) -> bool:
@@ -832,14 +890,19 @@ class ManipulationService(IService):
         elif e is Etat.SERRAGE:
             self._pas_serrage_mesure(dt)
         elif e is Etat.LEVAGE:
+            self._garder_sous_la_limite(dt)
             self._pas_levage_mesure()
         elif e is Etat.REPOSE:
             self._pas_repose()
         elif e is Etat.RAMENER:
+            self._garder_sous_la_limite(dt)
             self._pas_ramener()
         elif e is Etat.TENU:
+            self._garder_sous_la_limite(dt)
             self._surveiller_inclinaison()
         elif e in (Etat.MONTEE, Etat.DESCENTE, Etat.POSE, Etat.OUVERTURE):
+            if e is not Etat.OUVERTURE:
+                self._garder_sous_la_limite(dt)
             self._pas_apres_prise(dt)
         else:
             return False
@@ -1166,9 +1229,9 @@ class ManipulationService(IService):
     # ---- boucle : un pas à chaque appel de tick() ------------------------
 
     # États où les bras bougent : ceux qu'un arrêt de sécurité doit figer.
-    _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.MONTEE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE, Etat.OUVERTURE,
-                     Etat.DESCENTE, Etat.LACHER, Etat.PLACEMENT, Etat.FERMETURE, Etat.REPOSE,
-                     Etat.RAMENER)
+    _EN_MOUVEMENT = (Etat.PRESAISIE, Etat.MONTEE, Etat.SERRAGE, Etat.LEVAGE, Etat.POSE,
+                     Etat.OUVERTURE, Etat.DESCENTE, Etat.LACHER, Etat.PLACEMENT, Etat.FERMETURE,
+                     Etat.REPOSE, Etat.RAMENER)
 
     @sous_verrou
     def tick(self) -> ServiceResult:

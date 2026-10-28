@@ -10,6 +10,41 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Prise mesurée d'un carton (2026-10-28)
+
+`pick()`/`place()` ne changent pas de signature. Quand le robot donne les
+couples et les angles de ses bras (`MesuresBras` : robot simulé
+d'`axis_os.testing`, scène Isaac Sim T1), `ManipulationService` fait une
+prise mesurée au lieu d'aller vers une posture fixe : portée par la
+cinématique de l'URDF (refus `OUT_OF_REACH` avant tout geste), distance à
+la table qui garde les avant-bras à 3 cm du plateau (façade de tri), mains
+au milieu des faces, fermeture jusqu'au contact, serrage borné (5 N·m
+visés, jamais plus de 10 N·m ni de la moitié du couple max du garde-fou),
+levage vérifié avec une reprise, carton contre le buste, inclinaison
+surveillée. Effort absent, non fini ou périmé : pas de serrage
+(`SAFETY_LIMIT`). Sans mesures, la prise d'avant est inchangée. Rien n'est
+contourné : JointSafetyGuard, gardien (exemption aux mêmes conditions),
+VLAService, profils, arrêt d'urgence. Détail : `docs/demo_tri_usine.md`.
+
+Banc GPU : compteurs du VLA par essai (total à part), inclinaison et
+garde des avant-bras par essai, raison détaillée des échecs ;
+`evaluer_vla.sh --reflexes` ; `gh` récent depuis le dépôt officiel (clé
+vérifiée) ; sauvegardes en release brouillon par l'API, restauration
+depuis `OS-AXIS/axis-os-ancien` ; vidéo réduite en 540p.
+
+**Changements cassants** :
+- robot simulé (`axis_os.testing.SimulatedRobot`) : la prise est mesurée.
+  Le carton porté est contre le buste (centre à ~0,20 m devant le bassin,
+  plus 0,30 m) et plus haut de 5 cm ; une prise peut être refusée pour des
+  raisons nouvelles (hors de portée, rien entre les mains, effort
+  illisible) ;
+- `eval_vla.json` : `essais[].vla` compte l'essai seul (il cumulait) ; le
+  total est dans `vla_total` ; les raisons d'échec de prise sont celles du
+  service (« prise non confirmée » n'est plus la seule) ;
+- application de tri : un carton encore penché après la correction arrête
+  la mission (`ARRET`, intervention requise) ;
+- `installer.sh` échoue s'il ne peut pas installer un `gh` récent.
+
 ### Autonomie sur une journée (API du SDK 1.2.0, 2026-10-28)
 
 Le chemin ne change pas : `RobotContext`, pont JSON (schéma strict par

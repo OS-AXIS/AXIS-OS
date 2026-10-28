@@ -52,6 +52,8 @@ class ReglagesPrise:
     bord_min_m: float = 0.15           # le bord d'une table n'est jamais plus près du bassin
     duree_placement_s: float = 0.8
     vitesse_fermeture: float = 0.5     # rad/s, roulis d'épaule
+    vitesse_contact: float = 0.2       # rad/s, à moins de `zone_contact_rad` du contact
+    zone_contact_rad: float = 0.05     # attendu (~1,5 cm) : petit pas, petit dépassement
     hausse_contact_nm: float = 1.5     # hausse du couple qui signe le contact
     retard_contact_rad: float = 0.06   # la main ne suit plus sa consigne
     penetration_max_m: float = 0.02    # au-delà, plus rien entre les mains : vide
@@ -149,11 +151,12 @@ def cibles_mains(centre: np.ndarray, largeur: float, lacet: float, ecart: float
     return fg + n * ecart, fd - n * ecart
 
 
-def resoudre(modele: ModeleBras, cg: np.ndarray, cd: np.ndarray, depart: Dict[str, float]
-             ) -> Tuple[Optional[Dict[str, float]], float]:
-    """Angles des deux bras pour ces repères de mains, ou (None, erreur)."""
-    qg, eg = modele.gauche.inverse(cg, depart)
-    qd, ed = modele.droite.inverse(cd, depart)
+def resoudre(modele: ModeleBras, cg: np.ndarray, cd: np.ndarray, depart: Dict[str, float],
+             tol: float = 0.003) -> Tuple[Optional[Dict[str, float]], float]:
+    """Angles des deux bras pour ces repères de mains (à `tol` m près), ou
+    (None, erreur)."""
+    qg, eg = modele.gauche.inverse(cg, depart, tol=tol)
+    qd, ed = modele.droite.inverse(cd, depart, tol=tol)
     if qg is None or qd is None:
         return None, max(eg, ed)
     q = dict(qg)

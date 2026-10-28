@@ -229,6 +229,44 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
           m.raison)
     check("… exemption levée", robot.guard._exemption is None)
 
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+                    time_scale=ECHELLE) as robot:
+    m = robot.manipulation
+    prise(robot, carton(0.30))
+    q0, delta = dict(m._q), dict(m._delta)
+    robot.effort_fault = "nan"
+    time.sleep(0.3)
+    check("Effort NaN pendant le port : signalé (raison, stats), serrage figé, carton tenu",
+          m.etat is Etat.TENU and m.raison.startswith("effort illisible")
+          and m._q == q0 and m._delta == delta and robot.held is not None
+          and m.stats.get("efforts_illisibles") == 1, m.raison)
+    robot.effort_fault = None
+    time.sleep(0.2)
+    check("… effort revenu : le signalement s'efface", m.raison == "", m.raison)
+
+section("6b. Exemption du gardien : jamais gardée sans tenir l'objet")
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+                    time_scale=ECHELLE) as robot:
+    m = robot.manipulation
+    m.prendre(carton(0.30))
+    check("Accordée au début de la prise (volume de l'objet)", robot.guard._exemption is not None)
+    while m.etat is not Etat.FERMETURE:
+        time.sleep(0.005)
+    m.reinitialiser(large=True)
+    check("Prise interrompue (reinitialiser) pendant la fermeture : exemption levée",
+          robot.guard._exemption is None)
+    time.sleep(1.2)
+    check("… bras rouverts, prêts", m.etat is Etat.LIBRE)
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+                    time_scale=ECHELLE) as robot:
+    m = robot.manipulation
+    j = Journal(robot)
+    m.prendre(carton(0.30))
+    j.suivre(10.0)
+    tenu = [p for p in j.pas if p["etat"] in (Etat.RAMENER, Etat.TENU)]
+    check("Prise réussie : levée dès la confirmation, jamais pendant le transport",
+          tenu and not any(p["exemption"] for p in tenu))
+
 section("7. Serrage borné : raideur extrême, objet mou")
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
@@ -250,6 +288,66 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
     contact = m._contact["left"]
     check("… au plus 0,20 rad au-delà du contact", contact is not None
           and contact - roulis <= R.serrage_max_rad + 1e-6, f"{contact} {roulis}")
+
+for kp in (200.0, 400.0, 800.0):
+    with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+                        time_scale=ECHELLE) as robot:
+        robot.KP_ROULIS = kp
+        res, j = prise(robot, carton(0.30))
+        serre = [abs(p["couples"][x]) for p in j.pas if p["etat"] in (Etat.SERRAGE, Etat.LEVAGE,
+                                                                       Etat.RAMENER, Etat.TENU)
+                 for x in ROULIS]
+        check(f"Raideur {kp:.0f} N·m/rad : serrage arrivé à l'effort visé sans dépasser la "
+              f"limite ({max(serre):.1f} N·m au plus, limite 10)",
+              robot.manipulation.etat is Etat.TENU and max(serre) <= 10.0, robot.manipulation.raison)
+
+section("7b. Objet tenu : jamais au-delà de la limite, même pour tenir ou corriger")
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+                    time_scale=ECHELLE) as robot:
+    m = robot.manipulation
+    prise(robot, carton(0.30))
+    # L'objet se raidit (mains glissées vers une arête) : le couple tenu
+    # passe à ~12 N·m, au-dessus de la limite de la prise (10), sous celle
+    # du garde-fou (25 N·m, arrêt d'urgence au-delà de 27,5).
+    robot.KP_ROULIS = 100.0
+    robot._contact()
+    pic = max(abs(robot.raw_hal.get_full_state()[x].torque) for x in ROULIS)
+    time.sleep(1.0)
+    apres = max(abs(robot.raw_hal.get_full_state()[x].torque) for x in ROULIS)
+    check(f"Couple tenu à {pic:.1f} N·m : desserré jusque sous la limite ({apres:.1f} N·m), "
+          f"carton toujours tenu, pas d'arrêt d'urgence", pic > 10.0 and apres <= 10.0
+          and m.etat is Etat.TENU and robot.held is not None and not robot.hal.estop_active
+          and m.stats.get("serrages_limites", 0) > 0, f"{pic} {apres} {m.etat}")
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+                    time_scale=ECHELLE) as robot:
+    m = robot.manipulation
+    prise(robot, carton(0.30))
+    robot.KP_ROULIS = 68.0         # couple tenu ~9 N·m : moins de 2 N·m de marge
+    time.sleep(0.3)
+    delta = dict(m._delta)
+    robot.object_tilt_deg = 25.0
+    j = Journal(robot)
+    time.sleep(0.2)
+    j.suivre(4.0)
+    couples = [abs(p["couples"][x]) for p in j.pas for x in ROULIS]
+    fin = max(abs(robot.raw_hal.get_full_state()[x].torque) for x in ROULIS)
+    check(f"Correction d'inclinaison près de la limite : ramené plus près sans serrer plus ; "
+          f"au plus {max(couples):.1f} N·m en chemin, {fin:.1f} à la fin (limite 10, "
+          f"garde-fou 25)", m.stats.get("corrections_inclinaison") == 1
+          and all(m._delta[c] <= delta[c] + 1e-9 for c in delta) and fin <= 10.0
+          and max(couples) < 25.0 and not robot.hal.estop_active, f"{delta} {m._delta}")
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+                    time_scale=ECHELLE) as robot:
+    m = robot.manipulation
+    prise(robot, carton(0.30))
+    delta = dict(m._delta)
+    robot.effort_fault = "stale"
+    robot.object_tilt_deg = 25.0
+    time.sleep(0.2)
+    Journal(robot).suivre(4.0)
+    check("Correction d'inclinaison, effort périmé : aucun serrage de plus",
+          m.stats.get("corrections_inclinaison") == 1
+          and all(m._delta[c] <= delta[c] + 1e-9 for c in delta), f"{delta} {m._delta}")
 
 section("8. Levage vérifié : reposer, desserrer, recommencer une fois")
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
