@@ -45,7 +45,7 @@ from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.hal.core.capabilities import RobotCapability
 from axis_os.store.sdk.manifest import (
     AppManifest, Permission, PricingModel, Capability, ProtectionLevel,
-    get_protection_level,
+    get_protection_level, permission_notices,
 )
 from axis_os.store.sdk.app_base import (
     RobotApp, RobotContext, MissionResult, PermissionError, EstopActiveError,
@@ -225,6 +225,8 @@ def confirmer_au_terminal(manifest: AppManifest, permissions: List[Permission],
               f"{_affichable(manifest.author)}) change de prix :")
     for p in permissions:
         print(f"    - {p.name}")
+    for avis in permission_notices(manifest):
+        print(f"  ⚠ À savoir : {avis}")
     print(f"  Prix       : {decrire_prix(manifest)}")
     if details is not None and details.prix_precedent:
         print(f"  ⚠ PRIX MODIFIÉ : la version installée coûtait {details.prix_precedent}")
@@ -375,6 +377,8 @@ class PlayStoreRuntime:
         manipulation_service=None,
         human_interface=None,
         speech_synthesizer=None,
+        people_service=None,
+        follow_service=None,
     ):
         """
         `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
@@ -469,6 +473,11 @@ class PlayStoreRuntime:
         ctx.go_to() et ctx.pick() / place() ; None : l'app reçoit
         CAPABILITY_MISSING. Leur tick() reste l'affaire de la boucle du
         robot.
+
+        `people_service`, `follow_service` : détection des personnes et suivi
+        d'une personne (axis_os/services/people/), servis par ctx.people(),
+        person_in_front(), follow() ; None : liste vide ou
+        CAPABILITY_MISSING. Leur tick() reste aussi celui de la boucle.
 
         `human_interface` : IHumanInterface qui répond à
         ctx.ask_confirmation() ; None : aucun humain (refus).
@@ -578,6 +587,10 @@ class PlayStoreRuntime:
         # refusée (HUMAN_UNAVAILABLE), jamais tenue pour acceptée.
         self._human_interface = human_interface
         self._speech_synthesizer = speech_synthesizer
+        # Personnes : détection (PeopleService) et suivi (FollowService),
+        # tickés par la boucle du robot, jamais par une app.
+        self._people_service = people_service
+        self._follow_service = follow_service
         # Réglages choisis par l'utilisateur, par app (set_setting).
         self._reglages: Dict[str, Dict[str, Any]] = {}
         # Contexte du hook en cours, par app (pour request_stop), et
@@ -883,6 +896,8 @@ class PlayStoreRuntime:
         # qui ne demande aucune permission DANGEROUS : qui a signé (la clé
         # vérifiée, pas l'auteur déclaré) et les ressources accordées.
         details = self._details_confirmation(manifest)
+        for avis in permission_notices(manifest):
+            print(f"  ⚠ À savoir : {avis}")
         print(f"  Signée par : {decrire_signataire(details)}")
         print(f"  Quotas    : {' ; '.join(decrire_quotas(manifest.quota))}")
         print(f"  Prix      : {decrire_prix(manifest)}")
@@ -1895,7 +1910,9 @@ class PlayStoreRuntime:
                              speech=self._speech_service,
                              memory=self._memory_service,
                              navigation=self._navigation_service,
-                             manipulation=self._manipulation_service)
+                             manipulation=self._manipulation_service,
+                             people=self._people_service,
+                             follow=self._follow_service)
         ctx._set_human_interface(self._human_interface)
         ctx._set_voice(self._speech_synthesizer)
         ctx._set_settings(self._reglages.get(manifest.app_id, {}))

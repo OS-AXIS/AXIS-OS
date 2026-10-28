@@ -63,7 +63,7 @@ flowchart TB
 
     subgraph OS["AXIS-OS process"]
         CTX("<b>RobotContext</b><br/>✓ permission of each call<br/>✓ refused during an e-stop<br/>✓ velocity cap")
-        SV("<b>System services</b><br/>locomotion · navigation · perception<br/>manipulation · speech · memory · VLA")
+        SV("<b>System services</b><br/>locomotion · navigation · perception<br/>manipulation · speech · memory · VLA<br/>people · follow-me (no face recognition)")
         G("<b>Proximity guard</b> · optional lidar<br/>✓ slows, then stops the walk")
         N("<b>NormalizedRobotHAL</b><br/>✓ rejects NaN and infinite angles")
         D("<b>Robot driver</b> · IRobotHAL<br/>Unitree G1 · Isaac Sim")
@@ -208,7 +208,7 @@ container: see [sim/README.md](sim/README.md) and `deploy/machine_gpu/`.
 - [Write an app for AXIS-OS, from scratch](docs/CREATE_AN_APP.md), no robot or GPU needed
   ([version française](docs/CREER_UNE_APP.md))
 - [App SDK API reference](docs/API_REFERENCE.md): every API, its permission, its refusal codes,
-  an example; [three complete example apps](examples/)
+  an example; [four complete example apps](examples/), including "follow me"
 - [What a robot needs to run AXIS-OS](docs/PREREQUIS_ROBOT.md)
 - [Integration of GR00T Whole-Body Control](docs/integration_gr00t_wbc.md)
 - [App isolation: findings and plan](docs/isolation_apps.md)

@@ -75,8 +75,8 @@ from axis_os.store.sdk.stream import (
 )
 from axis_os.store.sdk.results import (
     EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
-    RefusalCode, RobotInfo, SafetyStatus, object_from_target, refused, require_language,
-    require_number, require_text, surface_height_from_target,
+    PersonInfo, RefusalCode, RobotInfo, SafetyStatus, object_from_target, refused,
+    require_int, require_language, require_number, require_text, surface_height_from_target,
 )
 from axis_os.store.runtime.canal_ipc import (
     Booleen, Canal, CanalCorrompu, CanalFerme, Chaine, Dictionnaire, Entier, JsonLibre, Liste,
@@ -278,6 +278,14 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "stop_animation": _VIDE,
     "speak": Objet({"text": Chaine(RobotContext.SPEAK_MAX_CHARS), "language": Chaine(8)}),
     "get_setting": Objet({"name": Chaine(32)}),
+    # Bornes exactes : RobotContext.person_in_front() et follow(), côté OS.
+    "people": _VIDE,
+    "person_in_front": Objet({"max_distance_m": Nombre(0, 100)}),
+    "follow": Objet({"person_id": Entier(1, 2 ** 31), "distance_m": Nombre(0, 100),
+                     "timeout_s": Nombre(0, RobotContext.MAX_ACTION_S),
+                     "deadman_s": Nombre(0, 100)}),
+    "follow_status": _VIDE,
+    "stop_follow": _VIDE,
 }
 
 # Actions longues dont le délai est borné par le temps qui reste au hook
@@ -666,6 +674,30 @@ class HALBridgeServer:
             elif cmd.action == "get_setting":
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.get_setting(cmd.payload["name"]))
+
+            elif cmd.action == "people":
+                return HALResponse(cmd.request_id, True,
+                                   data=[p.to_json() for p in self._ctx.people()])
+
+            elif cmd.action == "person_in_front":
+                p = self._ctx.person_in_front(cmd.payload["max_distance_m"])
+                return HALResponse(cmd.request_id, True, data=None if p is None else p.to_json())
+
+            elif cmd.action in ("follow", "follow_status", "stop_follow"):
+                p = cmd.payload
+                if cmd.action == "follow":
+                    res = self._ctx.follow(p["person_id"], distance_m=p["distance_m"],
+                                           timeout_s=p["timeout_s"], deadman_s=p["deadman_s"])
+                elif cmd.action == "follow_status":
+                    res = self._ctx.follow_status()
+                else:
+                    res = self._ctx.stop_follow()
+                if res.data.get("moved") is True:
+                    # Suivi terminé après que le robot a réellement marché :
+                    # mouvement réel (facturation). Lancé seulement, il peut
+                    # être arrêté aussitôt.
+                    self.successful_motor_commands += 1
+                return HALResponse(cmd.request_id, True, data=res.to_json())
 
             elif cmd.action == "play_animation":
                 p = cmd.payload
@@ -1347,6 +1379,39 @@ class HALBridgeClient:
 
     def get_setting(self, name: str):
         return self._call("get_setting", {"name": require_text("name", name, 32)})
+
+    # ---- Personnes (voir RobotContext.people, follow) ----------------------
+
+    PEOPLE_WARMUP_S = RobotContext.PEOPLE_WARMUP_S
+    FRONT_HALF_ANGLE = RobotContext.FRONT_HALF_ANGLE
+    PEOPLE_RANGE_MAX_M = RobotContext.PEOPLE_RANGE_MAX_M
+
+    def people(self) -> list:
+        return [PersonInfo.from_json(d) for d in
+                self._call("people", {}, duree_nominale_s=self.PEOPLE_WARMUP_S) or []]
+
+    def person_in_front(self, max_distance_m: float = 3.0):
+        portee = require_number("max_distance_m", max_distance_m, mini=0.0,
+                                maxi=self.PEOPLE_RANGE_MAX_M, strict_min=True)
+        d = self._call("person_in_front", {"max_distance_m": portee},
+                       duree_nominale_s=self.PEOPLE_WARMUP_S)
+        return None if d is None else PersonInfo.from_json(d)
+
+    def follow(self, person_id: int, *, distance_m: float = 1.5, timeout_s: float = 60.0,
+               deadman_s: float = 1.0) -> ActionResult:
+        payload = {"person_id": require_int("person_id", person_id, mini=1, maxi=2 ** 31),
+                   "distance_m": require_number("distance_m", distance_m, mini=0.0,
+                                                maxi=100.0, strict_min=True),
+                   "timeout_s": require_number("timeout_s", timeout_s, mini=0.0,
+                                               maxi=self.MAX_ACTION_S, strict_min=True),
+                   "deadman_s": require_number("deadman_s", deadman_s, mini=0.0, maxi=100.0)}
+        return ActionResult.from_json(self._call("follow", payload))
+
+    def follow_status(self) -> ActionResult:
+        return ActionResult.from_json(self._call("follow_status", {}))
+
+    def stop_follow(self) -> ActionResult:
+        return ActionResult.from_json(self._call("stop_follow", {}))
 
     # ---- Animations (voir RobotContext.play_animation) ---------------------
 

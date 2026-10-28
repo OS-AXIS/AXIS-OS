@@ -24,10 +24,13 @@ import io
 from typing import Any, Dict, Optional
 
 from axis_os.testing.humain import ScriptedHuman
-from axis_os.testing.robot_simule import SimulatedObject, SimulatedPerception, SimulatedRobot
+from axis_os.testing.robot_simule import (
+    SimulatedObject, SimulatedPerception, SimulatedPerson, SimulatedPersonDetector,
+    SimulatedRobot,
+)
 
 __all__ = ["AppTestHarness", "ScriptedHuman", "SimulatedObject", "SimulatedPerception",
-           "SimulatedRobot"]
+           "SimulatedPerson", "SimulatedPersonDetector", "SimulatedRobot"]
 
 
 class AppTestHarness:
