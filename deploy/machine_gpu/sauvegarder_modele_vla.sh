@@ -8,7 +8,9 @@
 # OS-AXIS/AXIS-OS. Ce dépôt est public : seul l'état de brouillon réserve la
 # release aux personnes qui ont un accès en écriture. Ne jamais la publier :
 # les poids sont dérivés de GR00T N1.7, sous licence NVIDIA (THIRD_PARTY.md).
-# gh est l'outil en ligne de commande de GitHub.
+# gh est l'outil en ligne de commande de GitHub ; la release est lue et
+# écrite par son API (releases_brouillon.sh), qui retrouve les brouillons
+# quelle que soit la version de gh.
 # Seuls les POIDS et la configuration sont gardés, pas l'état de
 # l'optimiseur : il est plusieurs fois plus gros, et inutile pour se servir
 # du modèle.
@@ -22,6 +24,7 @@
 #                                                (checkpoint)
 #   bash sauvegarder_modele_vla.sh --restaurer   le remet dans ~/vla_gr00t_g1
 set -euo pipefail
+source "$(dirname "$0")/releases_brouillon.sh"
 DEPOT="OS-AXIS/AXIS-OS"
 ETIQUETTE="vla-modele"
 MODELES="$HOME/vla_gr00t_g1"
@@ -29,8 +32,10 @@ cd "$HOME"
 # Restauration : télécharge les morceaux, les recolle (cat) et déballe
 # l'archive dans ~/vla_gr00t_g1, où evaluer_vla.sh ira la chercher.
 if [ "${1:-}" = "--restaurer" ]; then
+  ID=$(release_id "$DEPOT" "$ETIQUETTE")
+  [ -n "$ID" ] || { echo "Aucune release « $ETIQUETTE » dans $DEPOT."; exit 1; }
   rm -rf vla_modele_parts && mkdir vla_modele_parts && cd vla_modele_parts
-  gh release download "$ETIQUETTE" --repo "$DEPOT" --pattern "vla_modele.tar.part*"
+  release_telecharger "$DEPOT" "$ID" '^vla_modele\\.tar\\.part'
   mkdir -p "$MODELES"
   cat vla_modele.tar.part* | tar xf - -C "$MODELES"
   cd "$HOME" && rm -rf vla_modele_parts
@@ -49,11 +54,15 @@ tar cf - -C "$MODELES" --exclude="$NOM/optimizer*" --exclude="$NOM/global_step*"
   --exclude="$NOM/rng_state*" --exclude="$NOM/scheduler.pt" "$NOM" \
   | split -b 1900M -d - vla_modele_parts/vla_modele.tar.part
 echo "Archive : $(du -sh vla_modele_parts | cut -f1) en $(ls vla_modele_parts | wc -l) morceaux"
-if ! gh release view "$ETIQUETTE" --repo "$DEPOT" >/dev/null 2>&1; then
-  gh release create "$ETIQUETTE" --repo "$DEPOT" --draft \
-    --title "Modèle VLA GR00T N1.7 fine-tuné (G1, prise de cartons)" \
-    --notes "Poids seuls. Restaurer : bash deploy/machine_gpu/sauvegarder_modele_vla.sh --restaurer"
-fi
-gh release upload "$ETIQUETTE" vla_modele_parts/* --repo "$DEPOT" --clobber
+ID=$(release_id "$DEPOT" "$ETIQUETTE")
+[ -n "$ID" ] || ID=$(release_creer "$DEPOT" "$ETIQUETTE" \
+  "Modèle VLA GR00T N1.7 fine-tuné (G1, prise de cartons)" \
+  "Poids seuls. Restaurer : bash deploy/machine_gpu/sauvegarder_modele_vla.sh --restaurer")
+# Les morceaux d'une sauvegarde plus ancienne et plus longue ne doivent pas
+# rester : la restauration les recollerait tous.
+release_pieces "$DEPOT" "$ID" '^vla_modele\\.tar\\.part' | while read -r aid nom; do
+  [ -e "vla_modele_parts/$nom" ] || gh api --method DELETE "repos/$DEPOT/releases/assets/$aid" >/dev/null
+done
+release_envoyer "$DEPOT" "$ID" vla_modele_parts/*
 rm -rf vla_modele_parts
 echo "Sauvegardé sur GitHub : $NOM (release brouillon « $ETIQUETTE »)."

@@ -65,6 +65,12 @@ refus du garde-fou et les arrêts de sécurité sont comptés par essai : un
 VLA qui « réussit » en se faisant refuser des consignes n'est pas un VLA
 qui réussit.
 
+Mesures de la prise, par essai (si la boucle fournit mesures_prise()) :
+l'inclinaison maximale du carton tant qu'il est soulevé, la garde minimale
+des avant-bras au-dessus d'un plateau, et le nombre de pas où ils le
+touchent (garde de moins de 5 mm). Les compteurs du VLA (inférences,
+erreurs…) sont ceux de l'essai ; leur total est à part (vla_total()).
+
 Les cartons sont tirés avec une graine (la valeur qui fixe le tirage au
 hasard) différente de celle de la collecte : le modèle est jugé sur des
 positions qu'il n'a jamais vues.
@@ -112,6 +118,7 @@ class EvaluateurPrises:
                  arret_securite: Callable[[], bool], halt: Callable[[], None],
                  compteurs: Callable[[], Dict[str, float]],
                  journal: Callable[[str], None] = print, poste_prise: str = "prise",
+                 mesures_prise: Optional[Callable[[], Dict[str, Optional[float]]]] = None,
                  duree_max_s: float = 45.0, tenue_s: float = 1.0,
                  delta_liberation: float = 0.02, roulis: Sequence[str] = (
                      "left_shoulder_roll_joint", "right_shoulder_roll_joint")):
@@ -144,6 +151,10 @@ class EvaluateurPrises:
                       épaules), ramenées en dernier.
         journal     : fonction qui reçoit les messages de suivi.
         poste_prise : poste de navigation où le robot attend chaque carton.
+        mesures_prise() : {"inclinaison_deg": inclinaison du carton (ou
+                      None), "garde_avant_bras_m": distance du dessous des
+                      avant-bras au plateau qu'ils survolent (None : aucun)},
+                      relevées à chaque pas de l'essai.
         """
         inconnus = [m for m in modes if m not in MODES]
         if inconnus or not modes:
@@ -172,6 +183,10 @@ class EvaluateurPrises:
         self._succes: Optional[bool] = None
         self._t_pas: Optional[float] = None
         self._dt = 0.0
+        self._mesures = mesures_prise
+        self._m: Dict[str, float] = {}
+        self._v0: Dict[str, float] = {}
+        self._latence_totale = 0.0
 
     # ---- interface avec la boucle de simulation ------------------------
     @property
@@ -238,6 +253,15 @@ class EvaluateurPrises:
         couleur, _ = self.placements[i]
         self._t_essai, self._t_tenu, self._succes = self._horloge(), None, None
         self._c0 = dict(self._compteurs())
+        self._m = {"inclinaison_max_deg": 0.0, "garde_min_avant_bras_m": math.inf,
+                   "contacts_avant_bras": 0}
+        if self.vla is not None:
+            # Compteurs de l'essai : différence avec ce relevé ; la latence
+            # maximale (un maximum, pas un cumul) repart de zéro.
+            self._latence_totale = max(self._latence_totale,
+                                       float(self.vla.stats.get("latence_max_s", 0.0)))
+            self.vla.stats["latence_max_s"] = 0.0
+            self._v0 = dict(self.vla.stats)
         self._aller("ESSAI")
         if mode == "vla":
             self.f.suspendre()                        # un seul pilote sur la base
@@ -265,7 +289,13 @@ class EvaluateurPrises:
              "refus_garde_fou": int(c1.get("refus", 0) - self._c0.get("refus", 0)),
              "arrets_securite": int(c1.get("arrets", 0) - self._c0.get("arrets", 0))}
         if mode in MODES_VLA:
-            r["vla"] = dict(self.vla.stats)
+            r["vla"] = {k: (v if k == "latence_max_s" else v - self._v0.get(k, 0))
+                        for k, v in self.vla.stats.items()}
+        if self._mesures is not None:
+            g = self._m["garde_min_avant_bras_m"]
+            r["inclinaison_max_deg"] = round(self._m["inclinaison_max_deg"], 1)
+            r["garde_min_avant_bras_cm"] = None if g == math.inf else round(100 * g, 1)
+            r["contacts_avant_bras"] = self._m["contacts_avant_bras"]
         self.resultats.append(r)
         self._succes = succes
         n_ok = sum(x["succes"] for x in self.resultats if x["mode"] == mode)
@@ -276,8 +306,33 @@ class EvaluateurPrises:
                   f"{'  [garde-fou : %d refus]' % r['refus_garde_fou'] if r['refus_garde_fou'] else ''}")
         self._aller("LIBERER")
 
+    def vla_total(self) -> Optional[Dict[str, float]]:
+        """Compteurs du VLA cumulés sur toute l'évaluation (None sans VLA)."""
+        if self.vla is None:
+            return None
+        t = dict(self.vla.stats)
+        t["latence_max_s"] = max(self._latence_totale, float(t.get("latence_max_s", 0.0)))
+        return t
+
+    def _relever(self) -> None:
+        """Mesures de la prise à ce pas (voir l'en-tête du module)."""
+        try:
+            v = self._mesures()
+        except Exception:                 # noqa: BLE001 — une mesure manquée, pas l'essai
+            return
+        inc, garde = v.get("inclinaison_deg"), v.get("garde_avant_bras_m")
+        if inc is not None and math.isfinite(inc) and self._souleve():
+            self._m["inclinaison_max_deg"] = max(self._m["inclinaison_max_deg"], float(inc))
+        if garde is not None and math.isfinite(garde):
+            self._m["garde_min_avant_bras_m"] = min(self._m["garde_min_avant_bras_m"],
+                                                    float(garde))
+            if garde < 0.005:
+                self._m["contacts_avant_bras"] += 1
+
     # ---- ESSAI -------------------------------------------------------------
     def _etat_essai(self) -> None:
+        if self._mesures is not None:
+            self._relever()
         if self._au_sol():
             # Ramassé aussitôt (voir l'en-tête du module) : laissé au sol, il
             # tenait le robot à l'arrêt de sécurité, bras figés, sans fin.
@@ -351,7 +406,11 @@ class EvaluateurPrises:
             elif e == "ARRIVE":
                 ok, raison = self.f.prendre(self._colis)
                 if not ok:
-                    self._finir(False, f"prise refusée : {raison}")
+                    # La raison du service garde son détail (« prise
+                    # refusée — hors de portée des bras… »).
+                    self._finir(False, raison if raison.startswith(("prise refusée",
+                                                                    "serrage refusé"))
+                                else f"prise refusée : {raison}")
                     return
                 self.sous_etat = "PRENDRE"
             elif e == "ECHEC":
@@ -363,7 +422,8 @@ class EvaluateurPrises:
             if m == "TENU" and self._tenu_assez():
                 self._finir(True)
             elif m == "ECHEC":
-                self._finir(False, "prise non confirmée")
+                manip = getattr(self.f, "manip", None)
+                self._finir(False, getattr(manip, "raison", "") or "prise non confirmée")
 
     # ---- LIBERER -------------------------------------------------------------
     def _etat_liberer(self) -> None:
@@ -477,6 +537,16 @@ def bilan(resultats: Sequence[Dict]) -> Dict:
             "arrets_securite": sum(r["arrets_securite"] for r in rs),
             "echecs": raisons,
         }
+        if any("inclinaison_max_deg" in r for r in rs):
+            gardes = [r["garde_min_avant_bras_cm"] for r in rs
+                      if r.get("garde_min_avant_bras_cm") is not None]
+            out["par_mode"][m].update({
+                "inclinaison_max_deg": max(r.get("inclinaison_max_deg", 0.0) for r in rs),
+                "garde_min_avant_bras_cm": min(gardes) if gardes else None,
+                "contacts_avant_bras": sum(r.get("contacts_avant_bras", 0) for r in rs),
+                "essais_avec_contact_avant_bras": sum(1 for r in rs
+                                                      if r.get("contacts_avant_bras", 0)),
+            })
     par_carton: Dict[int, Dict[str, bool]] = {}
     for r in resultats:
         par_carton.setdefault(r["carton"], {})[r["mode"]] = r["succes"]
@@ -501,6 +571,11 @@ def texte_bilan(b: Dict) -> str:
         lignes.append(f"  {m:9s} : {s['reussis']}/{s['essais']} réussis ({100 * s['taux']:.0f} %)"
                       f", durée médiane {s['duree_mediane_s']} s, garde-fou {s['refus_garde_fou']}"
                       f" refus, {s['arrets_securite']} arrêts de sécurité")
+        if "inclinaison_max_deg" in s:
+            lignes.append(f"              carton penché au plus de {s['inclinaison_max_deg']}°"
+                          f", avant-bras à {s['garde_min_avant_bras_cm']} cm du plateau au plus"
+                          f" près, contact avec le plateau dans "
+                          f"{s['essais_avec_contact_avant_bras']} essai(s)")
         if s["echecs"]:
             lignes.append("              échecs : " + ", ".join(
                 f"{k} ×{v}" for k, v in sorted(s["echecs"].items(), key=lambda kv: -kv[1])))
@@ -511,10 +586,15 @@ def texte_bilan(b: Dict) -> str:
     return "\n".join(lignes)
 
 
-def ecrire(resultats: Sequence[Dict], chemin: str) -> Dict:
-    """Écrit le bilan et le détail des essais en JSON dans `chemin` ; rend
-    le bilan."""
+def ecrire(resultats: Sequence[Dict], chemin: str,
+           vla_total: Optional[Dict[str, float]] = None) -> Dict:
+    """Écrit le bilan et le détail des essais en JSON dans `chemin` (avec
+    les compteurs du VLA cumulés sur l'évaluation, s'ils sont donnés) ;
+    rend le bilan."""
     b = bilan(resultats)
+    sortie = {"bilan": b, "essais": list(resultats)}
+    if vla_total is not None:
+        sortie["vla_total"] = vla_total
     with open(chemin, "w", encoding="utf-8") as f:
-        json.dump({"bilan": b, "essais": list(resultats)}, f, ensure_ascii=False, indent=1)
+        json.dump(sortie, f, ensure_ascii=False, indent=1)
     return b

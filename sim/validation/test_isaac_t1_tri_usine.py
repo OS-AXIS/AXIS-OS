@@ -127,6 +127,8 @@ def main():
     from axis_os.services.locomotion.service import (
         BaseState, LocomotionService, LocomotionState,
     )
+    from axis_os.services.manipulation.cinematique import ModeleBras
+    from axis_os.services.manipulation.prise import MesuresBras
     from axis_os.services.manipulation.service import Etat, ManipulationService, Postures
     from axis_os.services.navigation.service import NavigationService, Pose2D
     from axis_os.services.perception.owlvit_detector import OwlViTDetector
@@ -415,10 +417,59 @@ def main():
     loco = LocomotionService(adapt, read_state, send_targets, command_timeout_s=0.5,
                              clock=horloge, gardien=gardien)
     nav = NavigationService(sd.carte(), pose2d, loco, horloge=horloge)
+    # Prise mesurée : angles et couples des bras (mesurés par la physique
+    # au dernier pas, d'où leur âge), hauteur du bassin, couple max du
+    # garde-fou, inclinaison du carton tenu. Si le couple ne peut pas être
+    # lu, la manipulation refuse de serrer (jamais « tout va bien »).
+    bras6 = [f"{c}_{a}" for c in ("left", "right")
+             for a in ("shoulder_pitch_joint", "shoulder_roll_joint", "elbow_joint")]
+    t_physique = [0.0]                   # temps simulé du dernier pas de physique
+
+    def efforts_bras():
+        # Le couple exercé par le solveur, celui que lit le JointSafetyGuard
+        # (IsaacSimBridge.read_feedback).
+        e = np.asarray(robot.get_applied_joint_efforts(), dtype=float)
+        age = sim_t[0] - t_physique[0]
+        return {j: (float(e[idx[j]]), age) for j in bras6}
+
+    def inclinaison_carton():
+        """Inclinaison (degrés) du carton entre les mains : l'angle entre
+        sa verticale et celle du monde. None sans carton."""
+        c = carton_aux_mains()
+        if c is None:
+            return None
+        w_, x_, y_, z_ = (float(v) for v in c["obj"].get_world_pose()[1])
+        return math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (x_ * x_ + y_ * y_)))))
+
+    def garde_avant_bras():
+        """Distance (m) du dessous des avant-bras (rayon 3,5 cm) au plateau
+        qu'ils survolent ; None s'ils n'en survolent aucun. Mesure du banc,
+        indépendante du modèle de la manipulation."""
+        garde = None
+        for c in ("left", "right"):
+            pts = [main_monde(f"{c}_elbow_link"), main_monde(f"{c}_wrist_roll_link"),
+                   main_monde(f"{c}_rubber_hand")]
+            if any(p_ is None for p_ in pts):
+                continue
+            for a_, b_ in zip(pts, pts[1:]):
+                for f_ in np.linspace(0.0, 1.0, 6):
+                    q_ = a_ + f_ * (b_ - a_)
+                    if any(r_.contient(float(q_[0]), float(q_[1]))
+                           for r_ in (sd.TABLE_PRISE, *sd.TABLES_DEPOSE.values())):
+                        g_ = float(q_[2]) - 0.035 - sd.PLATEAU
+                        garde = g_ if garde is None else min(garde, g_)
+        return garde
+
+    mesures_bras = MesuresBras(
+        ModeleBras(), lambda: {j: read_state().joint_pos[j] for j in bras6}, efforts_bras,
+        lambda: float(robot.get_world_pose()[0][2]),
+        couple_max={d.joint_id: d.limits.torque_max for d in _defs("29dof")
+                    if d.joint_id in bras6},
+        inclinaison=inclinaison_carton)
     # Le ManipulationService écrit dans le dictionnaire de bras de
     # l'adaptateur : il en est le seul écrivain.
     manip = ManipulationService(adapt.pose_bras, mains, vers_robot, verifier_prise,
-                                gardien=gardien, horloge=horloge)
+                                gardien=gardien, horloge=horloge, mesures=mesures_bras)
 
     tree = FrameTree()
     detecteur = OwlViTDetector(threshold=0.06)       # seuil de W4
@@ -694,7 +745,9 @@ def main():
                 carton_au_sol, arret_securite=lambda: gardien.arrete, halt=loco.halt,
                 compteurs=lambda: {"refus": loco.stats["refused"],
                                    "arrets": gardien.stats["arrets"]},
-                journal=journaliser)
+                journal=journaliser,
+                mesures_prise=lambda: {"inclinaison_deg": inclinaison_carton(),
+                                       "garde_avant_bras_m": garde_avant_bras()})
         DUREE = 1e9                          # la collecte s'arrête d'elle-même
 
     # ---- boucle à 50 Hz -----------------------------------------------------
@@ -877,6 +930,7 @@ def main():
         for i in range(cfg.decimation - 1):
             world.step(render=((percevoir or filmer) and i == 0))
         sim_t[0] += cfg.control_dt
+        t_physique[0] = sim_t[0]
         k += 1
         # Invariant : le robot ne se rapproche jamais d'une personne proche.
         pa = pose2d()
@@ -905,7 +959,27 @@ def main():
                           f"{100 * cumul:.1f} cm), tâche {tri.etat}, "
                           f"sécurité x{getattr(loco.dernier_verdict, 'facteur', float('nan')):.2f}"
                           f"{'' if tw_ is None else f', consigne {tw_}'}", flush=True)
-        if filmer:
+        if filmer and EVAL:
+            # Évaluation : le vrai état (mode, carton, phase, bras), pas
+            # celui de la logique de tri, qui ne tourne pas.
+            v = loco.dernier_verdict
+            i_, m_ = collecteur.essais[min(collecteur.k, len(collecteur.essais) - 1)]
+            inc_ = manip.inclinaison
+            rec.image([
+                f"Temps : {int(t // 60):02d}:{int(t % 60):02d}",
+                f"Évaluation : {m_} — carton {i_ + 1}/{len(collecteur.placements)}",
+                f"Phase : {collecteur.etat}"
+                f"{' / ' + collecteur.sous_etat if collecteur.etat == 'ESSAI' else ''}",
+                f"Bras : {manip.etat.name}"
+                f"{'' if inc_ is None else f' — carton penché de {inc_:.0f}°'}",
+                "Réussis : " + ", ".join(
+                    f"{md} {sum(r['succes'] for r in collecteur.resultats if r['mode'] == md)}"
+                    f"/{sum(1 for r in collecteur.resultats if r['mode'] == md)}"
+                    for md in dict.fromkeys(md_ for _, md_ in collecteur.essais)),
+                f"Sécurité : {v.raison[:38] if v else '—'}",
+                f"Garde-fou : {loco.stats['refused']} refus",
+            ], t)
+        elif filmer:
             b = tri.bilan
             v = loco.dernier_verdict
             rec.image([
@@ -946,13 +1020,14 @@ def main():
     if EVAL:
         from axis_os.vla.evaluation import ecrire, texte_bilan
         sortie = VIDEOS / "eval_vla.json"
-        b_ = ecrire(collecteur.resultats, str(sortie))
+        b_ = ecrire(collecteur.resultats, str(sortie), vla_total=collecteur.vla_total())
         print(f"\n{'=' * 66}\n  ÉVALUATION VLA CONTRE RÉFLEXES (mêmes cartons)\n{'=' * 66}")
         print(texte_bilan(b_))
         print(f"  cartons : {args.episodes} (graine {args.graine_eval}), essais faits : "
               f"{len(collecteur.resultats)}\n  garde-fou : {loco.stats['refused']} refus au total"
               f"\n  gardien : {gardien.stats}"
-              f"{'' if vla is None else chr(10) + '  VLA : ' + str(vla.stats)}"
+              f"{'' if vla is None else chr(10) + '  VLA (total) : ' + str(collecteur.vla_total())}"
+              f"\n  manipulation : {manip.stats}"
               f"\n  détail : {sortie}\n  temps réel : {time.monotonic() - t_mur:.0f} s")
         if chute:
             print(f"  CHUTE à t = {chute[0]:.1f} s (pendant l'essai {collecteur.mode})")
