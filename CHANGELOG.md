@@ -10,6 +10,25 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Correctifs de la prise mesurée (constats GPU du 2026-10-28)
+
+- **Prise jugée « hors de portée » à tort** : le lacet de l'objet (repère
+  monde) n'était pas replié ; devant un robot tourné d'un quart de tour
+  (scène T1), un carton aligné sur la table donnait -90°, et les mains
+  visaient l'avant et l'arrière du carton. Le lacet est maintenant
+  l'écart entre les faces de l'objet et les axes du robot, dans
+  [-45°, 45°] (la largeur est celle prise entre les mains). La
+  cinématique garde à leur valeur mesurée les articulations qu'elle ne
+  commande pas (taille, lacet d'épaule, poignets), aussi pour la garde
+  des avant-bras au-dessus du plateau.
+- **Chute déclarée à t = 0 en évaluation** : avant la boucle de T1, les
+  attentes de rendu font avancer la physique sans la politique
+  d'équilibre. Le robot est remis debout après elles, juste avant la
+  boucle. `BaseState.pas_physique` (simulation) : `LocomotionService` ne
+  décide rien, chute comprise, sur un état que la physique n'a pas encore
+  mis à jour depuis son démarrage ; ensuite, chaque état est jugé comme
+  avant. Sur un vrai robot (`None`), rien ne change.
+
 ### Prise mesurée d'un carton (2026-10-28)
 
 `pick()`/`place()` ne changent pas de signature. Quand le robot donne les

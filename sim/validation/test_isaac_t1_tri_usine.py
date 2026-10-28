@@ -121,7 +121,7 @@ def main():
         GR00TWBCAdapter, GR00TWBCConfig, GR00TWBCPolicy,
     )
     from axis_os.hal.drivers.unitree_g1.locomotion_policy import (
-        body_angular_velocity, quat_wxyz_to_matrix,
+        body_angular_velocity, projected_gravity, quat_wxyz_to_matrix,
     )
     from axis_os.services.locomotion.proximite import GardienProximite
     from axis_os.services.locomotion.service import (
@@ -281,9 +281,6 @@ def main():
         kps=np.array([g[j][0] for j in names]), kds=np.array([g[j][1] for j in names]))
     pos0, _ = robot.get_world_pose()
     yaw0 = sd.DEPART.cap
-    robot.set_world_pose(position=np.array([sd.DEPART.x, sd.DEPART.y, float(pos0[2])]),
-                         orientation=np.array([math.cos(yaw0 / 2), 0.0, 0.0,
-                                               math.sin(yaw0 / 2)]))
     bras_depart = {"left_shoulder_pitch_joint": P.tangage_port,
                    "right_shoulder_pitch_joint": P.tangage_port,
                    "left_shoulder_roll_joint": P.roulis_ouvert,
@@ -293,9 +290,20 @@ def main():
     q0.update(dict(zip(cfg.controlled_joints, cfg.default_angles)))
     q0.update(bras_depart)
     q0v = np.array([q0[j] for j in names])
-    robot.set_joint_positions(q0v)
-    robot.set_joint_velocities(np.zeros_like(q0v))
-    robot.apply_action(ArticulationAction(joint_positions=q0v))
+
+    def mettre_debout():
+        """Robot debout, immobile, à sa pose de départ."""
+        robot.set_world_pose(position=np.array([sd.DEPART.x, sd.DEPART.y, float(pos0[2])]),
+                             orientation=np.array([math.cos(yaw0 / 2), 0.0, 0.0,
+                                                   math.sin(yaw0 / 2)]))
+        robot.set_joint_positions(q0v)
+        robot.set_joint_velocities(np.zeros_like(q0v))
+        for vitesse in ("set_linear_velocity", "set_angular_velocity"):
+            if hasattr(robot, vitesse):
+                getattr(robot, vitesse)(np.zeros(3))
+        robot.apply_action(ArticulationAction(joint_positions=q0v))
+
+    mettre_debout()
 
     for c in (cam, dep):
         c.initialize()
@@ -397,9 +405,12 @@ def main():
         _p, quat = robot.get_world_pose()
         omega = body_angular_velocity(quat, robot.get_angular_velocity())
         jp, jv = robot.get_joint_positions(), robot.get_joint_velocities()
+        # pas_physique : la locomotion ne décide rien (chute comprise) sur
+        # un état que la physique n'a pas encore mis à jour.
         return BaseState(tuple(float(v) for v in quat), tuple(float(v) for v in omega),
                          {j: float(jp[idx[j]]) for j in names},
-                         {j: float(jv[idx[j]]) for j in names})
+                         {j: float(jv[idx[j]]) for j in names},
+                         pas_physique=getattr(world, "current_time_step_index", None))
 
     def send_targets(targets):
         # Chaque cible traverse la HAL, donc le JointSafetyGuard.
@@ -424,6 +435,11 @@ def main():
     bras6 = [f"{c}_{a}" for c in ("left", "right")
              for a in ("shoulder_pitch_joint", "shoulder_roll_joint", "elbow_joint")]
     t_physique = [0.0]                   # temps simulé du dernier pas de physique
+    # Angles mesurés de toute la chaîne des bras, taille comprise : la
+    # portée se calcule sur le bras tel qu'il est (lacet d'épaule, poignets).
+    chaine_bras = [j for j in names if j.startswith(("waist_", "left_shoulder", "right_shoulder",
+                                                     "left_elbow", "right_elbow", "left_wrist",
+                                                     "right_wrist"))]
 
     def efforts_bras():
         # Le couple exercé par le solveur, celui que lit le JointSafetyGuard
@@ -461,7 +477,7 @@ def main():
         return garde
 
     mesures_bras = MesuresBras(
-        ModeleBras(), lambda: {j: read_state().joint_pos[j] for j in bras6}, efforts_bras,
+        ModeleBras(), lambda: {j: read_state().joint_pos[j] for j in chaine_bras}, efforts_bras,
         lambda: float(robot.get_world_pose()[0][2]),
         couple_max={d.joint_id: d.limits.torque_max for d in _defs("29dof")
                     if d.joint_id in bras6},
@@ -771,6 +787,21 @@ def main():
     print(f"\n  T1 — {DUREE:.0f} s simulées, vidéo "
           f"{'non' if not video_ok else f'accélérée ×{args.acceleration}'}\n")
     pilote = collecteur if COLLECTE else tri
+    # Constaté sur GPU (RTX PRO 5000, 2026-10-28) : en évaluation, chute
+    # déclarée à t = 0, avant la première image. Avant cette boucle, les
+    # attentes de rendu (caméras de tête, caméra de la vidéo : jusqu'à 120
+    # images chacune, selon le temps que met la première image non noire)
+    # font avancer la physique SANS la politique d'équilibre, qui ne tourne
+    # que dans la boucle ; plus elles durent, plus le robot penche. On le
+    # remet donc debout ici, en dernier, après tout ce qui fait avancer la
+    # physique, et on dit dans quel état on l'a trouvé.
+    _p0, q_avant = robot.get_world_pose()
+    gz = float(projected_gravity(q_avant)[2])
+    print(f"  robot avant la boucle : {math.degrees(math.acos(max(-1.0, min(1.0, -gz)))):.0f}° "
+          f"d'inclinaison, après {getattr(world, 'current_time_step_index', '?')} pas de "
+          f"physique sans équilibre — remis debout", flush=True)
+    mettre_debout()
+    loco.start()                         # politique repartie de zéro, sur un robot debout
     while not pilote.termine and sim_t[0] < DUREE + 300.0:
         if suivi is not None and suivi.arret_demande:
             print("  Arrêt demandé depuis la page de suivi — bilan et vidéo écrits.")
