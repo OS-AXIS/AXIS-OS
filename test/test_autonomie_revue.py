@@ -215,5 +215,42 @@ faux.error = "Traceback ... ValueError: alice@example.com"
 check("Exception standard : son type est gardé, jamais le message",
       store.record("com.test.x", "1.0.0", "run_mission", faux).exception_type == "ValueError")
 
+section("B3 (vérifié). Une mise à jour ne change pas les déclencheurs sans accord humain")
+
+
+class AppV(RobotApp):
+    def __init__(self, version="1.0.0", triggers=None):
+        self.version, self.triggers = version, triggers
+
+    def manifest(self):
+        return AppManifest(app_id="com.test.maj", name="Maj", version=self.version, author="T",
+                           author_email="t@t.com", description="d",
+                           category=AppCategory.UTILITIES,
+                           permissions=[Permission.SCHEDULED_MISSIONS],
+                           triggers=list(self.triggers or [TriggerSpec("soir", "daily",
+                                                                       at="22:00")]))
+
+    def on_start(self, ctx): return True
+    def on_stop(self, ctx): pass
+
+    def run_mission(self, ctx, params):
+        return MissionResult(success=True, mission_id="", app_id="", duration_s=0.0)
+
+
+with SimulatedRobot() as robot:
+    vus, reponse = [], [True]
+
+    def confirmer(manifest, permissions):
+        vus.append([t.describe() for t in manifest.triggers])
+        return reponse[0]
+    rt = robot.make_runtime(confirmer_permissions=confirmer)
+    silencieux(rt.install, AppV())
+    reponse[0] = False
+    nuit = [TriggerSpec("nuit", "interval", every_s=300)]
+    ok = silencieux(rt.update_app, AppV("1.1.0", nuit))
+    check("Mise à jour qui change les déclencheurs : l'humain est consulté, et son refus "
+          "garde les anciens", not ok and vus[-1] == ["nuit : toutes les 5 minutes"]
+          and [t.name for t in rt._apps["com.test.maj"].manifest.triggers] == ["soir"], str(vus))
+
 print(f"\n{'=' * 66}\n  {'TOUT PASSE' if FAIL == 0 else f'{FAIL} ÉCHEC(S)'}\n{'=' * 66}")
 sys.exit(1 if FAIL else 0)
