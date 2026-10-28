@@ -75,6 +75,11 @@ def test_pause_while_motor_is_hot():
     with AppTestHarness(NightPatrolApp(), site_map=site(), time_scale=2.0) as h:
         robot = h.robot
         robot.set_motor_temperature("left_knee_joint", 72.0)
+        # La mission part une fois que l'OS a vu le moteur chaud.
+        deadline = time.monotonic() + 10.0
+        while robot.health.thermal_status() != "throttled" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert robot.health.thermal_status() == "throttled"
 
         def cool_down_once_paused():
             # Le moteur refroidit 2 s après que l'app a annoncé sa pause.
