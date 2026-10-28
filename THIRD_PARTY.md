@@ -52,7 +52,8 @@ All of these licenses allow use from an Apache 2.0 project. Note that
 
 | Model | Used by | License, as published by its authors |
 |-------|---------|--------------------------------------|
-| [google/owlvit-base-patch32](https://huggingface.co/google/owlvit-base-patch32), revision pinned | open-vocabulary object detection (`owlvit_detector.py`) | Apache 2.0 |
+| [google/owlvit-base-patch32](https://huggingface.co/google/owlvit-base-patch32), revision pinned | open-vocabulary object detection (`owlvit_detector.py`); fallback person detector (`ObjectDetectorPersons`) | Apache 2.0 |
+| [PekingU/rtdetr_r18vd](https://huggingface.co/PekingU/rtdetr_r18vd), revision `ac77a11ff0170a41b771c03264987f8ce2b0d753` pinned, `model.safetensors` only; code [lyuwenyu/RT-DETR](https://github.com/lyuwenyu/RT-DETR) | person detection for following (`axis_os/services/people/rtdetr_detector.py`): boxes and scores only, no identity | Apache 2.0 (code and weights, as published by the authors) |
 | [openai/whisper-small](https://huggingface.co/openai/whisper-small) | speech recognition (`whisper_recognizer.py`) | Apache 2.0 |
 | Unitree locomotion policy (`g1_motion.pt`), from [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) | walking in simulation | BSD 3-Clause |
 | GR00T Whole-Body Control policy, from [NVlabs/GR00T-WholeBodyControl](https://github.com/NVlabs/GR00T-WholeBodyControl) | balance and walking with load (29 DOF G1) | code Apache 2.0; **weights under the NVIDIA Open Model License** |
@@ -60,10 +61,28 @@ All of these licenses allow use from an Apache 2.0 project. Note that
 | [nvidia/Cosmos-Reason2-2B](https://huggingface.co/nvidia/Cosmos-Reason2-2B) | required by the GR00T fine-tuning script | **NVIDIA license, to be accepted on Hugging Face before download** |
 | [facebook/mms-tts-fra](https://huggingface.co/facebook/mms-tts-fra) | test sentences of the voice validation (`sim/validation/test_isaac_a2_voice.py`) and voice of a demo video (`sim/video/video_v2_voix.py`) | **CC BY-NC 4.0: non-commercial use only** |
 
+The two detectors above were trained on [COCO](https://cocodataset.org),
+whose annotations are under CC BY 4.0 and whose images come from Flickr
+under their own licenses; the published weights are under Apache 2.0.
+
 The models in bold are not under an open-source license. AXIS-OS does not
 need them to run, and its test suite runs without any of them. Anyone who
 uses them, or a model fine-tuned from them, must follow their terms; this is
 in particular the case for a commercial deployment.
+
+### People detection and following: what is used, and what is excluded
+
+| Component | Location | Origin | License |
+|-----------|----------|--------|---------|
+| Multi-person tracker (Kalman filter, two-stage association) and short re-identification | `axis_os/services/people/tracker.py` | written for AXIS-OS; the two-stage association follows the idea of ByteTrack (Zhang et al., ECCV 2022, whose code is MIT); no code copied | Apache 2.0 (this repository) |
+| Appearance descriptor (clothing colours, never the head) | `axis_os/services/people/appearance.py` | written for AXIS-OS, numpy only | Apache 2.0 (this repository) |
+| RT-DETR R18 weights | downloaded at run time, see the table above | PekingU / lyuwenyu | Apache 2.0 |
+
+Deliberately **not** used: the Ultralytics YOLO family (AGPL-3.0), any model
+published for non-commercial or research use only (for example InsightFace's
+pre-trained models), and any face recognition or face embedding model.
+AXIS-OS contains no face recognition and stores no biometric data. The test
+suite and the CI download no detection model: they use fake detections.
 
 ## 4. Simulation and runtime software (not included)
 
