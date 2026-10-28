@@ -84,7 +84,11 @@ class ConfigFacade:
     # points les plus proches). Pour obtenir le centre, on ajoute une
     # demi-profondeur dans la direction du regard (le cap de prise).
     position_face_avant: bool = True
-    distance_prise: float = 0.29   # centre des mains devant la base
+    # Centre des mains devant la base. En prise mesurée (bras avec
+    # mesures d'effort), c'est la distance minimale : le service de
+    # manipulation l'allonge s'il le faut pour que les avant-bras passent
+    # au-dessus du plateau (constaté sur GPU : ils s'y appuyaient).
+    distance_prise: float = 0.29
     recul_pre_pose: float = 0.45   # pré-pose, en arrière de la cible
     # Approche finale « comme un humain ». Pourquoi : constaté sur GPU, le
     # robot avançait les bras en posture de port (celle où il tient un
@@ -238,6 +242,7 @@ class FacadeServices:
         # Dernier progrès vers la cible, pour repérer un blocage.
         self._progres = None                       # (distance, instant, cible)
         self._t_tick: Optional[float] = None       # instant du tick précédent
+        self._penche_signale = False
         # Vitesse maximale de l'accostage en cours (réduite à l'insertion).
         self._vmax = cfg.v_max
         self.stats = {"accostages": 0, "accostages_ratees": 0,
@@ -353,6 +358,12 @@ class FacadeServices:
         c, s = math.cos(self.cap_prise), math.sin(self.cap_prise)
         cx, cy, _ = colis.position
         d = self.cfg.distance_prise
+        if getattr(self.manip, "mesures", None) is not None:
+            d, raison = self.manip.distance_de_prise(
+                Objet(colis.position, self.cfg.largeur, self.cfg.profondeur, self.cfg.hauteur),
+                d_min=self.cfg.distance_prise)
+            if d is None:
+                return False, f"prise impossible : {raison}"
         cible = Pose2D(cx - d * c, cy - d * s, self.cap_prise)
         p = self._pose()
         if math.hypot(cible.x - p.x, cible.y - p.y) > 3.0:
@@ -407,6 +418,17 @@ class FacadeServices:
         if self.bloque_par_securite():
             self._t_accostage += dt
             self._t_stab0 += dt
+        if self.manip.etat is Etat.RAMENER or getattr(self.manip, "penche", False):
+            # Carton en train de revenir contre le buste, ou penché : la
+            # base ne bouge pas (le temps ne compte pas dans les délais).
+            self.loco.halt()
+            self._t_accostage += dt
+            self._t_stab0 += dt
+            if self.manip.a_reposer and not self._penche_signale:
+                self._penche_signale = True
+                self._journal(f"transport arrêté : {self.manip.raison}")
+            return
+        self._penche_signale = False
         if self._phase == "NAV_ACCOSTAGE" and self.nav.etat is EtatNavigation.ARRIVE:
             self._cible = self._apres_nav
             self._vmax = self.cfg.v_max
@@ -637,6 +659,8 @@ class FacadeServices:
         """État des bras vu par la logique de tri : LIBRE, TENU, ECHEC, ou
         EN_COURS pour tout état intermédiaire."""
         e = self.manip.etat
+        if e is Etat.TENU and getattr(self.manip, "a_reposer", False):
+            return "ECHEC"              # penché malgré la correction
         if e in (Etat.LIBRE, Etat.TENU, Etat.ECHEC):
             return e.name
         return "EN_COURS"
