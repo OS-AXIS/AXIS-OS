@@ -383,7 +383,9 @@ with SimulatedRobot(time_scale=ECHELLE, site_map=carte, battery_percent=9.0,
     check("Sous 8 % : arrêt sur place, app arrêtée, URGENT", energie.state == "critical"
           and sortie.get("r") is not None and not sortie["r"].success
           and abs(robot.x - x0) < 0.01 and any(n.priority == "urgent" and n.source == "os"
-                                                for n in robot.notification_sink.delivered))
+                                                for n in robot.notification_sink.delivered),
+          f"{energie.state} {sortie.get('r')} dx={robot.x - x0:.3f} "
+          f"{[(n.title, n.priority) for n in robot.notification_sink.delivered]}")
     energie.stop()
 
 with SimulatedRobot(time_scale=ECHELLE, battery_percent=15.0) as robot:

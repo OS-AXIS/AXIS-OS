@@ -131,7 +131,8 @@ class NotificationCenter:
             self.stats["refused_os_name"] += 1
             return False, "INVALID_ARGUMENT", ("une notification d'app ne peut pas se présenter "
                                                "comme l'OS (« AXIS-OS »)")
-        nom = neutraliser(app_name, 64)
+        # Ni crochet ni séparateur : le nom ne peut pas fermer le préfixe imposé.
+        nom = re.sub(r"[\[\]·|]", " ", neutraliser(app_name, 64))
         if se_dit_os(nom):
             nom = app_id                     # un nom d'app qui imite l'OS n'est pas montré
         t = self._horloge()

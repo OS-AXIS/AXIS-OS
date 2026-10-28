@@ -27,8 +27,10 @@ Règles :
      bloqueur de mission le refuse (retour à la station de charge…), ni
      pour un déclencheur ou une app que l'humain a désactivés
      (set_enabled, set_paused).
-  6. Un même déclencheur ne tombe jamais deux fois en moins de MIN_REARM_S
-     (une zone franchie dix fois de suite ne lance pas dix missions) ; un
+  6. Un même déclencheur, et une même app (tous ses déclencheurs réunis),
+     ne sont jamais lancés deux fois en moins de MIN_REARM_S (une zone
+     franchie dix fois de suite, ou huit intervalles décalés, ne lancent pas
+     dix missions) ; un
      déclencheur de batterie se réarme quand la charge remonte de
      BATTERY_HYSTERESIS au-dessus de son seuil.
 
@@ -111,6 +113,7 @@ class MissionScheduler:
         self._pose = pose or self._pose_navigation
         self._chute = fallen or self._chute_locomotion
         self._etats: Dict[Tuple[str, str], _Etat] = {}
+        self._dernier_lancement_app: Dict[str, float] = {}
         self._desactives: set = set()
         self._pause = False
         self._heures: Optional[Tuple[int, int]] = None
@@ -239,7 +242,7 @@ class MissionScheduler:
             if motif is not None:
                 sortie.append(self._noter(t, app_id, spec.name, *motif))
                 continue
-            etat.dernier_lancement = t
+            etat.dernier_lancement = self._dernier_lancement_app[app_id] = t
             lance = True
             sortie.append(self._noter(t, app_id, spec.name, "launched", spec.describe()))
             self._travail = threading.Thread(target=self._executer, args=(app_id, spec.name),
@@ -304,6 +307,9 @@ class MissionScheduler:
             return "busy", "une mission est déjà en cours"
         if etat.dernier_lancement is not None and t - etat.dernier_lancement < self.MIN_REARM_S:
             return "rearm", f"déjà lancé il y a moins de {self.MIN_REARM_S:g} s"
+        app = self._dernier_lancement_app.get(app_id)
+        if app is not None and t - app < self.MIN_REARM_S:
+            return "rearm", f"cette app a été lancée il y a moins de {self.MIN_REARM_S:g} s"
         return None
 
     def _executer(self, app_id: str, nom: str) -> None:

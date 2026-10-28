@@ -196,6 +196,32 @@ reason AXIS-OS is **not ready for a real robot**.
    partly hidden has not been measured yet on the robot; the Isaac Sim
    script `sim/validation/test_isaac_f1_suivi_personne.py` has not been run.
 
+10. **Autonomy (SDK 1.2): what the OS does not guarantee yet.** Forbidden
+   and slow zones are enforced on the locomotion service — `walk`, `go_to`,
+   `follow` and the `"walk"` stream all go through it — from the robot's
+   estimated position, which is odometry today: it drifts, and a robot that
+   believes it is elsewhere can enter a zone. Joint commands to the legs
+   (`move_legs`, `move_all`, DANGEROUS) do not go through the locomotion
+   service: an app that builds its own gait escapes the zone guard as it
+   escapes the proximity guard. The scheduler (`MissionScheduler`) and the
+   energy service (`EnergyService`) run only where something starts them —
+   the tests today, since `python -m axis_os.main` does not exist yet; the
+   real G1 driver does not read its battery (`get_battery` returns
+   "unknown", so the energy service does nothing), and "docked" means
+   "within 0.3 m of the station" in the simulated robot. The thermal
+   protection works on the temperature the driver returns: the simulated G1
+   backend returns a fixed value (reported as unknown to apps), Webots and
+   Isaac stubs return estimates. A joint at its critical temperature gets
+   no new command, but its motor keeps holding its last target; nothing
+   unloads it yet. A notification is attributed by the prefix the OS adds
+   itself; the text check also refuses "AXIS-OS" in full-width or with
+   invisible characters, but not every look-alike letter (Cyrillic, for
+   instance). No hours are forbidden by default: the human accepts the
+   times shown at install, and the administrator can restrict them
+   (`set_allowed_hours`); daily triggers follow the robot's clock. A hook
+   force-stopped by the OS sees its calls refused with `ESTOP_ACTIVE` until
+   its process is killed.
+
 ## Resolved limits
 
 Weaknesses that earlier versions of this page listed, and what fixed them
@@ -459,6 +485,34 @@ réel**.
    vues de dos, accroupies ou en partie cachées n'a pas encore été mesurée
    sur le robot ; le script Isaac Sim
    `sim/validation/test_isaac_f1_suivi_personne.py` n'a pas été exécuté.
+
+10. **Autonomie (SDK 1.2) : ce que l'OS ne garantit pas encore.** Les
+   zones interdites et lentes sont appliquées par le service de locomotion
+   — `walk`, `go_to`, `follow` et le flux `"walk"` passent tous par lui —
+   d'après la position estimée du robot, qui vient aujourd'hui de
+   l'odométrie : elle dérive, et un robot qui se croit ailleurs peut entrer
+   dans une zone. Les commandes articulaires des jambes (`move_legs`,
+   `move_all`, DANGEROUS) ne passent pas par la locomotion : une app qui
+   fabrique sa propre marche échappe au gardien de zones comme au gardien
+   de proximité. L'ordonnanceur (`MissionScheduler`) et le service d'énergie
+   (`EnergyService`) ne tournent que là où quelque chose les démarre —
+   aujourd'hui les tests, puisque `python -m axis_os.main` n'existe pas
+   encore ; le driver du G1 réel ne lit pas sa batterie (`get_battery` rend
+   « inconnue », le service d'énergie ne fait alors rien), et « à la
+   station » veut dire « à moins de 0,3 m d'elle » sur le robot simulé. La
+   protection thermique travaille sur la température que rend le driver :
+   le G1 simulé rend une valeur fixe (inconnue pour les apps), les bouchons
+   Webots et Isaac des estimations. Une articulation à sa température
+   critique ne reçoit plus de commande, mais son moteur continue de tenir sa
+   dernière cible ; rien ne la soulage encore. Une notification est
+   attribuée par le préfixe que l'OS ajoute lui-même ; le contrôle du texte
+   refuse aussi « AXIS-OS » en pleine chasse ou avec des caractères
+   invisibles, mais pas toutes les lettres sosies (cyrilliques, par
+   exemple). Aucune heure n'est interdite par défaut : l'humain accepte les
+   heures montrées à l'installation, et l'administrateur peut les
+   restreindre (`set_allowed_hours`) ; les déclencheurs quotidiens suivent
+   l'horloge du robot. Un hook arrêté de force par l'OS voit ses appels
+   refusés avec `ESTOP_ACTIVE` jusqu'à ce que son processus soit tué.
 
 ## Limites résolues
 

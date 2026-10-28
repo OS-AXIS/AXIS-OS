@@ -97,6 +97,7 @@ class HardwareHealthService:
     """
 
     HOT_MARGIN_C = 25.0
+    HYSTERESIS_C = 2.0
     STALE_S = 1.0
     TICK_MIN_S = 0.2
     service_id = "hardware_health"
@@ -121,15 +122,19 @@ class HardwareHealthService:
 
     # ---- mesure ------------------------------------------------------------
 
-    def _statut_de(self, temp: Optional[float], limits) -> str:
+    def _statut_de(self, temp: Optional[float], limits, avant: str = UNKNOWN) -> str:
+        """Statut d'une articulation ; pour redescendre d'un statut, il faut
+        passer HYSTERESIS_C sous son seuil (un capteur qui oscille au seuil
+        ne fait pas entrer et sortir le robot de « critical » sans cesse)."""
         debut, critique = seuils_thermiques(limits)
         if temp is None:
             return UNKNOWN
-        if not math.isfinite(temp) or temp >= critique:
+        g, h = _GRAVITE[avant], self.HYSTERESIS_C
+        if not math.isfinite(temp) or temp >= critique - (h if g >= 3 else 0.0):
             return CRITICAL
-        if temp > debut:
+        if temp > debut - (h if g >= 2 else 0.0):
             return THROTTLED
-        if temp >= critique - self.HOT_MARGIN_C:
+        if temp >= critique - self.HOT_MARGIN_C - (h if g >= 1 else 0.0):
             return HOT
         return NORMAL
 
@@ -154,7 +159,8 @@ class HardwareHealthService:
                 temp = math.nan              # mesure absente ou périmée : danger
             else:
                 temp = float(fb.temperature)
-            statut = self._statut_de(temp, limits)
+            avant = self._moteurs[jid].status if jid in self._moteurs else UNKNOWN
+            statut = self._statut_de(temp, limits, avant)
             couple = float(fb.torque) if fb is not None and math.isfinite(fb.torque) else None
             courant = (float(fb.current) if fb is not None and limits.current_is_measured
                        and math.isfinite(fb.current) else None)
@@ -163,7 +169,8 @@ class HardwareHealthService:
                 None if temp is None or not math.isfinite(temp) else round(critique - temp, 2),
                 couple, courant, statut)
             if temp is not None:
-                facteur = min(facteur, facteur_thermique(temp, limits))
+                facteur = min(facteur, 0.0 if statut == CRITICAL
+                              else facteur_thermique(temp, limits))
             if _GRAVITE[statut] > _GRAVITE[pire]:
                 pire = statut
         with self._verrou:

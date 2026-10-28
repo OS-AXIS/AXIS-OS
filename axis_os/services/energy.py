@@ -70,6 +70,7 @@ class EnergyService:
         self._prochain_essai = 0.0
         self.retries = 0
         self._dernier_tick: Optional[float] = None
+        self._vus: dict = {}                  # app_id -> instant où l'arrêt a été demandé
         self._verrou = threading.RLock()
         self._fin = threading.Event()
         self._fil: Optional[threading.Thread] = None
@@ -134,42 +135,69 @@ class EnergyService:
             if self._dernier_tick is not None and t - self._dernier_tick < self.TICK_MIN_S:
                 return self.state
             self._dernier_tick = t
-            try:
-                b = self._batterie()
-            except Exception:                    # noqa: BLE001 — capteur en panne : inconnue
-                b = None
-            pct = None if b is None else float(b.percent)
-            if pct is not None and not math.isfinite(pct):
-                pct = None
-            self.percent = pct
-            en_charge = b is not None and b.charging is True
-            if pct is None:
-                if self.state == NORMAL:
-                    self._passer(UNKNOWN)
-                return self.state
-            if en_charge:
-                if self.state in (RETURNING, DOCKED, CRITICAL, NO_STATION, RETURN_FAILED):
-                    self._nav.annuler()
-                    self._passer(CHARGING)
-                if self.state in (CHARGING, UNKNOWN) and pct >= self.resume_percent:
-                    self._passer(NORMAL)
-                elif self.state == UNKNOWN:
-                    self._passer(CHARGING)
-                return self.state
-            if pct < self.critical_percent and self.state != CRITICAL:
-                self._arret_critique(pct)
-                return self.state
-            if self.state in (NORMAL, UNKNOWN, CHARGING) and pct < self.return_percent:
-                self._partir(pct, t)
-            elif self.state in (UNKNOWN, CHARGING):
-                self._passer(NORMAL)       # assez de charge, hors station
-            if self.state in (RETURNING, NO_STATION):
-                self._conduire(t)
+            self._evaluer(t)
+            if self.state in BLOCKING_STATES:
+                self._balayer(t)
+            else:
+                self._vus.clear()
+            if self.state == CRITICAL:
+                # Un dernier walk() d'une app, entre l'arrêt et la mort de son
+                # processus, ne doit pas faire repartir le robot.
+                self._loco.halt()
             return self.state
+
+    def _balayer(self, t: float) -> None:
+        """Tant que les missions sont bloquées, tout hook d'app en cours (même
+        démarré après coup : un on_stop lancé par l'humain…) est prié de
+        s'arrêter, puis arrêté de force après grace_s (tout de suite sous
+        batterie critique) : aucune app ne garde la main sur le robot."""
+        grace = 0.0 if self.state == CRITICAL else self.grace_s
+        actives = set(self._rt.running_apps())
+        for app_id in set(self._vus) - actives:
+            del self._vus[app_id]
+        for app_id in actives:
+            if app_id not in self._vus:
+                self._vus[app_id] = t
+                self._rt.request_stop(app_id, source="os")
+            if t - self._vus[app_id] >= grace:
+                self._rt.force_stop(app_id, self.blocked_reason() or "énergie")
+
+    def _evaluer(self, t: float) -> None:
+        """Lit la batterie et fait avancer l'état."""
+        try:
+            b = self._batterie()
+        except Exception:                    # noqa: BLE001 — capteur en panne : inconnue
+            b = None
+        pct = None if b is None else float(b.percent)
+        if pct is not None and not math.isfinite(pct):
+            pct = None
+        self.percent = pct
+        en_charge = b is not None and b.charging is True
+        if pct is None:
+            if self.state == NORMAL:
+                self._passer(UNKNOWN)
+            return
+        if en_charge:
+            if self.state in (RETURNING, DOCKED, CRITICAL, NO_STATION, RETURN_FAILED):
+                self._nav.annuler()
+                self._passer(CHARGING)
+            if self.state in (CHARGING, UNKNOWN) and pct >= self.resume_percent:
+                self._passer(NORMAL)
+            elif self.state == UNKNOWN:
+                self._passer(CHARGING)
+            return
+        if pct < self.critical_percent and self.state != CRITICAL:
+            self._arret_critique(pct)
+            return
+        if self.state in (NORMAL, UNKNOWN, CHARGING) and pct < self.return_percent:
+            self._partir(pct, t)
+        elif self.state in (UNKNOWN, CHARGING):
+            self._passer(NORMAL)       # assez de charge, hors station
+        if self.state in (RETURNING, NO_STATION):
+            self._conduire(t)
 
     def _arret_critique(self, pct: float) -> None:
         self._passer(CRITICAL)
-        self._rt.stop_all_hooks("batterie critique", grace_s=0.0)
         self._arreter_suivi("batterie critique")
         self._nav.annuler()
         self._loco.halt()
@@ -179,7 +207,6 @@ class EnergyService:
     def _partir(self, pct: float, t: float) -> None:
         self._passer(RETURNING)
         self.retries, self._en_route_depuis, self._prochain_essai = 0, None, t
-        self._rt.stop_all_hooks("batterie faible : retour à la station", grace_s=self.grace_s)
         self._notifier("Batterie faible", f"{pct:.0f} % : mission arrêtée, retour à la station "
                                           f"de charge", "warning")
 

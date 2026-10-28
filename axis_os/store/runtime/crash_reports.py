@@ -5,12 +5,14 @@ se bloque (délai dépassé), l'OS garde un rapport, que l'administrateur lit
 
 Un rapport ne contient ni donnée personnelle ni secret : l'app (app_id,
 version), le hook, la cause (SandboxErrorKind), le quota enfreint, la durée,
-l'heure, et le TYPE de l'exception, jamais son message ni la pile, les
+l'heure, et le TYPE de l'exception s'il est standard (« AppError » pour une
+classe de l'app), jamais son message ni la pile, les
 paramètres de la mission ou le journal de l'app (ils peuvent contenir ce
 que l'app a vu ou entendu).
 """
 from __future__ import annotations
 
+import builtins
 import re
 import threading
 import time
@@ -46,8 +48,15 @@ class CrashReportStore:
     def record(self, app_id: str, version: str, hook: str, sandbox_result) -> CrashReport:
         kind = getattr(sandbox_result.error_kind, "name", None) or "UNKNOWN"
         m = _TYPE_EXCEPTION.search(str(sandbox_result.error or ""))
+        type_exc = None
+        if m:
+            # Un nom de classe écrit par l'app peut porter n'importe quoi :
+            # seules les exceptions standard de Python sont nommées.
+            std = getattr(builtins, m.group(1), None)
+            type_exc = m.group(1) if isinstance(std, type) and issubclass(std, BaseException) \
+                else "AppError"
         v = sandbox_result.violation
-        r = CrashReport(app_id, version, hook, kind, m.group(1) if m else None,
+        r = CrashReport(app_id, version, hook, kind, type_exc,
                         getattr(v, "rule", None), getattr(v, "value", None),
                         getattr(v, "limit", None), round(float(sandbox_result.duration_s), 3),
                         time.time())

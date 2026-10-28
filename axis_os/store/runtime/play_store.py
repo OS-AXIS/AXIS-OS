@@ -1930,15 +1930,26 @@ class PlayStoreRuntime:
             lambda: "température moteur critique" if sante.thermal_status() == "critical"
             else None)
 
+        derniere = {}
+
+        def alerter(statut: str) -> bool:
+            # Une alerte par statut et par minute au plus : un capteur qui
+            # hésite ne noie pas l'opérateur.
+            t = self._clock()
+            if t - derniere.get(statut, -math.inf) < 60.0:
+                return False
+            derniere[statut] = t
+            return self._notifications is not None
+
         def changement(ancien: str, nouveau: str) -> None:
             if nouveau == "critical":
                 self.stop_all_hooks("température moteur critique")
-                if self._notifications is not None:
+                if alerter("critical"):
                     chauds = [m.joint for m in sante.motors() if m.status == "critical"]
                     self._notifications.from_os(
                         "Moteur trop chaud", f"arrêt sûr du robot — articulations : "
                         f"{', '.join(chauds) or 'mesure absente ou périmée'}", "urgent")
-            elif nouveau == "throttled" and self._notifications is not None:
+            elif nouveau == "throttled" and alerter("throttled"):
                 self._notifications.from_os("Moteur chaud",
                                             "vitesses et couples réduits", "warning")
         sante.add_listener(changement)

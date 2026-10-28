@@ -236,9 +236,10 @@ class JointSafetyGuard:
     # était fixe et limits.temperature_max n'était pas lue.
     # Entre le début du bridage (THERMAL_DERATING_SPAN_C sous le seuil
     # critique, 65 °C pour 80 °C : TEMPERATURE_WARNING_C) et le seuil
-    # critique, vitesse et couple commandés sont plafonnés à une part de
-    # vel_max et torque_max qui descend jusqu'à THERMAL_DERATING_MIN : la
-    # commande qui dépasse est refusée (THERMAL_DERATING), jamais réduite.
+    # critique, vitesse, couple et écart de position commandés sont
+    # plafonnés à une part de vel_max, torque_max et position_delta_max qui
+    # descend jusqu'à THERMAL_DERATING_MIN : la commande qui dépasse est
+    # refusée (THERMAL_DERATING), jamais réduite.
     TEMPERATURE_CRITICAL_C = 80.0
     TEMPERATURE_WARNING_C  = 65.0
     THERMAL_DERATING_SPAN_C = 15.0
@@ -472,8 +473,16 @@ class JointSafetyGuard:
                 return False, v
             if temp > debut:
                 k = facteur_thermique(temp, self.limits)
-                for val, maxi in ((command.velocity, self.limits.vel_max),
-                                  (command.torque, self.limits.torque_max)):
+                bornes = [(command.velocity, self.limits.vel_max),
+                          (command.torque, self.limits.torque_max)]
+                # En position (le G1), le couple vient du PD du moteur et
+                # croît avec l'écart : c'est lui qu'il faut brider.
+                if (self.limits.position_delta_max is not None
+                        and command.position is not None
+                        and math.isfinite(feedback.position)):
+                    bornes.append((command.position - feedback.position,
+                                   self.limits.position_delta_max))
+                for val, maxi in bornes:
                     if val is not None and abs(val) > maxi * k:
                         v = SafetyViolation(
                             joint_id=self.joint_id, rule="THERMAL_DERATING",
