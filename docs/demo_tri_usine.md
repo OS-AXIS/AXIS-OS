@@ -242,6 +242,14 @@ essai) :
   l'URDF et le bras simulé.
 - **L'inclinaison** du carton porté contre le buste en marchant.
 
+Correctifs du 2026-10-28 (RTX PRO 5000) : prise refusée « hors de portée »
+à tort (lacet du carton non replié, robot tourné d'un quart de tour) ; chute
+déclarée à t = 0 en évaluation (physique avancée sans équilibre pendant les
+attentes de rendu). Au prochain essai, le journal dit, juste avant la
+boucle : « robot avant la boucle : X° d'inclinaison, après N pas de
+physique sans équilibre — remis debout » ; avec « [tete_rgb] premières
+données après N image(s) », il confirme (ou non) cette cause.
+
 ## Budget GPU
 
 L'essentiel du développement se fait **sans rendu**, bien plus vite. Le

@@ -101,6 +101,11 @@ class BaseState:
     joint_vel    : vitesse de chaque articulation, indexée par son nom.
     timestamp_ns : instant de la lecture, en nanosecondes (par défaut,
                    l'horloge monotone du système, qui ne recule jamais).
+    pas_physique : en simulation, numéro du dernier pas de physique dont
+                   cet état est le résultat ; None sur un vrai robot. Voir
+                   LocomotionService.tick : aucune décision (chute,
+                   consigne) n'est prise sur un état que la physique n'a
+                   pas encore mis à jour depuis le démarrage du service.
 
     `ang_vel_body` porte son repère dans son nom. Pourquoi : le repère
     d'une vitesse angulaire ne se devine pas, et une erreur de repère fait
@@ -117,6 +122,7 @@ class BaseState:
     joint_pos: Dict[str, float]
     joint_vel: Dict[str, float]
     timestamp_ns: int = field(default_factory=time.monotonic_ns)
+    pas_physique: Optional[int] = None
 
 
 class ILocomotionAdapter(ABC):
@@ -251,7 +257,12 @@ class LocomotionService(IService):
         # consignes articulaires refusées par le HAL (refused), chutes
         # (falls), consignes non finies refusées (non_finies).
         self.stats = {"ticks": 0, "stale": 0, "clamped": 0,
-                      "refused": 0, "falls": 0, "non_finies": 0}
+                      "refused": 0, "falls": 0, "non_finies": 0,
+                      "attentes_physique": 0}
+        # Pas de physique au premier tick après start() (simulation) ; None
+        # une fois la physique avancée : à partir de là, chaque état compte.
+        self._pas_depart: Optional[int] = None
+        self._physique_avancee = False
 
     # ---- Interface IService, commune à tous les services système --------
 
@@ -271,6 +282,7 @@ class LocomotionService(IService):
         après une chute (état FALLEN)."""
         self._adapter.reset()
         self._twist, self._twist_t = Twist(), None
+        self._pas_depart, self._physique_avancee = None, False
         self.state = LocomotionState.RUNNING
         return HALStatus.OK
 
@@ -403,6 +415,19 @@ class LocomotionService(IService):
             return ServiceResult(ok=False, reason="service arrêté")
 
         st = self._read_state()
+        if not self._physique_avancee and st.pas_physique is not None:
+            # Simulation : tant que la physique n'a pas avancé depuis le
+            # démarrage, l'état lu n'en est pas le résultat (constaté sur
+            # GPU, 2026-10-28 : chute déclarée à t = 0, avant le premier
+            # pas). On n'en tire rien, et on n'envoie rien. Dès qu'un pas a
+            # eu lieu, la détection de chute s'applique à chaque état.
+            if self._pas_depart is None:
+                self._pas_depart = st.pas_physique
+            if st.pas_physique <= self._pas_depart:
+                self.stats["attentes_physique"] += 1
+                return ServiceResult(ok=False, reason="état pas encore mis à jour par la "
+                                                      "physique — aucune consigne")
+            self._physique_avancee = True
         # Chute : plus aucune consigne, ni ce pas-ci ni les suivants
         # (exigence 3, en tête du module).
         if self._adapter.is_fallen(st):
