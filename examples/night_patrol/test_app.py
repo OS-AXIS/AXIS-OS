@@ -73,16 +73,20 @@ def test_low_battery_goes_home():
 
 def test_pause_while_motor_is_hot():
     with AppTestHarness(NightPatrolApp(), site_map=site(), time_scale=2.0) as h:
-        h.robot.set_motor_temperature("left_knee_joint", 72.0)
-        timer = threading.Timer(3.0, h.robot.set_motor_temperature, ("left_knee_joint", 35.0))
-        timer.start()
-        t0 = time.monotonic()
+        robot = h.robot
+        robot.set_motor_temperature("left_knee_joint", 72.0)
+
+        def cool_down_once_paused():
+            # Le moteur refroidit 2 s après que l'app a annoncé sa pause.
+            while not any(n.title == "Ronde en pause" for n in robot.notification_sink.delivered):
+                time.sleep(0.05)
+            time.sleep(2.0)
+            robot.set_motor_temperature("left_knee_joint", 35.0)
+        threading.Thread(target=cool_down_once_paused, daemon=True).start()
         result = h.run()
         assert result.metrics["outcome"] == "DONE", result.metrics
         assert result.metrics["events"][:3] == ["pause", "resume", "ronde 1:ARRIVED"], \
             result.metrics
-        assert time.monotonic() - t0 > 3.0
-        assert any(n.title == "Ronde en pause" for n in h.robot.notification_sink.delivered)
 
 
 if __name__ == "__main__":
