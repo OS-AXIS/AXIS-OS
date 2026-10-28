@@ -74,8 +74,9 @@ from axis_os.store.sdk.stream import (
     MAX_JOINTS, StreamAck, StreamMetrics, TargetStream, stream_params, stream_target,
 )
 from axis_os.store.sdk.results import (
-    EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, ObjectSpec,
-    PersonInfo, RefusalCode, RobotInfo, SafetyStatus, object_from_target, refused,
+    EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, Location, ObjectSpec,
+    PersonInfo, PlaceInfo, RefusalCode, RobotInfo, SafetyStatus, ZoneInfo, object_from_target,
+    refused,
     require_int, require_language, require_number, require_text, surface_height_from_target,
 )
 from axis_os.store.runtime.canal_ipc import (
@@ -242,9 +243,12 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "safety_status": _VIDE,
     # Bornes larges ici ; les bornes exactes sont celles de RobotContext
     # (require_number), vérifiées à nouveau côté OS.
-    "go_to": Objet({"x": Nombre(-1e4, 1e4), "y": Nombre(-1e4, 1e4),
-                    "timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
-                   facultatifs={"theta": Nombre(-2 * math.pi, 2 * math.pi)}),
+    # Des coordonnées (x et y) OU un lieu nommé (place) : vérifié par le
+    # serveur.
+    "go_to": Objet({"timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
+                   facultatifs={"x": Nombre(-1e4, 1e4), "y": Nombre(-1e4, 1e4),
+                                "theta": Nombre(-2 * math.pi, 2 * math.pi),
+                                "place": Chaine(64)}),
     "pick": Objet({"center": Liste(Nombre(), 3), "size": Liste(Nombre(), 3),
                    "timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)}),
     "place": Objet({"timeout_s": Nombre(0, RobotContext.MAX_ACTION_S)},
@@ -253,8 +257,10 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "should_stop": _VIDE,
     "report_progress": Objet({"fraction": Nombre(0, 1),
                               "message": Chaine(PROGRESS_MESSAGE_MAX)}),
-    "subscribe_event": Objet({"kind": UnParmi("estop", "alert", "low_battery")},
-                             facultatifs={"threshold_percent": Nombre(1, 99)}),
+    "subscribe_event": Objet({"kind": UnParmi("estop", "alert", "low_battery", "zone_enter",
+                                              "zone_exit", "thermal")},
+                             facultatifs={"threshold_percent": Nombre(1, 99),
+                                          "zone": Chaine(64)}),
     "poll_events": Objet({}, facultatifs={"since_index": Entier(0, 2 ** 31)}),
     "ask_confirmation": Objet({"question": Chaine(QUESTION_MAX),
                                "timeout_s": Nombre(0, CONFIRMATION_MAX_S)}),
@@ -278,6 +284,9 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "stop_animation": _VIDE,
     "speak": Objet({"text": Chaine(RobotContext.SPEAK_MAX_CHARS), "language": Chaine(8)}),
     "get_setting": Objet({"name": Chaine(32)}),
+    "where_am_i": _VIDE,
+    "places": _VIDE,
+    "zones": _VIDE,
     # Bornes exactes : RobotContext.person_in_front() et follow(), côté OS.
     "people": _VIDE,
     "person_in_front": Objet({"max_distance_m": Nombre(0, 100)}),
@@ -675,6 +684,13 @@ class HALBridgeServer:
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.get_setting(cmd.payload["name"]))
 
+            elif cmd.action == "where_am_i":
+                return HALResponse(cmd.request_id, True, data=self._ctx.where_am_i().to_json())
+
+            elif cmd.action in ("places", "zones"):
+                return HALResponse(cmd.request_id, True,
+                                   data=[o.to_json() for o in getattr(self._ctx, cmd.action)()])
+
             elif cmd.action == "people":
                 return HALResponse(cmd.request_id, True,
                                    data=[p.to_json() for p in self._ctx.people()])
@@ -766,15 +782,17 @@ class HALBridgeServer:
             elif cmd.action == "subscribe_event":
                 p = cmd.payload
                 return HALResponse(cmd.request_id, True, data=self._ctx._peut_abonner(
-                    p["kind"], p.get("threshold_percent")))
+                    p["kind"], p.get("threshold_percent"), p.get("zone")))
 
             elif cmd.action == "poll_events":
                 # Rien à scruter sans au moins une permission d'événement.
                 if not any(self._ctx._manifest.has_permission(p) for p in (
                         Permission.MISSION_LIFECYCLE, Permission.WATCHDOG_READ,
-                        Permission.SYSTEM_INFO)):
+                        Permission.SYSTEM_INFO, Permission.LOCATION,
+                        Permission.HARDWARE_HEALTH)):
                     raise SandboxPermissionError(
-                        "poll_events exige MISSION_LIFECYCLE, WATCHDOG_READ ou SYSTEM_INFO")
+                        "poll_events exige MISSION_LIFECYCLE, WATCHDOG_READ, SYSTEM_INFO, "
+                        "LOCATION ou HARDWARE_HEALTH")
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx._etat_evenements(cmd.payload.get("since_index")))
 
@@ -786,8 +804,15 @@ class HALBridgeServer:
             elif cmd.action in ("go_to", "pick", "place", "rest_pose"):
                 p = cmd.payload
                 if cmd.action == "go_to":
-                    res = self._ctx.go_to(p["x"], p["y"], p.get("theta"),
-                                          timeout_s=p["timeout_s"])
+                    if (p.get("place") is None) == (p.get("x") is None or p.get("y") is None) \
+                            or (p.get("place") is not None and (p.get("x") is not None
+                                                                or p.get("y") is not None)):
+                        raise InvalidArgumentError("go_to : x et y, OU un lieu (place)")
+                    if p.get("place") is not None:
+                        res = self._ctx.go_to(p["place"], timeout_s=p["timeout_s"])
+                    else:
+                        res = self._ctx.go_to(p["x"], p["y"], p.get("theta"),
+                                              timeout_s=p["timeout_s"])
                 elif cmd.action == "pick":
                     res = self._ctx.pick(ObjectSpec(tuple(p["center"]), tuple(p["size"])),
                                          timeout_s=p["timeout_s"])
@@ -1338,12 +1363,19 @@ class HALBridgeClient:
     MAX_ACTION_S = RobotContext.MAX_ACTION_S
     api_version: str = RobotContext.api_version
 
-    def go_to(self, x: float, y: float, theta: Optional[float] = None, *,
+    def go_to(self, x, y: Optional[float] = None, theta: Optional[float] = None, *,
               timeout_s: float) -> ActionResult:
+        delai = require_number("timeout_s", timeout_s, mini=0.0, maxi=self.MAX_ACTION_S,
+                               strict_min=True)
+        if isinstance(x, str):
+            if y is not None or theta is not None:
+                raise InvalidArgumentError("go_to(nom_du_lieu) : sans y ni theta")
+            return ActionResult.from_json(self._call(
+                "go_to", {"place": require_text("place", x, 64), "timeout_s": delai},
+                duree_nominale_s=delai))
         payload = {"x": require_number("x", x, mini=-1e4, maxi=1e4),
                    "y": require_number("y", y, mini=-1e4, maxi=1e4),
-                   "timeout_s": require_number("timeout_s", timeout_s, mini=0.0,
-                                               maxi=self.MAX_ACTION_S, strict_min=True)}
+                   "timeout_s": delai}
         if theta is not None:
             payload["theta"] = require_number("theta", theta, mini=-2 * math.pi,
                                               maxi=2 * math.pi)
@@ -1507,12 +1539,15 @@ class HALBridgeClient:
             "message": require_text("message", message, PROGRESS_MESSAGE_MAX,
                                     allow_empty=True)})
 
-    def _abonner(self, kind: str, callback, threshold: Optional[float] = None) -> bool:
+    def _abonner(self, kind: str, callback, threshold: Optional[float] = None,
+                 zone: Optional[str] = None) -> bool:
         """Vérifie le droit auprès de l'OS, puis abonne `callback` au thread
         des événements de ce processus (créé au premier abonnement)."""
         if not callable(callback):
             raise InvalidArgumentError("callback doit être une fonction")
         payload = {"kind": kind}
+        if zone is not None:
+            payload["zone"] = require_text("name", zone, 64).strip()
         if threshold is not None:
             payload["threshold_percent"] = require_number("threshold_percent", threshold,
                                                           mini=1.0, maxi=99.0)
@@ -1522,8 +1557,23 @@ class HALBridgeClient:
             self._evenements = EventPoller(
                 lambda i: self._call("poll_events", {} if i is None else {"since_index": i}),
                 self.log)
-        self._evenements.add(kind, callback, threshold)
+        self._evenements.add(kind, callback, threshold, zone=payload.get("zone"))
         return True
+
+    def on_enter_zone(self, name: str, callback) -> None:
+        self._abonner("zone_enter", callback, zone=name)
+
+    def on_exit_zone(self, name: str, callback) -> None:
+        self._abonner("zone_exit", callback, zone=name)
+
+    def where_am_i(self) -> Location:
+        return Location.from_json(self._call("where_am_i", {}))
+
+    def places(self) -> list:
+        return [PlaceInfo.from_json(d) for d in self._call("places", {}) or []]
+
+    def zones(self) -> list:
+        return [ZoneInfo.from_json(d) for d in self._call("zones", {}) or []]
 
     def on_estop(self, callback) -> None:
         self._abonner("estop", callback)

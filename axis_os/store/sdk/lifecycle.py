@@ -83,8 +83,9 @@ class EventPoller:
     """Thread qui interroge l'OS et appelle les callbacks de l'app.
 
     `lire(since_index)` rend un dict : estop (bool), alerts (liste de
-    dicts), next_index (int), battery_percent (float ou None). Il lève
-    quand le pont est fermé : le thread s'arrête alors."""
+    dicts), next_index (int), battery_percent (float ou None), zones (noms
+    des zones où est le robot, ou None), thermal (état thermique, ou None).
+    Il lève quand le pont est fermé : le thread s'arrête alors."""
 
     PERIOD_S = 0.1
 
@@ -96,17 +97,26 @@ class EventPoller:
         self._estop: List[Callable] = []
         self._alertes: List[Callable] = []
         self._batterie: List[list] = []        # [callback, seuil, déjà sous le seuil]
+        self._zones: List[tuple] = []          # (« zone_enter » | « zone_exit », nom, callback)
+        self._thermique: List[Callable] = []
+        self._zones_vues: Optional[set] = None
+        self._thermique_vu: Optional[str] = None
         self._arret = threading.Event()
         self._fil: Optional[threading.Thread] = None
         self._index: Optional[int] = None
         self._estop_vu = False
 
-    def add(self, kind: str, callback: Callable, threshold: Optional[float] = None) -> None:
+    def add(self, kind: str, callback: Callable, threshold: Optional[float] = None,
+            zone: Optional[str] = None) -> None:
         with self._verrou:
             if kind == "estop":
                 self._estop.append(callback)
             elif kind == "alert":
                 self._alertes.append(callback)
+            elif kind in ("zone_enter", "zone_exit"):
+                self._zones.append((kind, zone, callback))
+            elif kind == "thermal":
+                self._thermique.append(callback)
             else:
                 self._batterie.append([callback, threshold, False])
             if self._fil is None:
@@ -166,6 +176,26 @@ class EventPoller:
         self._index = etat.get("next_index", self._index)
         for cb in faible:
             self._appeler(cb, pct)
+        zones = etat.get("zones")
+        if zones is not None:
+            vues = set(zones)
+            if self._zones_vues is not None:
+                with self._verrou:
+                    abonnes = list(self._zones)
+                for kind, nom, cb in abonnes:
+                    entree = nom in vues and nom not in self._zones_vues
+                    sortie = nom in self._zones_vues and nom not in vues
+                    if (kind == "zone_enter" and entree) or (kind == "zone_exit" and sortie):
+                        self._appeler(cb, nom)
+            self._zones_vues = vues
+        thermique = etat.get("thermal")
+        if thermique is not None:
+            if self._thermique_vu is not None and thermique != self._thermique_vu:
+                with self._verrou:
+                    abonnes = list(self._thermique)
+                for cb in abonnes:
+                    self._appeler(cb, thermique)
+            self._thermique_vu = thermique
         return True
 
     def _boucle(self) -> None:

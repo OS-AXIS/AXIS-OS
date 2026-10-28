@@ -47,6 +47,8 @@ from axis_os.services.locomotion.service import (
 )
 from axis_os.services.manipulation.service import Etat, ManipulationService
 from axis_os.services.navigation.service import Carte, NavigationService, Pose2D
+from axis_os.services.navigation.site_map import SiteMap
+from axis_os.services.navigation.zones import GardienZones
 from axis_os.services.people.appearance import appearance_descriptor, synthetic_person_image
 from axis_os.services.people.detector import IPersonDetector, PersonDetection
 from axis_os.services.people.follow import FollowService
@@ -341,6 +343,8 @@ class SimulatedRobot:
     speech           : avec un service de parole ; hear() lui fait entendre
                        une phrase.
     seed             : graine du bruit des mesures simulées.
+    site_map         : carte du sens (lieux nommés, zones) ; par défaut une
+                       carte vide, que le test complète par publish().
     time_scale       : le temps du robot passe `time_scale` fois plus vite
                        que le temps réel (2 : un essai de 20 s en dure 10).
                        Tout ce qui mesure le temps du robot (services, apps
@@ -355,7 +359,8 @@ class SimulatedRobot:
                  objects=(), battery_percent: Optional[float] = None,
                  grasp_succeeds: bool = True, tick_hz: float = 50.0,
                  max_twist: Twist = Twist(0.4, 0.2, 0.8), people=(),
-                 speech: bool = False, seed: int = 0, time_scale: float = 1.0):
+                 speech: bool = False, seed: int = 0, time_scale: float = 1.0,
+                 site_map: Optional[SiteMap] = None):
         if time_scale == 1.0:
             self.clock = time.monotonic
         else:
@@ -387,10 +392,13 @@ class SimulatedRobot:
         self.guard = (GardienProximite(self._scan, self._pose_xyc,
                                        obstacles=self.carte.obstacles, horloge=self.clock)
                       if proximity_guard else None)
+        self.site_map = site_map if site_map is not None else SiteMap()
+        self.zone_guard = GardienZones(self.site_map, self._pose_xyc)
         self.locomotion = LocomotionService(self.adapter, self._etat_base, self._envoyer,
-                                            clock=self.clock, gardien=self.guard)
+                                            clock=self.clock, gardien=self.guard,
+                                            zones=self.zone_guard)
         self.navigation = NavigationService(self.carte, self._pose2d, self.locomotion,
-                                            horloge=self.clock)
+                                            horloge=self.clock, site_map=self.site_map)
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
                                                  self._vers_robot, self._prise_tient,
                                                  gardien=self.guard, horloge=self.clock)
@@ -498,6 +506,7 @@ class SimulatedRobot:
                         speech_synthesizer=self.voice, speech_service=self.speech,
                         people_service=self.people_service,
                         follow_service=self.follow_service,
+                        site_map=self.site_map,
                         clock=self.clock, profil=Profil.SIMULATION,
                         confirmer_permissions=accepter_tout_SIMULATION)
         reglages.update(kw)

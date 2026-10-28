@@ -56,6 +56,8 @@ class RefusalCode(str, Enum):
     STREAM_STOPPED = "STREAM_STOPPED"           # flux arrêté : reprise explicite exigée
     TARGET_LOST = "TARGET_LOST"                 # personne suivie perdue, ou numéro inconnu
     DEADMAN = "DEADMAN"                         # homme mort : plus de nouvelles de l'app
+    FORBIDDEN_ZONE = "FORBIDDEN_ZONE"           # destination dans une zone interdite
+    RATE_LIMITED_APP = "RATE_LIMITED_APP"       # trop d'appels de l'app (notifications, sons)
 
 
 class AxisRefusal(Exception):
@@ -307,6 +309,87 @@ class PersonInfo:
         return cls(person_id=int(d["person_id"]), distance_m=float(d["distance_m"]),
                    bearing_rad=float(d["bearing_rad"]), seen_for_s=float(d["seen_for_s"]),
                    confidence=float(d["confidence"]))
+
+
+# ─── Position, lieux et zones (where_am_i, places, zones) ─────────────────
+
+@dataclass(frozen=True)
+class Location:
+    """Où est le robot (ctx.where_am_i()). `known` faux : la localisation ne
+    répond pas, et tout le reste vaut None. `uncertainty_m` : None quand la
+    localisation ne la connaît pas (l'odométrie seule), jamais inventée.
+    `timestamp` : heure du robot de la mesure. `zones` : noms des zones de
+    la carte où se trouve le robot."""
+    known: bool
+    x: Optional[float] = None
+    y: Optional[float] = None
+    heading: Optional[float] = None
+    uncertainty_m: Optional[float] = None
+    timestamp: Optional[float] = None
+    nearest_place: Optional[str] = None
+    nearest_place_distance_m: Optional[float] = None
+    zones: tuple = ()
+    map_version: Optional[int] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        d = {k: getattr(self, k) for k in ("known", "x", "y", "heading", "uncertainty_m",
+                                           "timestamp", "nearest_place",
+                                           "nearest_place_distance_m", "map_version")}
+        d["zones"] = list(self.zones)
+        return d
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "Location":
+        return cls(known=d.get("known") is True, x=d.get("x"), y=d.get("y"),
+                   heading=d.get("heading"), uncertainty_m=d.get("uncertainty_m"),
+                   timestamp=d.get("timestamp"), nearest_place=d.get("nearest_place"),
+                   nearest_place_distance_m=d.get("nearest_place_distance_m"),
+                   zones=tuple(d.get("zones") or ()), map_version=d.get("map_version"))
+
+
+@dataclass(frozen=True)
+class PlaceInfo:
+    """Un lieu nommé de la carte du site (lecture seule). `kind` : « place »,
+    ou « charging_station » pour la station de charge."""
+    name: str
+    x: float
+    y: float
+    heading: Optional[float]
+    kind: str
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"name": self.name, "x": self.x, "y": self.y, "heading": self.heading,
+                "kind": self.kind}
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "PlaceInfo":
+        return cls(str(d["name"]), float(d["x"]), float(d["y"]), d.get("heading"),
+                   str(d["kind"]))
+
+
+@dataclass(frozen=True)
+class ZoneInfo:
+    """Une zone de la carte du site (lecture seule) : `kind` « forbidden »
+    (le robot n'y entre jamais), « slow » (vitesse plafonnée à
+    max_speed_mps) ou « named »."""
+    name: str
+    kind: str
+    polygon: tuple
+    max_speed_mps: Optional[float] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        return {"name": self.name, "kind": self.kind,
+                "polygon": [list(p) for p in self.polygon], "max_speed_mps": self.max_speed_mps}
+
+    @classmethod
+    def from_json(cls, d: Dict[str, Any]) -> "ZoneInfo":
+        return cls(str(d["name"]), str(d["kind"]),
+                   tuple((float(a), float(b)) for a, b in d["polygon"]), d.get("max_speed_mps"))
+
+    def contains(self, x: float, y: float) -> bool:
+        """Le point (x, y), repère monde, est-il dans la zone ?"""
+        from axis_os.services.navigation.site_map import point_in_polygon
+        return point_in_polygon(x, y, self.polygon)
 
 
 # ─── Objets à saisir (pick, place) ───────────────────────────────────────

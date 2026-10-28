@@ -187,6 +187,19 @@ class Permission(Enum):
     # Faire suivre une personne par le robot (follow, stop_follow). Exige
     # aussi PEOPLE_DETECT et les droits de walk.
     PEOPLE_FOLLOW        = auto()
+    # Savoir où est le robot sur la carte du site, lire ses lieux nommés et
+    # ses zones, être prévenue en entrant ou en sortant d'une zone
+    # (where_am_i, places, zones, on_enter_zone, on_exit_zone).
+    LOCATION             = auto()
+    # Envoyer une notification à l'opérateur (notify), sous le nom de l'app.
+    NOTIFICATIONS        = auto()
+    # Être lancée par l'OS selon les déclencheurs de son manifeste (heure,
+    # intervalle, batterie, entrée dans une zone) : le robot bougera sans
+    # qu'on le lui demande sur le moment.
+    SCHEDULED_MISSIONS   = auto()
+    # Lire la santé du matériel : batterie détaillée, moteurs, état
+    # thermique (battery, motors_health, thermal_status, on_thermal_change).
+    HARDWARE_HEALTH      = auto()
 
 
 class ProtectionLevel(Enum):
@@ -277,6 +290,14 @@ PERMISSION_LEVELS: dict[Permission, ProtectionLevel] = {
     Permission.PEOPLE_DETECT:        ProtectionLevel.NORMAL,
     # DANGEROUS : le robot marche vers une personne.
     Permission.PEOPLE_FOLLOW:        ProtectionLevel.DANGEROUS,
+    # NORMAL : de la lecture (position, carte) et un message à l'opérateur,
+    # sous le nom de l'app et à débit limité. LOCATION est montrée à
+    # l'installation (PERMISSION_NOTICES).
+    Permission.LOCATION:             ProtectionLevel.NORMAL,
+    Permission.NOTIFICATIONS:        ProtectionLevel.NORMAL,
+    Permission.HARDWARE_HEALTH:      ProtectionLevel.NORMAL,
+    # DANGEROUS : le robot bougera sans qu'on le lui demande sur le moment.
+    Permission.SCHEDULED_MISSIONS:   ProtectionLevel.DANGEROUS,
 }
 
 # Ce que l'humain doit lire à l'installation, quel que soit le niveau de la
@@ -289,6 +310,9 @@ PERMISSION_NOTICES: dict[Permission, str] = {
                                "(des numéros temporaires, des distances, des directions ; "
                                "jamais leur identité ni leur visage)"),
     Permission.PEOPLE_FOLLOW: "cette app peut faire marcher le robot derrière une personne",
+    Permission.LOCATION: "cette app connaît la position du robot sur la carte du site",
+    Permission.SCHEDULED_MISSIONS: ("cette app se lance d'elle-même (tâches planifiées) : le "
+                                    "robot bougera sans qu'on le lui demande sur le moment"),
 }
 
 
@@ -442,6 +466,80 @@ class HardwareRequirements:
 
 SETTING_TYPES = ("bool", "int", "float", "str", "choice")
 MAX_SETTINGS = 32
+
+# Déclencheurs de tâches planifiées (voir TriggerSpec).
+TRIGGER_KINDS = ("daily", "interval", "battery_below", "zone_enter")
+MAX_TRIGGERS = 8
+# Intervalle minimal entre deux lancements par un même déclencheur : pas de
+# missions en rafale.
+TRIGGER_INTERVAL_MIN_S = 300.0
+TRIGGER_INTERVAL_MAX_S = 7 * 24 * 3600.0
+MAX_REQUIRED_PLACES = 32
+_HEURE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+@dataclass(frozen=True)
+class TriggerSpec:
+    """Un déclencheur de tâche planifiée, déclaré dans le manifeste : l'OS
+    lance alors la mission de l'app (params {"trigger": name}), avec ses
+    quotas et sous toutes les protections. Exige SCHEDULED_MISSIONS.
+
+    kind « daily »         : chaque jour à `at` (« HH:MM », heure locale du
+                             robot) ;
+         « interval »      : toutes les `every_s` secondes (au moins
+                             TRIGGER_INTERVAL_MIN_S) ;
+         « battery_below » : quand la batterie passe sous `percent` ;
+         « zone_enter »    : quand le robot entre dans la zone `zone`.
+
+    Le texte de chaque déclencheur est montré à l'installation (describe)."""
+    name: str
+    kind: str
+    at: Optional[str] = None
+    every_s: Optional[float] = None
+    percent: Optional[float] = None
+    zone: Optional[str] = None
+
+    def problems(self) -> list:
+        p = []
+        if not isinstance(self.name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", self.name):
+            p.append(f"déclencheur {str(self.name)[:40]!r} : nom en minuscules, chiffres et _")
+            return p
+        if self.kind not in TRIGGER_KINDS:
+            return [f"déclencheur {self.name} : type inconnu {self.kind!r} ({TRIGGER_KINDS})"]
+        champs = {"daily": "at", "interval": "every_s", "battery_below": "percent",
+                  "zone_enter": "zone"}
+        for k, nom in champs.items():
+            if (getattr(self, nom) is not None) != (k == self.kind):
+                p.append(f"déclencheur {self.name} : « {nom} » va avec le type {k} seulement")
+        if p:
+            return p
+        if self.kind == "daily" and (not isinstance(self.at, str) or not _HEURE.match(self.at)):
+            p.append(f"déclencheur {self.name} : at = « HH:MM » (00:00 à 23:59)")
+        if self.kind == "interval":
+            v = self.every_s
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+                    or not TRIGGER_INTERVAL_MIN_S <= v <= TRIGGER_INTERVAL_MAX_S:
+                p.append(f"déclencheur {self.name} : every_s dans [{TRIGGER_INTERVAL_MIN_S:g}, "
+                         f"{TRIGGER_INTERVAL_MAX_S:g}] s")
+        if self.kind == "battery_below":
+            v = self.percent
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+                    or not 5.0 <= v <= 95.0:
+                p.append(f"déclencheur {self.name} : percent dans [5, 95]")
+        if self.kind == "zone_enter" and (not isinstance(self.zone, str) or not self.zone.strip()
+                                          or len(self.zone) > 64):
+            p.append(f"déclencheur {self.name} : zone = un nom de zone de la carte")
+        return p
+
+    def describe(self) -> str:
+        """Le déclencheur, en clair, pour l'humain qui installe l'app."""
+        if self.kind == "daily":
+            return f"{self.name} : tous les jours à {self.at}"
+        if self.kind == "interval":
+            return f"{self.name} : toutes les {self.every_s / 60:g} minutes"
+        if self.kind == "battery_below":
+            return f"{self.name} : quand la batterie passe sous {self.percent:g} %"
+        return f"{self.name} : quand le robot entre dans la zone « {self.zone} »"
 _NOM_REGLAGE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
@@ -593,6 +691,14 @@ class AppManifest:
     # Réglages de l'app, choisis par l'utilisateur (voir SettingSpec).
     settings: list[SettingSpec] = field(default_factory=list)
 
+    # Lieux nommés de la carte du site dont l'app a besoin (« quai 3 »,
+    # « station de charge ») : l'installation est refusée s'il en manque un.
+    required_places: list[str] = field(default_factory=list)
+
+    # Déclencheurs de tâches planifiées (voir TriggerSpec) ; exigent la
+    # permission SCHEDULED_MISSIONS.
+    triggers: list[TriggerSpec] = field(default_factory=list)
+
     # Version minimale de l'API du SDK (axis_os.store.sdk.version.API_VERSION,
     # distincte de la version d'AXIS-OS de sdk_version_min) dont l'app a
     # besoin, au format SemVer. L'installation est refusée si l'API de l'OS
@@ -733,6 +839,23 @@ class AppManifest:
                 errors.append("settings : deux réglages portent le même nom")
             for s in self.settings:
                 errors.extend(s.problems())
+        if type(self.required_places) is not list or len(self.required_places) > MAX_REQUIRED_PLACES \
+                or any(not isinstance(n, str) or not n.strip() or len(n) > 64
+                       or not n.isprintable() for n in self.required_places):
+            errors.append(f"required_places : une liste d'au plus {MAX_REQUIRED_PLACES} noms "
+                          f"de lieux (64 caractères au plus)")
+        if type(self.triggers) is not list or len(self.triggers) > MAX_TRIGGERS \
+                or any(type(t) is not TriggerSpec for t in self.triggers):
+            errors.append(f"triggers : une liste d'au plus {MAX_TRIGGERS} TriggerSpec")
+        else:
+            noms = [t.name for t in self.triggers]
+            if len(set(noms)) != len(noms):
+                errors.append("triggers : deux déclencheurs portent le même nom")
+            for t in self.triggers:
+                errors.extend(t.problems())
+            if self.triggers and Permission.SCHEDULED_MISSIONS not in self.permissions:
+                errors.append("triggers exige la permission SCHEDULED_MISSIONS : l'humain doit "
+                              "accepter que le robot bouge sans qu'on le lui demande")
         # Une app qui exige une politique apprise (Capability.AI_POLICY) doit
         # déclarer ACTUATORS_AI_DRIVEN (règle ajoutée après un audit de
         # sécurité, octobre 2026). Sinon le pilotage par IA resterait

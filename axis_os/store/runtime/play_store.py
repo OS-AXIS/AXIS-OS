@@ -227,6 +227,8 @@ def confirmer_au_terminal(manifest: AppManifest, permissions: List[Permission],
         print(f"    - {p.name}")
     for avis in permission_notices(manifest):
         print(f"  ⚠ À savoir : {avis}")
+    for t in manifest.triggers:
+        print(f"  ⏰ Tâche planifiée : {_affichable(t.describe(), 120)}")
     print(f"  Prix       : {decrire_prix(manifest)}")
     if details is not None and details.prix_precedent:
         print(f"  ⚠ PRIX MODIFIÉ : la version installée coûtait {details.prix_precedent}")
@@ -379,6 +381,12 @@ class PlayStoreRuntime:
         speech_synthesizer=None,
         people_service=None,
         follow_service=None,
+        site_map=None,
+        notifications=None,
+        sound_player=None,
+        network_probe=None,
+        hardware_health=None,
+        crash_reports=None,
     ):
         """
         `profil` (obligatoire, jamais deviné) : SIMULATION, DEVELOPPEMENT ou
@@ -478,6 +486,15 @@ class PlayStoreRuntime:
         d'une personne (axis_os/services/people/), servis par ctx.people(),
         person_in_front(), follow() ; None : liste vide ou
         CAPABILITY_MISSING. Leur tick() reste aussi celui de la boucle.
+
+        Autonomie (SDK 1.2) : `site_map`, la carte du sens du site (lieux et
+        zones, axis_os/services/navigation/site_map.py), lue par les apps et
+        exigée par AppManifest.required_places ; `notifications`, le centre
+        de notifications (axis_os/services/notifications.py) ;
+        `sound_player`, les sons de l'OS ; `network_probe`, l'état du réseau
+        ; `hardware_health`, la santé du matériel et l'état thermique
+        (axis_os/services/health/) ; `crash_reports`, où l'OS garde les
+        rapports de plantage des apps (axis_os/store/runtime/rapports.py).
 
         `human_interface` : IHumanInterface qui répond à
         ctx.ask_confirmation() ; None : aucun humain (refus).
@@ -591,6 +608,12 @@ class PlayStoreRuntime:
         # tickés par la boucle du robot, jamais par une app.
         self._people_service = people_service
         self._follow_service = follow_service
+        self._site_map = site_map
+        self._notifications = notifications
+        self._sound_player = sound_player
+        self._network_probe = network_probe
+        self._hardware_health = hardware_health
+        self._crash_reports = crash_reports
         # Réglages choisis par l'utilisateur, par app (set_setting).
         self._reglages: Dict[str, Dict[str, Any]] = {}
         # Contexte du hook en cours, par app (pour request_stop), et
@@ -859,6 +882,22 @@ class PlayStoreRuntime:
                       f"absente(s) sur ce robot : {names}")
                 return False
 
+        # Lieux nommés et zones dont l'app a besoin : ils doivent exister sur
+        # la carte du site, comme une capacité requise doit exister sur le
+        # robot. L'administrateur les place, puis réinstalle l'app.
+        lieux = list(manifest.required_places)
+        zones_requises = [t.zone for t in manifest.triggers if t.kind == "zone_enter"]
+        if lieux or zones_requises:
+            carte = self._site_map.current if self._site_map is not None else None
+            manquants = [n for n in lieux if carte is None or carte.place(n) is None]
+            manquants += [f"zone {n}" for n in zones_requises
+                          if carte is None or not any(z.name == n for z in carte.zones)]
+            if manquants:
+                print(f"  [ERREUR] Lieu(x) requis absent(s) de la carte du site : "
+                      f"{[_affichable(n, 64) for n in manquants]} — l'administrateur doit "
+                      f"les placer sur la carte avant d'installer cette app.")
+                return False
+
         # Matériel : nombre minimal de degrés de liberté (DoF, en pratique
         # le nombre d'articulations motorisées) et modèles de robot
         # compatibles.
@@ -898,6 +937,8 @@ class PlayStoreRuntime:
         details = self._details_confirmation(manifest)
         for avis in permission_notices(manifest):
             print(f"  ⚠ À savoir : {avis}")
+        for t in manifest.triggers:
+            print(f"  ⏰ Tâche planifiée : {t.describe()}")
         print(f"  Signée par : {decrire_signataire(details)}")
         print(f"  Quotas    : {' ; '.join(decrire_quotas(manifest.quota))}")
         print(f"  Prix      : {decrire_prix(manifest)}")
@@ -1912,7 +1953,12 @@ class PlayStoreRuntime:
                              navigation=self._navigation_service,
                              manipulation=self._manipulation_service,
                              people=self._people_service,
-                             follow=self._follow_service)
+                             follow=self._follow_service,
+                             site_map=self._site_map,
+                             notifications=self._notifications,
+                             sounds=self._sound_player,
+                             network=self._network_probe,
+                             health=self._hardware_health)
         ctx._set_human_interface(self._human_interface)
         ctx._set_voice(self._speech_synthesizer)
         ctx._set_settings(self._reglages.get(manifest.app_id, {}))
