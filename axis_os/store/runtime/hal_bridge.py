@@ -74,7 +74,8 @@ from axis_os.store.sdk.stream import (
     MAX_JOINTS, StreamAck, StreamMetrics, TargetStream, stream_params, stream_target,
 )
 from axis_os.store.sdk.results import (
-    EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, InvalidArgumentError, Location, ObjectSpec,
+    EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal, BatteryInfo, InvalidArgumentError, Location,
+    MotorHealth, ObjectSpec,
     PersonInfo, PlaceInfo, RefusalCode, RobotInfo, SafetyStatus, ZoneInfo, object_from_target,
     refused,
     require_int, require_language, require_number, require_text, surface_height_from_target,
@@ -284,12 +285,17 @@ SCHEMAS_ACTIONS: Dict[str, Objet] = {
     "stop_animation": _VIDE,
     "speak": Objet({"text": Chaine(RobotContext.SPEAK_MAX_CHARS), "language": Chaine(8)}),
     "get_setting": Objet({"name": Chaine(32)}),
+    "play_sound": Objet({"name": UnParmi(*RobotContext.SOUNDS), "volume": Nombre(0, 1)}),
+    "network_status": _VIDE,
     "notify": Objet({"title": Chaine(RobotContext.NOTIFY_TITLE_MAX),
                      "message": Chaine(RobotContext.NOTIFY_MESSAGE_MAX),
                      "priority": UnParmi(*RobotContext.NOTIFY_PRIORITIES)}),
     "where_am_i": _VIDE,
     "places": _VIDE,
     "zones": _VIDE,
+    "battery": _VIDE,
+    "motors_health": _VIDE,
+    "thermal_status": _VIDE,
     # Bornes exactes : RobotContext.person_in_front() et follow(), côté OS.
     "people": _VIDE,
     "person_in_front": Objet({"max_distance_m": Nombre(0, 100)}),
@@ -687,6 +693,13 @@ class HALBridgeServer:
                 return HALResponse(cmd.request_id, True,
                                    data=self._ctx.get_setting(cmd.payload["name"]))
 
+            elif cmd.action == "play_sound":
+                return HALResponse(cmd.request_id, True, data=self._ctx.play_sound(
+                    cmd.payload["name"], volume=cmd.payload["volume"]).to_json())
+
+            elif cmd.action == "network_status":
+                return HALResponse(cmd.request_id, True, data=self._ctx.network_status())
+
             elif cmd.action == "notify":
                 p = cmd.payload
                 return HALResponse(cmd.request_id, True, data=self._ctx.notify(
@@ -694,6 +707,16 @@ class HALBridgeServer:
 
             elif cmd.action == "where_am_i":
                 return HALResponse(cmd.request_id, True, data=self._ctx.where_am_i().to_json())
+
+            elif cmd.action == "battery":
+                return HALResponse(cmd.request_id, True, data=self._ctx.battery().to_json())
+
+            elif cmd.action == "motors_health":
+                return HALResponse(cmd.request_id, True,
+                                   data=[m.to_json() for m in self._ctx.motors_health()])
+
+            elif cmd.action == "thermal_status":
+                return HALResponse(cmd.request_id, True, data=self._ctx.thermal_status())
 
             elif cmd.action in ("places", "zones"):
                 return HALResponse(cmd.request_id, True,
@@ -1420,6 +1443,18 @@ class HALBridgeClient:
     def get_setting(self, name: str):
         return self._call("get_setting", {"name": require_text("name", name, 32)})
 
+    SOUNDS, SOUND_MAX_VOLUME = RobotContext.SOUNDS, RobotContext.SOUND_MAX_VOLUME
+    SOUNDS_PER_MIN = RobotContext.SOUNDS_PER_MIN
+
+    def play_sound(self, name: str, *, volume: float = 0.5) -> ActionResult:
+        if name not in self.SOUNDS:
+            raise InvalidArgumentError(f"son inconnu — sons : {list(self.SOUNDS)}")
+        return ActionResult.from_json(self._call("play_sound", {
+            "name": name, "volume": require_number("volume", volume, mini=0.0, maxi=1.0)}))
+
+    def network_status(self) -> str:
+        return str(self._call("network_status", {}))
+
     NOTIFY_PRIORITIES = RobotContext.NOTIFY_PRIORITIES
     NOTIFY_TITLE_MAX = RobotContext.NOTIFY_TITLE_MAX
     NOTIFY_MESSAGE_MAX = RobotContext.NOTIFY_MESSAGE_MAX
@@ -1594,6 +1629,23 @@ class HALBridgeClient:
 
     def zones(self) -> list:
         return [ZoneInfo.from_json(d) for d in self._call("zones", {}) or []]
+
+    def battery(self) -> BatteryInfo:
+        return BatteryInfo.from_json(self._call("battery", {}) or {})
+
+    def motors_health(self) -> list:
+        return [MotorHealth.from_json(d) for d in self._call("motors_health", {}) or []]
+
+    def thermal_status(self) -> str:
+        return str(self._call("thermal_status", {}))
+
+    def on_thermal_change(self, callback) -> bool:
+        if not callable(callback):
+            raise InvalidArgumentError("callback doit être une fonction")
+        if not self._abonner("thermal", callback):
+            self.log("on_thermal_change : pas de service de santé sur ce robot")
+            return False
+        return True
 
     def on_estop(self, callback) -> None:
         self._abonner("estop", callback)

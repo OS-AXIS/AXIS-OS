@@ -89,6 +89,11 @@ class NormalizedRobotHAL:
         (inconnue)."""
         return self._hal.get_battery()
 
+    def measures_motor_temperature(self) -> bool:
+        """Relaie IRobotHAL.measures_motor_temperature()."""
+        mesure = getattr(self._hal, "measures_motor_temperature", None)
+        return bool(mesure()) if mesure is not None else False
+
     def get_rest_pose(self) -> Optional[Dict[str, float]]:
         """Posture de repos du driver (IRobotHAL.get_rest_pose), convertie
         dans la convention normalisée, celle des apps. None si le driver

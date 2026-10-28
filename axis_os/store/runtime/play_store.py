@@ -58,12 +58,19 @@ from axis_os.store.runtime.profil import (
     PLAFONDS_QUOTAS, Profil, ecrire_registre_apps, lire_cles_approuvees, lire_registre_apps,
 )
 from axis_os.store.runtime.hal_bridge import HALBridgeServer, HALBridgeClient
+from axis_os.store.runtime.crash_reports import CrashReportStore
 from axis_os.store.runtime.processus_app import (
     AppNonRechargeable, etat_json, rendre_os_non_inspectable, spec_depuis_instance,
 )
 from axis_os.services.memory.service import MemoryService
 from axis_os.store.sdk.signing import SignatureError, message_paquet, public_key_fingerprint
 import threading
+
+# Échecs d'un hook qui donnent un rapport de plantage (crash_reports) : l'app
+# a planté, dépassé un quota, s'est bloquée, ou a violé le protocole du pont.
+_PLANTAGES = (SandboxErrorKind.APPLICATION_ERROR, SandboxErrorKind.CPU_QUOTA,
+              SandboxErrorKind.MEMORY_QUOTA, SandboxErrorKind.TIMEOUT,
+              SandboxErrorKind.PROCESS_CRASH, SandboxErrorKind.PROTOCOL_VIOLATION)
 
 
 # ── Confirmation des permissions DANGEROUS ────────────────────────
@@ -613,7 +620,7 @@ class PlayStoreRuntime:
         self._sound_player = sound_player
         self._network_probe = network_probe
         self._hardware_health = hardware_health
-        self._crash_reports = crash_reports
+        self._crash_reports = crash_reports if crash_reports is not None else CrashReportStore()
         # Réglages choisis par l'utilisateur, par app (set_setting).
         self._reglages: Dict[str, Dict[str, Any]] = {}
         # Contexte du hook en cours, par app (pour request_stop), et
@@ -659,6 +666,10 @@ class PlayStoreRuntime:
         # qu'ils le disent (retour à la station de charge…) : voir
         # add_mission_blocker.
         self._bloqueurs: List[Callable[[], Optional[str]]] = []
+        # Apps dont l'OS a forcé l'arrêt (force_stop) : leurs hooks en cours
+        # sont arrêtés comme sous un arrêt d'urgence (processus tué).
+        self._arrets_forces: Dict[str, str] = {}
+        self._brancher_sante()
         print(f"\n[PlayStore] Runtime démarré | id={self._id} | robot={robot.robot_id}")
 
     # ── Installation ──────────────────────────────────────────────
@@ -1390,6 +1401,10 @@ class PlayStoreRuntime:
         # Ce RobotContext reste dans le processus de l'OS : il sert au
         # journal et au HALBridgeServer, qui exécute pour l'app les
         # commandes reçues par le pont. L'app ne le reçoit jamais.
+        bloque = self.mission_blocked_reason()
+        if bloque is not None:
+            print(f"  [SECURITY] Démarrage de '{app_id}' refusé : {bloque}")
+            return False
         ctx = self._make_ctx(entry.manifest)
         ctx.log(f"Démarrage '{entry.manifest.name}'")
         # on_start (re)déclare le vocabulaire de l'app : celui d'un démarrage
@@ -1564,8 +1579,13 @@ class PlayStoreRuntime:
         # run_mission() refuse déjà toute mission sous e-stop, donc un e-stop
         # vu ici est survenu pendant celle-ci (y compris déclenché par l'app
         # elle-même, ou juste au moment où elle rendait success=True).
-        if result and (self._estop_actif()
-                       or sandbox_result.error_kind is SandboxErrorKind.ARRET_URGENCE):
+        force = getattr(ctx, "_arret_force", None)
+        if result and force is not None and not self._estop_actif():
+            result.success = False
+            result.error_message = f"Arrêt forcé par l'OS : {force}" + (
+                f" — {result.error_message}" if result.error_message else "")
+        elif result and (self._estop_actif()
+                         or sandbox_result.error_kind is SandboxErrorKind.ARRET_URGENCE):
             result.success = False
             result.interrompue_par_arret_urgence = True
             result.error_message = MOTIF_ARRET_URGENCE + (
@@ -1865,6 +1885,64 @@ class PlayStoreRuntime:
             available.add(Capability.MEMORY_PERSISTENT)
         return available
 
+    def running_apps(self) -> List[str]:
+        """Apps dont un hook (mission, on_start, on_stop) tourne."""
+        return sorted(self._ctx_courants)
+
+    def force_stop(self, app_id: str, reason: str) -> bool:
+        """Arrêt forcé par l'OS des hooks en cours de l'app : son processus
+        est arrêté comme sous un arrêt d'urgence (ses appels reçoivent
+        ESTOP_ACTIVE, puis il est tué). La mission rend « Arrêt forcé par
+        l'OS : <reason> ». False si aucun hook de l'app ne tourne."""
+        if app_id not in self._ctx_courants:
+            return False
+        self._arrets_forces[app_id] = str(reason)[:200]
+        return True
+
+    STOP_GRACE_S = 5.0
+
+    def stop_all_hooks(self, reason: str, *, grace_s: Optional[float] = None) -> List[str]:
+        """Demande l'arrêt (source « os ») de tout hook en cours, puis force
+        celui des apps encore en cours après `grace_s` (STOP_GRACE_S par
+        défaut). Non bloquant ; rend les apps concernées."""
+        apps = self.running_apps()
+        for app_id in apps:
+            self.request_stop(app_id, source="os")
+        delai = self.STOP_GRACE_S if grace_s is None else grace_s
+
+        def forcer():
+            for app_id in apps:
+                self.force_stop(app_id, reason)
+        if apps:
+            minuteur = threading.Timer(delai, forcer)
+            minuteur.daemon = True
+            minuteur.start()
+        return apps
+
+    def _brancher_sante(self) -> None:
+        """Santé matérielle (hardware_health) : sous une température moteur
+        critique, plus aucune mission, et celle en cours est arrêtée ;
+        l'opérateur est prévenu."""
+        sante = self._hardware_health
+        if sante is None:
+            return
+        self.add_mission_blocker(
+            lambda: "température moteur critique" if sante.thermal_status() == "critical"
+            else None)
+
+        def changement(ancien: str, nouveau: str) -> None:
+            if nouveau == "critical":
+                self.stop_all_hooks("température moteur critique")
+                if self._notifications is not None:
+                    chauds = [m.joint for m in sante.motors() if m.status == "critical"]
+                    self._notifications.from_os(
+                        "Moteur trop chaud", f"arrêt sûr du robot — articulations : "
+                        f"{', '.join(chauds) or 'mesure absente ou périmée'}", "urgent")
+            elif nouveau == "throttled" and self._notifications is not None:
+                self._notifications.from_os("Moteur chaud",
+                                            "vitesses et couples réduits", "warning")
+        sante.add_listener(changement)
+
     def add_mission_blocker(self, fn: Callable[[], Optional[str]]) -> None:
         """Ajoute un service de l'OS qui peut refuser toute nouvelle mission :
         `fn()` rend la raison du refus, ou None. Côté OS seulement."""
@@ -1914,11 +1992,16 @@ class PlayStoreRuntime:
         ctx._set_deadline(self._clock() + entry.manifest.quota.max_runtime_s)
         app_id = entry.manifest.app_id
         self._ctx_courants.setdefault(app_id, []).append(ctx)
+
+        def arret_ou_force() -> bool:
+            # Arrêt forcé par l'OS (force_stop) : traité comme un arrêt
+            # d'urgence pour ce hook seulement.
+            return app_id in self._arrets_forces or (arret is not None and arret())
         try:
             result = runner.run_app(entry.spec, hook, serveur=bridge_server,
                                     params=params, etat=etat,
                                     tolerance_lenteur=HALBridgeClient.TOLERANCE_LENTEUR,
-                                    arret=arret)
+                                    arret=arret_ou_force)
         finally:
             # Une action longue encore servie pour ce hook (go_to abandonné
             # après un arrêt d'urgence…) s'arrête au pas suivant.
@@ -1928,9 +2011,20 @@ class PlayStoreRuntime:
                 courants.remove(ctx)
             if not courants:
                 self._ctx_courants.pop(app_id, None)
+                ctx._arret_force = self._arrets_forces.pop(app_id, None)
+            elif app_id in self._arrets_forces:
+                ctx._arret_force = self._arrets_forces[app_id]
             if ctx._progression:
                 self._progressions[app_id] = ctx._progression[-1]
+        if not result.success and result.error_kind in _PLANTAGES:
+            self._crash_reports.record(app_id, entry.manifest.version, hook, result)
         return result, bridge_server
+
+    def crash_reports(self, app_id: Optional[str] = None) -> list:
+        """Rapports de plantage (CrashReport), pour l'administrateur : une
+        app qui a planté, dépassé un quota ou s'est bloquée. Sans donnée
+        personnelle ni secret (voir crash_reports.py)."""
+        return self._crash_reports.reports(app_id)
 
     def request_stop(self, app_id: str, *, source: str = "human") -> bool:
         """Demande l'arrêt de la mission (ou du hook) en cours de l'app :

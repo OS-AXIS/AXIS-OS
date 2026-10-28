@@ -15,7 +15,7 @@ Qui écrit, qui lit : l'administrateur du site, par l'API de l'OS (publish(),
 rollback()), jamais une app. Les apps lisent, par ctx.places() et ctx.zones().
 Chaque publication crée une nouvelle version, vérifiée en entier avant d'être
 retenue (noms uniques, nombres finis, polygones valides, aucun lieu dans une
-zone interdite) ; les versions précédentes restent consultables et on peut
+zone interdite ni à moins de PLACE_CLEARANCE_M d'elle) ; les versions précédentes restent consultables et on peut
 revenir à l'une d'elles. Avec un chemin de fichier, la carte est enregistrée
 (écriture atomique) et relue au démarrage.
 
@@ -42,6 +42,10 @@ NAME_MAX = 64
 MAX_PLACES, MAX_ZONES, MAX_VERTICES = 256, 128, 64
 HISTORY_MAX = 20
 COORD_MAX = 1e4
+# Un lieu plus près d'une zone interdite serait inatteignable : le
+# planificateur de la navigation tient le robot à 0,65 m d'elle (rayon,
+# marge et anticipation du gardien de zones).
+PLACE_CLEARANCE_M = 0.70
 
 
 class SiteMapError(ValueError):
@@ -207,8 +211,9 @@ def _verifier(places: Sequence[Place], zones: Sequence[Zone]) -> Tuple[Tuple[Pla
         propres_z.append(Zone(nom, z.kind, poly, vmax))
     for p in propres_p:
         for z in propres_z:
-            if z.kind == FORBIDDEN and z.contains(p.x, p.y):
-                raise SiteMapError(f"le lieu {p.name!r} est dans la zone interdite {z.name!r}")
+            if z.kind == FORBIDDEN and z.distance(p.x, p.y) < PLACE_CLEARANCE_M:
+                raise SiteMapError(f"le lieu {p.name!r} est dans la zone interdite {z.name!r}, "
+                                   f"ou à moins de {PLACE_CLEARANCE_M:g} m (inatteignable)")
     return tuple(propres_p), tuple(propres_z)
 
 

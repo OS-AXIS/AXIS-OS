@@ -47,6 +47,8 @@ from axis_os.hal.core.types import (
 )
 from axis_os.hal.watchdog.system import WatchdogSystem
 from axis_os.services.notifications import MESSAGE_MAX, PRIORITIES, TITLE_MAX
+from axis_os.services.network import STATES as NETWORK_STATES
+from axis_os.services.sounds import MAX_VOLUME, SOUNDS
 from .manifest import AppManifest, Permission
 from .version import API_VERSION
 from .lifecycle import (
@@ -62,7 +64,7 @@ from .stream import (
 )
 from .results import (
     ABSENT, AVAILABLE, DEGRADED, EXCEPTIONS_PAR_CODE, ActionResult, AxisRefusal,
-    BatteryInfo, InvalidArgumentError, Location, PersonInfo, PlaceInfo, RefusalCode,
+    BatteryInfo, InvalidArgumentError, Location, MotorHealth, PersonInfo, PlaceInfo, RefusalCode,
     RobotInfo, SafetyStatus, ZoneInfo, object_from_target, refused, require_int,
     require_language, require_number, require_text, surface_height_from_target,
 )
@@ -282,8 +284,11 @@ class RobotContext:
         self._site = None
         self._notifications = None
         self._sons = None
+        self._sons_joues: list = []           # instants des sons joués (débit)
         self._reseau = None
         self._sante = None
+        # Raison d'un arrêt forcé par l'OS (PlayStoreRuntime.force_stop).
+        self._arret_force: Optional[str] = None
         # Objets vus par la perception de l'OS pour cette app, dans le
         # repère monde : (instant, (x, y, z)). pick() n'accepte qu'une cible
         # proche de l'un d'eux (voir _cible_vue).
@@ -820,7 +825,8 @@ class RobotContext:
         de proximité (« clear », « slowing », « stopped » ou
         « unavailable »), chute détectée (None si le robot ne marche pas),
         et quotas restants : durée du hook en cours (secondes du robot),
-        clés et octets de mémoire persistante.
+        clés et octets de mémoire persistante, statut thermique des moteurs,
+        température et charge du processeur (et de la carte graphique).
 
         Permission : SYSTEM_INFO. Servie aussi pendant un arrêt d'urgence."""
         self._require(Permission.SYSTEM_INFO)
@@ -845,11 +851,15 @@ class RobotContext:
                 n, taille = r.value
                 cles = max(0, self._memory.MAX_CLES_PAR_APP - n)
                 octets = max(0, self._memory.MAX_OCTETS_PAR_APP - taille)
+        thermique, calcul = "unknown", {}
+        if self._sante is not None:
+            thermique, calcul = str(self._sante.thermal_status()), dict(self._sante.compute())
         return SafetyStatus(
             estop_active=bool(self._watchdog.estop_fired or self._robot.estop_active),
             proximity=proximite, proximity_distance_m=distance, proximity_reason=raison,
             fall_detected=chute, time_remaining_s=reste,
-            storage_keys_remaining=cles, storage_bytes_remaining=octets)
+            storage_keys_remaining=cles, storage_bytes_remaining=octets,
+            thermal=thermique, compute=calcul)
 
     # Version de l'API du SDK que sert cet OS (SemVer, voir
     # axis_os/store/sdk/version.py et AppManifest.min_sdk_version).
@@ -1307,6 +1317,68 @@ class RobotContext:
         self._exiger_appelable(callback)
         self._peut_abonner("zone_exit", zone=name)
         self._abonner("zone_exit", callback, zone=self._zone_connue(name))
+
+    # ---- Santé matérielle --------------------------------------------------
+
+    def battery(self) -> BatteryInfo:
+        """Batterie détaillée, telle que le driver la mesure : charge, en
+        charge ou non, tension, courant, température, état de santé,
+        cycles ; None pour tout ce qu'il ne mesure pas, et known=False s'il
+        ne la lit pas du tout. Servie sous arrêt d'urgence (lecture seule).
+        Permission : HARDWARE_HEALTH."""
+        self._require(Permission.HARDWARE_HEALTH)
+        try:
+            b = self._lire_batterie()
+        except Exception:                    # noqa: BLE001 — capteur en panne : inconnue
+            b = None
+        if b is None or not math.isfinite(float(b.percent)):
+            return BatteryInfo(known=False)
+
+        def mesure(nom):
+            v = getattr(b, nom, None)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) \
+                and math.isfinite(v) else None
+        cycles = getattr(b, "cycles", None)
+        return BatteryInfo(known=True, percent=float(b.percent),
+                           charging=b.charging if isinstance(b.charging, bool) else None,
+                           voltage=mesure("voltage"), current_a=mesure("current"),
+                           temperature_c=mesure("temperature"),
+                           health_percent=mesure("health_percent"),
+                           cycles=cycles if isinstance(cycles, int)
+                           and not isinstance(cycles, bool) else None)
+
+    def motors_health(self) -> list:
+        """Santé de chaque articulation (MotorHealth) : température mesurée,
+        température critique et marge avant elle, couple et courant mesurés,
+        statut. None pour ce que le driver ne mesure pas ; [] sans service
+        de santé sur ce robot. Lecture seule. Permission : HARDWARE_HEALTH."""
+        self._require(Permission.HARDWARE_HEALTH)
+        if self._sante is None:
+            return []
+        return [MotorHealth(m.joint, m.temperature_c, m.critical_c, m.margin_c, m.torque_nm,
+                            m.current_a, m.status) for m in self._sante.motors()]
+
+    def thermal_status(self) -> str:
+        """Statut thermique du robot : « normal », « hot » (chaud),
+        « throttled » (bridé : l'OS réduit vitesses et couples),
+        « critical » (plus aucun mouvement, la mission est arrêtée) ou
+        « unknown » (le driver ne mesure pas la température, ou pas de
+        service de santé). Permission : HARDWARE_HEALTH."""
+        self._require(Permission.HARDWARE_HEALTH)
+        if self._sante is None:
+            return "unknown"
+        return str(self._sante.thermal_status())
+
+    def on_thermal_change(self, callback) -> bool:
+        """Appelle `callback(statut)` à chaque changement du statut
+        thermique. Rend False, sans s'abonner, sans service de santé sur ce
+        robot. Permission : HARDWARE_HEALTH."""
+        self._exiger_appelable(callback)
+        if not self._peut_abonner("thermal"):
+            self.log("on_thermal_change : pas de service de santé sur ce robot")
+            return False
+        self._abonner("thermal", callback)
+        return True
 
     # ---- Personnes : présence et suivi (« suis-moi ») ----------------------
 
@@ -1951,6 +2023,53 @@ class RobotContext:
         if code == "RATE_LIMITED_APP":
             return refused("REFUSED", RefusalCode.RATE_LIMITED_APP, explication)
         return refused("FAILED", RefusalCode.FAILED, explication)
+
+    SOUNDS, SOUND_MAX_VOLUME = SOUNDS, MAX_VOLUME
+    SOUNDS_PER_MIN = 20
+
+    def play_sound(self, name: str, *, volume: float = 0.5) -> ActionResult:
+        """Joue un son de l'OS : « beep », « alert » ou « confirmation ».
+        `volume` dans [0, 1], plafonné par l'OS à SOUND_MAX_VOLUME ; au plus
+        SOUNDS_PER_MIN sons par minute (RATE_LIMITED_APP au-delà).
+
+        `status` : PLAYED, REFUSED (CAPABILITY_MISSING : pas de haut-parleur ;
+        RATE_LIMITED_APP), FAILED. Lève InvalidArgumentError (son inconnu,
+        volume hors bornes) et EstopActiveError sous arrêt d'urgence.
+        Permission : AUDIO_OUTPUT."""
+        self._require(Permission.AUDIO_OUTPUT)
+        if name not in self.SOUNDS:
+            raise InvalidArgumentError(f"son inconnu : {str(name)[:40]!r} — sons : "
+                                       f"{list(self.SOUNDS)}")
+        v = min(require_number("volume", volume, mini=0.0, maxi=1.0), self.SOUND_MAX_VOLUME)
+        self._require_no_estop()
+        if self._sons is None:
+            return refused("REFUSED", RefusalCode.CAPABILITY_MISSING, "pas de haut-parleur")
+        t = self.now()
+        self._sons_joues = [x for x in self._sons_joues if t - x < 60.0]
+        if len(self._sons_joues) >= self.SOUNDS_PER_MIN:
+            return refused("REFUSED", RefusalCode.RATE_LIMITED_APP,
+                           f"{self.SOUNDS_PER_MIN} sons par minute au plus")
+        self._sons_joues.append(t)
+        try:
+            ok = self._sons.play(name, v) is True
+        except Exception as exc:             # noqa: BLE001 — haut-parleur en panne
+            return refused("FAILED", RefusalCode.FAILED, f"son : {type(exc).__name__}")
+        if not ok:
+            return refused("FAILED", RefusalCode.FAILED, "le son n'a pas été joué")
+        return ActionResult(ok=True, status="PLAYED", message=f"{name} à {v:g}")
+
+    def network_status(self) -> str:
+        """État du réseau : « online », « local_only » (réseau local
+        seulement), « offline » ou « unknown » (rien de lisible). Aucune
+        connexion n'est ouverte pour le savoir. Permission : SYSTEM_INFO."""
+        self._require(Permission.SYSTEM_INFO)
+        if self._reseau is None:
+            return "unknown"
+        try:
+            etat = self._reseau.status()
+        except Exception:                    # noqa: BLE001
+            return "unknown"
+        return etat if etat in NETWORK_STATES else "unknown"
 
     def get_setting(self, name: str):
         """Valeur d'un réglage déclaré dans le manifeste (settings) : celle
