@@ -20,10 +20,11 @@ sudo docker cp "$DEPOT/axis_os" "$CONTENEUR:/isaac-sim/"
 # axis_os/hal/drivers/unitree_g1/urdf/deriver_mains_collision.py).
 sudo docker cp "$DEPOT/axis_os/hal/drivers/unitree_g1/urdf/g1_29dof_rev_1_0_mains_collision.urdf" \
   "$CONTENEUR:/isaac-sim/"
-# Les scripts d'essai Isaac Sim (sim/validation/test_isaac_*.py) sont copiés
+# Les scripts d'essai Isaac Sim (sim/validation/test_isaac_*.py) et leurs modules
+# de banc (banc_*.py : juge, vue du robot) sont copiés
 # dans /isaac-sim/axis_os/, d'où les lanceurs les exécutent (par exemple
 # lancer_t1.sh).
-for f in "$DEPOT"/sim/validation/test_isaac_*.py; do
+for f in "$DEPOT"/sim/validation/test_isaac_*.py "$DEPOT"/sim/validation/banc_*.py; do
   sudo docker cp "$f" "$CONTENEUR:/isaac-sim/axis_os/"
 done
 echo "Code copié ($(git -C "$DEPOT" log --oneline -1))."

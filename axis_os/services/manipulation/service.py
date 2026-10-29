@@ -626,6 +626,45 @@ class ManipulationService(IService):
         g, d = self.mesures.modele.mains({**self._fixes, **angles})
         return g, d
 
+    def _interieur(self, mod: Tuple[np.ndarray, np.ndarray]) -> float:
+        """Écart (m) entre les faces intérieures des mains `mod` (repère du
+        bassin), le long de la normale de l'objet planifié."""
+        lacet = self._plan["lacet"]
+        n = np.array([-math.sin(lacet), math.cos(lacet), 0.0])
+        return float((mod[0] - mod[1]) @ n) - 2 * self.r.demi_main_m
+
+    def etat_visible(self) -> dict:
+        """Ce que la prise vise et mesure, repère du bassin, pour une vue de
+        diagnostic (lecture seule, aucun effet sur les décisions) : phase,
+        objet, centre visé, cibles des mains (ouverture, contact, borne de
+        fermeture), mains mesurées (cinématique), contacts estimés."""
+        v = {"phase": self.etat.name, "objet": self.objet, "plan": None, "cibles": {},
+             "mains": None, "contacts": dict(self.contacts_estimes)}
+        try:
+            v["mains"] = self._mains_modele()
+            plan = self._plan
+            if plan:
+                v["plan"] = {"centre": plan["centre"], "lacet": plan["lacet"],
+                             "largeur": plan["largeur"]}
+                modele, fixes = self.mesures.modele, self._fixes
+                v["cibles"]["ouverture"] = plan["cibles"]
+                v["cibles"]["contact"] = modele.mains({**fixes, **plan["q_contact"]})
+                if self._cible_ferm:
+                    q = {**fixes, **self._q, **self._cible_ferm.get("left", {}),
+                         **self._cible_ferm.get("right", {})}
+                    v["cibles"]["borne"] = modele.mains(q)
+        except Exception:                 # noqa: BLE001 — une vue, jamais une panne
+            pass
+        return v
+
+    def objet_entre_les_mains(self) -> bool:
+        """Signal réel, pour vérifier une prise sans voir l'objet : les faces
+        intérieures des mains (cinématique sur les angles mesurés) restent
+        écartées d'au moins la largeur de l'objet, moins `vide_m`. Un objet
+        qui a glissé laisse les mains se refermer sur le vide."""
+        mod = self._mains_modele() if self._plan else None
+        return mod is not None and self._interieur(mod) >= self._plan["largeur"] - self.r.vide_m
+
     def diagnostic_mains(self, objet: Optional[Objet] = None) -> str:
         """Position des deux mains (mesurées, et calculées sur les angles
         mesurés) et celle de l'objet visé, repère du bassin."""
@@ -839,8 +878,7 @@ class ManipulationService(IService):
                           "inconnue")
             return
         plan = self._plan
-        n = np.array([-math.sin(plan["lacet"]), math.cos(plan["lacet"]), 0.0])
-        interieur = float((mod[0] - mod[1]) @ n) - 2 * r.demi_main_m
+        interieur = self._interieur(mod)
         if interieur < plan["largeur"] - r.vide_m:
             self._echouer(f"prise refusée — rien entre les mains : serrage dans le vide évité "
                           f"(faces intérieures des mains à {interieur:.3f} m l'une de l'autre, "

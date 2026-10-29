@@ -84,6 +84,9 @@ def main():
                     help="cartons de l'évaluation (≠ graine de la collecte : positions jamais vues)")
     ap.add_argument("--acceleration", type=int, default=10)
     ap.add_argument("--sans-video", action="store_true")
+    # Vue du robot (t1_vue_robot.mp4) sans les calques de l'OS ni de la
+    # vérité simulation : pour la vidéo de démonstration.
+    ap.add_argument("--vue-sans-calques", action="store_true")
     ap.add_argument("--graine", type=int, default=3)
     ap.add_argument("--port-direct", type=int, default=8080,
                     help="page de suivi en direct (0 : désactivée)")
@@ -127,7 +130,9 @@ def main():
     from axis_os.services.locomotion.service import (
         BaseState, LocomotionService, LocomotionState,
     )
+    from axis_os.hal.drivers.isaac_sim.bruit_couples import BruitCouples
     from axis_os.services.manipulation.cinematique import ModeleBras
+    from axis_os.services.manipulation.estimation import HauteurBassin, inclinaison_mains
     from axis_os.services.manipulation.prise import CalibrationMains, MesuresBras, ReglagesPrise
     from axis_os.services.manipulation.service import (
         Etat, ManipulationService, Postures, posture_bras,
@@ -135,6 +140,10 @@ def main():
     from axis_os.services.navigation.service import NavigationService, Pose2D
     from axis_os.services.perception.owlvit_detector import OwlViTDetector
     from axis_os.services.perception.service import PerceptionService
+    # Banc seulement (copiés à côté de ce script par copier_code.sh) : le juge
+    # et la vue du robot lisent la vérité de la simulation, l'OS jamais.
+    from banc_prise import JugeContacts, capteurs_contact_isaac, gains_prise
+    from banc_vue_robot import VueRobot, coins
 
     cfg = GR00TWBCConfig()
     pol = GR00TWBCPolicy(POLICIES / "gr00t_wbc_balance.onnx",
@@ -147,6 +156,9 @@ def main():
     robot, world = bridge._robot, bridge._world
     idx = bridge._joint_index
     names = sorted(idx, key=lambda j: idx[j])
+    # Couples ESTIMÉS (bruit_couples.py), comme ceux du vrai G1 : c'est ce
+    # que lisent le garde-fou (IsaacSimBridge) et la prise (efforts_bras).
+    bridge.bruit_couples = BruitCouples(len(names), graine=args.graine)
     stage = omni.usd.get_context().get_stage()
 
     # ================================================================
@@ -281,6 +293,15 @@ def main():
 
     robot.get_articulation_controller().set_gains(
         kps=np.array([g[j][0] for j in names]), kds=np.array([g[j][1] for j in names]))
+    # Gains de prise (banc_prise.gains_prise) : poignets et coudes raidis de
+    # la fermeture au dépôt, à la demande du ManipulationService
+    # (MesuresBras.raideur), comme le permet la commande bas niveau du G1.
+    g_prise = gains_prise(g)
+
+    def regler_raideur(active):
+        gg = g_prise if active else g
+        robot.get_articulation_controller().set_gains(
+            kps=np.array([gg[j][0] for j in names]), kds=np.array([gg[j][1] for j in names]))
     pos0, _ = robot.get_world_pose()
     yaw0 = sd.DEPART.cap
     bras_depart = {"left_shoulder_pitch_joint": P.tangage_port,
@@ -357,11 +378,24 @@ def main():
                 return np.array([t_[0], t_[1], t_[2]], dtype=float)
         return None
 
-    def mains():
+    def mains_reelles():
+        """Mains de la simulation (prims USD) : banc seulement (calibration,
+        juge, diagnostics)."""
         return main_monde("left_rubber_hand"), main_monde("right_rubber_hand")
 
+    def mains():
+        """Mains vues par l'OS : cinématique sur les angles mesurés, posée
+        dans le monde par la pose du bassin (voir « vérité » dans
+        docs/demo_tri_usine.md : la position du bassin vient encore de la
+        simulation ; elle s'annule dans le repère du bassin)."""
+        p_, q_ = robot.get_world_pose()
+        r_ = quat_wxyz_to_matrix(q_)
+        g_, d_ = mesures_bras.modele.mains({j: read_state().joint_pos[j] for j in chaine_bras})
+        p_ = np.asarray(p_, dtype=float)
+        return p_ + r_ @ g_, p_ + r_ @ d_
+
     def carton_aux_mains(rayon=0.25):
-        g_, d_ = mains()
+        g_, d_ = mains_reelles()
         m = (g_ + d_) / 2
         best, dmin = None, rayon
         for c in cartons:
@@ -374,16 +408,16 @@ def main():
     diag_prise = [-1e9]
 
     def verifier_prise():
-        # Simulation : le carton a-t-il quitté la table avec les mains ? Sur
-        # le vrai robot : l'effort mesuré aux épaules.
-        c = carton_aux_mains()
-        ok_ = c is not None and float(c["obj"].get_world_pose()[0][2]) > \
-            sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.015
+        # Signal réel (le vrai G1 n'a rien d'autre) : l'objet est encore entre
+        # les mains, d'après la cinématique sur les angles mesurés ; le
+        # service y ajoute la hausse de couple des roulis. Le carton réel
+        # (levé ou non) n'est lu que pour le diagnostic ci-dessous.
+        ok_ = manip.objet_entre_les_mains()
         if not ok_ and sim_t[0] - diag_prise[0] > 5.0:
             diag_prise[0] = sim_t[0]          # une fois par tentative, pas à chaque pas
             # Diagnostic d'une prise ratée : où étaient les mains, le carton,
             # et dans quel sens le carton était tourné (poussé en avançant ?).
-            g_, d_ = mains()
+            g_, d_ = mains_reelles()
             pr_ = pose2d()
             print(f"  [prise ratée {sim_t[0]:5.1f} s] robot ({pr_.x:.2f}, {pr_.y:.2f}, "
                   f"cap {math.degrees(pr_.cap):.0f}°), main G {np.round(g_, 3)}, "
@@ -444,20 +478,36 @@ def main():
                                                      "right_wrist"))]
 
     def efforts_bras():
-        # Le couple exercé par le solveur, celui que lit le JointSafetyGuard
-        # (IsaacSimBridge.read_feedback).
-        e = np.asarray(robot.get_applied_joint_efforts(), dtype=float)
+        # Couple ESTIMÉ (couple du solveur + erreurs d'estimation du G1), le
+        # même que lit le JointSafetyGuard (IsaacSimBridge.read_feedback).
+        e = bridge.bruit_couples(robot.get_applied_joint_efforts())
         age = sim_t[0] - t_physique[0]
         return {j: (float(e[idx[j]]), age) for j in bras6}
 
     def inclinaison_carton():
-        """Inclinaison (degrés) du carton entre les mains : l'angle entre
-        sa verticale et celle du monde. None sans carton."""
+        """VÉRITÉ SIMULATION (évaluation, juge) : inclinaison (degrés) du
+        carton entre les mains, l'angle entre sa verticale et celle du
+        monde. None sans carton. L'OS lit inclinaison_os()."""
         c = carton_aux_mains()
         if c is None:
             return None
         w_, x_, y_, z_ = (float(v) for v in c["obj"].get_world_pose()[1])
         return math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (x_ * x_ + y_ * y_)))))
+
+    hauteur_bassin = HauteurBassin()
+
+    def angles_mesures():
+        return {j: read_state().joint_pos[j] for j in names}
+
+    def rotation_imu():
+        # Orientation de la centrale inertielle (celle du bassin, en simulation).
+        return quat_wxyz_to_matrix(robot.get_world_pose()[1])
+
+    def inclinaison_os():
+        """Inclinaison de l'objet tenu, vue par l'OS : la droite qui joint
+        les mains (cinématique), dans le repère de la centrale inertielle."""
+        g_, d_ = mesures_bras.modele.mains({j: read_state().joint_pos[j] for j in chaine_bras})
+        return inclinaison_mains(g_, d_, rotation_imu())
 
     def garde_avant_bras():
         """Distance (m) du dessous des avant-bras (rayon 3,5 cm) au plateau
@@ -480,10 +530,13 @@ def main():
 
     mesures_bras = MesuresBras(
         ModeleBras(), lambda: {j: read_state().joint_pos[j] for j in chaine_bras}, efforts_bras,
-        lambda: float(robot.get_world_pose()[0][2]),
+        # Hauteur du bassin : cinématique des jambes et centrale inertielle.
+        lambda: hauteur_bassin(angles_mesures(), rotation_imu()),
         couple_max={d.joint_id: d.limits.torque_max for d in _defs("29dof")
                     if d.joint_id in bras6},
-        inclinaison=inclinaison_carton,
+        inclinaison=inclinaison_os,
+        raideur=regler_raideur,
+        arret_urgence=lambda: hal.estop_active,
         # Repère complet du bassin (il penche un peu en équilibre) : celui
         # de la cinématique, pour les cibles comme pour les mains mesurées.
         vers_bassin=vers_robot)
@@ -828,7 +881,8 @@ def main():
                 retirer_vla, horloge, facade, vla, adapt.pose_bras, carton_souleve,
                 carton_au_sol, arret_securite=lambda: gardien.arrete, halt=loco.halt,
                 compteurs=lambda: {"refus": loco.stats["refused"],
-                                   "arrets": gardien.stats["arrets"]},
+                                   "arrets": gardien.stats["arrets"],
+                                   **(juge.compteurs if juge is not None else {})},
                 journal=journaliser,
                 mesures_prise=lambda: {"inclinaison_deg": inclinaison_carton(),
                                        "garde_avant_bras_m": garde_avant_bras()})
@@ -869,6 +923,69 @@ def main():
           f"d'inclinaison, après {getattr(world, 'current_time_step_index', '?')} pas de "
           f"physique sans équilibre — remis debout", flush=True)
     mettre_debout()
+    # Juge (vérité simulation, banc_prise) : capteurs de contact PhysX sur les
+    # mains, pour noter le contact estimé par l'OS ; l'OS n'en lit rien.
+    corps_mains = {}
+    for cote_ in ("left", "right"):
+        for nom_ in (f"{cote_}_rubber_hand", f"{cote_}_wrist_yaw_link"):
+            prim_ = next((q_ for q_ in stage.Traverse() if q_.GetName() == nom_
+                          and "/World/g1" in str(q_.GetPath())
+                          and q_.HasAPI(UsdPhysics.RigidBodyAPI)), None)
+            if prim_ is not None:
+                corps_mains[cote_] = str(prim_.GetPath())
+                break
+    lire_contact = (capteurs_contact_isaac(stage, corps_mains,
+                                           [c_["obj"].prim_path for c_ in cartons],
+                                           cfg.physics_dt)
+                    if len(corps_mains) == 2 else None)
+    juge = JugeContacts(lire_contact) if lire_contact is not None else None
+    print(f"  juge des contacts (vérité simulation) : "
+          f"{'actif sur ' + str(corps_mains) if juge else 'indisponible'}", flush=True)
+    print(f"  hauteur du bassin : estimée {hauteur_bassin(angles_mesures(), rotation_imu()):.3f} m "
+          f"(jambes et centrale inertielle), vraie {float(robot.get_world_pose()[0][2]):.3f} m",
+          flush=True)
+    # Vue du robot : caméra de tête (celle de la perception), 640×480 à 15
+    # images par seconde de vidéo, sur le même temps simulé que la vidéo
+    # principale ; en incrustation dans celle-ci et sur la page de suivi.
+    vue = VueRobot(str(VIDEOS / "t1_vue_robot.mp4"), ips=15) if video_ok else None
+    pas_vue = max(1, round(pas_video * rec.fps / 15)) if video_ok else 0
+    derniere_vue = None
+
+    def couches_vue():
+        """Calques de la vue du robot, repère monde : l'état de l'OS (lecture
+        seule) puis la vérité simulation."""
+        diag_ = percep_couleur.diagnostic or {}
+        v_ = manip.etat_visible()
+        p_, q_ = robot.get_world_pose()
+        r_, p_ = quat_wxyz_to_matrix(q_), np.asarray(p_, dtype=float)
+
+        def monde(pb):
+            return p_ + r_ @ np.asarray(pb, dtype=float)
+        ca = {"detections": [(d_["bbox"], d_["couleur"], d_["confiance"])
+                             for d_ in diag_.get("detections", []) if d_.get("bbox")],
+              "faces": list(perception.dernieres_faces.values()),
+              "phase": v_["phase"],
+              "contacts": {c_: bool(v_["contacts"].get(c_)) for c_ in ("left", "right")},
+              "cibles": {n_: tuple(monde(x_) for x_ in pr_)
+                         for n_, pr_ in v_["cibles"].items() if pr_ is not None},
+              "mains": None if v_["mains"] is None else tuple(monde(x_) for x_ in v_["mains"])}
+        if v_["plan"] is not None and v_["objet"] is not None:
+            pl_, ob_ = v_["plan"], v_["objet"]
+            ca["centre"] = monde(pl_["centre"])
+            ca["boite"] = np.array([monde(x_) for x_ in coins(
+                pl_["centre"], pl_["largeur"], ob_.profondeur, ob_.hauteur, pl_["lacet"])])
+        reel_ = carton_aux_mains(0.35)
+        verite_ = {"contacts": {c_: (juge.reel.get(c_) or {}).get("force")
+                                for c_ in ("left", "right")} if juge else {}}
+        if reel_ is not None:
+            pc_, qc_ = reel_["obj"].get_world_pose()
+            rc_ = quat_wxyz_to_matrix(qc_)
+            demi_ = np.array([sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON, sd.HAUTEUR_CARTON]) / 2
+            verite_["boite"] = np.array([np.asarray(pc_, dtype=float) + rc_ @ (demi_ * np.array(
+                [sx_, sy_, sz_])) for sz_ in (-1, 1) for sx_ in (-1, 1) for sy_ in (-1, 1)])
+        ca["verite"] = verite_
+        return ca
+
     loco.start()                         # politique repartie de zéro, sur un robot debout
     while not pilote.termine and sim_t[0] < DUREE + 300.0:
         if suivi is not None and suivi.arret_demande:
@@ -1010,7 +1127,8 @@ def main():
         percevoir = tri.etat == "CHERCHER" or facade.veut_percevoir or (
             COLLECTE and collecteur.veut_rendu(t + cfg.control_dt))
         filmer = video_ok and k % pas_video == 0
-        if percevoir or filmer:
+        filmer_vue = video_ok and k % pas_vue == 0
+        if percevoir or filmer or filmer_vue:
             p_, q_ = robot.get_world_pose()
             R = quat_wxyz_to_matrix(q_)
             p_w = np.asarray(p_, dtype=float)
@@ -1026,14 +1144,32 @@ def main():
                 tree.set(tf)
             if filmer:
                 rec.cadrer()
+            if filmer_vue:
+                f_ = cam.capture()
+                k_ = cam.get_intrinsics()
+                if f_ is not None and k_ is not None and tf is not None:
+                    rgb_ = np.frombuffer(f_.data, dtype=np.uint8).reshape(f_.height, f_.width, 3)
+                    # Image du dernier rendu (un pas de commande plus tôt).
+                    derniere_vue = vue.image(rgb_, k_, tf, {} if args.vue_sans_calques
+                                             else couches_vue())
+                    if suivi is not None:
+                        suivi.image_robot(derniere_vue)
         # send_targets (dans loco.tick) a déjà fait un pas de physique : on
         # complète la décimation. En faire un de trop décalerait le temps
         # simulé de 25 % et ferait tourner GR00T hors de sa fréquence.
         for i in range(cfg.decimation - 1):
-            world.step(render=((percevoir or filmer) and i == 0))
+            world.step(render=((percevoir or filmer or filmer_vue) and i == 0))
         sim_t[0] += cfg.control_dt
         t_physique[0] = sim_t[0]
         k += 1
+        # Juge : une prise va de l'entrée en FERMETURE à sa sortie.
+        if juge is not None:
+            if manip.etat is Etat.FERMETURE and not juge.en_cours:
+                juge.debut()
+            juge.pas(sim_t[0])
+            if juge.en_cours and manip.etat is not Etat.FERMETURE:
+                for ligne_ in juge.fin(manip.contacts_estimes):
+                    journaliser(f"[{sim_t[0]:7.1f}s] {ligne_}")
         # Invariant : le robot ne se rapproche jamais d'une personne proche.
         pa = pose2d()
         for f in figurants:
@@ -1080,7 +1216,7 @@ def main():
                     for md in dict.fromkeys(md_ for _, md_ in collecteur.essais)),
                 f"Sécurité : {v.raison[:38] if v else '—'}",
                 f"Garde-fou : {loco.stats['refused']} refus",
-            ], t)
+            ], t, incrustation=derniere_vue)
         elif filmer:
             b = tri.bilan
             v = loco.dernier_verdict
@@ -1095,7 +1231,7 @@ def main():
                 f"Tâche : {tri.etat}",
                 "Règles : " + ", ".join(f"{c}→{p}" for c, p in sorted(tri.cfg.regles.items())),
                 f"Garde-fou : {loco.stats['refused']} refus",
-            ], t)
+            ], t, incrustation=derniere_vue)
         if suivi is not None and k % 25 == 0:
             b_ = tri.bilan
             suivi.resume(f"{int(t // 60):02d}:{int(t % 60):02d} simulé · "
@@ -1115,6 +1251,7 @@ def main():
 
     if video_ok:
         rec.terminer()
+        vue.terminer()
     if suivi is not None:
         suivi.resume("test terminé — bilan dans le terminal")
 
@@ -1151,6 +1288,7 @@ def main():
     print("  " + sup.rapport())
     print(f"  gardien : {gardien.stats}\n  navigation : {nav.stats}\n  façade : {facade.stats}"
           f"\n  manipulation : {manip.stats}\n  lidar : {lidar.stats}"
+          f"\n  juge (vérité simulation) : {juge.compteurs if juge else 'indisponible'}"
           f"\n  couleur : {percep_couleur.stats}\n  cartons remis en place par l'opérateur : {stats.get('remises_en_place', 0)}"
           f"\n  écrêtages dans les butées (avant le garde-fou) : {adapt.stats}"
           f"\n  personne la plus proche : {d_min_humain:.2f} m"

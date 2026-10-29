@@ -68,10 +68,12 @@ class ChaineBras:
 
     @classmethod
     def depuis_urdf(cls, cote: str, chemin: Path = URDF_G1_29DOF,
-                    base: str = "pelvis") -> "ChaineBras":
+                    base: str = "pelvis", fin: Optional[str] = None) -> "ChaineBras":
+        """`fin` : le lien du bout de la chaîne (par défaut la main ; le
+        pied, `{cote}_ankle_roll_link`, pour la hauteur du bassin)."""
         racine = ET.parse(str(chemin)).getroot()
         par_enfant = {j.find("child").get("link"): j for j in racine.findall("joint")}
-        fin = f"{cote}_rubber_hand"
+        fin = fin or f"{cote}_rubber_hand"
         liens, lien = [], fin
         while lien != base:
             j = par_enfant[lien]
