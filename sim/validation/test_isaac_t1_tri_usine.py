@@ -128,8 +128,10 @@ def main():
         BaseState, LocomotionService, LocomotionState,
     )
     from axis_os.services.manipulation.cinematique import ModeleBras
-    from axis_os.services.manipulation.prise import MesuresBras
-    from axis_os.services.manipulation.service import Etat, ManipulationService, Postures
+    from axis_os.services.manipulation.prise import CalibrationMains, MesuresBras, ReglagesPrise
+    from axis_os.services.manipulation.service import (
+        Etat, ManipulationService, Postures, posture_bras,
+    )
     from axis_os.services.navigation.service import NavigationService, Pose2D
     from axis_os.services.perception.owlvit_detector import OwlViTDetector
     from axis_os.services.perception.service import PerceptionService
@@ -481,11 +483,77 @@ def main():
         lambda: float(robot.get_world_pose()[0][2]),
         couple_max={d.joint_id: d.limits.torque_max for d in _defs("29dof")
                     if d.joint_id in bras6},
-        inclinaison=inclinaison_carton)
+        inclinaison=inclinaison_carton,
+        # Repère complet du bassin (il penche un peu en équilibre) : celui
+        # de la cinématique, pour les cibles comme pour les mains mesurées.
+        vers_bassin=vers_robot)
     # Le ManipulationService écrit dans le dictionnaire de bras de
     # l'adaptateur : il en est le seul écrivain.
     manip = ManipulationService(adapt.pose_bras, mains, vers_robot, verifier_prise,
-                                gardien=gardien, horloge=horloge, mesures=mesures_bras)
+                                gardien=gardien, horloge=horloge, mesures=mesures_bras,
+                                journal=lambda m: journaliser(f"[{sim_t[0]:7.1f}s] {m} ; "
+                                                              f"{cartons_reels()}"))
+
+    def cartons_reels():
+        """Position réelle (repère du bassin) des cartons sur la table de
+        prise : à comparer à « objet visé » dans un message de prise ratée."""
+        parts = []
+        for c_ in cartons:
+            if c_["lieu"] not in ("prise", "porte"):
+                continue
+            pc_, q_ = c_["obj"].get_world_pose()
+            r_ = vers_robot(np.asarray(pc_, dtype=float))
+            parts.append(f"{c_['couleur']} réel ({r_[0]:.3f}, {r_[1]:.3f}, {r_[2]:.3f}) "
+                         f"tourné de {math.degrees(2 * math.atan2(float(q_[3]), float(q_[0]))):.0f}°")
+        return "cartons : " + (", ".join(parts) if parts else "aucun sur la table")
+
+    # Calibration des mains, au début de la boucle (la politique d'équilibre
+    # tourne) : le banc amène les bras dans quelques postures et compare la
+    # main calculée par la cinématique (angles mesurés) au lien de la main
+    # dans Isaac (main_monde). Au-delà de 1,5 cm, la prise mesurée est
+    # refusée. Constaté sur GPU (2026-10-28) : mains contre la face avant du
+    # carton, ~10 cm du milieu des faces.
+    calib = CalibrationMains(mesures_bras.modele, ReglagesPrise().ecart_modele_max_m)
+    postures_calib = [("port", posture_bras(P.roulis_ouvert, P.tangage_port, P.coude)),
+                      ("ouverte", posture_bras(P.roulis_presaisie, P.tangage_port, P.coude)),
+                      ("basse", posture_bras(0.25, -0.15, 0.50)),
+                      ("haute", posture_bras(0.25, -0.70, 0.20)),
+                      ("port", posture_bras(P.roulis_ouvert, P.tangage_port, P.coude))]
+    etat_calib = {"i": 0, "arrive": None, "fini": False}
+
+    def pas_calibration():
+        """Un pas de la calibration ; vrai une fois finie."""
+        nom, cible = postures_calib[etat_calib["i"]]
+        reste = 0.0
+        for j, v in cible.items():           # 0,02 rad par pas au plus (1 rad/s)
+            e = v - adapt.pose_bras[j]
+            adapt.pose_bras[j] += max(-0.02, min(0.02, e))
+            reste = max(reste, abs(e))
+        if reste > 1e-6:
+            return False
+        if etat_calib["arrive"] is None:
+            etat_calib["arrive"] = sim_t[0]
+        if sim_t[0] - etat_calib["arrive"] < 0.6:  # le bras se pose
+            return False
+        st_ = read_state()
+        g_, d_ = mains()
+        calib.ajouter(nom, {j: st_.joint_pos[j] for j in chaine_bras},
+                      (vers_robot(g_), vers_robot(d_)))
+        etat_calib["i"] += 1
+        etat_calib["arrive"] = None
+        if etat_calib["i"] < len(postures_calib):
+            return False
+        ok_, texte_ = calib.bilan()
+        for ligne_ in texte_.splitlines():
+            journaliser(ligne_)
+        if not ok_:
+            manip.calibration_refus = (
+                f"cinématique des bras non calibrée : main réelle à "
+                f"{100 * calib.ecart_max:.1f} cm du modèle (limite "
+                f"{100 * calib.ecart_max_m:.1f}), voir « calibration des mains » au début du "
+                f"journal")
+        manip.resynchroniser()               # bras revenus en posture de port
+        return True
 
     tree = FrameTree()
     detecteur = OwlViTDetector(threshold=0.06)       # seuil de W4
@@ -819,7 +887,10 @@ def main():
         facade.tick()
         loco.tick()
         manip.tick()
-        pilote.pas()
+        if not etat_calib["fini"]:
+            etat_calib["fini"] = pas_calibration()
+        else:
+            pilote.pas()
         if loco.state is LocomotionState.FALLEN:
             chute = (t, tri.etat)
             break

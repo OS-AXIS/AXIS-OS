@@ -236,7 +236,8 @@ class ManipulationService(IService):
                  postures: Postures = Postures(),
                  arret_securite: Optional[Callable[[], bool]] = None,
                  mesures: Optional[MesuresBras] = None,
-                 reglages: ReglagesPrise = ReglagesPrise()):
+                 reglages: ReglagesPrise = ReglagesPrise(),
+                 journal: Optional[Callable[[str], None]] = None):
         """
         bras            : le dictionnaire des cibles de bras de l'adaptateur
                           de locomotion, qui les transmet au robot. Ce
@@ -262,6 +263,9 @@ class ManipulationService(IService):
                           avec elles, la prise est mesurée (voir l'en-tête
                           du module) ; sans elles, serrage en boucle ouverte.
         reglages        : réglages de la prise mesurée (ReglagesPrise).
+        journal         : (message) -> None ; reçoit, à chaque échec ou
+                          refus de prise mesurée, la position des mains
+                          (mesurées et calculées) et celle de l'objet visé.
         """
         self._bras = bras
         self._mains = mains
@@ -270,6 +274,10 @@ class ManipulationService(IService):
         self._gardien = gardien
         self._horloge = horloge
         self.p = postures
+        self._journal = journal
+        # Raison du refus de toute prise mesurée (calibration des mains
+        # ratée, voir prise.CalibrationMains) ; vide : prise permise.
+        self.calibration_refus = ""
         self.etat = Etat.LIBRE
         self.objet: Optional[Objet] = None
         self.raison = ""
@@ -461,6 +469,8 @@ class ManipulationService(IService):
         """Point du repère monde -> repère du bassin (x, y du robot ; z
         au-dessus du bassin)."""
         p = np.asarray(p_monde, dtype=float)
+        if self.mesures.vers_bassin is not None:
+            return np.asarray(self.mesures.vers_bassin(p), dtype=float)
         r = self._vers_robot(p)
         return np.array([float(r[0]), float(r[1]), float(p[2]) - float(self.mesures.bassin_z())])
 
@@ -547,6 +557,52 @@ class ManipulationService(IService):
         self.raison = raison
         self._lever_exemption()
         self.etat = Etat.ECHEC
+        self._journaliser_echec(raison)
+
+    def _mains_modele(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Mains calculées par la cinématique sur les angles MESURÉS
+        (repère du bassin), ou None si les angles sont illisibles."""
+        try:
+            brut = self.mesures.positions()
+            angles = {j: float(v) for j, v in brut.items()}
+        except Exception:                 # noqa: BLE001
+            return None
+        if not all(math.isfinite(v) for v in angles.values()):
+            return None
+        g, d = self.mesures.modele.mains({**self._fixes, **angles})
+        return g, d
+
+    def diagnostic_mains(self, objet: Optional[Objet] = None) -> str:
+        """Position des deux mains (mesurées, et calculées sur les angles
+        mesurés) et celle de l'objet visé, repère du bassin."""
+        def f(v):
+            return "?" if v is None else "(" + ", ".join(f"{x:.3f}" for x in v) + ")"
+        try:
+            mg, md = self._mains_bassin()
+        except Exception:                 # noqa: BLE001
+            mg = md = None
+        mod = self._mains_modele() if self.mesures is not None else None
+        centre = None
+        objet = objet if objet is not None else self.objet
+        if objet is not None:
+            try:
+                centre = self._vers_bassin(objet.centre)
+            except Exception:             # noqa: BLE001
+                centre = None
+        cibles = self._plan["cibles"] if self._plan else (None, None)
+        return (f"main G {f(mg)}, main D {f(md)} ; modèle G {f(mod and mod[0])}, "
+                f"D {f(mod and mod[1])} ; cibles G {f(cibles[0])}, D {f(cibles[1])} ; "
+                f"objet visé {f(centre)}, écart des mains "
+                f"{'?' if mg is None else f'{float(np.linalg.norm(mg - md)):.3f}'} m "
+                f"(repère du bassin)")
+
+    def _journaliser_echec(self, raison: str, objet: Optional[Objet] = None) -> None:
+        if self._journal is None or self.mesures is None:
+            return
+        try:
+            self._journal(f"prise ratée : {raison} — {self.diagnostic_mains(objet)}")
+        except Exception:                 # noqa: BLE001 — le journal ne doit rien casser
+            pass
 
     def _efforts(self) -> Tuple[Optional[Dict[str, float]], str]:
         tau, raison = efforts_valides(self.mesures, self._ROULIS.values(), self.r.age_max_effort_s)
@@ -607,9 +663,25 @@ class ManipulationService(IService):
             return
         plan, r = self._plan, self.r
         mg, md = self._mains_bassin()
+        # Les mains vues par le robot et celles que donne la cinématique
+        # sur les angles mesurés doivent concorder, et toutes être au milieu
+        # des faces : sinon, le modèle ne décrit pas le bras, et serrer
+        # serait serrer à côté.
+        mod = self._mains_modele()
+        if mod is None:
+            self._echouer("serrage refusé — angles des bras illisibles : position des "
+                          "mains inconnue")
+            return
+        desaccord = max(float(np.linalg.norm(a - b)) for a, b in zip((mg, md), mod))
+        if desaccord > r.ecart_modele_max_m:
+            self._echouer(f"prise refusée — mains mesurées à {100 * desaccord:.1f} cm du modèle "
+                          f"des bras (limite {100 * r.ecart_modele_max_m:.1f}) : cinématique à "
+                          f"recalibrer")
+            return
         axe = np.array([math.cos(plan["lacet"]), math.sin(plan["lacet"]), 0.0])
         erreurs = [m - c for m, c in zip((mg, md), plan["cibles"])]
-        prof = max(abs(float(e @ axe)) for e in erreurs)
+        prof = max(abs(float(e @ axe)) for e in erreurs + [m - c for m, c in zip(mod,
+                                                                                   plan["cibles"])])
         haut = max(abs(float(e[2])) for e in erreurs)
         if prof <= r.tol_profondeur_m and haut <= r.tol_hauteur_m:
             self._debut_fermeture()
@@ -664,7 +736,8 @@ class ManipulationService(IService):
             # Près du contact attendu, on ralentit : le dépassement d'un pas
             # (avant que le contact soit vu) reste petit, même objet raide.
             loin = s * (self._plan["q_contact"][j] - self._q[j]) > r.zone_contact_rad
-            pas = s * (r.vitesse_fermeture if loin else r.vitesse_contact) * min(dt, 0.05)
+            pas = s * (r.vitesse_fermeture * min(dt, 0.05) if loin
+                       else min(r.vitesse_contact * min(dt, 0.05), r.pas_contact_max_rad))
             q[j] = self._q[j] + pas if s * (limite - (self._q[j] + pas)) > 0 else limite
         self._ecrire_q(q)
         if all(v is not None for v in self._contact.values()):
@@ -1103,10 +1176,14 @@ class ManipulationService(IService):
             self.stats["refus"] += 1
             return ServiceResult(ok=False, reason=f"prise refusée — {raison}")
         if self.mesures is not None:
+            if self.calibration_refus:
+                self.stats["refus"] += 1
+                return ServiceResult(ok=False, reason=f"prise refusée — {self.calibration_refus}")
             self._init_mesure()
             ok, raison = self._planifier(objet)
             if not ok:
                 self.stats["refus"] += 1
+                self._journaliser_echec(f"prise refusée — {raison}", objet)
                 return ServiceResult(ok=False, reason=f"prise refusée — {raison}")
             tau, raison = self._efforts()
             if tau is None:

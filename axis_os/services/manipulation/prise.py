@@ -54,6 +54,7 @@ class ReglagesPrise:
     vitesse_fermeture: float = 0.5     # rad/s, roulis d'épaule
     vitesse_contact: float = 0.2       # rad/s, à moins de `zone_contact_rad` du contact
     zone_contact_rad: float = 0.05     # attendu (~1,5 cm) : petit pas, petit dépassement
+    pas_contact_max_rad: float = 0.004  # et jamais plus par pas (un pas lent ne l'agrandit pas)
     hausse_contact_nm: float = 1.5     # hausse du couple qui signe le contact
     retard_contact_rad: float = 0.06   # la main ne suit plus sa consigne
     penetration_max_m: float = 0.02    # au-delà, plus rien entre les mains : vide
@@ -73,6 +74,12 @@ class ReglagesPrise:
     hausse_transport_m: float = 0.05
     duree_ramener_s: float = 1.2
     inclinaison_max_deg: float = 15.0
+    # Écart admis entre une main mesurée par le robot (le lien de la main,
+    # rubber_hand) et la même main calculée par la cinématique sur les
+    # angles mesurés. Au-delà, le modèle des bras ne décrit pas le robot :
+    # pas de prise mesurée (constaté sur GPU le 2026-10-28 : mains contre
+    # la face avant du carton, ~10 cm du milieu des faces).
+    ecart_modele_max_m: float = 0.015
 
 
 @dataclass
@@ -86,6 +93,10 @@ class MesuresBras:
     couple_max  : couple maximal du garde-fou par articulation (N·m).
     inclinaison : () -> inclinaison de l'objet tenu (degrés), ou None si
                   elle n'est pas mesurée.
+    vers_bassin : point du repère monde -> repère du bassin, rotation
+                  complète (tangage et roulis du bassin compris), celui de
+                  la cinématique. None : le cap seul, et la hauteur au-dessus
+                  du bassin (bassin supposé droit).
     """
     modele: ModeleBras
     positions: Callable[[], Dict[str, float]]
@@ -93,6 +104,7 @@ class MesuresBras:
     bassin_z: Callable[[], float]
     couple_max: Dict[str, float] = field(default_factory=dict)
     inclinaison: Optional[Callable[[], Optional[float]]] = None
+    vers_bassin: Optional[Callable[[np.ndarray], np.ndarray]] = None
 
 
 def efforts_valides(mesures: MesuresBras, joints: Iterable[str], age_max: float
@@ -207,3 +219,53 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
         return None, "objet hors de portée des bras à toute distance"
     return None, (f"avant-bras trop près du plateau à toute distance (au mieux "
                   f"{100 * meilleure_garde:.1f} cm, il faut {100 * r.marge_plateau_m:.0f})")
+
+
+def ecarts_modele(modele: ModeleBras, angles: Dict[str, float],
+                  mains_reelles: Tuple[np.ndarray, np.ndarray]
+                  ) -> Tuple[np.ndarray, np.ndarray]:
+    """Écarts (m, repère du bassin) entre les mains mesurées et les mains
+    calculées par la cinématique sur les angles mesurés : (gauche, droite),
+    réel moins modèle."""
+    pg, pd = modele.mains(angles)
+    return (np.asarray(mains_reelles[0], dtype=float) - pg,
+            np.asarray(mains_reelles[1], dtype=float) - pd)
+
+
+class CalibrationMains:
+    """Compare, sur quelques postures, les mains calculées par la
+    cinématique (angles mesurés) aux mains mesurées par le robot. Le banc
+    T1 la fait au démarrage ; au-delà de `ecart_max_m`, la prise mesurée
+    est refusée (ManipulationService.calibration_refus)."""
+
+    def __init__(self, modele: ModeleBras, ecart_max_m: float = 0.015):
+        self.modele, self.ecart_max_m = modele, ecart_max_m
+        self.releves: list = []          # (posture, écart gauche, écart droit)
+
+    def ajouter(self, posture: str, angles: Dict[str, float],
+                mains_reelles: Tuple[np.ndarray, np.ndarray]) -> None:
+        eg, ed = ecarts_modele(self.modele, angles, mains_reelles)
+        self.releves.append((posture, eg, ed))
+
+    @property
+    def ecart_max(self) -> float:
+        """Plus grand écart relevé (m) ; +inf sans relevé, ou s'il n'est pas fini."""
+        if not self.releves:
+            return math.inf
+        v = max(float(np.linalg.norm(e)) for _, eg, ed in self.releves for e in (eg, ed))
+        return v if math.isfinite(v) else math.inf
+
+    def bilan(self) -> Tuple[bool, str]:
+        """(acceptée, texte lisible, une ligne par posture et par main)."""
+        lignes = []
+        for nom, eg, ed in self.releves:
+            for cote, e in (("gauche", eg), ("droite", ed)):
+                lignes.append(f"    {nom:10s} main {cote:6s} : réel - modèle = "
+                              f"({100 * e[0]:+.1f}, {100 * e[1]:+.1f}, {100 * e[2]:+.1f}) cm, "
+                              f"{100 * float(np.linalg.norm(e)):.1f} cm")
+        ok = self.ecart_max <= self.ecart_max_m
+        tete = (f"calibration des mains : écart max {100 * self.ecart_max:.1f} cm "
+                f"(limite {100 * self.ecart_max_m:.1f}) — "
+                + ("prise mesurée autorisée" if ok else
+                   "MODÈLE DES BRAS FAUX, prise mesurée REFUSÉE"))
+        return ok, "\n".join([tete] + lignes)
