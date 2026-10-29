@@ -260,6 +260,62 @@ est en avant du carton réel, c'est la position perçue du carton qui est
 fausse en profondeur (caméra de profondeur, face avant + demi-profondeur),
 pas la cinématique.
 
+## Contact décidé en géométrie, et ce que l'OS reçoit en simulation (2026-10-29)
+
+Constat (`evaluer_vla.sh 5 1 --reflexes`) : 0/2, « fermeture au bout de sa
+course sans contact », faces intérieures à 0,239 m pour un carton de
+0,24 m : les mains étaient CONTRE le carton. Le contact n'était cherché
+qu'au roulis d'épaule (couple, retard) ; le roulis suivait sa consigne, et
+c'étaient le poignet et le coude qui cédaient. Ce qui change :
+- message d'échec : faces intérieures commandées et mesurées, et les trois
+  plus grands écarts consigne-mesure du bras ;
+- contact = couple, OU retard du roulis, OU face mesurée en retard d'au
+  moins 1 cm sur la face commandée et à moins de 1,5 cm de la face attendue
+  (2 pas de suite) ; la consigne s'arrête quand la face commandée atteint
+  largeur/2 − 2 cm ; une main qui touche situe l'objet pour l'autre ;
+- poignets et coudes raidis (gains kp ×2, plafonnés au plus grand gain du
+  pilote du G1, 100) de la fermeture au dépôt ; gains normaux à l'échec,
+  au dépôt, à la réinitialisation et sur arrêt d'urgence.
+
+**Règle : en simulation, l'OS ne reçoit que ce que le vrai G1 à mains
+caoutchouc fournit.** Ce que le banc T1 lui passait, et ce qu'il reçoit
+maintenant :
+
+| Entrée de l'OS | Avant (vérité simulation) | Maintenant |
+|---|---|---|
+| Couples des bras et du garde-fou | couple exact du solveur | couple ESTIMÉ : solveur + gain ±5 %, biais ±0,5 N·m par articulation, bruit 0,3 N·m (`bruit_couples.py`) |
+| Position des mains | prims USD des mains | cinématique sur les angles mesurés |
+| Prise vérifiée au levage | hauteur PhysX du carton | objet encore entre les mains (cinématique) et hausse du couple des roulis |
+| Inclinaison du carton tenu | quaternion PhysX du carton | droite qui joint les mains, centrale inertielle (un carton qui tourne autour de cette droite n'est pas vu) |
+| Hauteur du bassin | racine PhysX | cinématique des jambes et centrale inertielle (pied le plus bas au sol) |
+| Position et cap du robot (navigation, gardien), pose de la caméra dans le monde | racine PhysX | **inchangé : écart restant**, il faut une localisation (odométrie, LiDAR) ; pour la prise, il s'annule (le carton perçu dans le monde est ramené dans le repère du bassin par la même pose) |
+
+Restent du banc, sans effet sur les décisions : la calibration des mains
+(prims USD contre cinématique, au démarrage), l'évaluateur (carton soulevé,
+au sol, inclinaison réelle, garde des avant-bras), le journal (position
+réelle des cartons), le juge et la vue du robot ci-dessous.
+
+**Juge** (`sim/validation/banc_prise.py`, vérité simulation, invisible
+pour l'OS) : capteur de contact PhysX sur chaque main. À chaque prise, le
+journal donne par main « contact estimé par l'OS à t (signal), contact réel
+à t (force) — vrai contact / CONTACT MANQUÉ / FAUX CONTACT » ; le bilan de
+l'évaluation compte vrais, manqués et faux contacts.
+
+**Vue du robot** (`sim/validation/banc_vue_robot.py`) : `t1_vue_robot.mp4`,
+caméra de tête (celle de la perception), 640×480, 15 im/s, aussi en
+incrustation dans `t1_tri_usine.mp4` et à côté de la vue extérieure sur la
+page de suivi. Calques de l'OS (jaune) : détections OWL-ViT (couleur,
+score), points de la face avant, contour estimé et centre visé, cibles des
+mains (ouverture, contact, borne) et mains mesurées, phase, contact estimé
+par main. En rose et pointillé, « vérité simulation » : contour réel du
+carton, contact réel du juge. `--vue-sans-calques` les retire (vidéo de
+démo).
+
+À vérifier au premier essai GPU : le capteur de contact (le journal dit
+« juge des contacts : actif sur … » ou « indisponible ») ; « hauteur du
+bassin : estimée X, vraie Y » avant la boucle (écart attendu sous 1 cm) ;
+les nouvelles raisons d'échec, avec les écarts consigne-mesure.
+
 ## Budget GPU
 
 L'essentiel du développement se fait **sans rendu**, bien plus vite. Le

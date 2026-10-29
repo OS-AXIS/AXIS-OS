@@ -439,12 +439,13 @@ class SceneRecorder:
         self._bandeau_fin_s = t_s + duree_s
         self._bandeau_couleur = couleur
 
-    def image(self, etat: Sequence[str], t_s: float) -> None:
+    def image(self, etat: Sequence[str], t_s: float, incrustation=None) -> None:
         """Capture une image, y incruste l'état du système et l'ajoute à
         la vidéo.
 
         etat : lignes du panneau d'état ; l'instant de simulation t_s est
-        ajouté en dernière ligne. Sans effet si l'enregistrement n'a pas
+        ajouté en dernière ligne. incrustation : image PIL (la vue du
+        robot) posée en bas à droite, au tiers de la largeur. Sans effet si l'enregistrement n'a pas
         démarré ou si la caméra ne fournit pas encore d'image. L'image
         composée est aussi transmise au suivi en direct, s'il est branché.
         """
@@ -497,6 +498,11 @@ class SceneRecorder:
                    fill=(255, 255, 255, 255))
 
         img = Image.alpha_composite(img, calque).convert("RGB")
+        if incrustation is not None:
+            w_i = self._w // 3
+            h_i = round(incrustation.height * w_i / incrustation.width)
+            img.paste(incrustation.convert("RGB").resize((w_i, h_i)),
+                      (int(self._w - w_i - 16 * self._k), int(self._h - h_i - 16 * self._k)))
         self._writer.append_data(np.asarray(img))
         self.images += 1
         if self.direct is not None:

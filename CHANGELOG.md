@@ -10,6 +10,32 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Contact décidé en géométrie ; l'OS ne reçoit que les signaux du vrai G1 (constat GPU du 2026-10-29)
+
+Constat : 0/2, « fermeture au bout de sa course sans contact », mains
+contre le carton : le poignet et le coude cédaient, le roulis suivait sa
+consigne.
+- **Contact** : couple, retard du roulis, ou face intérieure mesurée en
+  retard d'au moins 1 cm sur la face commandée près de la face attendue
+  (`ReglagesPrise.retard_face_m`, `tol_face_contact_m`). **Borne** : la face
+  commandée s'arrête à largeur/2 − `penetration_max_m` (`course_sup_rad`
+  retiré) ; tout le bras est interpolé si le roulis n'y suffit pas.
+- `MesuresBras.raideur`, `MesuresBras.arret_urgence` : poignets et coude
+  raidis pendant la prise, gains rendus au dépôt, à l'échec, à la
+  réinitialisation et sur arrêt d'urgence.
+- `ManipulationService.objet_entre_les_mains()`, `etat_visible()` (lecture
+  seule) ; `PerceptionService.dernieres_faces` (lecture seule).
+- `axis_os/services/manipulation/estimation.py` : hauteur du bassin
+  (jambes, centrale inertielle), inclinaison vue des mains.
+  `ChaineBras.depuis_urdf(fin=…)`.
+- `IsaacSimBridge.bruit_couples` (`bruit_couples.py`) : couples estimés.
+  None par défaut (couple exact, campagne de validation) ; T1 l'active.
+- Banc T1 : mains, vérification, inclinaison et hauteur du bassin calculées
+  des signaux réels ; juge des contacts (`sim/validation/banc_prise.py`),
+  vue du robot (`banc_vue_robot.py`, `t1_vue_robot.mp4`, `/vue_robot.jpg`,
+  `SceneRecorder.image(incrustation=…)`, `SuiviDirect.image_robot`).
+- Évaluation : compteurs du juge (`CONTACTS_JUGE`) par essai et au bilan.
+
 ### Fermeture géométrique, bras affaissés, profondeur perçue (constat GPU du 2026-10-29)
 
 Constat : 0/5, « rien entre les mains » ×5, calibration des mains juste

@@ -302,6 +302,10 @@ class IsaacSimBridge:
         # Pompe du thread principal, attachée seulement en mode
         # multi-thread (voir attach_pump()).
         self._pump: Optional["MainThreadSimPump"] = None
+        # Couples estimés (bruit_couples.py) : None, le couple exact du
+        # solveur (campagne de validation : vérifier les limites de l'URDF).
+        self.bruit_couples = None
+
     def setup(self, fix_base: bool = False, require_meshes: bool = False,
               ground_clearance: float = 0.0,
               physics_dt: Optional[float] = None):
@@ -812,6 +816,8 @@ class IsaacSimBridge:
             efforts = self._robot.get_applied_joint_efforts()
         except AttributeError:
             efforts = None
+        if efforts is not None and self.bruit_couples is not None:
+            efforts = self.bruit_couples(efforts)
         out = {}
         for joint_id, idx in self._joint_index.items():
             out[joint_id] = (
@@ -855,7 +861,10 @@ class IsaacSimBridge:
         # physique. C'est la seule source fiable pour vérifier que le couple
         # ne dépasse jamais la limite de l'URDF (campagne de validation, §2).
         try:
-            eff = float(self._robot.get_applied_joint_efforts()[idx])
+            efforts = self._robot.get_applied_joint_efforts()
+            if self.bruit_couples is not None:
+                efforts = self.bruit_couples(efforts)
+            eff = float(efforts[idx])
         except AttributeError:
             eff = float("nan")  # à vérifier selon la version d'Isaac Sim
         return ActuatorFeedback(

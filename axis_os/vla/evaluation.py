@@ -88,6 +88,9 @@ from axis_os.vla.collecte import consigne
 # Modes d'essai (voir l'en-tête) ; MODES_VLA : ceux où le VLA pilote.
 MODES = ("reflexes", "vla", "vla_prise")
 MODES_VLA = ("vla", "vla_prise")
+# Compteurs du juge des contacts du banc (contact estimé par l'OS contre
+# contact réel), cumulés : rendus par compteurs() s'il y a un juge.
+CONTACTS_JUGE = ("contacts_vrais", "contacts_manques", "faux_contacts")
 
 
 def tirer_placements(n: int, graine: int, couleurs: Sequence[str] = ("rouge", "bleu"),
@@ -139,8 +142,9 @@ class EvaluateurPrises:
         arret_securite() : vrai pendant un arrêt de sécurité.
         halt()      : met la base à l'arrêt, en équilibre.
         compteurs() : {"refus": …, "arrets": …} cumulés (garde-fou,
-                      gardien) ; l'évaluateur en fait la différence par
-                      essai.
+                      gardien), et ceux du juge des contacts s'il y en a un
+                      (CONTACTS_JUGE) ; l'évaluateur en fait la différence
+                      par essai.
         duree_max_s : délai d'un essai, au-delà duquel il est raté.
         tenue_s     : durée pendant laquelle le carton doit rester soulevé
                       pour que l'essai réussisse.
@@ -288,6 +292,10 @@ class EvaluateurPrises:
              "duree_s": round(self._horloge() - self._t_essai, 2),
              "refus_garde_fou": int(c1.get("refus", 0) - self._c0.get("refus", 0)),
              "arrets_securite": int(c1.get("arrets", 0) - self._c0.get("arrets", 0))}
+        # Juge des contacts (vérité simulation, si le banc en fournit un).
+        for cle in CONTACTS_JUGE:
+            if cle in c1:
+                r[cle] = int(c1[cle] - self._c0.get(cle, 0))
         if mode in MODES_VLA:
             r["vla"] = {k: (v if k == "latence_max_s" else v - self._v0.get(k, 0))
                         for k, v in self.vla.stats.items()}
@@ -537,6 +545,9 @@ def bilan(resultats: Sequence[Dict]) -> Dict:
             "arrets_securite": sum(r["arrets_securite"] for r in rs),
             "echecs": raisons,
         }
+        if any(CONTACTS_JUGE[0] in r for r in rs):
+            out["par_mode"][m]["contacts"] = {c: sum(r.get(c, 0) for r in rs)
+                                              for c in CONTACTS_JUGE}
         if any("inclinaison_max_deg" in r for r in rs):
             gardes = [r["garde_min_avant_bras_cm"] for r in rs
                       if r.get("garde_min_avant_bras_cm") is not None]
@@ -576,6 +587,10 @@ def texte_bilan(b: Dict) -> str:
                           f", avant-bras à {s['garde_min_avant_bras_cm']} cm du plateau au plus"
                           f" près, contact avec le plateau dans "
                           f"{s['essais_avec_contact_avant_bras']} essai(s)")
+        if "contacts" in s:
+            c = s["contacts"]
+            lignes.append(f"              juge (vérité simulation) : {c['contacts_vrais']} vrais "
+                          f"contacts, {c['contacts_manques']} manqués, {c['faux_contacts']} faux")
         if s["echecs"]:
             lignes.append("              échecs : " + ", ".join(
                 f"{k} ×{v}" for k, v in sorted(s["echecs"].items(), key=lambda kv: -kv[1])))

@@ -199,6 +199,11 @@ class PerceptionService(IService):
         self._started = False
         self._detections_count = 0
         self._stale_frames = 0
+        # Points de la face avant retenus pour chaque détection de la
+        # dernière recherche ({bbox: tableau N×3, repère de sortie}) : lus
+        # par les vues de diagnostic, jamais par une décision.
+        self.dernieres_faces: dict = {}
+        self._faces_ns: Optional[int] = None
 
     @property
     def service_id(self) -> str:
@@ -387,6 +392,7 @@ class PerceptionService(IService):
             return detections, warn
 
         out = []
+        faces: dict = {}
         for d in detections:
             x, y, w, h = d.bbox
             # Centre de la boîte : approximation assumée. Le centre
@@ -407,7 +413,11 @@ class PerceptionService(IService):
             # trigonométrie.
             position = d.position_3d
             if position is None and depth is not None:
-                position = self._point_de_face(depth, d.bbox, intrinsics, tf)
+                retenus: list = []
+                position = self._point_de_face(depth, d.bbox, intrinsics, tf,
+                                               retenus=retenus)
+                if retenus:
+                    faces[tuple(d.bbox)] = retenus[0]
             if position is None and depth is not None:
                 # Repli (trop peu de points pour trouver la face) : la
                 # profondeur proche le long du rayon du centre de la boîte.
@@ -428,12 +438,17 @@ class PerceptionService(IService):
                 frame="world" if frame == FRAME_WORLD else "base",
                 timestamp_ns=d.timestamp_ns,
             ))
+        # Plusieurs requêtes au même instant (PerceptionCouleur) : cumulées.
+        if now_ns != self._faces_ns:
+            self.dernieres_faces, self._faces_ns = {}, now_ns
+        self.dernieres_faces.update(faces)
         return out, warn
 
     @staticmethod
     def _point_de_face(depth, bbox, intrinsics: CameraIntrinsics, tf, pas: int = 2,
                        bande_m: float = 0.06, support_m: float = 0.015,
-                       marge_verticale: float = 0.15) -> Optional[Vector3]:
+                       marge_verticale: float = 0.15,
+                       retenus: Optional[list] = None) -> Optional[Vector3]:
         """Point de la FACE de l'objet tournée vers la caméra (son milieu,
         repère de `tf`), d'après les points 3D de la boîte de détection.
 
@@ -459,7 +474,8 @@ class PerceptionService(IService):
             distance horizontale médiane de la face, à mi-hauteur de la face.
         Les bords haut et bas de la boîte (`marge_verticale`) sont laissés
         de côté : ils débordent d'ordinaire sur le fond et sur la table.
-        Rend None si trop peu de points : jamais une position par défaut."""
+        Rend None si trop peu de points : jamais une position par défaut.
+        `retenus` (liste) : y ajoute les points de la face retenus (N×3)."""
         import numpy as np
         h, w = depth.shape[0], depth.shape[1]
         x, y, bw, bh = (float(v) for v in bbox)
@@ -488,6 +504,8 @@ class PerceptionService(IService):
         if face.sum() < 5:
             return None
         Q = P[face]
+        if retenus is not None:
+            retenus.append(Q)
         centre = rot @ np.array([(x + bw / 2 - k.cx) / k.fx, (y + bh / 2 - k.cy) / k.fy, 1.0])
         n = float(np.hypot(centre[0], centre[1]))
         if n < 1e-9:
