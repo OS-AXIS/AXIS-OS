@@ -250,6 +250,16 @@ boucle : « robot avant la boucle : X° d'inclinaison, après N pas de
 physique sans équilibre — remis debout » ; avec « [tete_rgb] premières
 données après N image(s) », il confirme (ou non) cette cause.
 
+Calibrage des mains (2026-10-28, mains contre la face avant du carton) :
+au début de la boucle, le journal donne « calibration des mains : écart
+max … » et, pour chaque posture et chaque main, réel − modèle en cm.
+Chaque prise ratée donne les mains (mesurées et du modèle), les cibles,
+l'objet visé et la position réelle des cartons, dans le repère du bassin.
+Lecture : si la calibration passe (modèle juste) mais que « objet visé »
+est en avant du carton réel, c'est la position perçue du carton qui est
+fausse en profondeur (caméra de profondeur, face avant + demi-profondeur),
+pas la cinématique.
+
 ## Budget GPU
 
 L'essentiel du développement se fait **sans rendu**, bien plus vite. Le

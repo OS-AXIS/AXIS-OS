@@ -10,6 +10,26 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Calibrage des mains de la prise mesurée (constat GPU du 2026-10-28)
+
+Constat : 0/5, « rien entre les mains » ×5 ; à la fermeture, les mains
+étaient contre la face avant du carton, ~10 cm du milieu des faces.
+- `CalibrationMains` (`prise.py`) : sur quelques postures, la main calculée
+  par la cinématique (angles mesurés) contre la main mesurée par le robot ;
+  au-delà de 1,5 cm (`ReglagesPrise.ecart_modele_max_m`), la prise mesurée
+  est refusée (`ManipulationService.calibration_refus`). Le banc T1 la fait
+  au début de sa boucle et écrit le bilan au journal.
+- Avant de fermer : les mains mesurées et celles du modèle doivent
+  concorder (1,5 cm) et toutes être au milieu des faces, sinon correction
+  ou refus.
+- Chaque échec ou refus de prise mesurée est journalisé
+  (`ManipulationService(journal=…)`) : mains mesurées, mains du modèle,
+  cibles, objet visé ; dans T1, plus la position réelle des cartons.
+- `MesuresBras.vers_bassin` : repère complet du bassin (T1), pour que
+  cibles, mains mesurées et cinématique soient dans le même repère.
+- Fermeture près du contact : pas borné à 0,004 rad, quel que soit le
+  temps entre deux pas.
+
 ### Correctifs de la prise mesurée (constats GPU du 2026-10-28)
 
 - **Prise jugée « hors de portée » à tort** : le lacet de l'objet (repère
