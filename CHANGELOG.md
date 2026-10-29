@@ -10,6 +10,32 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Fermeture géométrique, bras affaissés, profondeur perçue (constat GPU du 2026-10-29)
+
+Constat : 0/5, « rien entre les mains » ×5, calibration des mains juste
+(0,0 cm). Mains 3,3 cm sous leurs cibles (bras qui s'affaissent) ; au
+refus, leurs faces intérieures étaient à ~0,5 cm du carton ; carton perçu
+2 à 5 cm trop près.
+- **Vide décidé sur les mains** : faces intérieures des mains (cinématique
+  sur tous les angles mesurés) plus proches que la largeur de l'objet moins
+  2 cm (`ReglagesPrise.vide_m`). L'angle du roulis ne fait plus que borner
+  la consigne (`q_vide + course_sup_rad`) ; au bout de sa course sans
+  contact : refus, avec l'écart des faces.
+- **Affaissement compensé** : la correction du placement est cumulée (elle
+  repartait de la cible à chaque fois), bornée à 10 cm par main
+  (`compensation_max_m`) ; les bornes de fermeture sont recalculées pour les
+  bras compensés ; hauteur vérifiée à 1,5 cm (`tol_hauteur_m`, 3 cm avant)
+  avant de fermer ; la reprise repart de la visée compensée.
+- **Perception** : `PerceptionService._point_de_face`. Chaque pixel de la
+  boîte est reporté le long de son propre rayon ; le point rendu est le
+  milieu de la face tournée vers la caméra (le plan qui porte l'objet
+  écarté). Avant, la profondeur du haut de la face était portée le long du
+  rayon du centre de la boîte : trop près, et trop haut. Sur des cartes de
+  profondeur synthétiques de la scène T1 : écart en profondeur 2,5 → 1,2 cm,
+  en hauteur 3,2 → 2,1 cm.
+- Robot simulé : `affaissement_rad` (tangage mesuré plus grand que sa
+  consigne).
+
 ### Calibrage des mains de la prise mesurée (constat GPU du 2026-10-28)
 
 Constat : 0/5, « rien entre les mains » ×5 ; à la fermeture, les mains
