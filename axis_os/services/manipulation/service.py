@@ -278,6 +278,7 @@ class ManipulationService(IService):
         # Raison du refus de toute prise mesurée (calibration des mains
         # ratée, voir prise.CalibrationMains) ; vide : prise permise.
         self.calibration_refus = ""
+        self.raideur_active = False        # gains des poignets raidis (MesuresBras.raideur)
         self.etat = Etat.LIBRE
         self.objet: Optional[Objet] = None
         self.raison = ""
@@ -465,6 +466,12 @@ class ManipulationService(IService):
         self.effort_max_mesure = 0.0
         self._fixes: Dict[str, float] = {}
         self._visee = None                 # visée compensée des mains (placement)
+        self._lam = {"left": 0.0, "right": 0.0}        # avancement de la fermeture, 0 à 1
+        self._q_ferm0: Dict[str, float] = {}
+        self._cible_ferm: Dict[str, Dict[str, float]] = {}
+        self._attendue: Dict[str, float] = {}
+        # Contact estimé par l'OS, par main : {"t": instant, "signal": …}.
+        self.contacts_estimes: Dict[str, Optional[Dict]] = {"left": None, "right": None}
 
     def _vers_bassin(self, p_monde) -> np.ndarray:
         """Point du repère monde -> repère du bassin (x, y du robot ; z
@@ -559,7 +566,52 @@ class ManipulationService(IService):
         self.raison = raison
         self._lever_exemption()
         self.etat = Etat.ECHEC
+        self._regler_raideur(False)
         self._journaliser_echec(raison)
+
+    def _regler_raideur(self, active: bool) -> None:
+        """Gains des poignets et du coude : raidis pour fermer et tenir,
+        normaux au dépôt, à l'échec, sur arrêt d'urgence (MesuresBras.raideur)."""
+        if self.mesures is None or self.mesures.raideur is None or self.raideur_active == active:
+            return
+        try:
+            self.mesures.raideur(active)
+        except Exception:                 # noqa: BLE001 — gains inchangés : on le dit
+            self.stats["raideur_en_echec"] = self.stats.get("raideur_en_echec", 0) + 1
+            return
+        self.raideur_active = active
+
+    def _consigne_complete(self) -> Dict[str, float]:
+        """La consigne des bras, complétée des articulations qu'elle ne
+        commande pas (taille, lacet d'épaule, poignets : leur valeur au plan)."""
+        return {**self._fixes, **self._q}
+
+    def _faces(self, mains) -> Tuple[float, float]:
+        """Position des faces intérieures des mains (gauche, droite) le long
+        de la normale de l'objet, depuis son centre (repère du bassin)."""
+        plan, r = self._plan, self.r
+        n = np.array([-math.sin(plan["lacet"]), math.cos(plan["lacet"]), 0.0])
+        c = np.asarray(plan["centre"], dtype=float)
+        return (float((mains[0] - c) @ n) - r.demi_main_m,
+                float((mains[1] - c) @ n) + r.demi_main_m)
+
+    def _diagnostic_fermeture(self, mod) -> str:
+        """Faces intérieures commandées et mesurées, et les trois plus
+        grands écarts consigne-mesure des articulations des bras."""
+        cmd = self.mesures.modele.mains(self._consigne_complete())
+        fg_c, fd_c = self._faces(cmd)
+        fg_m, fd_m = self._faces(mod)
+        try:
+            mesures = {j: float(v) for j, v in self.mesures.positions().items()}
+        except Exception:                 # noqa: BLE001
+            mesures = {}
+        consigne = self._consigne_complete()
+        ecarts = sorted(((mesures[j] - v, j) for j, v in consigne.items()
+                         if j in mesures and ("shoulder" in j or "elbow" in j or "wrist" in j)),
+                        key=lambda e: -abs(e[0]))[:3]
+        return (f"faces intérieures commandées à {fg_c - fd_c:.3f} m (G {fg_c:+.3f}, D "
+                f"{fd_c:+.3f}), mesurées à {fg_m - fd_m:.3f} m (G {fg_m:+.3f}, D {fd_m:+.3f}) ; "
+                f"écarts consigne-mesure : " + ", ".join(f"{j} {e:+.3f} rad" for e, j in ecarts))
 
     def _mains_modele(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """Mains calculées par la cinématique sur les angles MESURÉS
@@ -644,8 +696,44 @@ class ManipulationService(IService):
         self._contact = {"left": None, "right": None}
         self._compte_contact = {"left": 0, "right": 0}
         self._delta = {"left": 0.0, "right": 0.0}
+        self._lam = {"left": 0.0, "right": 0.0}
+        self._q_ferm0 = dict(self._q)
+        # Faces attendues de l'objet, le long de sa normale (repère du bassin).
+        self._attendue = {"left": self._plan["largeur"] / 2.0,
+                          "right": -self._plan["largeur"] / 2.0}
+        self._cible_ferm = {cote: self._cible_fermeture(k, cote)
+                            for k, cote in enumerate(self._ROULIS)}
+        self.contacts_estimes = {"left": None, "right": None}
+        self._regler_raideur(True)
         self._aller(Etat.FERMETURE)
         return True
+
+    def _cible_fermeture(self, k: int, cote: str) -> Dict[str, float]:
+        """Où va la consigne d'un bras en fermant : le seul roulis, jusqu'à
+        ce que la face COMMANDÉE soit à penetration_max_m dans la face
+        attendue de l'objet ; si le roulis n'y suffit pas dans ses bornes,
+        tout le bras, vers q_vide (cinématique inverse complète, compensée)."""
+        plan, r = self._plan, self.r
+        j = self._ROULIS[cote]
+        sens = 1.0 if k == 0 else -1.0
+        borne = self._attendue[cote] - sens * r.penetration_max_m
+        chaine = self.mesures.modele.gauche if k == 0 else self.mesures.modele.droite
+        base = self._consigne_complete()
+
+        def face(roulis):
+            q2 = dict(base)
+            q2[j] = roulis
+            main = chaine.main(q2)
+            return self._faces((main, main))[k]
+        lo_b, hi_b = chaine.bornes[j]
+        depart, fin = base[j], (lo_b + 0.02 if self._FERME[cote] < 0 else hi_b - 0.02)
+        if sens * (face(fin) - borne) > 0:                 # le roulis n'y suffit pas
+            return {jj: v for jj, v in plan["q_vide"].items() if jj.startswith(cote + "_")}
+        a, b = depart, fin                                  # face(a) au-delà, face(b) en deçà
+        for _ in range(40):
+            m = (a + b) / 2.0
+            a, b = (m, b) if sens * (face(m) - borne) > 0 else (a, m)
+        return {j: b}
 
     def _pas_placement(self) -> None:
         # Les mains ne doivent rien toucher en allant aux faces : un effort
@@ -756,41 +844,75 @@ class ManipulationService(IService):
         if interieur < plan["largeur"] - r.vide_m:
             self._echouer(f"prise refusée — rien entre les mains : serrage dans le vide évité "
                           f"(faces intérieures des mains à {interieur:.3f} m l'une de l'autre, "
-                          f"l'objet attendu en ferait {plan['largeur']:.2f})")
+                          f"l'objet attendu en ferait {plan['largeur']:.2f} ; "
+                          f"{self._diagnostic_fermeture(mod)})")
             return
+        # Faces intérieures des mains, COMMANDÉES (cinématique sur la
+        # consigne complète) et MESURÉES (sur les angles mesurés), le long
+        # de la normale de l'objet ; face attendue de l'objet : ±largeur/2.
+        faces_c = self._faces(self.mesures.modele.mains(self._consigne_complete()))
+        faces_m = self._faces(mod)
         q = dict(self._q)
         en_butee = 0
-        for cote, j in self._ROULIS.items():
+        for k, (cote, j) in enumerate(self._ROULIS.items()):
             if self._contact[cote] is not None:
                 continue
             s = self._FERME[cote]
+            sens = 1.0 if k == 0 else -1.0       # la face gauche descend, la droite monte
+            attendue = self._attendue[cote]
             hausse = abs(tau[j] - self._tau0[j])
             retard = s * (self._q[j] - qm[j])
-            if hausse >= r.hausse_contact_nm or retard >= r.retard_contact_rad:
+            retard_face = sens * (faces_m[k] - faces_c[k])
+            signal = ("couple" if hausse >= r.hausse_contact_nm else
+                      "retard du roulis" if retard >= r.retard_contact_rad else
+                      "géométrie" if (retard_face >= r.retard_face_m and
+                                      abs(faces_m[k] - attendue) <= r.tol_face_contact_m)
+                      else None)
+            if signal is not None:
                 # Contact probable : la consigne n'avance plus, on le
                 # confirme au pas suivant (jamais d'élan dans l'objet).
                 self._compte_contact[cote] += 1
                 if self._compte_contact[cote] >= 2:
                     self._contact[cote] = self._q[j]
+                    self.contacts_estimes[cote] = {"t": self._horloge(), "signal": signal}
+                    # L'objet est maintenant situé : la face opposée est
+                    # attendue à une largeur de celle-ci (une main touche
+                    # avant l'autre quand l'objet est un peu décalé), et la
+                    # borne de l'autre main suit.
+                    autre = "right" if cote == "left" else "left"
+                    if self._contact[autre] is None:
+                        self._attendue[autre] = faces_m[k] - sens * plan["largeur"]
+                        self._cible_ferm[autre] = self._cible_fermeture(1 - k, autre)
+                        self._q_ferm0.update({jj: self._q[jj] for jj in self._cible_ferm[autre]})
+                        self._lam[autre] = 0.0
                 continue
             self._compte_contact[cote] = 0
-            # Borne de la consigne : jamais au-delà, quoi qu'il arrive.
-            limite = plan["q_vide"][j] + s * r.course_sup_rad
-            if s * (limite - self._q[j]) <= 1e-6:
+            # Borne de la consigne : la face COMMANDÉE ne va jamais au-delà de
+            # largeur/2 - penetration_max_m (la cible de fermeture l'y amène
+            # en lam = 1).
+            borne = attendue - sens * r.penetration_max_m
+            if self._lam[cote] >= 1.0 or sens * (faces_c[k] - borne) <= 1e-4:
                 en_butee += 1
                 continue
-            # Près du contact attendu, on ralentit : le dépassement d'un pas
-            # (avant que le contact soit vu) reste petit, même objet raide.
-            loin = s * (self._plan["q_contact"][j] - self._q[j]) > r.zone_contact_rad
-            pas = s * (r.vitesse_fermeture * min(dt, 0.05) if loin
-                       else min(r.vitesse_contact * min(dt, 0.05), r.pas_contact_max_rad))
-            q[j] = self._q[j] + pas if s * (limite - (self._q[j] + pas)) > 0 else limite
+            # Vers la cible de fermeture (le roulis, ou tout le bras si le
+            # roulis n'y suffit pas) ; près du contact attendu, petits pas :
+            # le dépassement d'un pas (avant que le contact soit vu) reste
+            # petit, même objet raide.
+            cible = self._cible_ferm[cote]
+            course = max(abs(v - self._q_ferm0[jj]) for jj, v in cible.items())
+            pres = sens * (faces_c[k] - attendue) <= r.zone_contact_m
+            pas = (min(r.vitesse_contact * min(dt, 0.05), r.pas_contact_max_rad) if pres
+                   else r.vitesse_fermeture * min(dt, 0.05))
+            self._lam[cote] = 1.0 if course < 1e-9 else min(1.0, self._lam[cote] + pas / course)
+            for jj, v in cible.items():
+                q[jj] = self._q_ferm0[jj] + self._lam[cote] * (v - self._q_ferm0[jj])
         self._ecrire_q(q)
         libres = sum(1 for v in self._contact.values() if v is None)
         if libres and en_butee == libres:
             self._echouer(f"prise refusée — fermeture au bout de sa course sans contact : faces "
                           f"intérieures des mains à {interieur:.3f} m l'une de l'autre, l'objet "
-                          f"attendu en ferait {plan['largeur']:.2f}")
+                          f"attendu en ferait {plan['largeur']:.2f} ; "
+                          f"{self._diagnostic_fermeture(mod)}")
             return
         if all(v is not None for v in self._contact.values()):
             mg, md = self._mains_bassin()
@@ -1150,6 +1272,7 @@ class ManipulationService(IService):
             if fini:
                 self.stats["poses"] += 1
                 self.objet, self._q_tenu = None, None
+                self._regler_raideur(False)              # objet déposé : gains normaux
                 # Retour progressif à la posture de port (jamais un saut).
                 self._q_de = dict(self._q)
                 self._q_vers = posture_bras(p.roulis_ouvert, p.tangage_port, p.coude)
@@ -1371,6 +1494,7 @@ class ManipulationService(IService):
         self._q_de = dict(self._q)
         self._q_vers = posture_bras(*self._lacher_vers, self.p.coude)
         self._init_mesure()
+        self._regler_raideur(False)
         self._aller(Etat.LACHER)
 
     def resynchroniser(self) -> None:
@@ -1390,6 +1514,7 @@ class ManipulationService(IService):
         self._q = posture_bras(self.p.roulis_ouvert, self.p.tangage_port, self.p.coude)
         self._tangage_ouverture = self.p.tangage_port
         self._init_mesure()
+        self._regler_raideur(False)
         self.etat = Etat.LIBRE
 
     # ---- boucle : un pas à chaque appel de tick() ------------------------
@@ -1409,6 +1534,16 @@ class ManipulationService(IService):
         maintenant = self._horloge()
         dt = 0.0 if self._dernier_tick is None else maintenant - self._dernier_tick
         self._dernier_tick = maintenant
+        if self.raideur_active and self.mesures is not None \
+                and self.mesures.arret_urgence is not None:
+            try:
+                urgence = bool(self.mesures.arret_urgence())
+            except Exception:             # noqa: BLE001 — illisible : on rend les gains
+                urgence = True
+            if urgence:
+                self._regler_raideur(False)      # arrêt d'urgence : gains normaux aussitôt
+                self.stats["raideur_rendue_urgence"] = \
+                    self.stats.get("raideur_rendue_urgence", 0) + 1
         if self.etat in self._EN_MOUVEMENT and self._arret_securite is not None \
                 and self._arret_securite():
             # Gel : on n'écrit rien, donc les bras restent où ils sont, et on

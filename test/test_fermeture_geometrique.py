@@ -82,8 +82,8 @@ m = r.manipulation
 check("Bras affaissés, aucun carton : ÉCHEC « rien entre les mains », faces intérieures dites",
       m.etat is Etat.ECHEC and "rien entre les mains" in m.raison
       and "faces intérieures des mains" in m.raison, m.raison)
-borne = m._plan["q_vide"]["left_shoulder_roll_joint"] - R.course_sup_rad
-check("… la consigne ne passe jamais la borne de fermeture (q_vide + course_sup_rad)",
+borne = m._cible_ferm["left"]["left_shoulder_roll_joint"]
+check("… la consigne ne passe jamais la borne de fermeture (face commandée à largeur/2 - 2 cm)",
       roulis_min is not None and roulis_min >= borne - 1e-6, f"{roulis_min} {borne}")
 check("… exemption levée, aucun serrage", r.guard._exemption is None
       and m.effort_max_mesure < R.effort_serrage_nm)

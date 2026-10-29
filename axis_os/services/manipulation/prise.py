@@ -56,18 +56,26 @@ class ReglagesPrise:
     bord_min_m: float = 0.15           # le bord d'une table n'est jamais plus près du bassin
     duree_placement_s: float = 0.8
     vitesse_fermeture: float = 0.5     # rad/s, roulis d'épaule
-    vitesse_contact: float = 0.2       # rad/s, à moins de `zone_contact_rad` du contact
-    zone_contact_rad: float = 0.05     # attendu (~1,5 cm) : petit pas, petit dépassement
+    vitesse_contact: float = 0.2       # rad/s, face commandée à moins de `zone_contact_m`
+    zone_contact_m: float = 0.015      # de la face attendue : petit pas, petit dépassement
     pas_contact_max_rad: float = 0.004  # et jamais plus par pas (un pas lent ne l'agrandit pas)
     hausse_contact_nm: float = 1.5     # hausse du couple qui signe le contact
-    retard_contact_rad: float = 0.06   # la main ne suit plus sa consigne
-    penetration_max_m: float = 0.02    # borne de la consigne de fermeture (avec course_sup_rad)
+    retard_contact_rad: float = 0.06   # ou le roulis ne suit plus sa consigne
+    # ou, en géométrie (constaté sur GPU le 2026-10-29 : le roulis suit sa
+    # consigne, ce sont le poignet et le coude qui cèdent), la face
+    # intérieure MESURÉE de la main en retard d'au moins `retard_face_m` sur
+    # sa face COMMANDÉE, le long de la normale de l'objet, et à moins de
+    # `tol_face_contact_m` de la face attendue de l'objet.
+    retard_face_m: float = 0.01
+    tol_face_contact_m: float = 0.015
+    # Borne de la consigne de fermeture : la face COMMANDÉE de chaque main
+    # ne va jamais au-delà de largeur/2 - penetration_max_m du centre.
+    penetration_max_m: float = 0.02
     # Vide : les faces intérieures des mains (cinématique sur TOUS les
     # angles mesurés) plus proches que la largeur de l'objet moins vide_m.
     # Jamais d'après le seul angle du roulis : bras affaissés, ce même
     # angle ne ferme pas autant (constaté sur GPU, 2026-10-29).
     vide_m: float = 0.02
-    course_sup_rad: float = 0.10       # la consigne ne va jamais au-delà de q_vide + ceci
     ecart_largeur_max_m: float = 0.05  # contact bien avant la largeur attendue : autre chose
     effort_serrage_nm: float = 5.0     # hausse de couple visée, pour tenir
     effort_min_nm: float = 2.0         # en dessous, la prise ne tient pas
@@ -107,6 +115,12 @@ class MesuresBras:
                   complète (tangage et roulis du bassin compris), celui de
                   la cinématique. None : le cap seul, et la hauteur au-dessus
                   du bassin (bassin supposé droit).
+    raideur     : (bool) -> None ; True raidit les poignets (et le coude)
+                  par leurs gains kp/kd, dans les limites du pilote, False
+                  rend les gains normaux. Appelé à la fermeture, puis au
+                  dépôt, à l'échec et sur arrêt d'urgence. None : pas de
+                  réglage de gains.
+    arret_urgence : () -> arrêt d'urgence en cours ? (gains rendus aussitôt)
     """
     modele: ModeleBras
     positions: Callable[[], Dict[str, float]]
@@ -115,6 +129,8 @@ class MesuresBras:
     couple_max: Dict[str, float] = field(default_factory=dict)
     inclinaison: Optional[Callable[[], Optional[float]]] = None
     vers_bassin: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    raideur: Optional[Callable[[bool], None]] = None
+    arret_urgence: Optional[Callable[[], bool]] = None
 
 
 def efforts_valides(mesures: MesuresBras, joints: Iterable[str], age_max: float
