@@ -407,6 +407,10 @@ class PerceptionService(IService):
             # trigonométrie.
             position = d.position_3d
             if position is None and depth is not None:
+                position = self._point_de_face(depth, d.bbox, intrinsics, tf)
+            if position is None and depth is not None:
+                # Repli (trop peu de points pour trouver la face) : la
+                # profondeur proche le long du rayon du centre de la boîte.
                 dist = self._depth_of_object(depth, d.bbox)
                 if dist is not None:
                     p_opt = Vector3(ray_optical.x * dist,
@@ -425,6 +429,73 @@ class PerceptionService(IService):
                 timestamp_ns=d.timestamp_ns,
             ))
         return out, warn
+
+    @staticmethod
+    def _point_de_face(depth, bbox, intrinsics: CameraIntrinsics, tf, pas: int = 2,
+                       bande_m: float = 0.06, support_m: float = 0.015,
+                       marge_verticale: float = 0.15) -> Optional[Vector3]:
+        """Point de la FACE de l'objet tournée vers la caméra (son milieu,
+        repère de `tf`), d'après les points 3D de la boîte de détection.
+
+        Pourquoi (constaté sur GPU, 2026-10-29 : carton vu 2 à 5 cm trop
+        près) : _depth_of_object rend la profondeur du quart le plus proche
+        de la boîte, c'est-à-dire le HAUT de la face avant pour une caméra
+        qui regarde vers le bas, et on la portait le long du rayon du
+        CENTRE de la boîte. Le point tombait donc sur le plan perpendiculaire
+        à l'axe de la caméra passant par le haut de la face, qui revient
+        vers le robot à mesure qu'il descend : trop près (de Δz × tan de la
+        plongée), et trop haut. Une boîte qui déborde vers le bas (bord de
+        la table) aggravait l'écart.
+
+        Ici, chaque pixel est reporté le long de SON rayon, dans le repère
+        de sortie (z vertical) :
+          - la distance horizontale de la face : celle de la partie la plus
+            proche (médiane du quart le plus proche), et tous les points à
+            moins de `bande_m` derrière (une face tournée de 12° y tient) ;
+          - le plan qui porte l'objet (le dessus de la table) en est
+            écarté : les points à moins de `support_m` au-dessus du plus
+            bas de la face ;
+          - le point rendu : dans la direction du centre de la boîte, à la
+            distance horizontale médiane de la face, à mi-hauteur de la face.
+        Les bords haut et bas de la boîte (`marge_verticale`) sont laissés
+        de côté : ils débordent d'ordinaire sur le fond et sur la table.
+        Rend None si trop peu de points : jamais une position par défaut."""
+        import numpy as np
+        h, w = depth.shape[0], depth.shape[1]
+        x, y, bw, bh = (float(v) for v in bbox)
+        x0, x1 = int(max(0, x)), int(min(w, x + max(bw, 1)))
+        y0 = int(max(0, y + marge_verticale * bh))
+        y1 = int(min(h, y + (1 - marge_verticale) * bh))
+        if x0 >= x1 or y0 >= y1:
+            return None
+        vs, us = np.mgrid[y0:y1:pas, x0:x1:pas]
+        d = np.asarray(depth, dtype=float)[vs, us]
+        ok = np.isfinite(d) & (d > 1e-3)
+        if ok.sum() < 10:
+            return None
+        u, v, d = us[ok], vs[ok], d[ok]
+        k = intrinsics
+        opt = np.stack([(u - k.cx) / k.fx * d, (v - k.cy) / k.fy * d, d], axis=1)
+        o = tf.apply(Vector3(0.0, 0.0, 0.0))
+        t = np.array([o.x, o.y, o.z])
+        rot = np.array([[c.x, c.y, c.z] for c in (tf.apply_direction(Vector3(*e))
+                                                   for e in np.eye(3))]).T
+        P = opt @ rot.T + t
+        rho = np.hypot(P[:, 0] - t[0], P[:, 1] - t[1])
+        proche = float(np.median(rho[rho <= np.quantile(rho, 0.25)]))
+        face = rho <= proche + bande_m
+        face &= P[:, 2] > np.quantile(P[face, 2], 0.02) + support_m
+        if face.sum() < 5:
+            return None
+        Q = P[face]
+        centre = rot @ np.array([(x + bw / 2 - k.cx) / k.fx, (y + bh / 2 - k.cy) / k.fy, 1.0])
+        n = float(np.hypot(centre[0], centre[1]))
+        if n < 1e-9:
+            return None                    # caméra à la verticale : pas de direction horizontale
+        r = float(np.median(np.hypot(Q[:, 0] - t[0], Q[:, 1] - t[1])))
+        z = 0.5 * (float(np.quantile(Q[:, 2], 0.02)) + float(np.quantile(Q[:, 2], 0.98))) \
+            - support_m / 2
+        return Vector3(float(t[0] + r * centre[0] / n), float(t[1] + r * centre[1] / n), z)
 
     @staticmethod
     def _depth_of_object(depth, bbox, quantile: float = 0.25):

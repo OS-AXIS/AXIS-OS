@@ -45,7 +45,11 @@ class ReglagesPrise:
     demi_main_m: float = 0.045
     jeu_ouverture_m: float = 0.04      # chaque main, à l'écart de sa face avant de fermer
     tol_profondeur_m: float = 0.025    # mains au milieu des faces, en profondeur
-    tol_hauteur_m: float = 0.03        # et en hauteur
+    # et en hauteur ; constaté sur GPU (2026-10-29) : mains 3,3 cm plus bas
+    # que leurs cibles (bras qui s'affaissent), d'où une tolérance serrée et
+    # la compensation ci-dessous.
+    tol_hauteur_m: float = 0.015
+    compensation_max_m: float = 0.10   # visée décalée d'au plus 10 cm par main pour compenser
     corrections_max: int = 2
     rayon_avant_bras_m: float = 0.035
     marge_plateau_m: float = 0.03      # sous l'avant-bras, au-dessus du plateau
@@ -57,7 +61,13 @@ class ReglagesPrise:
     pas_contact_max_rad: float = 0.004  # et jamais plus par pas (un pas lent ne l'agrandit pas)
     hausse_contact_nm: float = 1.5     # hausse du couple qui signe le contact
     retard_contact_rad: float = 0.06   # la main ne suit plus sa consigne
-    penetration_max_m: float = 0.02    # au-delà, plus rien entre les mains : vide
+    penetration_max_m: float = 0.02    # borne de la consigne de fermeture (avec course_sup_rad)
+    # Vide : les faces intérieures des mains (cinématique sur TOUS les
+    # angles mesurés) plus proches que la largeur de l'objet moins vide_m.
+    # Jamais d'après le seul angle du roulis : bras affaissés, ce même
+    # angle ne ferme pas autant (constaté sur GPU, 2026-10-29).
+    vide_m: float = 0.02
+    course_sup_rad: float = 0.10       # la consigne ne va jamais au-delà de q_vide + ceci
     ecart_largeur_max_m: float = 0.05  # contact bien avant la largeur attendue : autre chose
     effort_serrage_nm: float = 5.0     # hausse de couple visée, pour tenir
     effort_min_nm: float = 2.0         # en dessous, la prise ne tient pas

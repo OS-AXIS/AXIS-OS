@@ -464,6 +464,7 @@ class ManipulationService(IService):
         self._corrections_inclinaison = 0
         self.effort_max_mesure = 0.0
         self._fixes: Dict[str, float] = {}
+        self._visee = None                 # visée compensée des mains (placement)
 
     def _vers_bassin(self, p_monde) -> np.ndarray:
         """Point du repère monde -> repère du bassin (x, y du robot ; z
@@ -543,6 +544,7 @@ class ManipulationService(IService):
         if garde < r.marge_plateau_m:
             return False, (f"avant-bras à {100 * garde:.1f} cm du plateau (il faut "
                            f"{100 * r.marge_plateau_m:.0f}) : changer la distance à la table")
+        self._visee = None
         self._plan = {"centre": centre, "lacet": lacet, "q_ouvert": q_ouvert,
                       "q_contact": q_contact, "q_vide": q_vide, "largeur": objet.largeur,
                       "garde": garde,
@@ -673,6 +675,7 @@ class ManipulationService(IService):
                           "mains inconnue")
             return
         desaccord = max(float(np.linalg.norm(a - b)) for a, b in zip((mg, md), mod))
+        mesurees = (mg, md)
         if desaccord > r.ecart_modele_max_m:
             self._echouer(f"prise refusée — mains mesurées à {100 * desaccord:.1f} cm du modèle "
                           f"des bras (limite {100 * r.ecart_modele_max_m:.1f}) : cinématique à "
@@ -680,9 +683,9 @@ class ManipulationService(IService):
             return
         axe = np.array([math.cos(plan["lacet"]), math.sin(plan["lacet"]), 0.0])
         erreurs = [m - c for m, c in zip((mg, md), plan["cibles"])]
-        prof = max(abs(float(e @ axe)) for e in erreurs + [m - c for m, c in zip(mod,
-                                                                                   plan["cibles"])])
-        haut = max(abs(float(e[2])) for e in erreurs)
+        erreurs_mod = [m - c for m, c in zip(mod, plan["cibles"])]
+        prof = max(abs(float(e @ axe)) for e in erreurs + erreurs_mod)
+        haut = max(abs(float(e[2])) for e in erreurs + erreurs_mod)
         if prof <= r.tol_profondeur_m and haut <= r.tol_hauteur_m:
             self._debut_fermeture()
             return
@@ -691,16 +694,44 @@ class ManipulationService(IService):
                           f"corrections : {100 * prof:.1f} cm en profondeur, {100 * haut:.1f} cm "
                           f"en hauteur")
             return
-        # Correction : viser plus loin de l'erreur mesurée (le modèle et le
-        # bras réel diffèrent un peu), puis revérifier.
+        # Correction : viser plus loin de l'erreur mesurée (bras qui
+        # s'affaissent sous leur poids, modèle un peu différent du bras),
+        # en CUMULANT : la visée d'avant, moins l'écart qui reste. Puis
+        # revérifier. La compensation est bornée.
         self._corrections += 1
         self.stats["corrections_placement"] = self.stats.get("corrections_placement", 0) + 1
-        cg, cd = (c - e for c, e in zip(plan["cibles"], erreurs))
-        q, _ = resoudre(self.mesures.modele, cg, cd, self._graine(self._q))
-        if q is None:
+        visee = self._visee if self._visee is not None else list(plan["cibles"])
+        visee = [v - (m - c) for v, m, c in zip(visee, mesurees, plan["cibles"])]
+        comp = [v - c for v, c in zip(visee, plan["cibles"])]
+        trop = max(float(np.linalg.norm(c)) for c in comp)
+        if trop > r.compensation_max_m:
+            self._echouer(f"prise refusée — mains {100 * trop:.1f} cm loin de leur cible malgré "
+                          f"la compensation (limite {100 * r.compensation_max_m:.0f}) : bras "
+                          f"qui s'affaissent trop")
+            return
+        q, _ = resoudre(self.mesures.modele, visee[0], visee[1], self._graine(self._q))
+        bornes = self._bornes_fermeture(comp)
+        if q is None or bornes is None:
             self._echouer("prise refusée — hors de portée des bras pour corriger les mains")
             return
+        self._visee = visee
+        plan["q_contact"], plan["q_vide"] = bornes
+        plan["q_place"] = q                # la reprise repartira de la visée compensée
         self._vers_placement(q, r.duree_placement_s / 2.0)
+
+    def _bornes_fermeture(self, comp) -> Optional[Tuple[Dict[str, float], Dict[str, float]]]:
+        """Angles du contact attendu et de la borne de fermeture, pour des
+        mains visées avec la compensation `comp` (par main) : ceux du plan
+        sont calculés pour des bras qui ne s'affaissent pas."""
+        plan, r = self._plan, self.r
+        sortie = []
+        for ecart in (r.demi_main_m, r.demi_main_m - r.penetration_max_m):
+            cg, cd = cibles_mains(plan["centre"], plan["largeur"], plan["lacet"], ecart)
+            q, _ = resoudre(self.mesures.modele, cg + comp[0], cd + comp[1], self._graine(self._q))
+            if q is None:
+                return None
+            sortie.append(q)
+        return sortie[0], sortie[1]
 
     def _pas_fermeture(self, dt: float) -> None:
         r = self.r
@@ -712,7 +743,23 @@ class ManipulationService(IService):
         if qm is None:
             self._echouer(f"serrage refusé — {raison}")
             return
+        # Vide : décidé d'après les MAINS (cinématique sur tous les angles
+        # mesurés), jamais d'après le seul angle du roulis.
+        mod = self._mains_modele()
+        if mod is None:
+            self._echouer("serrage refusé — angles des bras illisibles : position des mains "
+                          "inconnue")
+            return
+        plan = self._plan
+        n = np.array([-math.sin(plan["lacet"]), math.cos(plan["lacet"]), 0.0])
+        interieur = float((mod[0] - mod[1]) @ n) - 2 * r.demi_main_m
+        if interieur < plan["largeur"] - r.vide_m:
+            self._echouer(f"prise refusée — rien entre les mains : serrage dans le vide évité "
+                          f"(faces intérieures des mains à {interieur:.3f} m l'une de l'autre, "
+                          f"l'objet attendu en ferait {plan['largeur']:.2f})")
+            return
         q = dict(self._q)
+        en_butee = 0
         for cote, j in self._ROULIS.items():
             if self._contact[cote] is not None:
                 continue
@@ -727,12 +774,11 @@ class ManipulationService(IService):
                     self._contact[cote] = self._q[j]
                 continue
             self._compte_contact[cote] = 0
-            limite = self._plan["q_vide"][j]
-            if s * (limite - qm[j]) <= 0.005:
-                # La main elle-même (mesurée) a passé la largeur attendue.
-                self._echouer("prise refusée — rien entre les mains : serrage dans le vide "
-                              "évité (aucun contact à la largeur attendue)")
-                return
+            # Borne de la consigne : jamais au-delà, quoi qu'il arrive.
+            limite = plan["q_vide"][j] + s * r.course_sup_rad
+            if s * (limite - self._q[j]) <= 1e-6:
+                en_butee += 1
+                continue
             # Près du contact attendu, on ralentit : le dépassement d'un pas
             # (avant que le contact soit vu) reste petit, même objet raide.
             loin = s * (self._plan["q_contact"][j] - self._q[j]) > r.zone_contact_rad
@@ -740,6 +786,12 @@ class ManipulationService(IService):
                        else min(r.vitesse_contact * min(dt, 0.05), r.pas_contact_max_rad))
             q[j] = self._q[j] + pas if s * (limite - (self._q[j] + pas)) > 0 else limite
         self._ecrire_q(q)
+        libres = sum(1 for v in self._contact.values() if v is None)
+        if libres and en_butee == libres:
+            self._echouer(f"prise refusée — fermeture au bout de sa course sans contact : faces "
+                          f"intérieures des mains à {interieur:.3f} m l'une de l'autre, l'objet "
+                          f"attendu en ferait {plan['largeur']:.2f}")
+            return
         if all(v is not None for v in self._contact.values()):
             mg, md = self._mains_bassin()
             ecart = float(np.linalg.norm((mg - md)[:2]))
@@ -918,7 +970,7 @@ class ManipulationService(IService):
             self._aller(Etat.REPOSE)
             return
         self._corrections, self._delta = 0, {"left": 0.0, "right": 0.0}
-        self._vers_placement(self._plan["q_ouvert"], 0.0)
+        self._vers_placement(self._plan.get("q_place", self._plan["q_ouvert"]), 0.0)
 
     def _ramener(self, plus_pres: float = 0.0) -> None:
         """Vers le buste : la face arrière de l'objet à `distance_torse_m`

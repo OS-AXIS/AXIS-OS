@@ -439,6 +439,10 @@ class SimulatedRobot:
         self._limites_couple = {d.joint_id: d.limits.torque_max
                                 for d in self.raw_hal.get_joint_definitions()}
         self.effort_fault: Optional[str] = None
+        # Bras qui s'affaissent sous leur poids (moteurs souples), comme
+        # constaté sur GPU le 2026-10-29 : le tangage d'épaule mesuré est
+        # plus grand que sa consigne de `affaissement_rad` (main plus basse).
+        self.affaissement_rad = 0.0
         self._consignes_roulis: Dict[str, float] = {}
         self._suivre_consignes_roulis()
         self.object_tilt_deg: Optional[float] = None
@@ -671,7 +675,8 @@ class SimulatedRobot:
         """Retient la dernière consigne acceptée de chaque roulis d'épaule,
         d'où qu'elle vienne (manipulation, move_to_pose, posture de repos) :
         c'est elle que le contact compare à la position réelle."""
-        for j in ("left_shoulder_roll_joint", "right_shoulder_roll_joint"):
+        for j in ("left_shoulder_roll_joint", "right_shoulder_roll_joint",
+                  "left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
             act = self.raw_hal.get_actuator(j)
             envoi = act.send_command
 
@@ -722,6 +727,10 @@ class SimulatedRobot:
         """Chaque roulis d'épaule s'arrête où sa main touche la face de
         l'objet ; au-delà de la consigne, le couple monte (raideur
         KP_ROULIS). Sans contact, la main suit sa consigne, couple de repos."""
+        for j in ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
+            if j in self._consignes_roulis:
+                self.raw_hal.get_actuator(j)._position = (self._consignes_roulis[j]
+                                                          + self.affaissement_rad)
         etat = self.raw_hal.get_full_state()
         q = {j: etat[j].position for j in self._BRAS if j in etat}
         o = self._objet_entre_les_mains(q)
