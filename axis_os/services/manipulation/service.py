@@ -492,6 +492,8 @@ class ManipulationService(IService):
         self.force_serrage: Dict[str, float] = {"left": 0.0, "right": 0.0}
         self.force_max_mesuree = 0.0
         self.bruit_force: Dict[str, float] = {}
+        # Force absolue (N) à chaque main juste avant de fermer (voir _mesurer_bruit).
+        self.force_avant_fermeture: Dict[str, float] = {}
         self._seuil_contact = self.r.force_contact_n
         self._hist_force: Dict[str, deque] = {c: deque(maxlen=max(1, self.r.filtre_force))
                                               for c in ("left", "right")}
@@ -1104,6 +1106,28 @@ class ManipulationService(IService):
         self._noter(f"bruit de la force estimée au repos : G {self.bruit_force.get('left', 0):.2f}"
                     f" N, D {self.bruit_force.get('right', 0):.2f} N par lecture ({len(lus)} "
                     f"lectures) ; seuil de contact {self._seuil_contact:.1f} N")
+        # Filet avant de fermer : la force ABSOLUE à chaque main (poids du bras
+        # retiré par le modèle), pas celle depuis ce zéro, qu'une main déjà en
+        # appui fausserait (le contact serait vu trop tard).
+        appui = []
+        for cote, nom in (("left", "G"), ("right", "D")):
+            f = self._force_main(cote, self._tau0, a0, g, depuis_fermeture=False)
+            seuil = max(r.force_appui_n, r.sigmas_appui * self.bruit_force.get(cote, 0.0))
+            if f is not None:
+                # Le long de la normale, vers l'objet : c'est ainsi qu'une main
+                # repose sur sa face (un biais des couples porte aussi ailleurs).
+                self.force_avant_fermeture[cote] = float(f @ self._vers_objet(cote))
+                appui.append((nom, self.force_avant_fermeture[cote], seuil))
+        self.stats["force_avant_fermeture_n"] = {c: round(v, 2) for c, v in
+                                                 self.force_avant_fermeture.items()}
+        self._noter("force absolue à la main avant de fermer : " + ", ".join(
+            f"{nom} {f:.1f} N (seuil {seuil:.1f})" for nom, f, seuil in appui))
+        trop = [(nom, f, seuil) for nom, f, seuil in appui if f > seuil]
+        if trop:
+            nom, f, seuil = trop[0]
+            self._echouer(f"prise refusée — main {nom} déjà en appui sur l'objet avant de fermer "
+                          f"({f:.1f} N, seuil {seuil:.1f} N) : la perception le voyait ailleurs")
+            return True
         self._sous, self._echantillons = "", []
         self._t0 = self._horloge()
         return True

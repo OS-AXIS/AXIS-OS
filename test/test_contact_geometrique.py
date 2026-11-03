@@ -120,6 +120,14 @@ r.__exit__(None, None, None)
 COMPRESSION_M = 0.002
 
 
+def leve_valeur(f):
+    try:
+        f()
+    except ValueError:
+        return True
+    return False
+
+
 def penetrations(r):
     """Relevé, dans le fil de la simulation, à chaque consigne des bras : de
     combien la face intérieure de chaque main, là où elle est vraiment
@@ -237,28 +245,88 @@ check("Au-delà de recalage_max_m (1 cm ici, 3 par défaut) : « prise refusée 
 check("… gains des poignets rendus", not r.raideur_active, str(r.changements_raideur))
 r.__exit__(None, None, None)
 
-section("7. Carton 3 cm à côté de son estimation : aucune main à plus de 2 cm dans sa vraie face "
-        "à partir du toucher")
-# Les bornes du serrage partent des faces mesurées au toucher : du toucher au
-# port, aucune main n'entre de plus de 2 cm dans la vraie face (à la
-# compression du carton près, COMPRESSION_M). AVANT le toucher, la fermeture
-# vise la face perçue :
-# à 3 cm, la main est déjà contre le carton quand elle commence (géométrie de
-# T1 : les mains l'encadrent à 2,5 mm en posture de port), le contact n'est vu
-# qu'à la force, et la première main va ~2,5 cm dans sa face. Relevé, non
-# borné ici (voir la PR).
+section("7. Carton 3 cm à côté de son estimation : ouverture qui le dégage, mains jamais à "
+        "plus de 2 cm dans sa vraie face ; main en appui refusée")
+
+
+def deplacer_avant_fermeture(r, deplacement):
+    """Décale le carton de `deplacement(r)` (m, le long de y) au moment où
+    la fermeture commence, mains ouvertes, dans le fil de la prise : le
+    robot simulé pose le carton entre les mains en posture de port, à 2,5 mm
+    de chacune ; décalé dès le départ, il serait dans une main avant même la
+    prise, ce qui n'arrive pas sur le vrai robot."""
+    m = r.manipulation
+    debut = m._debut_fermeture
+
+    def deplacer():
+        o = r.objects[0]
+        o.position = (o.position[0], o.position[1] + deplacement(r), o.position[2])
+        return debut()
+    m._debut_fermeture = deplacer
+
+
+def releve_au_repos(r):
+    """Plus grande force RÉELLE de contact (vérité de la simulation) pendant la
+    mesure au repos, juste avant de fermer."""
+    m, vu = r.manipulation, []
+    mesurer = m._mesurer_bruit
+
+    def releve(tau):
+        vu.append(max(r.forces_contact.values()))
+        return mesurer(tau)
+    m._mesurer_bruit = releve
+    return vu
+
+
+R0 = ReglagesPrise()
+check(f"Ouverture avant de fermer ({100 * R0.jeu_ouverture_m:.0f} cm) = erreur acceptée "
+      f"({100 * R0.recalage_max_m:.0f} cm) + marge ({100 * R0.marge_ouverture_m:.0f} cm) ; "
+      f"une ouverture plus courte est refusée à la construction des réglages",
+      R0.jeu_ouverture_m >= R0.recalage_max_m + R0.marge_ouverture_m - 1e-12
+      and leve_valeur(lambda: ReglagesPrise(jeu_ouverture_m=0.04))
+      and not leve_valeur(lambda: ReglagesPrise(jeu_ouverture_m=0.04, recalage_max_m=0.02)))
 for dy in (0.03, -0.03):
-    r = robot(y=dy, cedent=False)
+    r = robot(cedent=False)
+    deplacer_avant_fermeture(r, lambda r_, dy=dy: dy)
+    au_repos = releve_au_repos(r)
     pire = penetrations(r)
     etats = prendre(r, CARTON)
     m = r.manipulation
-    issue = ("tenu" if m.etat is Etat.TENU else
-             "refusé au recalage" if "recalage au toucher" in m.raison else m.raison[:60])
-    check(f"Décalé de {100 * dy:+.0f} cm ({issue}) : au plus {100 * pire['toucher']:.2f} cm dans "
-          f"la vraie face du toucher au port (fermeture : {100 * pire['fermeture']:.2f} cm)",
-          Etat.FERMETURE in etats and m.etat in (Etat.TENU, Etat.ECHEC)
-          and pire["toucher"] <= m.r.penetration_max_m + COMPRESSION_M, f"{pire} {m.raison} {etats}")
+    check(f"Décalé de {100 * dy:+.0f} cm : aucune main ne touche le carton avant de fermer "
+          f"(au plus {max(au_repos, default=-1.0):.1f} N réels au repos), au plus "
+          f"{100 * pire['fermeture']:.2f} cm dans la vraie face à la fermeture, "
+          f"{100 * pire['toucher']:.2f} cm du toucher au port ; la prise tient",
+          au_repos and max(au_repos) == 0.0 and m.etat is Etat.TENU
+          and max(pire.values()) <= m.r.penetration_max_m + COMPRESSION_M,
+          f"{max(au_repos, default=None)} {pire} {m.raison} {etats}")
     r.__exit__(None, None, None)
+# Main en appui forcé : au début de la fermeture, la face gauche du carton est
+# mise 1,5 cm dans la main gauche ouverte.
+journal = []
+r = robot(cedent=False)
+m = r.manipulation
+m._journal = journal.append
+
+
+def dans_la_main(r_):
+    g, _ = r_.manipulation._mains_bassin()
+    face_main = float(g[1]) - r_.manipulation.r.demi_main_m
+    return (face_main + 0.015 - r_.objects[0].size[0] / 2.0) - float(r_.objects[0].position[1])
+
+
+deplacer_avant_fermeture(r, dans_la_main)
+au_repos = releve_au_repos(r)
+etats = prendre(r, CARTON)
+ligne = next((l for l in journal if l.startswith("force absolue à la main avant de fermer")), "")
+check(f"Main gauche en appui forcé ({max(au_repos, default=0.0):.1f} N réels) : « prise refusée — "
+      f"main G déjà en appui sur l'objet », sans fermer, gains rendus",
+      m.etat is Etat.ECHEC and "main G déjà en appui sur l'objet" in m.raison
+      and m.stats.get("force_avant_fermeture_n", {}).get("left", 0.0) > 3.0
+      and not any(m.contacts_estimes.values()) and not r.raideur_active,
+      f"{m.raison} {m.stats.get('force_avant_fermeture_n')} {m.contacts_estimes}")
+check("… la force absolue de chaque main avant de fermer est au journal (pour régler le seuil)",
+      "G " in ligne and "D " in ligne and "seuil" in ligne, ligne)
+r.__exit__(None, None, None)
 
 print(f"\n{'=' * 66}\n  {'TOUT PASSE' if FAIL == 0 else f'{FAIL} ÉCHEC(S)'}\n{'=' * 66}")
 sys.exit(1 if FAIL else 0)

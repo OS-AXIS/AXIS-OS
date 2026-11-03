@@ -46,6 +46,13 @@ le centre perçu était celui de la face avant, dans un cadre qui déborde.
   `ManipulationService.recalage`, `stats["recalage_m"]`,
   `etat_visible()["recalage"]`) ; bornes du serrage depuis les faces
   mesurées au toucher, une main déjà au-delà reculée jusqu'à sa borne.
+- Ouverture avant de fermer : `jeu_ouverture_m` 4 → 5 cm, au moins
+  `recalage_max_m` + `marge_ouverture_m` (2 cm), vérifié à la construction
+  de `ReglagesPrise` (ValueError sinon). Filet avant de fermer : force
+  absolue de chaque main vers l'objet au-delà de max(`force_appui_n`,
+  `sigmas_appui` × bruit au repos) : « main déjà en appui sur l'objet »,
+  prise refusée ; `ManipulationService.force_avant_fermeture`,
+  `stats["force_avant_fermeture_n"]`, valeur au journal.
 - Banc T1 : pose de la caméra de tête par son montage sur le bassin ;
   `--detecteur owlvit|owlv2`, `--seuil-detecteur`, `--sans-sam2`,
   `--images-perception` ; `banc_perception.py` compare les détecteurs ; vue

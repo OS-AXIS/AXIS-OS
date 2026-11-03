@@ -416,12 +416,17 @@ la façade de l'app de tri) :
    déjà les mains mesurées. Les bornes du serrage partent alors des faces
    MESURÉES au toucher, plus du centre estimé : aucune main ne va plus de
    2 cm dans la face qu'elle touche, et une main déjà au-delà recule jusqu'à
-   sa borne avant de serrer. Avant le toucher, la fermeture vise la face
-   perçue : à 3 cm d'erreur, la main est déjà contre le carton quand elle
-   commence (les mains l'encadrent à 2,5 mm en posture de port), le contact
-   n'est vu qu'à la force, et la première main va ~2,5 cm dans sa face
-   (relevé par `test_contact_geometrique`, section 7). Le lacet n'est pas
-   observable par deux mains
+   sa borne avant de serrer. Avant de fermer, chaque main s'ouvre à 5 cm de
+   sa face perçue (`jeu_ouverture_m`) : l'erreur de position acceptée (3 cm,
+   `recalage_max_m`) plus 2 cm de marge (`marge_ouverture_m`, pour l'écart
+   entre main commandée et main réelle des bras qui s'affaissent : 2 cm
+   constatés). Des réglages qui ne tiennent pas cette relation
+   sont refusés dès leur construction. Filet : juste avant de fermer, la
+   force ABSOLUE de chaque main vers l'objet (poids du bras retiré par le
+   modèle), au-delà de 3 N ou de 4 fois le bruit mesuré au repos, refuse la
+   prise (« main déjà en appui sur l'objet ») ; sa valeur est au journal
+   (« force absolue à la main avant de fermer »), pour régler ce seuil
+   provisoire sur les essais GPU. Le lacet n'est pas observable par deux mains
    plates à la même profondeur : la largeur mesurée en borne l'écart (au
    journal). La profondeur ne l'est pas non plus : elle reste celle de la
    perception.
@@ -475,7 +480,10 @@ FoundationPose (licence NVIDIA non commerciale) et cuRobo.
 À vérifier au premier essai GPU : la ligne « montage de la caméra de tête »
 (attendu sous 0,5 cm et 0,5°) ; « [sam2] … chargé » ; au journal, « carton
 … vu » (résidu, couverture) puis « recalage au toucher » à chaque prise ; la
-comparaison des deux détecteurs sur les images enregistrées.
+comparaison des deux détecteurs sur les images enregistrées ; « force absolue
+à la main avant de fermer » à chaque prise (seuil provisoire de 3 N, à régler),
+et que l'ouverture de 5 cm passe la portée et la garde de l'avant-bras
+au-dessus du plateau de T1.
 
 ## Budget GPU
 
