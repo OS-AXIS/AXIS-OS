@@ -268,5 +268,27 @@ check(f"Seuil de contact jamais sous {R.sigmas_contact:.0f} fois le bruit filtr�
       m._seuil_contact >= R.sigmas_contact * max(m.bruit_force.values())
       / math.sqrt(R.filtre_force) - 1e-9)
 
+section("7. Carton 2 cm à côté de sa perception : levé sans relâcher une main")
+# La cinématique inverse du levage partait d'une graine sans le lacet
+# d'épaule ni les poignets serrés : au premier pas, la main gauche lâchait
+# (« l'objet n'a pas suivi »).
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.02, 0.90))], time_scale=2.0) as r:
+    m, au_levage = r.manipulation, []
+    pas_levage = m._pas_levage_mesure
+
+    def releve():
+        # Dans le fil de la simulation, à chaque pas du levage (un sondage
+        # depuis le test peut manquer la phase sur une machine chargée).
+        au_levage.append(min(r.forces_contact.values()))
+        return pas_levage()
+    m._pas_levage_mesure = releve
+    time.sleep(0.2)
+    prendre(r)
+    check(f"Les deux mains serrent pendant tout le levage (au moins "
+          f"{min(au_levage, default=0.0):.1f} N, 4 portent le carton de 1 kg)",
+          au_levage and min(au_levage) >= 4.0, str(au_levage[:5]))
+    check("… et la prise tient du premier coup", m.etat is Etat.TENU
+          and not m.stats.get("reprises"), f"{m.raison} {m.stats}")
+
 print(f"\n{'=' * 66}\n  {'TOUT PASSE' if FAIL == 0 else f'{FAIL} ÉCHEC(S)'}\n{'=' * 66}")
 sys.exit(1 if FAIL else 0)

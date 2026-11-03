@@ -353,6 +353,13 @@ Ce qui change :
   entre deux mains caoutchouc demande 4,9 N à chacune.
 - Lacet d'épaule et poignets commandés pendant la fermeture et le serrage,
   rendus à leur consigne d'avant en fin de prise ; lacet d'épaule raidi aussi.
+- **Gestes avec l'objet** (levage, transport, dépose) : les mains commandées
+  au serrage suivent en translation le milieu des mains mesurées ; leur avance
+  dans le carton, le serrage, reste la même en cartésien. Avant, la cinématique
+  inverse de référence oubliait le lacet d'épaule et les poignets serrés : la
+  main d'un carton décalé de 2 cm lâchait au premier pas du levage. Au buste,
+  le bras est plus raide : la force monte (18 N en simulation pour 9 au
+  serrage), toujours sous le plafond de couple de chaque articulation.
 - Journal d'échec : force estimée par main et couple de chaque articulation.
 - **Juge** : rapport de contact PhysX posé sur les corps des mains AVANT
   world.reset() (capteur de contact d'Isaac en repli, extension activée), avec

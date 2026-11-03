@@ -464,7 +464,7 @@ class ManipulationService(IService):
         self._t_phase: Optional[float] = None
         self._sous = ""
         self._q_serre: Optional[Dict[str, float]] = None
-        self._q_ref: Optional[Dict[str, float]] = None
+        self._c_serre: Optional[np.ndarray] = None
         self._delta_serre = {"left": 0.0, "right": 0.0}
         self._c_de = self._c_vers = np.zeros(3)
         self._q_tenu: Optional[Dict[str, float]] = None
@@ -1306,15 +1306,6 @@ class ManipulationService(IService):
             self._q_serre = dict(self._q)
             self._lever_de_quelques_cm()
 
-    def _ik_mains(self, centre_mains: np.ndarray, ecart: float, depart: Dict[str, float]
-                  ) -> Optional[Dict[str, float]]:
-        # Objet tenu : 0,5 mm près, car l'écart des mains EST le serrage (un
-        # écart de 3 mm, sur un objet raide, ferait varier l'effort de plusieurs N·m).
-        demi = np.array([0.0, ecart / 2.0, 0.0])
-        q, _ = resoudre(self.mesures.modele, centre_mains + demi, centre_mains - demi,
-                        self._graine(depart), tol=0.0005)
-        return q
-
     def _raideur(self, cote: str, force: float) -> float:
         """Raideur mesurée (N/m) au serrage : hausse de la force à la main
         sur l'avance de la face commandée depuis la dernière mesure ; 0 si
@@ -1362,14 +1353,23 @@ class ManipulationService(IService):
     def _q_mains(self, centre_mains: np.ndarray, ecart: float) -> Optional[Dict[str, float]]:
         """Bras qui mettent les mains de part et d'autre de `centre_mains`
         (repère du bassin), à `ecart` l'une de l'autre, le serrage gardé :
-        aux consignes serrées s'ajoute le déplacement que la cinématique
-        donne depuis la prise (le serrage mesuré reste le même, même si le
-        modèle diffère un peu du bras réel), et la variation du serrage."""
-        q = self._ik_mains(centre_mains, ecart, self._q_ref)
+        les mains COMMANDÉES au serrage suivent, en translation, le milieu
+        des mains mesurées (leur avance dans l'objet, le serrage, reste la
+        même en cartésien, quelle que soit la posture), plus la variation
+        du serrage. Le lacet d'épaule et les poignets restent ceux du
+        serrage : la cinématique inverse ne résout que tangage, roulis et
+        coude, les autres angles pris dans sa graine."""
+        cg, cd = self.mesures.modele.mains({**self._fixes, **self._q_serre})
+        t = np.asarray(centre_mains, dtype=float) - self._c_serre
+        e = np.array([0.0, (ecart - self._ecart_mains) / 2.0, 0.0])
+        q, _ = resoudre(self.mesures.modele, cg + t + e, cd + t - e,
+                        # 0,5 mm près : l'écart des mains EST le serrage (3 mm, sur un
+                        # objet raide, feraient varier l'effort de plusieurs N·m).
+                        self._graine(self._q_serre), tol=0.0005)
         if q is None:
             return None
         sortie = dict(self._q_serre)
-        sortie.update({j: self._q_serre[j] + q[j] - self._q_ref[j] for j in q})
+        sortie.update(q)
         for cote in self._ROULIS:
             d = self._delta[cote] - self._delta_serre[cote]
             if abs(d) > 1e-6:
@@ -1380,12 +1380,8 @@ class ManipulationService(IService):
 
     def _lever_de_quelques_cm(self) -> None:
         mg, md = self._mains_bassin()
-        centre = (mg + md) / 2.0
-        # La géométrie de la prise, mains mesurées, sert de référence.
-        self._q_ref = self._ik_mains(centre, self._ecart_mains, self._q)
-        if self._q_ref is None:
-            self._echouer("prise refusée — impossible de lever l'objet (hors de portée)")
-            return
+        # Milieu des mains mesurées au serrage : la référence des gestes avec l'objet.
+        centre = self._c_serre = (mg + md) / 2.0
         self._delta_serre = dict(self._delta)
         self._centre_porte = centre + np.array([0.0, 0.0, self.r.hauteur_test_m])
         q = self._q_mains(self._centre_porte, self._ecart_mains)

@@ -30,6 +30,10 @@ serrage ne mesurait que le couple du roulis.
   `penetration_max_m` (main réelle) ; plafond de couple sur chaque
   articulation du bras. `MesuresBras.commandables` ; efforts de tous les bras
   (`efforts_valides(optionnels=…)`).
+- Gestes avec l'objet (levage, transport, dépose) : les mains commandées au
+  serrage suivent en translation le milieu des mains mesurées, lacet d'épaule
+  et poignets gardés ; avant, la main d'un carton décalé de 2 cm lâchait au
+  premier pas du levage.
 - Robot simulé : bras souples (ressorts aux gains du banc), main arrêtée sur
   la face de l'objet (`SimulatedObject.raideur_n_m`), couples = poids + Jᵀ F,
   `forces_contact` (vérité), `bruit_couples`, `souplesse_poignets`.
