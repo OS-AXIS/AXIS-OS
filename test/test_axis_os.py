@@ -22,7 +22,6 @@ Scénarios :
 
 import sys
 import time
-import threading
 import random
 sys.path.insert(0, ".")
 random.seed(42)
@@ -157,21 +156,48 @@ robot2.initialize_all()
 cfg = WatchdogConfig.standard()
 cfg.poll_interval_s = 0.01
 
-alerts = []
-lock   = threading.Lock()
-def collect(a):
-    with lock: alerts.append(a)
 
-wd = WatchdogSystem(robot2, config=cfg)
-wd.subscribe(collect)
-wd.start()
-time.sleep(0.05)
+class HorlogeSimulee:
+    """Heure du watchdog, avancée par le test : chaque cycle a lieu à son
+    instant, quelle que soit la charge de la machine (un fil de
+    surveillance qui attend son tour sur une machine chargée manquait la
+    fenêtre). La fenêtre, la période et les seuils du watchdog restent les
+    siens ; seule l'horloge est simulée."""
 
-# Injecter température critique
-act = robot2.get_actuator("left_knee_joint")
-if isinstance(act, G1SimulatedActuator):
-    act._temperature = 82.0
-time.sleep(0.15)
+    def __init__(self):
+        self.t = 1000.0
+
+    def monotonic(self):
+        return self.t
+
+
+import axis_os.hal.watchdog.system as module_watchdog  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+horloge = HorlogeSimulee()
+temps_reel = module_watchdog.time
+module_watchdog.time = SimpleNamespace(monotonic=horloge.monotonic, time_ns=time.time_ns,
+                                       sleep=time.sleep)
+try:
+    wd = WatchdogSystem(robot2, config=cfg)
+    wd._build_joint_states()
+
+    def cycles(duree_s):
+        """Les cycles de surveillance de `duree_s` secondes simulées, un par
+        période (poll_interval_s), comme les ferait le fil wdg_monitor."""
+        for _ in range(round(duree_s / cfg.poll_interval_s)):
+            horloge.t += cfg.poll_interval_s
+            wd._run_cycle()
+
+    cycles(0.05)
+    # Injecter température critique
+    act = robot2.get_actuator("left_knee_joint")
+    if isinstance(act, G1SimulatedActuator):
+        act._temperature = 82.0
+    cycles(0.15)
+finally:
+    module_watchdog.time = temps_reel
+alerts = wd.get_recent_alerts()
 
 check("TEMPERATURE_CRITICAL émise",
       any(a.kind == AlertKind.TEMPERATURE_CRITICAL for a in alerts))
@@ -181,7 +207,6 @@ check("E-stop déclenché", wd.estop_fired)
 check("Tous les joints en EMERGENCY_STOP",
       all(a.state == ActuatorState.EMERGENCY_STOP
           for a in robot2.get_all_actuators().values()))
-wd.stop()
 robot2.shutdown_all()
 
 section("7 — WatchdogSystem : perte de communication")

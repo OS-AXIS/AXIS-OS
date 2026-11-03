@@ -129,16 +129,36 @@ with SimulatedRobot(objects=[SimulatedObject("red box", (0.30, 0.0, 0.90))]) as 
           leve(RefusalCode.BUSY, ctx.stream_targets, "arms"))
 
 
-def espionner_bras(ctx):
-    """Note chaque consigne de position envoyée aux bras : (instant, {articulation: position})."""
+def espionner_bras(ctx, horloge=None):
+    """Note chaque consigne de position envoyée aux bras : (instant, {articulation: position}).
+    `horloge` : l'horloge simulée du geste (HorlogeAnimation), lue sans l'avancer ;
+    sinon l'heure réelle."""
     vues = []
     reel = ctx.move_arms
 
     def move_arms(commands):
-        vues.append((time.monotonic(), {j: c.position for j, c in commands.items()}))
+        t = horloge.t if horloge is not None else time.monotonic()
+        vues.append((t, {j: c.position for j, c in commands.items()}))
         return reel(commands)
     ctx.move_arms = move_arms
     return vues
+
+
+class HorlogeAnimation:
+    """Horloge simulée d'un geste : chaque lecture par le fil de l'animation
+    (ctx.now(), une par pas) l'avance d'un pas, PERIOD_S ; toute autre
+    lecture, et l'espion, la lisent sans l'avancer. Le temps du geste ne
+    dépend plus de l'ordonnanceur : sur une machine chargée, un fil qui
+    attendait son tour faisait voir une accélération que le geste n'avait
+    pas (la gigue). Le lecteur et son limiteur restent les leurs."""
+
+    def __init__(self, depart, pas):
+        self.t, self.pas = float(depart), pas
+
+    def __call__(self):
+        if threading.current_thread().name == "axis-animation":
+            self.t += self.pas
+        return self.t
 
 
 def vitesses_accelerations(vues, jid):
@@ -165,13 +185,24 @@ with SimulatedRobot() as robot:
                         {"t": 1.8, "positions": {EPAULE: -1.2}}]}
     from axis_os.store.sdk.animation import ANIM_MAX_ACC, ANIM_MAX_VEL, AnimationPlayer
     silencieux(ctx.move_to_pose, {EPAULE: 0.0}, 1.0)
-    vues = espionner_bras(ctx)
-    r = silencieux(ctx.play_animation, aller_retour)
+    # Le geste sur une horloge simulée (le mécanisme de l'OS : ctx._set_clock),
+    # le reste du test sur l'horloge du robot.
+    horloge_robot = ctx._clock
+    horloge = HorlogeAnimation(ctx.now(), AnimationPlayer.PERIOD_S)
+    ctx._set_clock(horloge)
+    vues = espionner_bras(ctx, horloge)
+    try:
+        # Délai d'attente : le geste avance d'un pas par tour de son fil, pas
+        # plus vite que l'heure réelle ; sur une machine chargée, plus lentement.
+        r = silencieux(ctx.play_animation, aller_retour,
+                       timeout_s=RobotContext.ANIMATION_TIMEOUT_MAX_S)
+    finally:
+        ctx._set_clock(horloge_robot)
     vmax, amax = vitesses_accelerations(vues, EPAULE)
     check("Animation aller-retour jouée (PLAYED)", r.ok, str(r))
     check(f"… vitesse commandée au plus {ANIM_MAX_VEL} rad/s (marge 15 %)",
           vmax <= ANIM_MAX_VEL * 1.15, f"{vmax:.2f} rad/s")
-    check(f"… accélération commandée au plus {ANIM_MAX_ACC} rad/s² (marge 50 %, gigue du fil)",
+    check(f"… accélération commandée au plus {ANIM_MAX_ACC} rad/s² (marge 50 %)",
           amax <= ANIM_MAX_ACC * 1.5, f"{amax:.1f} rad/s²")
     pas = max((abs(b[1][EPAULE] - a[1][EPAULE]) for a, b in zip(vues, vues[1:])), default=0.0)
     check("… aucun pas plus grand que deux pas à vitesse maximale (pas de rattrapage)",
