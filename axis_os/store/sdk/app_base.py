@@ -442,9 +442,14 @@ class RobotContext:
             # attendre : son fil termine seul.
             self._flux.close(attendre_s=0.0)
         if self._suivi is not None:
-            # Le suivi ne survit pas au hook qui l'a lancé.
-            self._suivi.arreter(self, "CANCELLED", RefusalCode.CANCELLED.value,
-                                "fin du hook de l'app")
+            # Le suivi ne survit pas au hook qui l'a lancé. Sous arrêt
+            # d'urgence, c'est lui qui l'arrête : un hook tué par l'arrêt
+            # d'urgence finissait avant le pas suivant du suivi, qui
+            # rendait alors « fin du hook » au lieu d'ESTOP.
+            code, message = self._motif_interruption() or (RefusalCode.CANCELLED,
+                                                           "fin du hook de l'app")
+            self._suivi.arreter(self, "ESTOP" if code is RefusalCode.ESTOP_ACTIVE
+                                else "CANCELLED", code.value, message)
 
     def _conduit_encore(self) -> bool:
         """Vrai si ce contexte conduit encore le robot : hook pas terminé, et

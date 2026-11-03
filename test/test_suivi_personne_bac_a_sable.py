@@ -232,5 +232,25 @@ with AppTestHarness(AppSuisMoi()) as h:
                                 if c[0] > t_arret[0] + 0.1))
     check("… la base ne bouge plus", math.isfinite(h.robot.x))
 
+section("5b. Arrêt d'urgence : le hook de l'app finit avant le pas suivant du suivi")
+# La course constatée (1 fois sur 6 environ) : l'arrêt d'urgence tue l'app,
+# la fin de son hook arrête le suivi avant que FollowService.tick ne voie
+# l'arrêt d'urgence. On la force : le suivi ne fait plus de pas à l'instant
+# de l'arrêt d'urgence.
+with AppTestHarness(AppSuisMoi()) as h:
+    p = h.robot.add_person(2.5, 0.0, torso=ROUGE)
+    p.walk_to(6.0, 0.0, speed_mps=0.3)
+
+    def arreter_sans_pas_du_suivi():
+        time.sleep(3.0)
+        h.robot.follow_service.tick = lambda: None
+        h.robot.hal.emergency_stop_all()
+    threading.Thread(target=arreter_sans_pas_du_suivi, daemon=True).start()
+    res = h.run({"duree": 10.0})
+    issue = h.robot.follow_service._issue
+    check("Le suivi s'arrête avec ESTOP, même arrêté par la fin du hook",
+          issue is not None and issue.status == "ESTOP" and issue.code == "ESTOP_ACTIVE",
+          str(issue))
+
 print(f"\n{'=' * 66}\n  {'TOUT PASSE' if FAIL == 0 else f'{FAIL} ÉCHEC(S)'}\n{'=' * 66}")
 sys.exit(1 if FAIL else 0)
