@@ -51,6 +51,8 @@ class _Lien:
     origine: np.ndarray            # 4x4
     axe: Optional[np.ndarray]      # None : articulation fixe
     bornes: Tuple[float, float]
+    masse: float = 0.0             # du lien enfant (URDF, <inertial>)
+    centre: Tuple[float, float, float] = (0.0, 0.0, 0.0)   # son centre de masse, dans son repère
 
 
 class ChaineBras:
@@ -73,6 +75,14 @@ class ChaineBras:
         pied, `{cote}_ankle_roll_link`, pour la hauteur du bassin)."""
         racine = ET.parse(str(chemin)).getroot()
         par_enfant = {j.find("child").get("link"): j for j in racine.findall("joint")}
+        inerties = {}
+        for l_ in racine.findall("link"):
+            i_ = l_.find("inertial")
+            if i_ is not None and i_.find("mass") is not None:
+                o_ = i_.find("origin")
+                c_ = [float(v) for v in ((o_.get("xyz") if o_ is not None else None)
+                                         or "0 0 0").split()]
+                inerties[l_.get("name")] = (float(i_.find("mass").get("value")), tuple(c_))
         fin = fin or f"{cote}_rubber_hand"
         liens, lien = [], fin
         while lien != base:
@@ -90,7 +100,8 @@ class ChaineBras:
                 axe = a / np.linalg.norm(a)
                 lim = j.find("limit")
                 bornes = (float(lim.get("lower")), float(lim.get("upper")))
-            liens.append(_Lien(j.get("name"), lien, m, axe, bornes))
+            masse, centre = inerties.get(lien, (0.0, (0.0, 0.0, 0.0)))
+            liens.append(_Lien(j.get("name"), lien, m, axe, bornes, masse, centre))
             lien = j.find("parent").get("link")
         return cls(liens[::-1], cote)
 
@@ -112,6 +123,49 @@ class ChaineBras:
 
     def main(self, q: Dict[str, float]) -> np.ndarray:
         return self.points(q)[MAIN]
+
+    def _reperes(self, q: Dict[str, float]):
+        """Pour chaque lien : (articulation, position et axe de l'articulation
+        ou None si elle est fixe, centre de masse et masse du lien enfant),
+        repère du bassin ; puis la main."""
+        t = np.eye(4)
+        sortie = []
+        for l in self._liens:
+            t = t @ l.origine
+            art = None
+            if l.axe is not None:
+                art = (t[:3, 3].copy(), t[:3, :3] @ l.axe)
+                r = np.eye(4)
+                r[:3, :3] = _rotation(l.axe, float(q.get(l.nom, 0.0)))
+                t = t @ r
+            sortie.append((l.nom, art, t[:3, :3] @ np.asarray(l.centre) + t[:3, 3], l.masse))
+        return sortie, t[:3, 3].copy()
+
+    def jacobienne(self, q: Dict[str, float], articulations: Sequence[str]) -> np.ndarray:
+        """Jacobienne (3 × n, m/rad) de la position de la main par rapport
+        aux `articulations` (colonne nulle pour une articulation hors de la
+        chaîne), repère du bassin : axe × (main − articulation)."""
+        reperes, main = self._reperes(q)
+        cols = {nom: np.cross(a[1], main - a[0]) for nom, a, _, _ in reperes if a is not None}
+        return np.stack([cols.get(j, np.zeros(3)) for j in articulations], axis=1)
+
+    def couples_gravite(self, q: Dict[str, float], articulations: Sequence[str],
+                        gravite=(0.0, 0.0, -9.81)) -> np.ndarray:
+        """Couple (N·m) que chaque articulation doit fournir pour tenir le
+        bras immobile contre son poids (masses et centres de masse de
+        l'URDF), `gravite` dans le repère du bassin."""
+        reperes, _ = self._reperes(q)
+        g = np.asarray(gravite, dtype=float)
+        sortie = {}
+        # Des liens distaux vers la base : masse et moment cumulés (Σm, Σm·c),
+        # d'où τ = -axe · ((Σm·c - Σm·p) × g), un produit vectoriel par articulation.
+        masse, moment = 0.0, np.zeros(3)
+        for nom, a, c, m in reversed(reperes):
+            masse += m
+            moment = moment + m * c
+            if a is not None and nom in articulations:
+                sortie[nom] = -float(a[1] @ np.cross(moment - masse * a[0], g))
+        return np.array([sortie.get(j, 0.0) for j in articulations])
 
     def dans_les_bornes(self, q: Dict[str, float], marge: float = 0.02) -> bool:
         return all(self.bornes[j][0] + marge <= v <= self.bornes[j][1] - marge
