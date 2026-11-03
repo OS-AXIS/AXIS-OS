@@ -7,8 +7,10 @@ reprise, transport contre le buste, inclinaison surveillée ; refus quand
 l'effort est absent, non fini ou périmé.
 
 Sur le robot simulé léger (axis_os.testing) : cinématique de l'URDF du G1,
-contact simulé (une main ne traverse pas le carton, le couple du roulis
-d'épaule monte avec le serrage).
+bras souples (chaque articulation, un ressort autour de sa consigne), une
+main ne traverse pas le carton (sa raideur en série) ; la force de contact
+monte avec le serrage, et chaque couple est le poids du bras plus Jᵀ de
+cette force.
 """
 import contextlib
 import io
@@ -30,6 +32,7 @@ FAIL = 0
 ECHELLE = 2.0
 R = ReglagesPrise()
 ROULIS = ("left_shoulder_roll_joint", "right_shoulder_roll_joint")
+BRAS = SimulatedRobot._BRAS
 
 
 def check(label, cond, detail=""):
@@ -65,9 +68,13 @@ class Journal:
             etat = r.raw_hal.get_full_state()
             g, d = r._mains()
             self.pas.append({"etat": m.etat, "q": dict(m._q), "couples": {j: etat[j].torque
-                                                                         for j in ROULIS},
+                                                                         for j in BRAS},
                              "mains": (g, d), "objet": r.objects[0].position if r.objects
-                             else None, "exemption": r.guard._exemption is not None})
+                             else None, "exemption": r.guard._exemption is not None,
+                             "mains_cmd": r.modele_bras.mains({**m._fixes, **m._q}),
+                             "force": dict(r.forces_contact),
+                             "serrage": dict(m.force_serrage),
+                             "attendue": dict(m._attendue)})
             if m.etat in (Etat.TENU, Etat.ECHEC, Etat.LIBRE) and len(self.pas) > 3:
                 break
             time.sleep(0.01)
@@ -75,6 +82,22 @@ class Journal:
 
     def premier(self, etat):
         return next((p for p in self.pas if p["etat"] is etat), None)
+
+
+def releve_au_levage(robot):
+    """Relevé pris DANS le fil de la simulation, à l'instant où le levage
+    commence : force réelle (monde simulé) et estimée (OS) à chaque main. Un
+    relevé par sondage depuis le test peut manquer la phase (0,4 s) sur une
+    machine chargée (constaté en CI)."""
+    m, releve = robot.manipulation, {}
+    lever = m._lever_de_quelques_cm
+
+    def avec_releve():
+        releve.setdefault("force", dict(robot.forces_contact))
+        releve.setdefault("serrage", dict(m.force_serrage))
+        return lever()
+    m._lever_de_quelques_cm = avec_releve
+    return releve
 
 
 def prise(robot, objet, duree=15.0):
@@ -110,6 +133,7 @@ check("Plateau trop haut pour les bras : aucune distance, raison claire",
 section("2. Prise normale : placement, contact, serrage borné, levage, transport")
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
+    leve = releve_au_levage(robot)
     res, j = prise(robot, carton(0.30))
     m = robot.manipulation
     check("Prise réussie : TENU", res.ok and m.etat is Etat.TENU, m.raison)
@@ -118,17 +142,24 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
     check("Avant de fermer : mains au milieu des faces (2,5 cm en profondeur, 3 cm en hauteur)",
           abs((g[0] + d[0]) / 2 - 0.30) <= R.tol_profondeur_m
           and abs((g[2] + d[2]) / 2 - 0.90) <= R.tol_hauteur_m, f"{g} {d}")
-    serres = [p for p in j.pas if p["etat"] in (Etat.FERMETURE, Etat.SERRAGE)]
-    tangages = {round(p["q"]["left_shoulder_pitch_joint"], 6) for p in serres}
-    check("Fermeture et serrage : seuls les roulis bougent (le levage est une phase à part)",
+    fermes = [p for p in j.pas if p["etat"] is Etat.FERMETURE]
+    tangages = {round(p["q"]["left_shoulder_pitch_joint"], 6) for p in fermes}
+    check("Fermeture : seuls les roulis bougent (le levage est une phase à part)",
           len(tangages) == 1, str(tangages))
-    leve = j.premier(Etat.LEVAGE)
-    check("Le levage ne commence qu'une fois l'effort de serrage atteint",
-          leve is not None and min(abs(leve["couples"][x]) for x in ROULIS)
-          - robot.COUPLE_REPOS_NM >= R.effort_serrage_nm - 0.5, str(leve and leve["couples"]))
+    hauteurs = [float(p["mains_cmd"][c][2]) for p in j.pas if p["etat"] is Etat.SERRAGE
+                for c in (0, 1)]
+    check("Serrage en cartésien : les mains commandées gardent leur hauteur, à 2 mm près",
+          hauteurs and max(hauteurs) - min(hauteurs) <= 0.002,
+          f"{min(hauteurs or [0]):.4f} {max(hauteurs or [0]):.4f}")
+    check("Le levage ne commence qu'une fois le serrage atteint : force réelle à chaque main "
+          f"d'au moins {R.force_min_n:.0f} N, et l'estimée de l'OS à 1 N près",
+          bool(leve) and min(leve["force"].values()) >= R.force_min_n
+          and all(abs(leve["force"][c] - leve["serrage"][c]) <= 1.0 for c in leve["force"]),
+          str(leve and (leve["force"], leve["serrage"])))
     limite = min(R.effort_max_nm, R.part_couple_garde * 25.0)
-    check(f"Effort mesuré toujours sous {limite:.1f} N·m (et la moitié du couple max du "
-          f"garde-fou)", m.effort_max_mesure <= limite, f"{m.effort_max_mesure:.2f}")
+    check(f"Effort mesuré toujours sous {limite:.1f} N·m, à chaque articulation des bras (et "
+          f"la moitié du couple max du garde-fou)", m.effort_max_mesure <= limite,
+          f"{m.effort_max_mesure:.2f}")
     o = robot.objects[0].position
     check("Carton ramené contre le buste (face arrière à ~10 cm du bassin)",
           o[0] < 0.25 and robot.held is not None, str(o))
@@ -159,6 +190,7 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.355, 0.0, 0.90))],
 section("4. Carton hors de portée (26 cm plus loin) : refus, jamais de serrage dans le vide")
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.56, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
+    time.sleep(0.2)                    # bras arrivés en posture de port
     avant = robot._angles_bras()
     res = robot.manipulation.prendre(carton(0.56))
     time.sleep(0.5)
@@ -193,14 +225,14 @@ for titre, reel, attendu in (("rien à cet endroit", None, "rien entre les mains
               roulis_min is not None and q_vide is not None and roulis_min >= q_vide - 1e-6,
               f"{roulis_min} {q_vide}")
         check("… exemption levée, aucun serrage", robot.guard._exemption is None
-              and m.effort_max_mesure < R.effort_serrage_nm, f"{m.effort_max_mesure:.1f} N·m")
-with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90), size=(0.36, 0.2, 0.2))],
+              and m.force_max_mesuree < R.force_serrage_n, f"{m.force_max_mesuree:.1f} N")
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90), size=(0.44, 0.2, 0.2))],
                     time_scale=ECHELLE) as robot:
     time.sleep(0.2)                    # le premier pas simule le contact
     avant = robot._angles_bras()
     res = robot.manipulation.prendre(carton(0.30))
     time.sleep(0.3)
-    check("Bras déjà en effort au-delà de la limite (carton de 36 cm dans les mains) : refus, "
+    check("Bras déjà en effort (carton de 44 cm dans les mains, ~19 N à chaque main) : refus, "
           "rien ne bouge", not res.ok and "déjà en effort" in res.reason
           and immobiles(robot, avant), res.reason)
 
@@ -209,6 +241,7 @@ for panne in ("absent", "nan", "stale"):
     with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                         time_scale=ECHELLE) as robot:
         robot.effort_fault = panne
+        time.sleep(0.2)                # bras arrivés en posture de port
         avant = robot._angles_bras()
         res = robot.manipulation.prendre(carton(0.30))
         check(f"Effort « {panne} » avant la prise : refus « serrage refusé », bras immobiles",
@@ -268,73 +301,101 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
           tenu and not any(p["exemption"] for p in tenu))
 
 section("7. Serrage borné : raideur extrême, objet mou")
-with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
-                    time_scale=ECHELLE) as robot:
-    robot.KP_ROULIS = 200.0
-    res, j = prise(robot, carton(0.30))
-    m = robot.manipulation
-    couples = [abs(p["couples"][x]) for p in j.pas for x in ROULIS]
-    check(f"Carton très raide : effort mesuré au plus {max(couples):.1f} N·m, sous la moitié "
-          f"du couple max du garde-fou (12,5)", max(couples) <= 12.5, str(max(couples)))
-    check("… et la prise tient", m.etat is Etat.TENU, m.raison)
-with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
-                    time_scale=ECHELLE) as robot:
-    robot.KP_ROULIS = 5.0
-    res, j = prise(robot, carton(0.30))
-    m = robot.manipulation
-    check("Objet mou : « serrage insuffisant », on n'insiste pas", m.etat is Etat.ECHEC
-          and "serrage insuffisant" in m.raison, m.raison)
-    roulis = min(p["q"]["left_shoulder_roll_joint"] for p in j.pas)
-    contact = m._contact["left"]
-    check("… au plus 0,20 rad au-delà du contact", contact is not None
-          and contact - roulis <= R.serrage_max_rad + 1e-6, f"{contact} {roulis}")
 
-for kp in (200.0, 400.0, 800.0):
-    with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+
+def borne_respectee(m, j):
+    """Aucune consigne n'a avancé la face COMMANDÉE d'une main au-delà de
+    largeur/2 - penetration_max_m, la face de l'objet étant celle que la
+    prise attendait alors (un premier contact situe l'objet, et la borne de
+    l'autre main suit ; une main déjà au-delà n'avance plus). Rend le pire
+    écart (m, négatif : au-delà)."""
+    pire, avant = math.inf, None
+    for p in j.pas:
+        if p["etat"] not in (Etat.FERMETURE, Etat.SERRAGE) or not p["attendue"]:
+            avant = None
+            continue
+        fg, fd = m._faces(p["mains_cmd"])
+        if avant is not None:
+            att, fg0, fd0 = avant
+            if fg < fg0 - 1e-4:
+                pire = min(pire, fg - (att["left"] - R.penetration_max_m))
+            if fd > fd0 + 1e-4:
+                pire = min(pire, (att["right"] + R.penetration_max_m) - fd)
+        avant = (p["attendue"], fg, fd)
+    return pire
+
+
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90), raideur_n_m=1e6)],
+                    time_scale=ECHELLE) as robot:
+    res, j = prise(robot, carton(0.30))
+    m = robot.manipulation
+    couples = [abs(p["couples"][x]) for p in j.pas for x in BRAS]
+    check(f"Carton très raide : effort mesuré au plus {max(couples):.1f} N·m sur toutes les "
+          f"articulations des bras, sous la moitié du couple max du garde-fou (12,5)",
+          max(couples) <= 12.5, str(max(couples)))
+    check("… et la prise tient", m.etat is Etat.TENU, m.raison)
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90), raideur_n_m=400.0)],
+                    time_scale=ECHELLE) as robot:
+    res, j = prise(robot, carton(0.30))
+    m = robot.manipulation
+    check("Objet mou (400 N/m) : « serrage insuffisant », on n'insiste pas", m.etat is Etat.ECHEC
+          and "serrage insuffisant" in m.raison, m.raison)
+    pire = borne_respectee(m, j)
+    check("… la face commandée de chaque main jamais au-delà de largeur/2 - 2 cm",
+          pire >= -1e-4, f"{pire:.4f} m")
+
+for raideur in (5e4, 2e5, 1e6):
+    with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90),
+                                                 raideur_n_m=raideur)],
                         time_scale=ECHELLE) as robot:
-        robot.KP_ROULIS = kp
+        leve = releve_au_levage(robot)
         res, j = prise(robot, carton(0.30))
         serre = [abs(p["couples"][x]) for p in j.pas if p["etat"] in (Etat.SERRAGE, Etat.LEVAGE,
                                                                        Etat.RAMENER, Etat.TENU)
-                 for x in ROULIS]
-        check(f"Raideur {kp:.0f} N·m/rad : serrage arrivé à l'effort visé sans dépasser la "
-              f"limite ({max(serre):.1f} N·m au plus, limite 10)",
-              robot.manipulation.etat is Etat.TENU and max(serre) <= 10.0, robot.manipulation.raison)
+                 for x in BRAS] or [0.0]
+        force = min(leve["force"].values()) if leve else 0.0
+        check(f"Carton de {raideur:.0e} N/m : serrage arrivé à la force voulue ({force:.1f} "
+              f"N au moins) sans dépasser la limite ({max(serre):.1f} N·m au plus, limite 10)",
+              robot.manipulation.etat is Etat.TENU and max(serre) <= 10.0
+              and force >= R.force_min_n, robot.manipulation.raison)
 
 section("7b. Objet tenu : jamais au-delà de la limite, même pour tenir ou corriger")
+LACET_G = "left_shoulder_yaw_joint"
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
     m = robot.manipulation
     prise(robot, carton(0.30))
-    # L'objet se raidit (mains glissées vers une arête) : le couple tenu
-    # passe à ~12 N·m, au-dessus de la limite de la prise (10), sous celle
-    # du garde-fou (25 N·m, arrêt d'urgence au-delà de 27,5).
-    robot.KP_ROULIS = 100.0
-    robot._contact()
-    pic = max(abs(robot.raw_hal.get_full_state()[x].torque) for x in ROULIS)
+    # Le lacet d'épaule tient ~1,1 N·m du serrage : sa limite tombe à
+    # 0,8 N·m (moitié de 1,6), sous celle du garde-fou.
+    pic = abs(robot.raw_hal.get_full_state()[LACET_G].torque)
+    m.mesures.couple_max[LACET_G] = 1.6
     time.sleep(1.0)
-    apres = max(abs(robot.raw_hal.get_full_state()[x].torque) for x in ROULIS)
-    check(f"Couple tenu à {pic:.1f} N·m : desserré jusque sous la limite ({apres:.1f} N·m), "
-          f"carton toujours tenu, pas d'arrêt d'urgence", pic > 10.0 and apres <= 10.0
-          and m.etat is Etat.TENU and robot.held is not None and not robot.hal.estop_active
-          and m.stats.get("serrages_limites", 0) > 0, f"{pic} {apres} {m.etat}")
+    apres = abs(robot.raw_hal.get_full_state()[LACET_G].torque)
+    check(f"Lacet d'épaule à {pic:.1f} N·m, limite abaissée à 0,8 : desserré jusque sous la "
+          f"limite ({apres:.1f} N·m), carton toujours tenu, pas d'arrêt d'urgence",
+          pic > 0.8 and apres <= 0.8 + 0.05 and m.etat is Etat.TENU and robot.held is not None
+          and not robot.hal.estop_active and m.stats.get("serrages_limites", 0) > 0,
+          f"{pic} {apres} {m.etat}")
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
     m = robot.manipulation
     prise(robot, carton(0.30))
-    robot.KP_ROULIS = 68.0         # couple tenu ~9 N·m : moins de 2 N·m de marge
+    # Moins de 2 N·m de marge sous la limite du lacet d'épaule : pas de
+    # serrage de plus pour corriger.
+    tenu = abs(robot.raw_hal.get_full_state()[LACET_G].torque)
+    m.mesures.couple_max[LACET_G] = 2.0 * (tenu + 1.0)
     time.sleep(0.3)
     delta = dict(m._delta)
     robot.object_tilt_deg = 25.0
     j = Journal(robot)
     time.sleep(0.2)
     j.suivre(4.0)
-    couples = [abs(p["couples"][x]) for p in j.pas for x in ROULIS]
-    fin = max(abs(robot.raw_hal.get_full_state()[x].torque) for x in ROULIS)
+    couples = [abs(p["couples"][x]) for p in j.pas for x in BRAS]
+    fin = abs(robot.raw_hal.get_full_state()[LACET_G].torque)
     check(f"Correction d'inclinaison près de la limite : ramené plus près sans serrer plus ; "
-          f"au plus {max(couples):.1f} N·m en chemin, {fin:.1f} à la fin (limite 10, "
-          f"garde-fou 25)", m.stats.get("corrections_inclinaison") == 1
-          and all(m._delta[c] <= delta[c] + 1e-9 for c in delta) and fin <= 10.0
+          f"au plus {max(couples):.1f} N·m en chemin, lacet d'épaule à {fin:.1f} à la fin "
+          f"(limite {tenu + 1.0:.1f}, garde-fou 25)", m.stats.get("corrections_inclinaison") == 1
+          and all(m._delta[c] <= delta[c] + 1e-9 for c in delta) and fin <= tenu + 1.0 + 0.05
           and max(couples) < 25.0 and not robot.hal.estop_active, f"{delta} {m._delta}")
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
@@ -388,6 +449,7 @@ section("10. Avant-bras au-dessus du plateau : la distance s'en déduit, sinon r
 # 2,5 cm du plateau (il en faut 3).
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
+    time.sleep(0.2)                    # bras arrivés en posture de port
     avant = robot._angles_bras()
     res = robot.manipulation.prendre(Objet((0.30, 0.0, 0.90), 0.24, 0.20, 0.20, bord_m=0.05))
     check("Trop près de la table : refus « avant-bras … du plateau », bras immobiles",

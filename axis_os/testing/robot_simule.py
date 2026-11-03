@@ -67,12 +67,14 @@ class SimulatedObject:
     """Un objet du monde simulé : son nom (ce que la perception reconnaît),
     son centre dans le repère monde (m) et ses dimensions : largeur (prise
     entre les mains), profondeur, hauteur (m) ; `lacet` : rotation autour
-    de la verticale (rad, repère monde ; 0 : la largeur le long de y)."""
+    de la verticale (rad, repère monde ; 0 : la largeur le long de y) ;
+    `raideur_n_m` : raideur de ses faces sous une main (N/m)."""
     label: str
     position: Tuple[float, float, float]
     size: Tuple[float, float, float] = (0.24, 0.20, 0.20)
     confidence: float = 0.9
     lacet: float = 0.0
+    raideur_n_m: float = 20000.0
 
 
 class SimulatedPerson:
@@ -374,13 +376,25 @@ class SimulatedRobot:
     PEOPLE_EVERY = 5
     # Hauteur du bassin du G1 debout (m) : mains à 0,90 m en posture de port.
     PELVIS_HEIGHT_M = 0.72
-    # Raideur simulée du roulis d'épaule en contact (N·m/rad), demi-épaisseur
-    # d'une main (m), couple de repos (N·m, le poids du bras).
-    KP_ROULIS = 40.0
+    # Bras : chaque articulation est un ressort autour de sa consigne, de
+    # raideur KP_BRAS (N·m/rad, les gains du banc Isaac T1) ; pendant la
+    # prise (MesuresBras.raideur), celles de RAIDIS doublent, plafonnées à
+    # 100 (le plus grand gain du pilote du G1). Une main ne traverse pas
+    # l'objet : elle s'arrête sur sa face (raideur_n_m de l'objet en série),
+    # chaque articulation cède selon sa raideur, et son couple est celui du
+    # poids du bras (URDF) plus Jᵀ de la force de contact. Demi-épaisseur
+    # d'une main (m) ; couple de repos des roulis (N·m, frottement).
+    KP_BRAS = {"shoulder_pitch_joint": 90.0, "shoulder_roll_joint": 100.0,
+               "shoulder_yaw_joint": 40.0, "elbow_joint": 60.0, "wrist_roll_joint": 40.0,
+               "wrist_yaw_joint": 40.0}
+    RAIDIS = ("shoulder_yaw_joint", "elbow_joint", "wrist_roll_joint", "wrist_yaw_joint")
     DEMI_MAIN_M = 0.045
     COUPLE_REPOS_NM = 0.4
-    _BRAS = ("left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_elbow_joint",
-             "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_elbow_joint")
+    # Un objet tenu entre deux mains caoutchouc (frottement 1,2) : 1 kg.
+    FROTTEMENT, MASSE_OBJET_KG = 1.2, 1.0
+    _BRAS = tuple(f"{c}_{a}" for c in ("left", "right") for a in (
+        "shoulder_pitch_joint", "shoulder_roll_joint", "shoulder_yaw_joint", "elbow_joint",
+        "wrist_roll_joint"))
     STATION_RADIUS_M = 0.30
 
     def __init__(self, *, carte: Optional[Carte] = None,
@@ -445,19 +459,23 @@ class SimulatedRobot:
         # constaté sur GPU le 2026-10-29 : le tangage d'épaule mesuré est
         # plus grand que sa consigne de `affaissement_rad` (main plus basse).
         self.affaissement_rad = 0.0
-        # Poignets et coude qui CÈDENT au contact (constaté sur GPU le
-        # 2026-10-29) : le carton bloque la main, le roulis d'épaule suit sa
-        # consigne sans effort, et ce sont le lacet du poignet et le coude qui
-        # plient, jusqu'à `souplesse_rad` (le quart quand les gains sont
-        # raidis, voir MesuresBras.raideur) ; au-delà, le roulis s'arrête et
-        # son couple monte. Le lacet du poignet n'est pas une articulation du
-        # HAL simulé (23 DOF) : il est rendu dans les angles mesurés, comme
-        # l'encodeur du vrai G1 29 DOF.
+        # Poignets, coude et lacet d'épaule qui CÈDENT au contact (constaté
+        # sur GPU le 2026-10-29) : leur raideur multipliée par
+        # `souplesse_poignets` (le quart par défaut). Le lacet du
+        # poignet n'est pas une articulation du HAL simulé (23 DOF) : il est
+        # rendu dans les angles et les couples mesurés, comme l'encodeur et le
+        # couple estimé du vrai G1 29 DOF (consigne 0, non commandable ici).
         self.poignets_cedent = False
-        self.souplesse_rad = 1.0
+        self.souplesse_poignets = 0.25
         self.raideur_active = False
         self.changements_raideur: List[bool] = []
         self._poignets = {"left_wrist_yaw_joint": 0.0, "right_wrist_yaw_joint": 0.0}
+        self._couples_poignets = {"left_wrist_yaw_joint": 0.0, "right_wrist_yaw_joint": 0.0}
+        # Force de contact de chaque main sur l'objet (N), vérité du monde
+        # simulé (jamais lue par l'OS) ; couples estimés : bruit (par exemple
+        # BruitCouples du banc Isaac) appliqué aux couples des bras, ou None.
+        self.forces_contact = {"left": 0.0, "right": 0.0}
+        self.bruit_couples = None
         self._consignes_roulis: Dict[str, float] = {}
         self._suivre_consignes_roulis()
         self.object_tilt_deg: Optional[float] = None
@@ -465,9 +483,11 @@ class SimulatedRobot:
         self.forearm_table_contacts = 0
         mesures = MesuresBras(self.modele_bras, self._angles_bras, self._efforts_bras,
                               lambda: self.PELVIS_HEIGHT_M,
-                              couple_max={j: self._limites_couple[j] for j in self._BRAS},
+                              couple_max={**{j: self._limites_couple[j] for j in self._BRAS},
+                                          **{j: 5.0 for j in self._poignets}},
                               inclinaison=self._inclinaison, raideur=self._regler_raideur,
-                              arret_urgence=lambda: self.hal.estop_active)
+                              arret_urgence=lambda: self.hal.estop_active,
+                              commandables=self._BRAS)
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
                                                  self._vers_robot, self._prise_tient,
                                                  gardien=self.guard, horloge=self.clock,
@@ -691,10 +711,11 @@ class SimulatedRobot:
         """Retient la dernière consigne acceptée de chaque roulis d'épaule,
         d'où qu'elle vienne (manipulation, move_to_pose, posture de repos) :
         c'est elle que le contact compare à la position réelle."""
-        for j in ("left_shoulder_roll_joint", "right_shoulder_roll_joint",
-                  "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
-                  "left_elbow_joint", "right_elbow_joint"):
+        for j in self._BRAS:
             act = self.raw_hal.get_actuator(j)
+            # Consigne de départ : la position initiale (jamais la position
+            # cédée au contact, qui s'y accumulerait pas après pas).
+            self._consignes_roulis[j] = float(act._position)
             envoi = act.send_command
 
             def enveloppe(command, defer_publish=False, _envoi=envoi, _j=j):
@@ -722,6 +743,7 @@ class SimulatedRobot:
         maintenant = time.time_ns()
         sortie = {j: (etat[j].torque, (maintenant - etat[j].timestamp_ns) / 1e9)
                   for j in self._BRAS if j in etat}
+        sortie.update({j: (v, 0.0) for j, v in self._couples_poignets.items()})
         if self.effort_fault == "absent":
             sortie.pop("left_shoulder_roll_joint", None)
         elif self.effort_fault == "nan":
@@ -747,93 +769,67 @@ class SimulatedRobot:
         """Point du repère du bassin -> repère monde."""
         return self._vers_monde(float(p[0]), float(p[1]), float(p[2]) + self.PELVIS_HEIGHT_M)
 
+    def _kp(self, j: str) -> float:
+        """Raideur (N·m/rad) de l'articulation `j` en ce moment."""
+        nom = j.split("_", 1)[1]
+        kp = self.KP_BRAS.get(nom, 40.0)
+        if nom in self.RAIDIS:
+            if self.poignets_cedent:
+                kp *= self.souplesse_poignets
+            if self.raideur_active:
+                kp = min(2.0 * kp, max(kp, 100.0))
+        return kp
+
     def _contact(self) -> None:
-        """Chaque roulis d'épaule s'arrête où sa main touche la face de
-        l'objet ; au-delà de la consigne, le couple monte (raideur
-        KP_ROULIS). Sans contact, la main suit sa consigne, couple de repos."""
+        """Chaque articulation des bras va à sa consigne (le tangage plus bas
+        de `affaissement_rad`) ; une main qui entrerait dans l'objet s'arrête
+        sur sa face, les articulations cèdent selon leur raideur, la force
+        de contact monte (raideur de l'objet en série), et chaque couple est
+        le poids du bras plus Jᵀ de cette force."""
+        q = {}
+        for j in self._BRAS:
+            q[j] = self._consignes_roulis.get(j, self.raw_hal.get_actuator(j)._position)
+        q.update({j: 0.0 for j in self._poignets})
         for j in ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
-            if j in self._consignes_roulis:
-                self.raw_hal.get_actuator(j)._position = (self._consignes_roulis[j]
-                                                          + self.affaissement_rad)
-        for j in ("left_elbow_joint", "right_elbow_joint"):      # le coude repart de sa consigne
-            if j in self._consignes_roulis:
-                self.raw_hal.get_actuator(j)._position = self._consignes_roulis[j]
-        for j in self._poignets:
-            self._poignets[j] = 0.0
-        etat = self.raw_hal.get_full_state()
-        q = {j: etat[j].position for j in self._BRAS if j in etat}
-        q.update(self._poignets)
-        o = self._objet_entre_les_mains(q)
-        for cote, j, signe in (("left", "left_shoulder_roll_joint", 1.0),
-                               ("right", "right_shoulder_roll_joint", -1.0)):
-            act = self.raw_hal.get_actuator(j)
-            cmd = self._consignes_roulis.get(j, act._position)
-            reel = cmd
+            q[j] += self.affaissement_rad
+        cmd = dict(q)
+        o = self._objet_entre_les_mains(cmd)
+        couples = {}
+        for cote, signe in (("left", 1.0), ("right", -1.0)):
+            chaine = self.modele_bras.gauche if cote == "left" else self.modele_bras.droite
+            joints = [j for j in list(self._BRAS) + list(self._poignets) if j.startswith(cote)]
+            lam = 0.0
             if o is not None:
-                chaine = self.modele_bras.gauche if cote == "left" else self.modele_bras.droite
                 c = self._vers_robot(o.position)
-
-                def penetre(r, q_=None):
-                    q2 = dict(q if q_ is None else q_)
-                    q2[j] = r
-                    main = chaine.main(q2)
-                    # le long de la normale des faces latérales de l'objet (lacet
-                    # replié comme ManipulationService : size[0] est entre les mains)
-                    a = (o.lacet - self.heading + math.pi / 4) % (math.pi / 2) - math.pi / 4
-                    n = (-math.sin(a), math.cos(a))
-                    lat = (float(main[0]) - c[0]) * n[0] + (float(main[1]) - c[1]) * n[1]
-                    return signe * lat < o.size[0] / 2.0 + self.DEMI_MAIN_M
-                q2 = dict(q)
-                q2[j] = cmd
-                if self.poignets_cedent and penetre(cmd):
-                    cede = self._ceder(cote, chaine, q2, signe, lambda q_: penetre(cmd, q_))
-                    q.update(cede)
-                if penetre(cmd):
-                    ouvert = cmd + signe * 0.6
-                    if not penetre(ouvert):
-                        lo, hi = cmd, ouvert         # lo pénètre, hi non
-                        for _ in range(30):
-                            mid = (lo + hi) / 2.0
-                            lo, hi = (mid, hi) if penetre(mid) else (lo, mid)
-                        reel = hi
-            act._position = reel
-            act._torque = signe * (self.COUPLE_REPOS_NM + self.KP_ROULIS * signe * (reel - cmd)) \
-                if reel != cmd else signe * self.COUPLE_REPOS_NM
-
-    def _ceder(self, cote, chaine, q, signe, penetre) -> Dict[str, float]:
-        """Poignets mous : le lacet du poignet et le coude plient pour que la
-        main ne traverse pas l'objet, dans la souplesse permise ; rend les
-        angles cédés (appliqués au HAL et aux angles mesurés)."""
-        noms = (f"{cote}_elbow_joint", f"{cote}_wrist_yaw_joint")
-        base = np.array([chaine.main(q)[1] * signe])
-        grad = []
-        for n in noms:
-            q2 = dict(q)
-            q2[n] = q2.get(n, 0.0) + 1e-4
-            grad.append((chaine.main(q2)[1] * signe - base[0]) / 1e-4)
-        g = np.array(grad)
-        if np.linalg.norm(g) < 1e-9:
-            return {}
-        d = g / np.linalg.norm(g)                  # vers l'extérieur
-        s_max = self.souplesse_rad * (0.25 if self.raideur_active else 1.0)
-
-        def avec(s):
-            q2 = dict(q)
-            for n, dn in zip(noms, d):
-                q2[n] = q2.get(n, 0.0) + s * dn
-            return q2
-        lo, hi = 0.0, s_max
-        if penetre(avec(hi)):
-            s = hi                                  # souplesse épuisée : le roulis prendra le reste
-        else:
-            for _ in range(30):
-                mid = (lo + hi) / 2.0
-                lo, hi = (mid, hi) if penetre(avec(mid)) else (lo, mid)
-            s = hi
-        cede = {n: avec(s)[n] for n in noms}
-        self.raw_hal.get_actuator(noms[0])._position = cede[noms[0]]
-        self._poignets[noms[1]] = cede[noms[1]]
-        return cede
+                # le long de la normale des faces latérales de l'objet (lacet
+                # replié comme ManipulationService : size[0] est entre les mains)
+                a = (o.lacet - self.heading + math.pi / 4) % (math.pi / 2) - math.pi / 4
+                n = np.array([-math.sin(a), math.cos(a), 0.0]) * signe     # vers cette main
+                limite = o.size[0] / 2.0 + self.DEMI_MAIN_M
+                souplesse = np.array([1.0 / self._kp(j) for j in joints])
+                for _ in range(4):
+                    main = chaine.main(q)
+                    s_ = float((main[:2] - c[:2]) @ n[:2])
+                    reste = s_ - (limite - lam / o.raideur_n_m)
+                    if lam <= 0.0 and reste >= 0.0:
+                        break
+                    g = n @ chaine.jacobienne(q, joints)
+                    lam = max(0.0, lam - reste / (float(g @ (souplesse * g)) + 1.0 / o.raideur_n_m))
+                    for j, dq in zip(joints, souplesse * g * lam):
+                        q[j] = cmd[j] + float(dq)
+            self.forces_contact[cote] = lam
+            grav = chaine.couples_gravite(q, joints)
+            for j, gj in zip(joints, grav):
+                couples[j] = float(gj) + self._kp(j) * (cmd[j] - q[j])
+            couples[f"{cote}_shoulder_roll_joint"] += signe * self.COUPLE_REPOS_NM
+        if self.bruit_couples is not None:
+            noms = sorted(couples)
+            couples = dict(zip(noms, self.bruit_couples([couples[j] for j in noms])))
+        for j in self._BRAS:
+            act = self.raw_hal.get_actuator(j)
+            act._position, act._torque = q[j], couples[j]
+        for j in self._poignets:
+            self._poignets[j], self._couples_poignets[j] = q[j], couples[j]
 
     def _inclinaison(self) -> Optional[float]:
         """Inclinaison de l'objet tenu (degrés) : 5° par cm de décalage des
@@ -893,9 +889,9 @@ class SimulatedRobot:
                      key=lambda o: math.dist(o.position, objet.centre))
         if proche is None or math.dist(proche.position, objet.centre) > 0.15:
             return False
-        etat = self.raw_hal.get_full_state()
-        serre = all(abs(etat[j].torque) - self.COUPLE_REPOS_NM >= 2.0
-                    for j in ("left_shoulder_roll_joint", "right_shoulder_roll_joint"))
+        # Le frottement des deux mains porte l'objet (vérité du monde simulé).
+        serre = all(f * 2.0 * self.FROTTEMENT >= self.MASSE_OBJET_KG * 9.81
+                    for f in self.forces_contact.values())
         g, d = self._mains()
         m = self._vers_robot((g + d) / 2.0)
         c = self._vers_robot(proche.position)

@@ -24,6 +24,38 @@ Deux courses présentes sur `main`, vues en CI (intermittentes) :
   ne voie l'arrêt d'urgence. `RobotContext._fermer()` donne maintenant le
   motif de l'interruption (arrêt d'urgence d'abord) : ESTOP.
 
+### Force estimée à la main, serrage en cartésien (constat GPU du 2026-10-30)
+
+Constat : contact vu, puis « serrage insuffisant (0,1 à 0,4 N·m) » : le
+serrage ne mesurait que le couple du roulis.
+- `ChaineBras.jacobienne()`, `ChaineBras.couples_gravite()` (masses de
+  l'URDF), vérifiées contre des différences finies et contre Pinocchio.
+- Force à la main : pseudo-inverse amortie de Jᵀ sur les couples des 7
+  articulations du bras, poids retiré, filtrée ; bruit mesuré au repos avant
+  chaque fermeture (journal). `ReglagesPrise` : `force_contact_n`,
+  `force_serrage_n`, `force_min_n`, `force_deja_n`, `amorti_force_m`,
+  `filtre_force`, `duree_bruit_s`, `sigmas_contact`, `pas_serrage_*_m`,
+  `duree_serrage_max_s` (jamais un serrage sans fin) ;
+  `effort_serrage_nm`, `effort_min_nm`, `vitesse_serrage`, `serrage_max_rad`
+  retirés (serrage en newtons à la main).
+- Contact : signal « force » ; couple du roulis, poids retiré ; retard
+  géométrique pris depuis le début de la fermeture.
+- Serrage en cartésien sur tout le bras, borné à largeur/2 -
+  `penetration_max_m` (main réelle) ; plafond de couple sur chaque
+  articulation du bras. `MesuresBras.commandables` ; efforts de tous les bras
+  (`efforts_valides(optionnels=…)`).
+- Gestes avec l'objet (levage, transport, dépose) : les mains commandées au
+  serrage suivent en translation le milieu des mains mesurées, lacet d'épaule
+  et poignets gardés ; avant, la main d'un carton décalé de 2 cm lâchait au
+  premier pas du levage.
+- Robot simulé : bras souples (ressorts aux gains du banc), main arrêtée sur
+  la face de l'objet (`SimulatedObject.raideur_n_m`), couples = poids + Jᵀ F,
+  `forces_contact` (vérité), `bruit_couples`, `souplesse_poignets`.
+- Banc T1 : juge par rapport de contact PhysX posé avant `world.reset()`,
+  lacet réel du carton par phase ; vue de diagnostic au-dessus des mains
+  (`t1_vue_diagnostic.mp4`, `/vue_diagnostic.jpg`, `SuiviDirect.image_vue`) ;
+  flèche de la force estimée.
+
 ### Contact décidé en géométrie ; l'OS ne reçoit que les signaux du vrai G1 (constat GPU du 2026-10-29)
 
 Constat : 0/2, « fermeture au bout de sa course sans contact », mains

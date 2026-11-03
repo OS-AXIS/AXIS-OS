@@ -9,10 +9,11 @@ le contact n'était cherché que sur le roulis d'épaule (couple, retard) : le
 roulis suivait sa consigne, et c'étaient le poignet et le coude qui
 cédaient.
 
-Robot simulé léger (axis_os.testing) : `poignets_cedent` reproduit ce cas
-(le carton bloque la main, le lacet du poignet et le coude plient, le
-roulis suit sa consigne sans effort) ; la raideur demandée par l'OS
-(MesuresBras.raideur) réduit au quart ce qui peut céder.
+Robot simulé léger (axis_os.testing) : chaque articulation des bras est un
+ressort autour de sa consigne ; `poignets_cedent` reproduit ce cas (lacet
+d'épaule, coude et poignets assouplis de `souplesse_poignets` : ils plient,
+et le couple du roulis monte peu) ; la raideur demandée par l'OS
+(MesuresBras.raideur) les double, plafonnée au plus grand gain du pilote.
 """
 import math
 import sys
@@ -39,12 +40,13 @@ def section(t):
     print(f"\n{'=' * 66}\n  {t}\n{'=' * 66}")
 
 
-def robot(objets=True, y=0.0, lacet_deg=0.0, cedent=True):
+def robot(objets=True, y=0.0, lacet_deg=0.0, cedent=True, souplesse=0.25):
     r = SimulatedRobot(objects=[SimulatedObject("carton", (0.30, y, 0.90),
                                                 lacet=math.radians(lacet_deg))] if objets else [],
                        time_scale=2.0)
     r.__enter__()
     r.poignets_cedent = cedent
+    r.souplesse_poignets = souplesse
     time.sleep(0.2)
     return r
 
@@ -66,25 +68,28 @@ def prendre(r, objet, reglages=None, jusqua=(Etat.TENU, Etat.ECHEC), duree=15.0)
 CARTON = Objet((0.30, 0.0, 0.90), 0.24, 0.20, 0.20)
 
 section("1. Le constat GPU : main contre le carton, poignet et coude qui cèdent")
-# Sans le contact géométrique (seuil hors d'atteinte), c'est le code d'avant :
-# le message d'échec dit maintenant pourquoi.
-r = robot()
-etats = prendre(r, CARTON, ReglagesPrise(retard_face_m=1.0))
+# Sans le contact géométrique ni la force à la main (seuils hors d'atteinte),
+# c'est le code d'avant : le message d'échec dit maintenant pourquoi. Bras
+# très souples (dixième de leur raideur) : dans les 2 cm de la borne, le
+# roulis ne prend pas 1,5 N·m.
+r = robot(souplesse=0.1)
+etats = prendre(r, CARTON, ReglagesPrise(retard_face_m=1.0, force_contact_n=1e3))
 m = r.manipulation
 check("Contact cherché sur le seul roulis : « fermeture au bout de sa course sans contact »",
       m.etat is Etat.ECHEC and "au bout de sa course sans contact" in m.raison, m.raison)
 check("… le message donne les faces COMMANDÉES et MESURÉES",
       "faces intérieures commandées à" in m.raison and "mesurées à" in m.raison, m.raison)
-check("… et les plus grands écarts consigne-mesure : le coude, le poignet, pas le roulis",
-      "écarts consigne-mesure" in m.raison and "elbow" in m.raison.split("écarts")[1]
+check("… et les plus grands écarts consigne-mesure : lacet d'épaule, coude, poignet, pas le "
+      "roulis", "écarts consigne-mesure" in m.raison
+      and "shoulder_yaw" in m.raison.split("écarts")[1]
       and "shoulder_roll" not in m.raison.split("écarts")[1], m.raison)
 r.__exit__(None, None, None)
 r = robot()
 etats = prendre(r, CARTON)
 m = r.manipulation
 check("Contact en géométrie : la prise tient", m.etat is Etat.TENU, f"{m.raison} {etats}")
-check("… contact estimé des deux mains par la géométrie",
-      all(m.contacts_estimes[c] and m.contacts_estimes[c]["signal"] == "géométrie"
+check("… contact estimé des deux mains sans le roulis : par la géométrie ou la force",
+      all(m.contacts_estimes[c] and m.contacts_estimes[c]["signal"] in ("géométrie", "force")
           for c in ("left", "right")), str(m.contacts_estimes))
 check("… sans consigne refusée par le garde-fou", r.locomotion.stats["refused"] == 0)
 r.__exit__(None, None, None)

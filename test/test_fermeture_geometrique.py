@@ -86,7 +86,7 @@ borne = m._cible_ferm["left"]["left_shoulder_roll_joint"]
 check("… la consigne ne passe jamais la borne de fermeture (face commandée à largeur/2 - 2 cm)",
       roulis_min is not None and roulis_min >= borne - 1e-6, f"{roulis_min} {borne}")
 check("… exemption levée, aucun serrage", r.guard._exemption is None
-      and m.effort_max_mesure < R.effort_serrage_nm)
+      and m.force_max_mesuree < R.force_serrage_n)
 r.__exit__(None, None, None)
 
 section("3. Affaissement compensé : mains au milieu des faces avant de fermer")

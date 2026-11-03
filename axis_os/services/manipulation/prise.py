@@ -37,7 +37,7 @@ from .cinematique import ModeleBras
 
 @dataclass(frozen=True)
 class ReglagesPrise:
-    """Réglages de la prise mesurée (m, rad, N·m, s)."""
+    """Réglages de la prise mesurée (m, rad, N, N·m, s)."""
     # Demi-épaisseur d'une main : du repère de la main (rubber_hand de
     # l'URDF) à sa surface de contact. Mesurée sur le banc GPU du
     # 2026-10-28 : mains à 0,331 m l'une de l'autre sur un carton de
@@ -77,12 +77,33 @@ class ReglagesPrise:
     # angle ne ferme pas autant (constaté sur GPU, 2026-10-29).
     vide_m: float = 0.02
     ecart_largeur_max_m: float = 0.05  # contact bien avant la largeur attendue : autre chose
-    effort_serrage_nm: float = 5.0     # hausse de couple visée, pour tenir
-    effort_min_nm: float = 2.0         # en dessous, la prise ne tient pas
+    # Force estimée à la main (N) : pseudo-inverse amortie de la transposée
+    # de la jacobienne (`amorti_force_m`), appliquée à la hausse des couples
+    # de TOUTES les articulations du bras depuis la fermeture, poids des bras
+    # retiré (URDF), composante le long de la normale de l'objet, moyenne
+    # glissante sur `filtre_force` lectures. Bruit : les couples estimés du
+    # G1 (bruit_couples.py, 0,3 N·m par lecture) donnent ~0,85 N par lecture
+    # à la main, ~0,4 N filtrés ; le bruit réel est mesuré au repos avant
+    # chaque fermeture (`duree_bruit_s`), et le seuil de contact n'est jamais
+    # sous `sigmas_contact` fois ce bruit filtré.
+    amorti_force_m: float = 0.02
+    filtre_force: int = 5
+    duree_bruit_s: float = 0.2
+    force_contact_n: float = 3.0
+    sigmas_contact: float = 6.0
+    # Serrage visé et minimal, à chaque main. Bras du G1 aux gains du banc
+    # T1 (raidis) : ~500 N/m à la main, soit ~10 N au plus sur un objet
+    # raide pour les 2 cm de `penetration_max_m` ; un carton de 1 kg entre
+    # deux mains caoutchouc (frottement ~1) demande 4,9 N à chacune.
+    force_serrage_n: float = 8.0
+    force_min_n: float = 5.0
+    force_deja_n: float = 16.0         # à la prise, avant de bouger : bras déjà en effort
+    pas_serrage_max_m: float = 0.0005  # avance de la face commandée par pas, au plus
+    pas_serrage_min_m: float = 0.0001
+    duree_serrage_max_s: float = 6.0   # au-delà, on juge la force obtenue
+    # Plafond de couple de CHAQUE articulation du bras (valeur absolue).
     effort_max_nm: float = 10.0        # jamais au-delà
     part_couple_garde: float = 0.5     # ni au-delà de cette part du couple max du garde-fou
-    vitesse_serrage: float = 0.3       # rad/s
-    serrage_max_rad: float = 0.20      # au-delà du contact, au plus
     duree_maintien_s: float = 0.3
     age_max_effort_s: float = 0.10
     hauteur_test_m: float = 0.04       # levage de vérification
@@ -121,6 +142,10 @@ class MesuresBras:
                   dépôt, à l'échec et sur arrêt d'urgence. None : pas de
                   réglage de gains.
     arret_urgence : () -> arrêt d'urgence en cours ? (gains rendus aussitôt)
+    commandables : articulations des bras que la prise peut commander (en
+                  plus du tangage, du roulis et du coude : lacet d'épaule,
+                  poignets) pour la fermeture et le serrage en cartésien.
+                  None : tangage, roulis et coude seulement.
     """
     modele: ModeleBras
     positions: Callable[[], Dict[str, float]]
@@ -131,20 +156,26 @@ class MesuresBras:
     vers_bassin: Optional[Callable[[np.ndarray], np.ndarray]] = None
     raideur: Optional[Callable[[bool], None]] = None
     arret_urgence: Optional[Callable[[], bool]] = None
+    commandables: Optional[Tuple[str, ...]] = None
 
 
-def efforts_valides(mesures: MesuresBras, joints: Iterable[str], age_max: float
-                    ) -> Tuple[Optional[Dict[str, float]], str]:
+def efforts_valides(mesures: MesuresBras, joints: Iterable[str], age_max: float,
+                    optionnels: Iterable[str] = ()) -> Tuple[Optional[Dict[str, float]], str]:
     """Couples des articulations `joints`, ou (None, raison) si une mesure
-    manque, n'est pas finie ou est périmée : jamais « tout va bien »."""
+    manque, n'est pas finie ou est périmée : jamais « tout va bien ». Les
+    `optionnels` sont ajoutés quand le robot les mesure (absents : ignorés,
+    illisibles : refus)."""
     try:
         brut = mesures.efforts()
     except Exception as exc:              # noqa: BLE001 — capteur en panne
         return None, f"lecture de l'effort impossible ({type(exc).__name__})"
+    requis = list(joints)
     sortie = {}
-    for j in joints:
+    for j in requis + [o for o in optionnels if o not in requis]:
         v = brut.get(j) if isinstance(brut, dict) else None
         if v is None:
+            if j not in requis:
+                continue
             return None, f"effort de {j} absent"
         try:
             couple, age = float(v[0]), float(v[1])

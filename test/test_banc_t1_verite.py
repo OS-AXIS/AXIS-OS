@@ -125,8 +125,10 @@ check("Poignets : kp ×2 (40 → 80), kd ×√2", pr["left_wrist_yaw_joint"] == 
       and pr["right_wrist_pitch_joint"][0] == 80.0)
 check(f"Coude : borné au plus grand gain du pilote ({KP_MAX_PILOTE:.0f})",
       pr["left_elbow_joint"][0] == KP_MAX_PILOTE)
-check("Épaules et jambes : gains inchangés", pr["left_shoulder_roll_joint"] == (100.0, 2.0)
+check("Roulis d'épaule et jambes : gains inchangés", pr["left_shoulder_roll_joint"] == (100.0, 2.0)
       and pr["left_knee_joint"] == (150.0, 4.0))
+check("Lacet d'épaule (le plus souple du bras à la main) : raidi aussi",
+      gains_prise({"left_shoulder_yaw_joint": (40.0, 1.0)})["left_shoulder_yaw_joint"][0] == 80.0)
 
 section("4. Juge des contacts (vérité simulation)")
 force = {"left": 0.0, "right": 0.0}
@@ -150,6 +152,14 @@ check("Contact estimé sans contact réel → FAUX CONTACT ; rien des deux côt�
       "FAUX CONTACT" in lignes[0] and "aucun contact" in lignes[1])
 check("Compteurs : 1 vrai, 1 manqué, 1 faux", juge.compteurs == {
     "contacts_vrais": 1, "contacts_manques": 1, "faux_contacts": 1})
+juge.debut()
+for phase, v in (("placement", -3.5), ("contact", -1.5), ("serrage", 6.0), ("echec", 13.0),
+                 ("contact", 99.0)):
+    juge.noter_lacet(phase, v)
+lignes = juge.fin({"left": None, "right": None})
+check("Lacet réel du carton à chaque phase (une fois chacune) : il tourne-t-il ?",
+      lignes[-1] == "juge (vérité simulation), lacet réel du carton : placement -3.5°, "
+                    "contact -1.5°, serrage +6.0°, echec +13.0°", lignes[-1])
 muet = JugeContacts(lambda c: None)
 muet.debut()
 muet.pas(0.0)
@@ -235,6 +245,9 @@ img = dessiner(noir.copy(), K, TF, couches)
 a = np.asarray(img)
 check("Calques dessinés : cadre de détection rouge, phase en haut à gauche",
       tuple(a[220, 320]) != (0, 0, 0) and a[8:40, 8:200].any())
+fleche = dessiner(noir.copy(), K, TF, {"forces": [(cible, 10.0 * ROT[:, 0])]})
+check("Flèche de la force estimée à la main dessinée (1 cm par newton, valeur en N)",
+      np.asarray(fleche)[180:300, 300:420].any())
 sans = dessiner(noir.copy(), K, TF, couches, verite=False)
 check("Réglage sans vérité : la vérité simulation (rose, pointillés) disparaît",
       int((np.asarray(sans) == (255, 80, 220)).all(axis=2).sum()) == 0
@@ -245,8 +258,9 @@ s = SuiviDirect(tempfile.mkdtemp(), port=18093, images_par_s=100.0)
 check("Le serveur démarre", s.demarrer())
 with urllib.request.urlopen("http://127.0.0.1:18093/", timeout=5) as rep:
     page = rep.read().decode()
-check("La page montre une deuxième image, /vue_robot.jpg", 'id="robot"' in page
-      and "/vue_robot.jpg" in page)
+check("La page montre la vue du robot et la vue de diagnostic, à côté de la vue extérieure",
+      'id="robot"' in page and 'id="diagnostic"' in page and "'/vue_' + nom + '.jpg?'" in page
+      and "vue('robot'); vue('diagnostic');" in page)
 try:
     urllib.request.urlopen("http://127.0.0.1:18093/vue_robot.jpg", timeout=5)
     absente = False
@@ -257,6 +271,10 @@ s.image_robot(img)
 with urllib.request.urlopen("http://127.0.0.1:18093/vue_robot.jpg?1", timeout=5) as rep:
     corps = rep.read()
 check("Vue publiée et servie en JPEG", corps[:2] == b"\xff\xd8")
+s.image_vue("diagnostic", img)
+with urllib.request.urlopen("http://127.0.0.1:18093/vue_diagnostic.jpg?1", timeout=5) as rep:
+    corps = rep.read()
+check("Vue de diagnostic servie en JPEG (/vue_diagnostic.jpg)", corps[:2] == b"\xff\xd8")
 s.arreter()
 
 section("8. Banc T1 et outils GPU (lecture des scripts, sans Isaac Sim)")
@@ -274,15 +292,26 @@ check("Hauteur du bassin et inclinaison : jambes, mains et centrale inertielle",
       and "inclinaison=inclinaison_os," in T1)
 check("Raideur de prise et arrêt d'urgence branchés", "raideur=regler_raideur," in T1
       and "arret_urgence=lambda: hal.estop_active," in T1)
+check("Juge : rapport de contact PhysX posé sur les mains AVANT world.reset(), raisons d'un "
+      "échec dites au journal (constat GPU : « indisponible », sans raison)",
+      0 < T1.find("capteurs.preparer(") < T1.find("\n    world.reset()\n")
+      < T1.find("capteurs.initialiser()")
+      and "' ; '.join(capteurs.raisons)" in T1)
+check("… lacet réel du carton noté au placement, au contact, au serrage et à la fin",
+      all(f'juge.noter_lacet("{ph}"' in T1 for ph in ("placement", "contact", "serrage")))
 check("Juge : prise par prise au journal, compteurs dans l'évaluation",
       "juge.fin(manip.contacts_estimes)" in T1 and "**(juge.compteurs if juge" in T1)
 check("Vue du robot : vidéo, incrustation, page de suivi, réglage pour la démo",
-      '"t1_vue_robot.mp4"' in T1 and "incrustation=derniere_vue" in T1
-      and "suivi.image_robot(derniere_vue)" in T1 and "--vue-sans-calques" in T1)
+      '"t1_vue_robot.mp4"' in T1 and "incrustation=[derniere_vue, derniere_diag]" in T1
+      and 'suivi.image_vue("robot", derniere_vue)' in T1 and "--vue-sans-calques" in T1)
+check("Vue de diagnostic au-dessus des mains (banc) : vidéo, incrustation, page de suivi",
+      '"t1_vue_diagnostic.mp4"' in T1 and 'suivi.image_vue("diagnostic", derniere_diag)' in T1)
 REC = (RACINE / "deploy/machine_gpu/recuperer_t1.sh").read_text(encoding="utf-8")
 CP = (RACINE / "deploy/machine_gpu/copier_code.sh").read_text(encoding="utf-8")
 check("recuperer_t1.sh : vue du robot récupérée, réduite en 540p, dans le zip",
       "t1_vue_robot.mp4" in REC and 'scale=-2:540' in REC and '$( [ -f "$VUE" ]' in REC)
+check("… et la vue de diagnostic aussi", "t1_vue_diagnostic.mp4" in REC
+      and '$( [ -f "$DIAG" ]' in REC)
 check("copier_code.sh : modules du banc copiés à côté des scripts",
       'sim/validation/banc_*.py' in CP)
 

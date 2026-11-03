@@ -83,6 +83,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Callable, Dict, Optional, Tuple
@@ -279,6 +280,9 @@ class ManipulationService(IService):
         # ratée, voir prise.CalibrationMains) ; vide : prise permise.
         self.calibration_refus = ""
         self.raideur_active = False        # gains des poignets raidis (MesuresBras.raideur)
+        # Articulations libérées pour la prise (lacet d'épaule, poignets) et
+        # leur consigne d'avant : rendue en fin de prise, en douceur (LACHER).
+        self._libres0: Dict[str, float] = {}
         self.etat = Etat.LIBRE
         self.objet: Optional[Objet] = None
         self.raison = ""
@@ -354,8 +358,11 @@ class ManipulationService(IService):
         self._bras.update(self._q)
 
     def _ecrire_q(self, q: Dict[str, float]) -> None:
-        """Écrit une consigne articulation par articulation (prise mesurée)."""
-        self._q = {j: float(v) for j, v in q.items()}
+        """Écrit une consigne articulation par articulation (prise mesurée) ;
+        les articulations libérées pour la prise que `q` ne donne pas gardent
+        leur consigne."""
+        garde = {j: self._q[j] for j in self._libres0 if j in self._q and j not in q}
+        self._q = {**garde, **{j: float(v) for j, v in q.items()}}
         self._tangage_courant = self._q.get("left_shoulder_pitch_joint", self._tangage_courant)
         self._roulis_courant = self._q.get("left_shoulder_roll_joint", self._roulis_courant)
         self._bras.update(self._q)
@@ -363,8 +370,9 @@ class ManipulationService(IService):
     def _interp_q(self, duree: float) -> Tuple[Dict[str, float], bool]:
         """Consigne qui va linéairement de `_q_de` à `_q_vers` en `duree`."""
         f = min(1.0, (self._horloge() - self._t0) / duree) if duree > 0 else 1.0
-        return ({j: self._q_de[j] + f * (self._q_vers[j] - self._q_de[j]) for j in self._q_vers},
-                f >= 1.0)
+        return ({j: self._q_de.get(j, self._q_vers[j])
+                 + f * (self._q_vers[j] - self._q_de.get(j, self._q_vers[j]))
+                 for j in self._q_vers}, f >= 1.0)
 
     def _interp_c(self, duree: float) -> Tuple[Dict[str, float], bool]:
         """Objet tenu : le milieu des mains va en ligne droite de `_c_de` à
@@ -437,6 +445,11 @@ class ManipulationService(IService):
     # gauche se referme quand son roulis diminue, le droit quand il croît).
     _ROULIS = {"left": "left_shoulder_roll_joint", "right": "right_shoulder_roll_joint"}
     _FERME = {"left": -1.0, "right": 1.0}
+    # Toutes les articulations d'un bras (épaule 3, coude, poignet 3) : la
+    # force à la main s'estime sur toutes celles dont le robot mesure le couple.
+    _BRAS_COTE = {c: tuple(f"{c}_{a}" for a in (
+        "shoulder_pitch_joint", "shoulder_roll_joint", "shoulder_yaw_joint", "elbow_joint",
+        "wrist_roll_joint", "wrist_pitch_joint", "wrist_yaw_joint")) for c in ("left", "right")}
 
     def _init_mesure(self) -> None:
         """Remet à zéro l'état de la prise mesurée."""
@@ -451,7 +464,7 @@ class ManipulationService(IService):
         self._t_phase: Optional[float] = None
         self._sous = ""
         self._q_serre: Optional[Dict[str, float]] = None
-        self._q_ref: Optional[Dict[str, float]] = None
+        self._c_serre: Optional[np.ndarray] = None
         self._delta_serre = {"left": 0.0, "right": 0.0}
         self._c_de = self._c_vers = np.zeros(3)
         self._q_tenu: Optional[Dict[str, float]] = None
@@ -472,6 +485,23 @@ class ManipulationService(IService):
         self._attendue: Dict[str, float] = {}
         # Contact estimé par l'OS, par main : {"t": instant, "signal": …}.
         self.contacts_estimes: Dict[str, Optional[Dict]] = {"left": None, "right": None}
+        # Force estimée à chaque main (voir _mesurer_forces) : vecteur (N,
+        # repère du bassin), serrage filtré le long de la normale (N, vers
+        # l'objet), le plus fort vu, bruit au repos et seuil de contact.
+        self.forces: Dict[str, Optional[np.ndarray]] = {"left": None, "right": None}
+        self.force_serrage: Dict[str, float] = {"left": 0.0, "right": 0.0}
+        self.force_max_mesuree = 0.0
+        self.bruit_force: Dict[str, float] = {}
+        self._seuil_contact = self.r.force_contact_n
+        self._hist_force: Dict[str, deque] = {c: deque(maxlen=max(1, self.r.filtre_force))
+                                              for c in ("left", "right")}
+        self._g0: Dict[str, float] = {}
+        self._echantillons: list = []
+        self._delta_max = {"left": 0.0, "right": 0.0}
+        self._raideur_vue: Dict[str, float] = {}
+        self._hausse_roulis = {"left": 0.0, "right": 0.0}
+        self._ecart_face0: Dict[str, float] = {}
+        self._plafond: Dict[str, str] = {}       # main arrêtée par la limite de couple de…
 
     def _vers_bassin(self, p_monde) -> np.ndarray:
         """Point du repère monde -> repère du bassin (x, y du robot ; z
@@ -565,9 +595,9 @@ class ManipulationService(IService):
         self.stats["prises_ratees"] += 1
         self.raison = raison
         self._lever_exemption()
-        self.etat = Etat.ECHEC
         self._regler_raideur(False)
         self._journaliser_echec(raison)
+        self.etat = Etat.ECHEC             # en dernier : qui voit ÉCHEC voit tout le reste
 
     def _regler_raideur(self, active: bool) -> None:
         """Gains des poignets et du coude : raidis pour fermer et tenir,
@@ -639,7 +669,8 @@ class ManipulationService(IService):
         objet, centre visé, cibles des mains (ouverture, contact, borne de
         fermeture), mains mesurées (cinématique), contacts estimés."""
         v = {"phase": self.etat.name, "objet": self.objet, "plan": None, "cibles": {},
-             "mains": None, "contacts": dict(self.contacts_estimes)}
+             "mains": None, "contacts": dict(self.contacts_estimes),
+             "forces": dict(self.forces), "serrage": dict(self.force_serrage)}
         try:
             v["mains"] = self._mains_modele()
             plan = self._plan
@@ -693,12 +724,16 @@ class ManipulationService(IService):
         if self._journal is None or self.mesures is None:
             return
         try:
-            self._journal(f"prise ratée : {raison} — {self.diagnostic_mains(objet)}")
+            self._journal(f"prise ratée : {raison} — {self.diagnostic_mains(objet)}"
+                          + (f" ; {self._texte_forces()}" if self._plan else ""))
         except Exception:                 # noqa: BLE001 — le journal ne doit rien casser
             pass
 
     def _efforts(self) -> Tuple[Optional[Dict[str, float]], str]:
-        tau, raison = efforts_valides(self.mesures, self._ROULIS.values(), self.r.age_max_effort_s)
+        """Couples des roulis (exigés) et de toutes les autres articulations
+        des bras que le robot mesure."""
+        tau, raison = efforts_valides(self.mesures, self._ROULIS.values(), self.r.age_max_effort_s,
+                                      optionnels=self._BRAS_COTE["left"] + self._BRAS_COTE["right"])
         if tau is not None:
             self.effort_max_mesure = max([self.effort_max_mesure]
                                          + [abs(v) for v in tau.values()])
@@ -710,11 +745,173 @@ class ManipulationService(IService):
         return min(lim, self.r.part_couple_garde * c) if c else lim
 
     def _effort_excessif(self, tau: Dict[str, float]) -> str:
-        """« articulation à X N·m » si un roulis dépasse sa limite, sinon ""."""
+        """« articulation à X N·m » si une articulation des bras dépasse sa
+        limite, sinon ""."""
         for j, v in tau.items():
             if abs(v) > self._limite_effort(j):
                 return f"{j} à {abs(v):.1f} N·m, limite {self._limite_effort(j):.1f}"
         return ""
+
+    def _noter(self, msg: str) -> None:
+        if self._journal is not None:
+            try:
+                self._journal(msg)
+            except Exception:             # noqa: BLE001 — le journal ne doit rien casser
+                pass
+
+    def _chaine(self, cote: str):
+        return self.mesures.modele.gauche if cote == "left" else self.mesures.modele.droite
+
+    def _commandables(self, cote: str) -> Tuple[str, ...]:
+        """Articulations du bras `cote` que la prise commande."""
+        c = self.mesures.commandables
+        base = (f"{cote}_shoulder_pitch_joint", f"{cote}_shoulder_roll_joint",
+                f"{cote}_elbow_joint")
+        if c is None:
+            return base
+        return base + tuple(j for j in self._BRAS_COTE[cote] if j in c and j not in base)
+
+    def _angles_mesures(self) -> Optional[Dict[str, float]]:
+        try:
+            brut = {j: float(v) for j, v in self.mesures.positions().items()}
+        except Exception:                 # noqa: BLE001
+            return None
+        if not all(math.isfinite(v) for v in brut.values()):
+            return None
+        return {**self._fixes, **brut}
+
+    def _gravite_bassin(self) -> np.ndarray:
+        """La pesanteur dans le repère du bassin (centrale inertielle, par
+        vers_bassin), ou verticale si le bassin est supposé droit."""
+        vb, defaut = self.mesures.vers_bassin, np.array([0.0, 0.0, -9.81])
+        if vb is None:
+            return defaut
+        try:
+            g = np.asarray(vb(np.array([0.0, 0.0, -1.0])), float) - np.asarray(vb(np.zeros(3)),
+                                                                                float)
+        except Exception:                 # noqa: BLE001
+            return defaut
+        n = float(np.linalg.norm(g))
+        return 9.81 * g / n if n > 1e-9 and np.all(np.isfinite(g)) else defaut
+
+    def _force_main(self, cote: str, tau: Dict[str, float], angles: Dict[str, float],
+                    g: np.ndarray, depuis_fermeture: bool = True) -> Optional[np.ndarray]:
+        """Force (N, repère du bassin) que la main `cote` exerce sur ce
+        qu'elle touche : F = (J Jᵀ + λ² I)⁻¹ J Δτ, pseudo-inverse amortie de
+        Jᵀ, J la jacobienne de la main (angles mesurés) et Δτ la hausse des
+        couples de toutes les articulations mesurées du bras depuis la
+        fermeture (ou depuis zéro), le poids des bras retiré (URDF)."""
+        joints = [j for j in self._BRAS_COTE[cote]
+                  if j in tau and (not depuis_fermeture or j in self._tau0)]
+        if not joints:
+            return None
+        chaine = self._chaine(cote)
+        jac = chaine.jacobienne(angles, joints)
+        grav = chaine.couples_gravite(angles, joints, g)
+        d = np.array([tau[j] for j in joints]) - grav
+        if depuis_fermeture:
+            d -= np.array([self._tau0[j] - self._g0.get(j, 0.0) for j in joints])
+        lam = self.r.amorti_force_m
+        return np.linalg.solve(jac @ jac.T + lam * lam * np.eye(3), jac @ d)
+
+    def _vers_objet(self, cote: str) -> np.ndarray:
+        """Direction (repère du bassin) dans laquelle la main `cote` serre
+        l'objet planifié : sa normale, vers son centre."""
+        lacet = self._plan["lacet"]
+        n = np.array([-math.sin(lacet), math.cos(lacet), 0.0])
+        return -n if cote == "left" else n
+
+    def _mesurer_forces(self, tau: Dict[str, float]) -> Optional[Dict[str, float]]:
+        """Serrage de chaque main (N, vers l'objet), moyenne glissante de
+        `filtre_force` lectures ; None si les angles sont illisibles."""
+        angles = self._angles_mesures()
+        if angles is None:
+            return None
+        g = self._gravite_bassin()
+        for cote, j in self._ROULIS.items():
+            # Hausse du couple du roulis depuis la fermeture, poids du bras
+            # retiré (le bras qui ferme change déjà son couple de ~1 N·m).
+            if j in tau and j in self._tau0:
+                gj = float(self._chaine(cote).couples_gravite(angles, [j], g)[0])
+                self._hausse_roulis[cote] = abs(tau[j] - gj - (self._tau0[j]
+                                                                - self._g0.get(j, 0.0)))
+        for cote in ("left", "right"):
+            f = self._force_main(cote, tau, angles, g)
+            self.forces[cote] = f
+            if f is not None:
+                self._hist_force[cote].append(float(f @ self._vers_objet(cote)))
+            h = self._hist_force[cote]
+            self.force_serrage[cote] = float(np.mean(h)) if h else 0.0
+        self.force_max_mesuree = max([self.force_max_mesuree] + list(self.force_serrage.values()))
+        return dict(self.force_serrage)
+
+    def _avancer(self, q: Dict[str, float], cote: str, d: float,
+                 direction: Optional[np.ndarray] = None) -> Optional[Dict[str, float]]:
+        """La main COMMANDÉE `cote` avance de `d` (m ; négatif : recule) le
+        long de `direction` (par défaut, vers l'objet) : cinématique inverse
+        différentielle amortie sur toutes les articulations commandées du
+        bras. None si elle sort des bornes de l'URDF."""
+        chaine = self._chaine(cote)
+        joints = self._commandables(cote)
+        base = {**self._fixes, **q}
+        u = self._vers_objet(cote) if direction is None else np.asarray(direction, float)
+        cible = chaine.main(base) + d * u
+        for _ in range(4):
+            e = cible - chaine.main(base)
+            if float(np.linalg.norm(e)) < 2e-5:
+                break
+            jac = chaine.jacobienne(base, joints)
+            dq = jac.T @ np.linalg.solve(jac @ jac.T + 1e-6 * np.eye(3), e)
+            for j, v in zip(joints, dq):
+                base[j] = base.get(j, 0.0) + float(v)
+        if not chaine.dans_les_bornes({j: base[j] for j in joints}):
+            return None
+        sortie = dict(q)
+        sortie.update({j: base[j] for j in joints})
+        return sortie
+
+    def _direction_serrage(self, q: Dict[str, float], cote: str) -> np.ndarray:
+        """Objet tenu : de la main `cote` vers l'autre (consigne)."""
+        g, d = self.mesures.modele.mains({**self._fixes, **q})
+        u = (d - g) / max(1e-9, float(np.linalg.norm(d - g)))
+        return u if cote == "left" else -u
+
+    def _reste_avant_borne(self, q: Dict[str, float], k: int, cote: str) -> float:
+        """De combien (m) la face COMMANDÉE de la main peut encore avancer
+        avant largeur/2 - penetration_max_m."""
+        sens = 1.0 if k == 0 else -1.0
+        main = self._chaine(cote).main({**self._fixes, **q})
+        face = self._faces((main, main))[k]
+        return sens * (face - self._borne(k, cote))
+
+    def _decalage(self, cote: str) -> float:
+        """Écart (m) entre la face mesurée et la face commandée de la main
+        `cote` au début de la fermeture, avant tout contact (bras qui
+        s'affaissent, modèle un peu différent du bras), borné à 3 cm."""
+        return max(-0.03, min(0.03, self._ecart_face0.get(cote, 0.0)))
+
+    def _borne(self, k: int, cote: str) -> float:
+        """Borne de la face COMMANDÉE : la main, là où elle est vraiment (la
+        consigne plus son décalage), jamais au-delà de largeur/2 -
+        penetration_max_m dans l'objet attendu."""
+        sens = 1.0 if k == 0 else -1.0
+        return self._attendue[cote] - sens * self.r.penetration_max_m - self._decalage(cote)
+
+    def _texte_forces(self) -> str:
+        """Force estimée par main et couple de chaque articulation des bras."""
+        def f(v):
+            return "?" if v is None else "(" + ", ".join(f"{x:+.1f}" for x in v) + ")"
+        parts = [f"forces estimées à la main : G {f(self.forces['left'])} N (serrage "
+                 f"{self.force_serrage['left']:.1f} N), D {f(self.forces['right'])} N (serrage "
+                 f"{self.force_serrage['right']:.1f} N)"]
+        try:
+            brut = self.mesures.efforts()
+            parts.append("couples : " + ", ".join(
+                f"{j.replace('_joint', '')} {float(brut[j][0]):+.2f}"
+                for c in ("left", "right") for j in self._BRAS_COTE[c] if j in brut))
+        except Exception:                 # noqa: BLE001
+            pass
+        return " ; ".join(parts)
 
     def _mains_bassin(self) -> Tuple[np.ndarray, np.ndarray]:
         g, d = self._mains()
@@ -731,6 +928,19 @@ class ManipulationService(IService):
             self._echouer(f"serrage refusé — {raison}")
             return False
         self._tau0 = dict(tau)
+        # Lacet d'épaule et poignets : commandés pendant la fermeture et le
+        # serrage (plus figés à leur valeur mesurée du plan), depuis leur
+        # consigne actuelle.
+        for cote in self._ROULIS:
+            for j in self._commandables(cote):
+                if j not in self._q:
+                    self._libres0[j] = float(self._bras.get(j, self._fixes.get(j, 0.0)))
+                    self._q[j] = self._libres0[j]
+                    self._fixes.pop(j, None)
+        # Bruit de la force estimée, bras immobiles, avant de fermer (sous-
+        # phase « bruit ») ; τ0 est la moyenne de ces lectures.
+        self._sous, self._echantillons, self._ecart_face0 = "bruit", [], {}
+        self._hist_force = {c: deque(maxlen=max(1, self.r.filtre_force)) for c in self._ROULIS}
         self._prec_serrage = {}
         self._contact = {"left": None, "right": None}
         self._compte_contact = {"left": 0, "right": 0}
@@ -755,7 +965,7 @@ class ManipulationService(IService):
         plan, r = self._plan, self.r
         j = self._ROULIS[cote]
         sens = 1.0 if k == 0 else -1.0
-        borne = self._attendue[cote] - sens * r.penetration_max_m
+        borne = self._borne(k, cote)
         chaine = self.mesures.modele.gauche if k == 0 else self.mesures.modele.droite
         base = self._consigne_complete()
 
@@ -860,12 +1070,59 @@ class ManipulationService(IService):
             sortie.append(q)
         return sortie[0], sortie[1]
 
+    def _mesurer_bruit(self, tau: Dict[str, float]) -> bool:
+        """Sous-phase « bruit » : lit les couples, bras immobiles, pendant
+        `duree_bruit_s` ; puis τ0 (leur moyenne), le bruit de la force à
+        chaque main et le seuil de contact. Vrai une fois fini."""
+        r = self.r
+        angles = self._angles_mesures()
+        if angles is not None:
+            self._echantillons.append((dict(tau), angles))
+        if self._horloge() - self._t0 < r.duree_bruit_s or len(self._echantillons) < 3:
+            return False
+        joints = set.intersection(*(set(t) for t, _ in self._echantillons))
+        self._tau0 = {j: float(np.mean([t[j] for t, _ in self._echantillons])) for j in joints}
+        a0 = {j: float(np.mean([a[j] for _, a in self._echantillons]))
+              for j in self._echantillons[0][1]}
+        g = self._gravite_bassin()
+        self._g0 = {}
+        for cote in self._ROULIS:
+            js = [j for j in self._BRAS_COTE[cote] if j in self._tau0]
+            if js:
+                self._g0.update(zip(js, self._chaine(cote).couples_gravite(a0, js, g)))
+        for cote in self._ROULIS:
+            lus = [self._force_main(cote, t, a, g) for t, a in self._echantillons]
+            lus = [float(f @ self._vers_objet(cote)) for f in lus if f is not None]
+            self.bruit_force[cote] = float(np.std(lus)) if len(lus) > 1 else 0.0
+        filtre = max(self.bruit_force.values(), default=0.0) / math.sqrt(max(1, r.filtre_force))
+        self._seuil_contact = max(r.force_contact_n, r.sigmas_contact * filtre)
+        self.stats["bruit_force_n"] = {c: round(v, 2) for c, v in self.bruit_force.items()}
+        self._noter(f"bruit de la force estimée au repos : G {self.bruit_force.get('left', 0):.2f}"
+                    f" N, D {self.bruit_force.get('right', 0):.2f} N par lecture ({len(lus)} "
+                    f"lectures) ; seuil de contact {self._seuil_contact:.1f} N")
+        self._sous, self._echantillons = "", []
+        self._t0 = self._horloge()
+        return True
+
     def _pas_fermeture(self, dt: float) -> None:
         r = self.r
         tau, raison = self._efforts()
         if tau is None:
             self._echouer(f"serrage refusé — {raison}")
             return
+        if self._sous == "bruit":
+            self._mesurer_bruit(tau)
+            return
+        forces = self._mesurer_forces(tau)
+        if not self._ecart_face0:
+            mod0 = self._mains_modele()
+            if mod0 is not None:
+                fm0 = self._faces(mod0)
+                fc0 = self._faces(self.mesures.modele.mains(self._consigne_complete()))
+                self._ecart_face0 = {c: fm0[k] - fc0[k] for k, c in enumerate(self._ROULIS)}
+                # Bornes de fermeture refaites pour ce décalage.
+                self._cible_ferm = {c: self._cible_fermeture(k, c)
+                                    for k, c in enumerate(self._ROULIS)}
         qm, raison = positions_valides(self.mesures, self._ROULIS.values())
         if qm is None:
             self._echouer(f"serrage refusé — {raison}")
@@ -898,11 +1155,17 @@ class ManipulationService(IService):
             s = self._FERME[cote]
             sens = 1.0 if k == 0 else -1.0       # la face gauche descend, la droite monte
             attendue = self._attendue[cote]
-            hausse = abs(tau[j] - self._tau0[j])
+            hausse = (self._hausse_roulis[cote] if forces is not None
+                      else abs(tau[j] - self._tau0[j]))
             retard = s * (self._q[j] - qm[j])
-            retard_face = sens * (faces_m[k] - faces_c[k])
+            # Retard pris DEPUIS le début de la fermeture : bras affaissés
+            # (tangage incliné), la main mesurée est déjà à côté de la
+            # commandée avant tout contact (constaté sur le robot simulé : 2 cm).
+            retard_face = sens * ((faces_m[k] - faces_c[k]) - self._ecart_face0.get(cote, 0.0))
+            force = forces.get(cote, 0.0) if forces is not None else 0.0
             signal = ("couple" if hausse >= r.hausse_contact_nm else
                       "retard du roulis" if retard >= r.retard_contact_rad else
+                      "force" if force >= self._seuil_contact else
                       "géométrie" if (retard_face >= r.retard_face_m and
                                       abs(faces_m[k] - attendue) <= r.tol_face_contact_m)
                       else None)
@@ -928,7 +1191,7 @@ class ManipulationService(IService):
             # Borne de la consigne : la face COMMANDÉE ne va jamais au-delà de
             # largeur/2 - penetration_max_m (la cible de fermeture l'y amène
             # en lam = 1).
-            borne = attendue - sens * r.penetration_max_m
+            borne = self._borne(k, cote)
             if self._lam[cote] >= 1.0 or sens * (faces_c[k] - borne) <= 1e-4:
                 en_butee += 1
                 continue
@@ -938,7 +1201,7 @@ class ManipulationService(IService):
             # petit, même objet raide.
             cible = self._cible_ferm[cote]
             course = max(abs(v - self._q_ferm0[jj]) for jj, v in cible.items())
-            pres = sens * (faces_c[k] - attendue) <= r.zone_contact_m
+            pres = sens * (faces_c[k] + self._decalage(cote) - attendue) <= r.zone_contact_m
             pas = (min(r.vitesse_contact * min(dt, 0.05), r.pas_contact_max_rad) if pres
                    else r.vitesse_fermeture * min(dt, 0.05))
             self._lam[cote] = 1.0 if course < 1e-9 else min(1.0, self._lam[cote] + pas / course)
@@ -963,46 +1226,79 @@ class ManipulationService(IService):
                 return
             self._ecart_mains = ecart
             self._t_phase = None
+            self._delta = {"left": 0.0, "right": 0.0}
+            self._plafond = {}
+            self._delta_max = {c: max(0.0, self._reste_avant_borne(self._q, k, c))
+                               for k, c in enumerate(self._ROULIS)}
             self._aller(Etat.SERRAGE)
         elif self._horloge() - self._t0 > 4.0:
             self._echouer("prise refusée — rien entre les mains : serrage dans le vide évité "
                           "(fermeture trop longue)")
 
     def _pas_serrage_mesure(self, dt: float) -> None:
+        """Serrage : la face COMMANDÉE de chaque main avance vers l'objet
+        (cinématique inverse sur tout le bras, petits pas), jusqu'à la force
+        visée à la main, jamais au-delà de largeur/2 - penetration_max_m ;
+        une articulation du bras au-delà de sa limite de couple fait
+        desserrer."""
         r = self.r
         tau, raison = self._efforts()
         if tau is None:
             self._echouer(f"serrage refusé — {raison}")
             return
+        forces = self._mesurer_forces(tau)
+        if forces is None:
+            self._echouer("serrage refusé — angles des bras illisibles : force inconnue")
+            return
         q = dict(self._q)
         prets = True
-        for cote, j in self._ROULIS.items():
-            s, hausse = self._FERME[cote], abs(tau[j] - self._tau0[j])
-            if abs(tau[j]) > self._limite_effort(j):
-                # Au-dessus de la limite : on desserre, jamais plus fort, au
-                # besoin en deçà du contact (objet très raide).
-                self._delta[cote] = max(-r.serrage_max_rad,
-                                        self._delta[cote] - 2 * r.vitesse_serrage * min(dt, 0.05))
+        for k, cote in enumerate(self._ROULIS):
+            f = forces[cote]
+            trop = [j for j in self._BRAS_COTE[cote] if j in tau
+                    and abs(tau[j]) > self._limite_effort(j)]
+            if trop:
+                # Au-dessus d'une limite : on desserre, jamais plus fort, et
+                # cette main ne serre plus (on jugera la force obtenue).
+                d = -2 * r.pas_serrage_max_m
                 self.stats["serrages_limites"] = self.stats.get("serrages_limites", 0) + 1
+                self._plafond[cote] = trop[0]
                 prets = False
-            elif hausse < r.effort_serrage_nm and self._delta[cote] < r.serrage_max_rad:
-                pas = r.vitesse_serrage * min(dt, 0.05)
-                raideur = self._raideur(cote, hausse)
-                # Pas réduit pour arriver à l'effort visé sans le dépasser ;
-                # petit tant que la raideur n'est pas mesurée.
-                pas = min(pas, max(0.002, (r.effort_serrage_nm - hausse) / raideur)
-                          if raideur > 0.0 else 0.004)
-                self._delta[cote] = min(r.serrage_max_rad, self._delta[cote] + pas)
-                prets = False
-            q[j] = self._contact[cote] + s * self._delta[cote]
+            elif f < r.force_serrage_n and not self._plafond.get(cote):
+                reste = self._reste_avant_borne(q, k, cote)
+                if reste <= r.pas_serrage_min_m:
+                    continue                      # au bout : on juge ce qu'on a
+                raideur = self._raideur(cote, f)
+                # Pas réduit pour arriver à la force visée sans la dépasser ;
+                # le plus petit tant que la raideur n'est pas mesurée.
+                pas = (min(r.pas_serrage_max_m, max(r.pas_serrage_min_m,
+                                                    (r.force_serrage_n - f) / raideur))
+                       if raideur > 0.0 else r.pas_serrage_min_m)
+                d = min(pas, reste)
+            else:
+                continue
+            q2 = self._avancer(q, cote, d)
+            if q2 is None:
+                if d > 0:
+                    self._plafond[cote] = "bornes de l'URDF"
+                continue                          # bornes du bras : on juge ce qu'on a
+            prets = False
+            q = q2
+            self._delta[cote] += d
         self._ecrire_q(q)
-        if not prets:
+        # Jamais un serrage sans fin : au-delà de `duree_serrage_max_s`, on
+        # juge la force obtenue.
+        if not prets and self._horloge() - self._t0 < r.duree_serrage_max_s:
             self._t_phase = None
             return
-        faible = min(abs(tau[j] - self._tau0[j]) for j in self._ROULIS.values())
-        if faible < r.effort_min_nm:
-            self._echouer(f"prise refusée — serrage insuffisant ({faible:.1f} N·m au plus "
-                          f"serré) : l'objet cède ou glisse, on n'insiste pas")
+        faible = min(forces.values())
+        if faible < r.force_min_n:
+            limites = ", ".join(f"main {'G' if c == 'left' else 'D'} arrêtée par "
+                                + (j if j.startswith("bornes") else f"la limite de couple de {j}")
+                                for c, j in self._plafond.items() if j)
+            self._echouer(f"prise refusée — serrage insuffisant ({faible:.1f} N à la main au plus "
+                          f"serré, {r.force_min_n:.0f} au moins"
+                          f"{' ; ' + limites if limites else ''}) : l'objet cède ou glisse, on "
+                          f"n'insiste pas")
             return
         if self._t_phase is None:
             self._t_phase = self._horloge()
@@ -1010,24 +1306,19 @@ class ManipulationService(IService):
             self._q_serre = dict(self._q)
             self._lever_de_quelques_cm()
 
-    def _ik_mains(self, centre_mains: np.ndarray, ecart: float, depart: Dict[str, float]
-                  ) -> Optional[Dict[str, float]]:
-        # Objet tenu : 0,5 mm près, car l'écart des mains EST le serrage (un
-        # écart de 3 mm, sur un objet raide, ferait varier l'effort de plusieurs N·m).
-        demi = np.array([0.0, ecart / 2.0, 0.0])
-        q, _ = resoudre(self.mesures.modele, centre_mains + demi, centre_mains - demi,
-                        self._graine(depart), tol=0.0005)
-        return q
-
-    def _raideur(self, cote: str, hausse: float) -> float:
-        """Raideur mesurée (N·m/rad) entre deux pas du serrage : hausse du
-        couple sur l'avance de la consigne ; 0 si elle n'est pas encore
-        connue."""
+    def _raideur(self, cote: str, force: float) -> float:
+        """Raideur mesurée (N/m) au serrage : hausse de la force à la main
+        sur l'avance de la face commandée depuis la dernière mesure ; 0 si
+        elle n'est pas encore connue."""
         prec = self._prec_serrage.get(cote)
-        self._prec_serrage[cote] = (self._delta[cote], hausse)
-        if prec is None or self._delta[cote] - prec[0] < 1e-4:
+        if prec is None:
+            self._prec_serrage[cote] = (self._delta[cote], force)
             return 0.0
-        return max(0.0, (hausse - prec[1]) / (self._delta[cote] - prec[0]))
+        if self._delta[cote] - prec[0] < 1e-3:
+            return self._raideur_vue.get(cote, 0.0)
+        self._prec_serrage[cote] = (self._delta[cote], force)
+        self._raideur_vue[cote] = max(0.0, (force - prec[1]) / (self._delta[cote] - prec[0]))
+        return self._raideur_vue[cote]
 
     def _garder_sous_la_limite(self, dt: float) -> None:
         """Objet tenu : un roulis au-delà de sa limite d'effort desserre un
@@ -1043,15 +1334,18 @@ class ManipulationService(IService):
             return
         if self.raison.startswith("effort illisible"):
             self.raison = ""
-        pas = 2 * self.r.vitesse_serrage * min(dt, 0.05)
+        pas = 2 * self.r.pas_serrage_max_m
         q = None
-        for cote, j in self._ROULIS.items():
-            if abs(tau[j]) > self._limite_effort(j) and self._delta[cote] > -self.r.serrage_max_rad:
+        for cote in self._ROULIS:
+            trop = any(abs(tau[j]) > self._limite_effort(j) for j in self._BRAS_COTE[cote]
+                       if j in tau)
+            if trop and self._delta[cote] > -self.r.penetration_max_m:
                 self._delta[cote] -= pas
                 self.stats["serrages_limites"] = self.stats.get("serrages_limites", 0) + 1
                 if self.etat is Etat.TENU:      # consigne fixe : on la corrige ici
                     q = dict(self._q) if q is None else q
-                    q[j] -= self._FERME[cote] * pas
+                    q2 = self._avancer(q, cote, -pas, self._direction_serrage(q, cote))
+                    q = q2 if q2 is not None else q
         if q is not None:
             self._ecrire_q(q)
             self._q_tenu = dict(q)
@@ -1059,25 +1353,35 @@ class ManipulationService(IService):
     def _q_mains(self, centre_mains: np.ndarray, ecart: float) -> Optional[Dict[str, float]]:
         """Bras qui mettent les mains de part et d'autre de `centre_mains`
         (repère du bassin), à `ecart` l'une de l'autre, le serrage gardé :
-        aux consignes serrées s'ajoute le déplacement que la cinématique
-        donne depuis la prise (le serrage mesuré reste le même, même si le
-        modèle diffère un peu du bras réel), et la variation du serrage."""
-        q = self._ik_mains(centre_mains, ecart, self._q_ref)
+        les mains COMMANDÉES au serrage suivent, en translation, le milieu
+        des mains mesurées (leur avance dans l'objet, le serrage, reste la
+        même en cartésien, quelle que soit la posture), plus la variation
+        du serrage. Le lacet d'épaule et les poignets restent ceux du
+        serrage : la cinématique inverse ne résout que tangage, roulis et
+        coude, les autres angles pris dans sa graine."""
+        cg, cd = self.mesures.modele.mains({**self._fixes, **self._q_serre})
+        t = np.asarray(centre_mains, dtype=float) - self._c_serre
+        e = np.array([0.0, (ecart - self._ecart_mains) / 2.0, 0.0])
+        q, _ = resoudre(self.mesures.modele, cg + t + e, cd + t - e,
+                        # 0,5 mm près : l'écart des mains EST le serrage (3 mm, sur un
+                        # objet raide, feraient varier l'effort de plusieurs N·m).
+                        self._graine(self._q_serre), tol=0.0005)
         if q is None:
             return None
-        sortie = {j: self._q_serre[j] + q[j] - self._q_ref[j] for j in q}
-        for cote, j in self._ROULIS.items():
-            sortie[j] += self._FERME[cote] * (self._delta[cote] - self._delta_serre[cote])
+        sortie = dict(self._q_serre)
+        sortie.update(q)
+        for cote in self._ROULIS:
+            d = self._delta[cote] - self._delta_serre[cote]
+            if abs(d) > 1e-6:
+                sortie = self._avancer(sortie, cote, d, self._direction_serrage(sortie, cote))
+                if sortie is None:
+                    return None
         return sortie
 
     def _lever_de_quelques_cm(self) -> None:
         mg, md = self._mains_bassin()
-        centre = (mg + md) / 2.0
-        # La géométrie de la prise, mains mesurées, sert de référence.
-        self._q_ref = self._ik_mains(centre, self._ecart_mains, self._q)
-        if self._q_ref is None:
-            self._echouer("prise refusée — impossible de lever l'objet (hors de portée)")
-            return
+        # Milieu des mains mesurées au serrage : la référence des gestes avec l'objet.
+        centre = self._c_serre = (mg + md) / 2.0
         self._delta_serre = dict(self._delta)
         self._centre_porte = centre + np.array([0.0, 0.0, self.r.hauteur_test_m])
         q = self._q_mains(self._centre_porte, self._ecart_mains)
@@ -1098,8 +1402,9 @@ class ManipulationService(IService):
         self._ecrire_q(q)
         if not fini:
             return
-        confirme = self._verifier() and min(abs(tau[j] - self._tau0[j])
-                                            for j in self._ROULIS.values()) >= r.effort_min_nm
+        forces = self._mesurer_forces(tau)
+        confirme = (self._verifier() and forces is not None
+                    and min(forces.values()) >= r.force_min_n)
         if not confirme and self._horloge() - self._t0 - r.duree_levage_test_s \
                 < p.attente_confirmation_s:
             return
@@ -1195,10 +1500,10 @@ class ManipulationService(IService):
         # Serrer un peu plus, seulement avec un effort lisible et de la
         # marge sous la limite (2 N·m) ; sinon, ramener plus près suffit.
         tau, _ = self._efforts()
-        if tau is not None and all(abs(tau[j]) + 2.0 <= self._limite_effort(j)
-                                   for j in self._ROULIS.values()):
+        if tau is not None and all(abs(v) + 2.0 <= self._limite_effort(j)
+                                   for j, v in tau.items()):
             for cote in self._delta:
-                self._delta[cote] = min(self.r.serrage_max_rad, self._delta[cote] + 0.05)
+                self._delta[cote] = min(self._delta_max.get(cote, 0.0), self._delta[cote] + 0.002)
         self._ramener(plus_pres=0.02)
 
     def _pas_mesure(self, dt: float) -> bool:
@@ -1313,7 +1618,8 @@ class ManipulationService(IService):
                 self._regler_raideur(False)              # objet déposé : gains normaux
                 # Retour progressif à la posture de port (jamais un saut).
                 self._q_de = dict(self._q)
-                self._q_vers = posture_bras(p.roulis_ouvert, p.tangage_port, p.coude)
+                self._q_vers = {**self._libres0,
+                                **posture_bras(p.roulis_ouvert, p.tangage_port, p.coude)}
                 self._aller(Etat.LACHER)
 
     def _ouvrir(self) -> None:
@@ -1403,6 +1709,13 @@ class ManipulationService(IService):
                 self.stats["refus"] += 1
                 return ServiceResult(ok=False, reason=f"serrage refusé — {raison}")
             trop = self._effort_excessif(tau)
+            angles = self._angles_mesures()
+            if not trop and angles is not None:
+                g = self._gravite_bassin()
+                for cote, nom in (("left", "G"), ("right", "D")):
+                    f = self._force_main(cote, tau, angles, g, depuis_fermeture=False)
+                    if f is not None and float(np.linalg.norm(f)) > self.r.force_deja_n:
+                        trop = f"main {nom} poussée à {float(np.linalg.norm(f)):.0f} N"
             if trop:
                 self.stats["refus"] += 1
                 return ServiceResult(ok=False, reason=f"serrage refusé — bras déjà en effort "
@@ -1530,7 +1843,7 @@ class ManipulationService(IService):
         # bougé seuls en prise mesurée) ; posture_bras est linéaire, donc en
         # boucle ouverte c'est exactement le geste d'avant.
         self._q_de = dict(self._q)
-        self._q_vers = posture_bras(*self._lacher_vers, self.p.coude)
+        self._q_vers = {**self._libres0, **posture_bras(*self._lacher_vers, self.p.coude)}
         self._init_mesure()
         self._regler_raideur(False)
         self._aller(Etat.LACHER)
@@ -1550,6 +1863,7 @@ class ManipulationService(IService):
         self.objet, self._franchi, self.raison = None, None, ""
         self._roulis_courant, self._tangage_courant = self.p.roulis_ouvert, self.p.tangage_port
         self._q = posture_bras(self.p.roulis_ouvert, self.p.tangage_port, self.p.coude)
+        self._libres0 = {}
         self._tangage_ouverture = self.p.tangage_port
         self._init_mesure()
         self._regler_raideur(False)
@@ -1597,6 +1911,11 @@ class ManipulationService(IService):
             q, fini = self._interp_q(p.duree_ouverture_s)
             self._ecrire_q(q)
             if fini:
+                # Lacet d'épaule et poignets revenus à leur consigne d'avant :
+                # la prise suivante les relira mesurés.
+                for j in self._libres0:
+                    self._q.pop(j, None)
+                self._libres0 = {}
                 self.etat = Etat.LIBRE
         elif self.etat is Etat.PRESAISIE:
             r, fini = self._interp(p.roulis_ouvert, p.roulis_presaisie, p.duree_presaisie_s)

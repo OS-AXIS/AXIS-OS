@@ -74,7 +74,7 @@ import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Deque, Optional, Sequence
+from typing import Deque, Dict, Optional, Sequence
 from urllib.parse import urlsplit
 
 # Noms sous lesquels un navigateur joint ce serveur par le tunnel SSH
@@ -125,7 +125,7 @@ _PAGE = """<!doctype html>
   .vues { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px;
           align-items: start; }
   @media (max-width: 800px) { .vues { grid-template-columns: 1fr; } }
-  #robot:not([src]) { display: none; }
+  #robot:not([src]), #diagnostic:not([src]) { display: none; }
   pre { margin: 0; white-space: pre-wrap; font-size: 13px; background: #161c28;
         padding: 10px; border-radius: 6px; max-height: 75vh; overflow: auto; }
   button { background: #c8322d; color: #fff; border: 0; border-radius: 6px;
@@ -135,7 +135,9 @@ _PAGE = """<!doctype html>
 <header><h1>AXIS-OS — test en direct</h1><span id="etat">connexion…</span>
 <button id="stop">Arrêter proprement</button></header>
 <main><div class="vues"><img id="img" src="/flux" alt="image du test en direct">
-<img id="robot" alt="vue de la caméra de tête du robot"></div><pre id="journal"></pre></main>
+<div><img id="robot" alt="vue de la caméra de tête du robot">
+<img id="diagnostic" alt="vue de diagnostic, au-dessus des mains"></div></div>
+<pre id="journal"></pre></main>
 <script>
 const img = document.getElementById('img'), j = document.getElementById('journal'),
       etat = document.getElementById('etat'), stop = document.getElementById('stop');
@@ -168,17 +170,16 @@ stop.onclick = async () => {
   if (!confirm('Arrêter le test ? La vidéo et le bilan seront écrits.')) return;
   await fetch('/arreter', {method: 'POST', headers: {'X-AXIS-Arret': 'oui'}}); maj();
 };
-// Vue du robot (caméra de tête, ce que lit la perception), à côté de la
-// vue extérieure : images successives, absentes tant que le test n'en
-// envoie pas.
-const robot = document.getElementById('robot');
-function vueRobot() {
-  const i = new Image();
-  i.onload = () => { robot.src = i.src; setTimeout(vueRobot, 250); };
-  i.onerror = () => setTimeout(vueRobot, 2000);
-  i.src = '/vue_robot.jpg?' + Date.now();
+// Vue du robot (caméra de tête, ce que lit la perception) et vue de
+// diagnostic (au-dessus des mains), à côté de la vue extérieure : images
+// successives, absentes tant que le test n'en envoie pas.
+function vue(nom) {
+  const el = document.getElementById(nom), i = new Image();
+  i.onload = () => { el.src = i.src; setTimeout(() => vue(nom), 250); };
+  i.onerror = () => setTimeout(() => vue(nom), 2000);
+  i.src = '/vue_' + nom + '.jpg?' + Date.now();
 }
-vueRobot();
+vue('robot'); vue('diagnostic');
 setInterval(maj, 1000); maj();
 </script></body></html>
 """
@@ -239,9 +240,10 @@ class SuiviDirect:
         # Dernière image encodée en JPEG, et condition qui réveille les
         # flux MJPEG à chaque nouvelle image (_image_n en est le numéro).
         self._jpeg: Optional[bytes] = None
-        # Dernière image de la vue du robot (image_robot), en JPEG.
-        self._jpeg_robot: Optional[bytes] = None
-        self._t_image_robot = 0.0
+        # Dernière image de chaque vue (image_vue : « robot », « diagnostic »),
+        # en JPEG, et l'instant de sa dernière mise à jour.
+        self._jpeg_vues: Dict[str, bytes] = {}
+        self._t_vues: Dict[str, float] = {}
         self._nouvelle = threading.Condition()
         self.arret_demande = False
         self._serveur: Optional[ThreadingHTTPServer] = None
@@ -323,7 +325,8 @@ class SuiviDirect:
                 """Routes : / ou /index.html (page), /etat (résumé et
                 journal au format JSON, un format texte de données
                 structurées), /image.jpg (dernière image), /vue_robot.jpg
-                (dernière vue de la caméra de tête), /tete.jpg et
+                et /vue_diagnostic.jpg (vues de la tête et au-dessus des
+                mains), /tete.jpg et
                 /tete_ok.jpg (vues de la tête du robot), /flux (flux
                 MJPEG). Toute autre adresse reçoit 404 (introuvable)."""
                 if not self._autorise():
@@ -339,8 +342,8 @@ class SuiviDirect:
                         self._envoyer(200, j, "image/jpeg")
                     else:
                         self._envoyer(404, b"", "text/plain")
-                elif self.path.startswith("/vue_robot.jpg"):
-                    j = suivi._jpeg_robot
+                elif self.path.split("?")[0] in ("/vue_robot.jpg", "/vue_diagnostic.jpg"):
+                    j = suivi._jpeg_vues.get(self.path.split("?")[0][5:-4])
                     if j is not None:
                         self._envoyer(200, j, "image/jpeg")
                     else:
@@ -487,16 +490,20 @@ class SuiviDirect:
             self._image_n += 1
             self._nouvelle.notify_all()      # réveille les flux en attente
 
-    def image_robot(self, img_pil) -> None:
-        """Reçoit la vue de la caméra de tête du robot (objet PIL), servie
-        par /vue_robot.jpg ; même cadence maximale que image()."""
+    def image_vue(self, nom: str, img_pil) -> None:
+        """Reçoit une vue (objet PIL) : « robot » (caméra de tête), servie par
+        /vue_robot.jpg, ou « diagnostic » (au-dessus des mains), par
+        /vue_diagnostic.jpg ; même cadence maximale que image()."""
         t = time.monotonic()
-        if t - self._t_image_robot < self._periode_image:
+        if t - self._t_vues.get(nom, 0.0) < self._periode_image:
             return
-        self._t_image_robot = t
+        self._t_vues[nom] = t
         tampon = io.BytesIO()
         img_pil.convert("RGB").save(tampon, "JPEG", quality=75)
-        self._jpeg_robot = tampon.getvalue()
+        self._jpeg_vues[nom] = tampon.getvalue()
+
+    def image_robot(self, img_pil) -> None:
+        self.image_vue("robot", img_pil)
 
     def etat(self) -> dict:
         """Instantané servi par /etat : résumé, journal, numéro de la
