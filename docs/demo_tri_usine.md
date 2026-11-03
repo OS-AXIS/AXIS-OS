@@ -374,6 +374,103 @@ Ce qui change :
 bruit au repos (~0,85 N attendus, plus si le bassin bouge) ; la force estimée
 contre le contact réel du juge ; le lacet réel du carton à chaque phase.
 
+## Perception du carton : masque, nuage de points, boîte orientée (2026-11-03)
+
+Constat (PR 16) : mains 2,5 à 5 cm trop en avant du milieu des faces. Le
+centre perçu était le point moyen de la face avant, pris dans le cadre
+d'OWL-ViT qui déborde sur la table, le fond et les mains : pas le centre du
+carton.
+
+L'OS ne lit que les signaux du vrai G1 à mains caoutchouc : image et
+profondeur de la caméra de tête, dont la pose vient de son **montage** sur
+le bassin (connu, comme dans l'URDF) et de la pose du bassin (localisation,
+centrale inertielle), et points du MID-360. Aucun capteur ajouté. Le banc
+T1 ne met plus dans l'arbre des repères la pose de la caméra lue dans la
+scène : il la compare une fois à celle de l'OS (« montage de la caméra de
+tête : pose de l'OS à X cm et Y° de celle de la scène »).
+
+La chaîne (`axis_os/services/perception/boite.py`, `sam2_segmenteur.py`,
+la façade de l'app de tri) :
+1. **Masque** du carton dans le cadre du détecteur : SAM 2.1 tiny (Meta).
+   Sans lui (modèle absent ou en échec), les points du cadre entier.
+2. **Nuage** : profondeur des pixels du masque, repère monde.
+3. **Table** : plans horizontaux par RANSAC à un point (la verticale est
+   connue) ; la table est le plus haut plan au moins une demi-hauteur de
+   carton sous son dessus. Seuls les points au-dessus restent.
+4. **Boîte orientée** : hauteur par le dessus ; lacet et centre par le
+   rectangle d'aire minimale du dessus vu d'en haut ; pour la face cachée,
+   les dimensions connues de l'app (centre = bord avant + profondeur/2 si le
+   dessus n'est pas vu en entier).
+5. **Fusion** des images de l'approche (3 s, 6 images au plus ; remise à
+   zéro si le carton a bougé de 15 cm), plus les points du MID-360 près du
+   carton.
+6. **Résidu** (écart quadratique moyen des points à la surface de la boîte)
+   et couverture du dessus au journal (« carton rouge vu : centre (…), lacet
+   …, résidu …, couverture … ») ; au-delà de 1,5 cm, ou sous 60 % de
+   couverture, « prise refusée — carton mal vu », jamais deviné.
+7. **Recalage au toucher** : au contact des deux mains, avant de serrer, le
+   milieu de leurs faces mesurées recale le centre le long de la normale
+   (« recalage au toucher : carton à +2,0 cm de la perception », au journal) ;
+   au-delà de 3 cm, prise refusée. Le centre recalé devient celui du plan de
+   prise (dépose, journal, vue du robot) ; le levage et le transport suivent
+   déjà les mains mesurées. Les bornes du serrage restent celles de la
+   fermeture (celle de la seconde main suit déjà la face touchée par la
+   première). Le lacet n'est pas observable par deux mains
+   plates à la même profondeur : la largeur mesurée en borne l'écart (au
+   journal). La profondeur ne l'est pas non plus : elle reste celle de la
+   perception.
+
+Mesuré sur des images de synthèse (lancer de rayons depuis la caméra de tête
+de T1, carton pris à 0,34 m, approche de 1,20 à 0,85 m ;
+`test/test_perception_boite.py`) :
+
+| Cas | Centre | Lacet |
+|---|---|---|
+| Tourné de 0, 5, 10, 15 et −8° | 0,32 cm au plus | 0,0° |
+| 34 % caché par les mains | 0,31 cm | 0,0° |
+| Profondeur bruitée (0,5 % de la distance) | 0,59 cm | 0,09° |
+| Sans masque, cadre débordant sur les mains | résidu 72 cm : refusé | — |
+
+**Détecteur** : OWL-ViT reste celui par défaut (validé, seuil 0,06) ;
+`--detecteur owlv2` prend OWLv2 (seuil 0,10 par défaut, à régler). Pour
+garder le meilleur des deux : lancer T1 avec `--images-perception DOSSIER`
+(une image par seconde de recherche, avec la vérité de la simulation),
+puis, dans le conteneur :
+`/isaac-sim/python.sh /isaac-sim/axis_os/banc_perception.py DOSSIER`. Par
+détecteur et par seuil : cartons vus, fausses détections, IoU moyen ; au
+seuil de travail, l'erreur de la boîte ajustée avec le masque et avec le
+cadre seul ; puis un verdict.
+
+**Vue du robot** : masque (teinte de la couleur du carton), points retenus,
+bord du plan de la table, boîte ajustée (pleine, avec son résidu), boîte
+recalée au toucher (vert) ; la vérité en rose et pointillés.
+
+**Licences et versions** (vérifiées sur Hugging Face et PyPI ; rien
+d'AGPL, rien de non commercial) :
+
+| Brique | Licence | Version épinglée |
+|---|---|---|
+| OWL-ViT `google/owlvit-base-patch32` (poids) | Apache-2.0 | commit `85fa9bec488a03a73b7f29206b1550551d0a7556` |
+| OWLv2 `google/owlv2-base-patch16-ensemble` (poids) | Apache-2.0 | commit `cfd3195ba4ea9592eec887ded089f4c08eff231d` |
+| SAM 2.1 `facebook/sam2.1-hiera-tiny` (poids) | Apache-2.0 | commit `de431c4043854a71d8101e17995dfe596bf101a5` |
+| transformers (code d'OWL-ViT, OWLv2, SAM 2.1) | Apache-2.0 | 5.17.0 |
+| numpy (RANSAC, rectangle minimal, boîte) | BSD-3-Clause | 2.5.3 (requirements-ci.txt), déjà une dépendance |
+| Pinocchio (test de référence de la cinématique, PR A) | BSD-2-Clause | 4.1.0, jamais une dépendance de l'OS |
+
+Poids en safetensors seulement, révision refusée si elle n'est pas un
+commit ; `installer.sh` les pré-télécharge aux mêmes révisions
+(`test/test_deploiement.py` le vérifie). Aucune dépendance nouvelle. Écartés :
+Open3D (MIT), dont la roue aarch64 n'existe qu'en manylinux_2_35 (0.20,
+JetPack 6) ou pour Python 3.11 au plus (0.18), d'où RANSAC et rectangle
+minimal en numpy ; MobileSAM (MIT), qui demande son propre paquet quand
+SAM 2.1 est déjà dans transformers ; et, d'office, Ultralytics (AGPL-3.0),
+FoundationPose (licence NVIDIA non commerciale) et cuRobo.
+
+À vérifier au premier essai GPU : la ligne « montage de la caméra de tête »
+(attendu sous 0,5 cm et 0,5°) ; « [sam2] … chargé » ; au journal, « carton
+… vu » (résidu, couverture) puis « recalage au toucher » à chaque prise ; la
+comparaison des deux détecteurs sur les images enregistrées.
+
 ## Budget GPU
 
 L'essentiel du développement se fait **sans rendu**, bien plus vite. Le

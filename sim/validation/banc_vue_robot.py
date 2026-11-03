@@ -3,11 +3,12 @@ Banc Isaac Sim T1 : la vue du robot, filmée par la caméra de tête (celle que
 lit la perception), avec par-dessus ce que l'OS croit. Lecture seule : rien
 ici n'agit sur ses décisions.
 
-Dessiné depuis l'état de l'OS : cadres des détections (OWL-ViT, couleur et
-score), points de la face avant retenus par la perception, contour 3D du
-carton estimé et centre visé, cibles des mains (ouverture, contact, borne de
-fermeture) reliées à la main mesurée, flèche de la force estimée à chaque
-main, phase et contact estimé par main. Les mêmes calques servent à la vue
+Dessiné depuis l'état de l'OS : cadres des détections (OWL-ViT ou OWLv2,
+couleur et score), masque du carton (SAM 2.1, vue de la tête seulement),
+points retenus par la perception, plan de la table, boîte ajustée (pleine,
+avec son résidu), boîte recalée au toucher, centre visé, cibles des mains
+(ouverture, contact, borne de fermeture) reliées à la main mesurée, flèche
+de la force estimée à chaque main, phase et contact estimé par main. Les mêmes calques servent à la vue
 de diagnostic (caméra de simulation au-dessus des mains).
 En pointillé et d'une autre couleur, légendés « vérité simulation » : le
 contour RÉEL du carton et le contact réel du juge (banc_prise.JugeContacts).
@@ -28,6 +29,7 @@ COULEURS = {"rouge": (230, 60, 50), "bleu": (60, 130, 240), "vert": (60, 190, 90
 OS = (255, 220, 60)              # ce que l'OS estime
 VERITE = (255, 80, 220)          # vérité de la simulation (pointillés)
 MAIN = (90, 230, 255)
+RECALEE = (120, 255, 140)        # boîte recalée au toucher
 ECHELLE_FORCE_M_N = 0.01          # flèche de force : 1 cm par newton
 ARETES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4),
           (0, 4), (1, 5), (2, 6), (3, 7)]
@@ -92,13 +94,32 @@ def _point(d, k, tf, p, couleur, r=4, plein=True):
 
 def dessiner(img, k, tf, couches: Dict, verite: bool = True):
     """Dessine `couches` (repère monde, voir banc T1) sur l'image PIL `img`
-    (modifiée et rendue).
+    (rendue : une nouvelle image si un calque est translucide).
 
-    couches : detections [(bbox, couleur, score)], faces [N×3],
-    boite (8×3), centre, cibles {nom: (g, d)}, mains (g, d), phase,
-    contacts {"left"/"right": bool} ; verite : {"boite": 8×3,
-    "contacts": {"left"/"right": force en N ou None}}."""
-    from PIL import ImageDraw
+    couches : detections [(bbox, couleur, score)], masques [(H×W
+    booléen, couleur)] (pixels de cette caméra-ci), faces [N×3] (points
+    retenus), table (4×3, contour du plan), boite (8×3, pleine),
+    residu (m), boite_recalee (8×3), centre, cibles {nom: (g, d)},
+    mains (g, d), phase, contacts {"left"/"right": bool} ; verite :
+    {"boite": 8×3, "contacts": {"left"/"right": force en N ou None}}."""
+    from PIL import Image, ImageDraw
+
+    from axis_os.services.perception.boite import _enveloppe
+    masques = [(m, c) for m, c in couches.get("masques", ()) if m is not None
+               and np.shape(m) == (img.height, img.width)]
+    if masques or couches.get("boite") is not None:
+        # Calques translucides : masque teinté, boîte pleine.
+        voile = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        for m, couleur in masques:
+            teinte = np.zeros((img.height, img.width, 4), dtype=np.uint8)
+            teinte[np.asarray(m, dtype=bool)] = (*COULEURS.get(couleur, OS), 90)
+            voile = Image.alpha_composite(voile, Image.fromarray(teinte, "RGBA"))
+        if couches.get("boite") is not None:
+            uv, ok = projeter(couches["boite"], k, tf)
+            if ok.all():
+                dv = ImageDraw.Draw(voile)
+                dv.polygon([tuple(map(float, q)) for q in _enveloppe(uv)], fill=(*OS, 70))
+        img = Image.alpha_composite(img.convert("RGBA"), voile).convert("RGB")
 
     from axis_os.hal.drivers.isaac_sim.video import _police
     f = _police(13)                      # une police qui dessine les accents
@@ -112,8 +133,21 @@ def dessiner(img, k, tf, couches: Dict, verite: bool = True):
         uv, ok = projeter(pts, k, tf)
         for x, y in uv[ok][::3]:
             d.point((float(x), float(y)), fill=OS)
+    if couches.get("table") is not None:
+        uv, ok = projeter(couches["table"], k, tf)
+        if ok.all():
+            for i in range(len(uv)):
+                _trait(d, uv[i], uv[(i + 1) % len(uv)], OS, 1)
+            d.text(tuple(uv[0] + 4), "table", fill=OS, font=f)
     if couches.get("boite") is not None:
         _boite(d, k, tf, couches["boite"], OS)
+        if couches.get("residu") is not None:
+            uv, ok = projeter(couches["boite"], k, tf)
+            if ok[7]:
+                d.text((uv[7][0] + 4, uv[7][1] - 16), f"résidu {100 * couches['residu']:.1f} cm",
+                       fill=OS, font=f)
+    if couches.get("boite_recalee") is not None:
+        _boite(d, k, tf, couches["boite_recalee"], RECALEE)
     if couches.get("centre") is not None:
         _point(d, k, tf, couches["centre"], OS, 5, plein=False)
     mains = couches.get("mains")
