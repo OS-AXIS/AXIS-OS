@@ -246,6 +246,8 @@ class LocomotionService(IService):
         self._gardien = gardien
         self._zones = zones
         self._thermique = thermique
+        # Motif d'interdiction de toute marche (verrouiller()), ou None.
+        self.verrou: Optional[str] = None
         self.dernier_verdict = None
         self.dernier_verdict_zones = None
         # Consigne en cours et instant de sa réception (None : aucune).
@@ -344,6 +346,8 @@ class LocomotionService(IService):
         if self.state is not LocomotionState.RUNNING:
             return ServiceResult(ok=False,
                                  reason=f"service {self.state.name}")
+        if self.verrou and not (vx == 0.0 and vy == 0.0 and wz == 0.0):
+            return ServiceResult(ok=False, reason=f"marche interdite : {self.verrou}")
         # Une consigne non finie est refusée, et le robot s'arrête en
         # équilibre. Pourquoi : un audit de sécurité (octobre 2026) a montré
         # que le bornage ci-dessous, max(-m, min(m, v)), transforme NaN
@@ -378,6 +382,17 @@ class LocomotionService(IService):
                 reason=f"consigne bornée à ({c.vx}, {c.vy}, {c.wz}) — "
                        f"au-delà, l'adaptateur sort de son domaine")
         return ServiceResult(ok=True, value=c)
+
+    def verrouiller(self, motif: Optional[str]) -> None:
+        """Interdit toute marche (`motif`), ou la permet de nouveau (None).
+        Verrouillé, le robot s'arrête en équilibre, et aucune consigne reçue
+        ensuite ne le fait repartir, d'où qu'elle vienne. Cas visé : batterie
+        critique (EnergyService). Constaté : le dernier walk() d'une app,
+        reçu entre l'arrêt et la mort de l'app, faisait encore avancer le
+        robot de ~2 cm jusqu'au pas suivant du service d'énergie."""
+        self.verrou = motif
+        if motif:
+            self._twist, self._twist_t = Twist(), self._clock()
 
     def halt(self) -> ServiceResult:
         """Arrêt en équilibre : vitesse nulle, l'adaptateur continue de
@@ -439,6 +454,8 @@ class LocomotionService(IService):
                                  "sécurité")
 
         twist = self._effective_twist()
+        if self.verrou:
+            twist = Twist()
         if self._gardien is not None:
             v = self._gardien.evaluer(self._clock())
             self.dernier_verdict = v

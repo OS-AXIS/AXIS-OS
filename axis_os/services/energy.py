@@ -111,6 +111,12 @@ class EnergyService:
             centre.from_os(titre, message, priorite)
 
     def _passer(self, etat: str) -> None:
+        # Batterie critique : toute marche est interdite au niveau de la
+        # locomotion, à chacun de ses pas, tant que l'état dure.
+        if etat == CRITICAL:
+            self._loco.verrouiller("batterie critique")
+        elif self.state == CRITICAL:
+            self._loco.verrouiller(None)
         self.state = etat
 
     def _arreter_suivi(self, raison: str) -> None:
