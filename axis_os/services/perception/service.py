@@ -55,6 +55,7 @@ from axis_os.hal.core.types import (
     CameraFrame, CameraIntrinsics, HALStatus, Vector3,
 )
 from axis_os.services.base import IService, ServiceHealth, ServiceResult
+from axis_os.services.perception.boite import points_du_masque
 from axis_os.store.sdk.manifest import Capability
 
 
@@ -168,6 +169,7 @@ class PerceptionService(IService):
         detector: Optional[IObjectDetector] = None,
         max_frame_age_s: float = 1.0,
         depth_camera: Optional[ICamera] = None,
+        segmenteur=None,
     ):
         """
         camera : caméra couleur principale (interface ICamera du HAL).
@@ -190,6 +192,10 @@ class PerceptionService(IService):
             l'alignement profondeur/couleur ; sur un montage où les images
             ne sont pas alignées, les positions seraient fausses sans
             qu'aucune vérification ne s'en aperçoive.
+        segmenteur : objet qui rend le masque d'un objet dans son cadre
+            (masque(image, bbox) -> tableau booléen, ou None ; par exemple
+            Sam2Segmenteur). Sans lui, les points 3D d'une détection sont
+            ceux de son cadre entier (table, fond et mains compris).
         """
         self._camera = camera
         self._depth_camera = depth_camera
@@ -203,6 +209,12 @@ class PerceptionService(IService):
         # dernière recherche ({bbox: tableau N×3, repère de sortie}) : lus
         # par les vues de diagnostic, jamais par une décision.
         self.dernieres_faces: dict = {}
+        # Points 3D de chaque détection (masque, ou cadre sans masque ;
+        # repère de sortie) et masque, par cadre, de la dernière recherche :
+        # pour qui ajuste une boîte (perception/boite.py) et pour les vues.
+        self.derniers_points: dict = {}
+        self.derniers_masques: dict = {}
+        self._segmenteur = segmenteur
         self._faces_ns: Optional[int] = None
 
     @property
@@ -369,8 +381,8 @@ class PerceptionService(IService):
         depth = None
         if self._depth_camera is not None:
             depth = getattr(self._depth_camera, "capture_depth", lambda: None)()
-        located, warn = self._locate(detections, intrinsics, now, depth,
-                                     repere_sortie)
+        located, warn = self._locate(detections, intrinsics, now, depth, image=frame,
+                                     frame=repere_sortie)
         return ServiceResult(
             ok=True,
             value=sorted(located, key=lambda d: -d.confidence),
@@ -378,7 +390,7 @@ class PerceptionService(IService):
         )
 
     def _locate(self, detections, intrinsics: CameraIntrinsics,
-                now_ns: int, depth=None, frame: str = FRAME_BASE):
+                now_ns: int, depth=None, image=None, frame: str = FRAME_BASE):
         """Ajoute à chaque détection sa direction et, si une image de
         profondeur est fournie, sa position, dans le repère `frame`.
 
@@ -393,6 +405,8 @@ class PerceptionService(IService):
 
         out = []
         faces: dict = {}
+        points: dict = {}
+        masques: dict = {}
         for d in detections:
             x, y, w, h = d.bbox
             # Centre de la boîte : approximation assumée. Le centre
@@ -412,6 +426,13 @@ class PerceptionService(IService):
             # produit des deux donne directement le point, sans
             # trigonométrie.
             position = d.position_3d
+            if depth is not None:
+                masque = (self._segmenteur.masque(image, d.bbox)
+                          if self._segmenteur is not None else None)
+                rot, t = self._pose_camera(tf)
+                points[tuple(d.bbox)] = points_du_masque(depth, intrinsics, rot, t,
+                                                         masque=masque, bbox=d.bbox)
+                masques[tuple(d.bbox)] = masque
             if position is None and depth is not None:
                 retenus: list = []
                 position = self._point_de_face(depth, d.bbox, intrinsics, tf,
@@ -441,8 +462,21 @@ class PerceptionService(IService):
         # Plusieurs requêtes au même instant (PerceptionCouleur) : cumulées.
         if now_ns != self._faces_ns:
             self.dernieres_faces, self._faces_ns = {}, now_ns
+            self.derniers_points, self.derniers_masques = {}, {}
         self.dernieres_faces.update(faces)
+        self.derniers_points.update(points)
+        self.derniers_masques.update(masques)
         return out, warn
+
+    @staticmethod
+    def _pose_camera(tf):
+        """(rotation 3 × 3, translation) de la pose `tf` (repère optique ->
+        repère de sortie)."""
+        import numpy as np
+        o = tf.apply(Vector3(0.0, 0.0, 0.0))
+        rot = np.array([[c.x, c.y, c.z] for c in (tf.apply_direction(Vector3(*e))
+                                                   for e in np.eye(3))]).T
+        return rot, np.array([o.x, o.y, o.z])
 
     @staticmethod
     def _point_de_face(depth, bbox, intrinsics: CameraIntrinsics, tf, pas: int = 2,

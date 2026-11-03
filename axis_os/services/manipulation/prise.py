@@ -101,6 +101,10 @@ class ReglagesPrise:
     pas_serrage_max_m: float = 0.0005  # avance de la face commandée par pas, au plus
     pas_serrage_min_m: float = 0.0001
     duree_serrage_max_s: float = 6.0   # au-delà, on juge la force obtenue
+    # Recalage au toucher : les faces mesurées des deux mains au contact
+    # disent où est vraiment le carton, le long de sa normale ; au-delà de
+    # `recalage_max_m` de la perception, la prise est refusée.
+    recalage_max_m: float = 0.03
     # Plafond de couple de CHAQUE articulation du bras (valeur absolue).
     effort_max_nm: float = 10.0        # jamais au-delà
     part_couple_garde: float = 0.5     # ni au-delà de cette part du couple max du garde-fou

@@ -502,6 +502,7 @@ class ManipulationService(IService):
         self._hausse_roulis = {"left": 0.0, "right": 0.0}
         self._ecart_face0: Dict[str, float] = {}
         self._plafond: Dict[str, str] = {}       # main arrêtée par la limite de couple de…
+        self.recalage: Optional[dict] = None     # recalage au toucher (voir _recaler)
 
     def _vers_bassin(self, p_monde) -> np.ndarray:
         """Point du repère monde -> repère du bassin (x, y du robot ; z
@@ -670,7 +671,8 @@ class ManipulationService(IService):
         fermeture), mains mesurées (cinématique), contacts estimés."""
         v = {"phase": self.etat.name, "objet": self.objet, "plan": None, "cibles": {},
              "mains": None, "contacts": dict(self.contacts_estimes),
-             "forces": dict(self.forces), "serrage": dict(self.force_serrage)}
+             "forces": dict(self.forces), "serrage": dict(self.force_serrage),
+             "recalage": self.recalage}
         try:
             v["mains"] = self._mains_modele()
             plan = self._plan
@@ -1224,6 +1226,8 @@ class ManipulationService(IService):
                               f"de l'autre, l'objet attendu en ferait {attendu:.2f} : ce n'est "
                               f"pas lui")
                 return
+            if not self._recaler(faces_m):
+                return
             self._ecart_mains = ecart
             self._t_phase = None
             self._delta = {"left": 0.0, "right": 0.0}
@@ -1234,6 +1238,38 @@ class ManipulationService(IService):
         elif self._horloge() - self._t0 > 4.0:
             self._echouer("prise refusée — rien entre les mains : serrage dans le vide évité "
                           "(fermeture trop longue)")
+
+    def _recaler(self, faces_m: Tuple[float, float]) -> bool:
+        """Recalage au toucher, avant de serrer : les faces intérieures
+        MESURÉES des deux mains au contact sont les faces du carton. Le
+        centre du plan est déplacé à leur milieu, le long de la normale ; au-
+        delà de `recalage_max_m`, la prise est refusée (la perception le
+        voyait ailleurs). Le lacet n'est pas observable par deux mains plates
+        à la même profondeur : seule la largeur mesurée en borne l'écart
+        (|Δ| = arccos(largeur / écart des faces)), donné au journal."""
+        plan, r = self._plan, self.r
+        decalage = (faces_m[0] + faces_m[1]) / 2.0
+        ecart = faces_m[0] - faces_m[1]
+        d_lacet = math.degrees(math.acos(min(1.0, plan["largeur"] / ecart))) if ecart > 0 else 0.0
+        n = np.array([-math.sin(plan["lacet"]), math.cos(plan["lacet"]), 0.0])
+        avant = np.asarray(plan["centre"], dtype=float)
+        self.recalage = {"avant": avant, "apres": avant + decalage * n, "decalage_m": decalage,
+                         "largeur_mesuree_m": ecart, "ecart_lacet_max_deg": d_lacet}
+        self.stats["recalage_m"] = round(decalage, 4)
+        texte = (f"recalage au toucher : carton à {100 * decalage:+.1f} cm de la perception le "
+                 f"long de sa normale, largeur mesurée {ecart:.3f} m (lacet à au plus "
+                 f"{d_lacet:.0f}° de la perception)")
+        if abs(decalage) > r.recalage_max_m:
+            self._echouer(f"prise refusée — {texte} : au-delà de {100 * r.recalage_max_m:.0f} cm, "
+                          f"la perception le voyait ailleurs")
+            return False
+        self._noter(texte)
+        plan["centre"] = avant + decalage * n
+        # Les faces se comptent désormais depuis le centre recalé ; les bornes
+        # du serrage, elles, restent où la fermeture les a mises (celle de la
+        # seconde main suit déjà la face touchée par la première).
+        self._attendue = {c: v - decalage for c, v in self._attendue.items()}
+        return True
 
     def _pas_serrage_mesure(self, dt: float) -> None:
         """Serrage : la face COMMANDÉE de chaque main avance vers l'objet

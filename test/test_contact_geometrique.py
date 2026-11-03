@@ -156,5 +156,30 @@ time.sleep(0.1)
 check("Prise interrompue (reinitialiser) : gains normaux", not r.raideur_active)
 r.__exit__(None, None, None)
 
+section("6. Recalage au toucher : carton 2 cm à côté de sa perception")
+journal = []
+r = robot(y=0.02)
+m = r.manipulation
+m._journal = journal.append
+etats = prendre(r, CARTON)
+rec = m.recalage or {}
+check("Au contact des deux mains, avant de serrer : « recalage au toucher : carton à +2.0 cm "
+      "de la perception » au journal", any("recalage au toucher : carton à +2.0 cm" in l
+                                            for l in journal), str(journal))
+check("… le centre de la prise suit, 2 mm près (milieu des faces mesurées), et la prise tient",
+      rec and abs(rec["decalage_m"] - 0.02) <= 0.002
+      and abs(float(m._plan["centre"][1]) - float(rec["avant"][1]) - 0.02) <= 0.002
+      and m.etat is Etat.TENU, f"{rec} {m.raison}")
+r.__exit__(None, None, None)
+r = robot(y=0.02)
+etats = prendre(r, CARTON, ReglagesPrise(recalage_max_m=0.01))
+m = r.manipulation
+check("Au-delà de recalage_max_m (1 cm ici, 3 par défaut) : « prise refusée — recalage au "
+      "toucher … la perception le voyait ailleurs », sans serrer", m.etat is Etat.ECHEC
+      and "prise refusée — recalage au toucher" in m.raison and "voyait ailleurs" in m.raison
+      and Etat.SERRAGE not in etats, f"{m.raison} {etats}")
+check("… gains des poignets rendus", not r.raideur_active, str(r.changements_raideur))
+r.__exit__(None, None, None)
+
 print(f"\n{'=' * 66}\n  {'TOUT PASSE' if FAIL == 0 else f'{FAIL} ÉCHEC(S)'}\n{'=' * 66}")
 sys.exit(1 if FAIL else 0)

@@ -49,10 +49,13 @@ import math
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from axis_os.apps.tri_colis.logique import Colis
 from axis_os.hal.core.frames import FRAME_WORLD
 from axis_os.services.manipulation.service import Etat, Objet
 from axis_os.services.navigation.service import EtatNavigation, Pose2D
+from axis_os.services.perception.boite import FusionCarton, ajuster_boite
 
 
 def _angle(a: float) -> float:
@@ -84,6 +87,14 @@ class ConfigFacade:
     # points les plus proches). Pour obtenir le centre, on ajoute une
     # demi-profondeur dans la direction du regard (le cap de prise).
     position_face_avant: bool = True
+    # Boîte orientée (perception/boite.py) ajustée aux points 3D de chaque
+    # détection, fusionnés image après image pendant l'approche : centre et
+    # lacet. Au-delà de `residu_max_m`, ou dessus vu sur moins de
+    # `couverture_min`, le carton est « mal vu » et n'est pas pris (jamais
+    # deviné). Un nouveau carton : à plus de `fusion_reset_m` du précédent.
+    residu_max_m: float = 0.015
+    couverture_min: float = 0.6
+    fusion_reset_m: float = 0.15
     # Centre des mains devant la base. En prise mesurée (bras avec
     # mesures d'effort), c'est la distance minimale : le service de
     # manipulation l'allonge s'il le faut pour que les avant-bras passent
@@ -183,7 +194,8 @@ class FacadeServices:
                  source_pose: Callable[[], Pose2D], horloge: Callable[[], float],
                  cap_prise: float, journal: Callable[[str], None] = print,
                  cfg: ConfigFacade = ConfigFacade(),
-                 postes_depose: Optional[Dict[str, PosteDepose]] = None):
+                 postes_depose: Optional[Dict[str, PosteDepose]] = None,
+                 points_lidar: Optional[Callable[[], object]] = None):
         """
         source_pose   : rend la pose courante de la base (x, y, cap) dans
                         la carte.
@@ -193,6 +205,8 @@ class FacadeServices:
         journal       : reçoit les messages destinés à l'opérateur.
         postes_depose : postes équipés d'un plateau. Aux autres, le carton
                         est relâché à hauteur de port.
+        points_lidar  : rend les points du LiDAR (N × 3, repère monde), ou
+                        None : ceux du carton s'ajoutent à ceux de la caméra.
         """
         self.nav, self.loco, self.manip = navigation, locomotion, manipulation
         self.percep = perception
@@ -201,6 +215,10 @@ class FacadeServices:
         self._journal = journal
         self.cfg = cfg
         self.postes_depose = dict(postes_depose or {})
+        self._points_lidar = points_lidar
+        # Cartons suivis : couleur, nuages fusionnés, dernière boîte ajustée.
+        self._suivis: List[dict] = []
+        self.derniere_boite: Dict[str, object] = {}
         # Phase courante de la façade :
         #   NAV             navigation simple vers un poste ;
         #   NAV_ACCOSTAGE   navigation vers une pré-pose, suivie d'un
@@ -287,12 +305,68 @@ class FacadeServices:
                 self.stats["detections_filtrees"] += 1
                 continue
             c = self._centre(p.x, p.y, p.z)
+            lacet, mal_vu, vu = 0.0, "", ""
+            b = self._boite(couleur, d, c)
+            if b is not None:
+                c, lacet, mal_vu, vu = b
             # Les détections arrivent triées par confiance : de deux
             # détections trop proches, on garde la première.
             if any(math.dist(c, k.position) < self.cfg.fusion_m for k in colis):
                 continue
-            colis.append(Colis(couleur, c, d.confidence))
+            colis.append(Colis(couleur, c, d.confidence, lacet, mal_vu, vu))
         return colis
+
+    def _boite(self, couleur: str, d, c_face):
+        """Boîte orientée du carton de la détection `d` : ses points 3D
+        (ceux que la perception a gardés, masque compris), fusionnés avec les
+        images précédentes du même carton et les points du LiDAR proches,
+        puis ajustés (perception/boite.py). Rend (centre, lacet, raison s'il
+        est mal vu, résumé), ou None sans points (on garde alors le centre
+        d'après la face avant)."""
+        service = getattr(self.percep, "perception", self.percep)
+        pts = getattr(service, "derniers_points", {}).get(tuple(d.bbox))
+        if pts is None or len(pts) < 30:
+            return None
+        suivi = next((s for s in self._suivis if s["couleur"] == couleur and math.dist(
+            s["centre"][:2], c_face[:2]) < self.cfg.fusion_reset_m), None)
+        if suivi is None:
+            suivi = {"couleur": couleur, "fusion": FusionCarton(), "centre": c_face}
+            self._suivis = [s for s in self._suivis if s["couleur"] != couleur][-4:] + [suivi]
+        suivi["fusion"].ajouter(self._horloge(), pts)
+        nuage = suivi["fusion"].points()
+        if self._points_lidar is not None:
+            try:
+                lid = self._points_lidar()
+            except Exception:              # noqa: BLE001 — capteur en panne : sans lui
+                lid = None
+            if lid is not None and len(lid):
+                lid = np.asarray(lid, dtype=float)
+                r = math.hypot(self.cfg.largeur, self.cfg.profondeur) / 2 + 0.02
+                pres = (np.hypot(lid[:, 0] - suivi["centre"][0], lid[:, 1] - suivi["centre"][1]) < r) \
+                    & (lid[:, 2] > suivi["centre"][2] - self.cfg.hauteur / 2 - 0.05) \
+                    & (lid[:, 2] < suivi["centre"][2] + self.cfg.hauteur / 2 + 0.03)
+                if pres.any():
+                    nuage = np.concatenate([nuage, lid[pres]])
+        p = self._pose()
+        vers = (p.x - c_face[0], p.y - c_face[1], 0.0)
+        b = ajuster_boite(nuage, (self.cfg.largeur, self.cfg.profondeur, self.cfg.hauteur),
+                          np.asarray(vers, dtype=float))
+        if b is None:
+            return None
+        suivi["centre"] = tuple(float(v) for v in b.centre)
+        self.derniere_boite[couleur] = b
+        self.stats["boites"] = self.stats.get("boites", 0) + 1
+        mal = ""
+        if b.residu_m > self.cfg.residu_max_m:
+            mal = (f"résidu de l'ajustement {100 * b.residu_m:.1f} cm (au plus "
+                   f"{100 * self.cfg.residu_max_m:.1f})")
+        elif b.couverture < self.cfg.couverture_min:
+            mal = (f"dessus vu à {100 * b.couverture:.0f} % (au moins "
+                   f"{100 * self.cfg.couverture_min:.0f})")
+        vu = (f"centre ({b.centre[0]:.3f}, {b.centre[1]:.3f}, {b.centre[2]:.3f}), lacet "
+              f"{math.degrees(b.lacet):+.1f}°, résidu {100 * b.residu_m:.2f} cm, dessus vu à "
+              f"{100 * b.couverture:.0f} %, {suivi['fusion'].images} image(s)")
+        return suivi["centre"], b.lacet, mal, vu
 
     # ---- navigation et accostage -----------------------------------------
     #
@@ -550,8 +624,11 @@ class FacadeServices:
             q = getattr(self, nom)
             if q is not None:
                 setattr(self, nom, Pose2D(q.x + dx, q.y + dy, q.cap))
-        self._colis_vise = Colis(v.couleur, (v.position[0] + dx, v.position[1] + dy,
-                                             v.position[2]), v.confiance)
+        # Le carton, lui, prend la boîte revue (fusionnée), centre et lacet ;
+        # sans boîte, la seule correction latérale.
+        self._colis_vise = (Colis(v.couleur, n.position, n.confiance, n.lacet, n.mal_vu, n.vu)
+                            if n.vu else Colis(v.couleur, (v.position[0] + dx, v.position[1] + dy,
+                                                           v.position[2]), v.confiance))
         self.stats["visees"] = self.stats.get("visees", 0) + 1
         self._journal(f"visée : colis {v.couleur} revu de face — correction latérale "
                       f"{100 * e:+.1f} cm")
@@ -644,8 +721,13 @@ class FacadeServices:
         if v is not None and v.couleur == colis.couleur \
                 and math.dist(v.position[:2], colis.position[:2]) < self.cfg.correction_visee_max_m:
             colis = v                    # position corrigée par la visée
+        if colis.vu:
+            self._journal(f"carton {colis.couleur} vu : {colis.vu}")
+        if colis.mal_vu:
+            self.stats["cartons_mal_vus"] = self.stats.get("cartons_mal_vus", 0) + 1
+            return False, f"prise refusée — carton mal vu : {colis.mal_vu}"
         r = self.manip.prendre(Objet(colis.position, self.cfg.largeur,
-                                     self.cfg.profondeur, self.cfg.hauteur))
+                                     self.cfg.profondeur, self.cfg.hauteur, lacet=colis.lacet))
         return r.ok, r.reason or ""
 
     def poser(self) -> Tuple[bool, str]:
