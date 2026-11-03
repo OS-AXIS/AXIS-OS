@@ -388,6 +388,30 @@ with SimulatedRobot(time_scale=ECHELLE, site_map=carte, battery_percent=9.0,
           f"{[(n.title, n.priority) for n in robot.notification_sink.delivered]}")
     energie.stop()
 
+# La course constatée (CI, 2026-10-29) : le dernier walk() d'une app, reçu
+# après l'arrêt critique, faisait encore avancer le robot (~2 cm) jusqu'au
+# pas suivant du service d'énergie. On la force : la consigne arrive juste
+# après le passage en état critique, sans autre pas du service d'énergie.
+with SimulatedRobot(time_scale=ECHELLE, site_map=carte, battery_percent=7.0) as robot:
+    rt = robot.make_runtime()
+    energie = EnergyService(rt, robot.navigation, robot.locomotion, robot.site_map,
+                            clock=robot.clock)
+    energie.tick()
+    x0 = robot.x
+    r = robot.locomotion.set_velocity(0.15, 0.0, 0.3)
+    time.sleep(0.6)
+    check("Batterie critique : une consigne de marche reçue ensuite est refusée, le robot "
+          "ne bouge plus d'un millimètre", energie.state == "critical" and not r.ok
+          and "batterie critique" in (r.reason or "") and abs(robot.x - x0) < 1e-3,
+          f"{energie.state} {r} dx={robot.x - x0:.4f}")
+    check("… l'arrêt en équilibre reste permis", robot.locomotion.halt().ok)
+    robot.x, robot.y = -2.4, 0.0                 # sur la station : en charge
+    time.sleep(0.3)
+    energie.tick()
+    check("Recharge (sortie de l'état critique) : la marche est de nouveau permise",
+          energie.state != "critical" and robot.locomotion.verrou is None
+          and robot.locomotion.set_velocity(0.1, 0.0, 0.0).ok, energie.state)
+
 with SimulatedRobot(time_scale=ECHELLE, battery_percent=15.0) as robot:
     rt = robot.make_runtime()
     energie = EnergyService(rt, robot.navigation, robot.locomotion, robot.site_map,

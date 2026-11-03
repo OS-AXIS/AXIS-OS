@@ -10,6 +10,20 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Sécurité : marche sous batterie critique, fin de suivi sous arrêt d'urgence
+
+Deux courses présentes sur `main`, vues en CI (intermittentes) :
+- **Batterie critique** : le dernier `walk()` d'une app, reçu entre l'arrêt
+  critique et la mort de l'app, faisait encore avancer le robot (~2 cm)
+  jusqu'au pas suivant du service d'énergie. `LocomotionService.verrouiller()`
+  interdit toute marche à chacun de ses pas (consigne non nulle refusée,
+  vitesse nulle appliquée), d'où qu'elle vienne ; `EnergyService` verrouille
+  à l'entrée en état critique et déverrouille à sa sortie (recharge).
+- **Suivi sous arrêt d'urgence** : l'arrêt d'urgence tue l'app, la fin de son
+  hook arrêtait le suivi avec « CANCELLED / fin du hook » avant que le suivi
+  ne voie l'arrêt d'urgence. `RobotContext._fermer()` donne maintenant le
+  motif de l'interruption (arrêt d'urgence d'abord) : ESTOP.
+
 ### Force estimée à la main, serrage en cartésien (constat GPU du 2026-10-30)
 
 Constat : contact vu, puis « serrage insuffisant (0,1 à 0,4 N·m) » : le
