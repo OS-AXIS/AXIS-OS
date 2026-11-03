@@ -84,6 +84,22 @@ class Journal:
         return next((p for p in self.pas if p["etat"] is etat), None)
 
 
+def releve_au_levage(robot):
+    """Relevé pris DANS le fil de la simulation, à l'instant où le levage
+    commence : force réelle (monde simulé) et estimée (OS) à chaque main. Un
+    relevé par sondage depuis le test peut manquer la phase (0,4 s) sur une
+    machine chargée (constaté en CI)."""
+    m, releve = robot.manipulation, {}
+    lever = m._lever_de_quelques_cm
+
+    def avec_releve():
+        releve.setdefault("force", dict(robot.forces_contact))
+        releve.setdefault("serrage", dict(m.force_serrage))
+        return lever()
+    m._lever_de_quelques_cm = avec_releve
+    return releve
+
+
 def prise(robot, objet, duree=15.0):
     j = Journal(robot)
     res = robot.manipulation.prendre(objet)
@@ -117,6 +133,7 @@ check("Plateau trop haut pour les bras : aucune distance, raison claire",
 section("2. Prise normale : placement, contact, serrage borné, levage, transport")
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
+    leve = releve_au_levage(robot)
     res, j = prise(robot, carton(0.30))
     m = robot.manipulation
     check("Prise réussie : TENU", res.ok and m.etat is Etat.TENU, m.raison)
@@ -134,10 +151,9 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
     check("Serrage en cartésien : les mains commandées gardent leur hauteur, à 2 mm près",
           hauteurs and max(hauteurs) - min(hauteurs) <= 0.002,
           f"{min(hauteurs or [0]):.4f} {max(hauteurs or [0]):.4f}")
-    leve = j.premier(Etat.LEVAGE)
     check("Le levage ne commence qu'une fois le serrage atteint : force réelle à chaque main "
           f"d'au moins {R.force_min_n:.0f} N, et l'estimée de l'OS à 1 N près",
-          leve is not None and min(leve["force"].values()) >= R.force_min_n
+          bool(leve) and min(leve["force"].values()) >= R.force_min_n
           and all(abs(leve["force"][c] - leve["serrage"][c]) <= 1.0 for c in leve["force"]),
           str(leve and (leve["force"], leve["serrage"])))
     limite = min(R.effort_max_nm, R.part_couple_garde * 25.0)
@@ -332,15 +348,16 @@ for raideur in (5e4, 2e5, 1e6):
     with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90),
                                                  raideur_n_m=raideur)],
                         time_scale=ECHELLE) as robot:
+        leve = releve_au_levage(robot)
         res, j = prise(robot, carton(0.30))
         serre = [abs(p["couples"][x]) for p in j.pas if p["etat"] in (Etat.SERRAGE, Etat.LEVAGE,
                                                                        Etat.RAMENER, Etat.TENU)
-                 for x in BRAS]
-        forces = [min(p["force"].values()) for p in j.pas if p["etat"] is Etat.LEVAGE]
-        check(f"Carton de {raideur:.0e} N/m : serrage arrivé à la force voulue ({min(forces):.1f} "
+                 for x in BRAS] or [0.0]
+        force = min(leve["force"].values()) if leve else 0.0
+        check(f"Carton de {raideur:.0e} N/m : serrage arrivé à la force voulue ({force:.1f} "
               f"N au moins) sans dépasser la limite ({max(serre):.1f} N·m au plus, limite 10)",
               robot.manipulation.etat is Etat.TENU and max(serre) <= 10.0
-              and min(forces) >= R.force_min_n, robot.manipulation.raison)
+              and force >= R.force_min_n, robot.manipulation.raison)
 
 section("7b. Objet tenu : jamais au-delà de la limite, même pour tenir ou corriger")
 LACET_G = "left_shoulder_yaw_joint"

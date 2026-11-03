@@ -126,16 +126,22 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
     m._journal = journal.append
     time.sleep(0.2)
     vu = {}
+    lever = m._lever_de_quelques_cm
 
-    def relever(r_, m_):
-        if m_.etat is Etat.LEVAGE and "levage" not in vu:
-            vu["levage"] = (dict(r_.forces_contact), dict(m_.force_serrage),
-                            dict(m_._q), {j: v for j, v in m_._libres0.items()})
-            etat = r_.raw_hal.get_full_state()
-            q = r_._angles_bras()
+    def relever():
+        # Pris DANS le fil de la simulation, à l'instant où le levage commence
+        # (un sondage depuis le test peut manquer la phase sur une machine
+        # chargée : constaté en CI).
+        if "levage" not in vu:
+            vu["levage"] = (dict(r.forces_contact), dict(m.force_serrage),
+                            dict(m._q), {j: v for j, v in m._libres0.items()})
+            etat = r.raw_hal.get_full_state()
+            q = r._angles_bras()
             vu["contact"] = {j: etat[j].torque - g for j, g in zip(
-                r_._BRAS[:5], r_.modele_bras.gauche.couples_gravite(q, r_._BRAS[:5]))}
-    prendre(r, pendant=relever)
+                r._BRAS[:5], r.modele_bras.gauche.couples_gravite(q, r._BRAS[:5]))}
+        return lever()
+    m._lever_de_quelques_cm = relever
+    prendre(r)
     check("Prise tenue", m.etat is Etat.TENU, m.raison)
     vraie, estimee, q_serre, libres0 = vu["levage"]
     check(f"Au levage : force réelle {vraie['left']:.1f} / {vraie['right']:.1f} N, estimée par "
