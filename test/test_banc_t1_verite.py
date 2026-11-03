@@ -182,13 +182,14 @@ lus = []
 for f in (RACINE / "axis_os").rglob("*.py"):
     t = f.read_text(encoding="utf-8")
     rel = f.relative_to(RACINE).as_posix()
-    if re.search(r"^\s*(from|import)\s+(banc_prise|banc_vue_robot)\b", t, re.M) \
+    if re.search(r"^\s*(from|import)\s+(banc_prise|banc_vue_robot|banc_perception)\b", t, re.M) \
             or re.search(r"ContactSensor|isaacsim\.sensors\.physics|omni\.isaac\.sensor", t):
         lus.append(rel)
     # Poses PhysX : réservées aux pilotes de simulation (HAL), jamais aux services.
     if "get_world_pose" in t and not rel.startswith("axis_os/hal/drivers/"):
         lus.append(rel)
-check("Aucun fichier d'axis_os/ n'importe le juge, la vue du robot ni un capteur de contact, "
+check("Aucun fichier d'axis_os/ n'importe le juge, la vue du robot, le banc de perception ni "
+      "un capteur de contact, "
       "aucun service ne lit une pose PhysX", not lus, str(lus))
 
 section("6. Vue du robot : projection et calques")
@@ -252,6 +253,27 @@ sans = dessiner(noir.copy(), K, TF, couches, verite=False)
 check("Réglage sans vérité : la vérité simulation (rose, pointillés) disparaît",
       int((np.asarray(sans) == (255, 80, 220)).all(axis=2).sum()) == 0
       and int((a == (255, 80, 220)).all(axis=2).sum()) > 0)
+
+masque = np.zeros((480, 640), dtype=bool)
+masque[100:140, 500:560] = True
+recalee = coins(cible + 0.05 * ROT[:, 0], 0.24, 0.20, 0.20, 0.0)
+table = np.array([cible + a_ * ROT[:, 0] + b_ * ROT[:, 1] for a_, b_ in
+                  ((-0.3, 0.2), (0.3, 0.2), (0.3, 0.3), (-0.3, 0.3))])
+plus = np.asarray(dessiner(noir.copy(), K, TF, {
+    **couches, "masques": [(masque, "bleu"), (np.ones((10, 10), dtype=bool), "rouge")],
+    "table": table, "residu": 0.004, "boite_recalee": recalee}))
+check("Masque du carton teinté de sa couleur (bleu) ; un masque d'une autre taille est ignoré",
+      plus[120, 530, 2] > 0 and plus[120, 530, 2] > plus[120, 530, 0]
+      and not plus[470:480, 0:10].any())
+dedans = projeter(cible - 0.06 * ROT[:, 0] + 0.04 * ROT[:, 1], K, TF)[0][0].astype(int)
+check("Boîte ajustée pleine : l'intérieur de son contour est teinté",
+      plus[dedans[1], dedans[0]].any() and not np.asarray(noir)[dedans[1], dedans[0]].any(),
+      str(plus[dedans[1], dedans[0]]))
+bord = projeter((table[3] + table[0]) / 2.0, K, TF)[0][0].round().astype(int)
+check("Boîte recalée au toucher (vert) et bord du plan de la table dessinés",
+      int((plus == (120, 255, 140)).all(axis=2).sum()) > 0
+      and tuple(plus[bord[1], bord[0]]) == (255, 220, 60)
+      and not np.asarray(img)[bord[1], bord[0]].any(), str(plus[bord[1], bord[0]]))
 
 section("7. Page de suivi : vue du robot à côté de la vue extérieure")
 s = SuiviDirect(tempfile.mkdtemp(), port=18093, images_par_s=100.0)

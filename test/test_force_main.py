@@ -201,10 +201,13 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90), raideu
                     time_scale=2.0) as r:
     m = r.manipulation
     m._journal = journal.append
+    # Hors d'atteinte dans la borne prise sur la face mesurée (voir
+    # test_prise_mesuree, section 7 : 7,7 N au plus pour ce carton).
+    m.r = ReglagesPrise(force_min_n=10.0, force_serrage_n=12.0)
     time.sleep(0.2)
     prendre(r)
     ligne = next((l for l in journal if l.startswith("prise ratée")), "")
-    check("Carton mou : « serrage insuffisant » en newtons à la main",
+    check("Carton mou, 10 N exigés : « serrage insuffisant » en newtons à la main",
           m.etat is Etat.ECHEC and "serrage insuffisant" in m.raison and " N à la main" in m.raison,
           m.raison)
     check("… journal : force estimée à chaque main et couple de chaque articulation des bras",

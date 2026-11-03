@@ -29,10 +29,15 @@ from typing import Callable, Dict, List, Optional, Protocol, Tuple
 class Colis:
     """Un colis repéré : sa couleur, la position (x, y, z) de son centre
     dans le repère monde (le repère fixe de la carte), en mètres, et la
-    confiance de sa détection."""
+    confiance de sa détection ; son lacet (rad, repère monde) et, s'il est
+    mal vu (boîte mal ajustée à ses points), pourquoi : il n'est alors pas
+    pris. `vu` : ce qu'en dit l'ajustement (journal)."""
     couleur: str
     position: Tuple[float, float, float]
     confiance: float
+    lacet: float = 0.0
+    mal_vu: str = ""
+    vu: str = ""
 
 
 class Robot(Protocol):

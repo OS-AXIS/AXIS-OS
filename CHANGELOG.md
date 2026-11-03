@@ -24,6 +24,42 @@ Deux courses présentes sur `main`, vues en CI (intermittentes) :
   ne voie l'arrêt d'urgence. `RobotContext._fermer()` donne maintenant le
   motif de l'interruption (arrêt d'urgence d'abord) : ESTOP.
 
+### Perception du carton : masque, nuage de points, boîte orientée, recalage au toucher
+
+Constat GPU (PR 16) : mains 2,5 à 5 cm trop en avant du milieu des faces ;
+le centre perçu était celui de la face avant, dans un cadre qui déborde.
+- `axis_os/services/perception/boite.py` (numpy seulement) : `plan_ransac`,
+  `rectangle_minimal`, `ajuster_boite` (`BoiteEstimee` : centre, lacet,
+  résidu, couverture du dessus, hauteur de la table), `FusionCarton`,
+  `points_du_masque`.
+- `Sam2Segmenteur` (`sam2_segmenteur.py`, SAM 2.1 tiny) et `Owlv2Detector` :
+  révisions épinglées, safetensors, chargement refusé sinon.
+  `OwlViTDetector.MODELE`, `REVISION`, `CLASSES`.
+- `PerceptionService(segmenteur=…)` ; `derniers_points`, `derniers_masques`
+  (lecture seule).
+- Façade de l'app de tri : boîte ajustée sur les images fusionnées et les
+  points du LiDAR (`FacadeServices(points_lidar=…)`) ; `ConfigFacade` :
+  `residu_max_m`, `couverture_min`, `fusion_reset_m` ; « prise refusée —
+  carton mal vu » ; `Colis.lacet`, `mal_vu`, `vu` ; le lacet perçu passe à
+  la prise.
+- Prise : recalage au toucher avant de serrer (`ReglagesPrise.recalage_max_m`,
+  `ManipulationService.recalage`, `stats["recalage_m"]`,
+  `etat_visible()["recalage"]`) ; bornes du serrage depuis les faces
+  mesurées au toucher, une main déjà au-delà reculée jusqu'à sa borne.
+- Ouverture avant de fermer : `jeu_ouverture_m` 4 → 5 cm, au moins
+  `recalage_max_m` + `marge_ouverture_m` (2 cm), vérifié à la construction
+  de `ReglagesPrise` (ValueError sinon). Filet avant de fermer : force
+  absolue de chaque main vers l'objet au-delà de max(`force_appui_n`,
+  `sigmas_appui` × bruit au repos) : « main déjà en appui sur l'objet »,
+  prise refusée ; `ManipulationService.force_avant_fermeture`,
+  `stats["force_avant_fermeture_n"]`, valeur au journal.
+- Banc T1 : pose de la caméra de tête par son montage sur le bassin ;
+  `--detecteur owlvit|owlv2`, `--seuil-detecteur`, `--sans-sam2`,
+  `--images-perception` ; `banc_perception.py` compare les détecteurs ; vue
+  du robot : masque, points retenus, plan de la table, boîte pleine, boîte
+  recalée. `installer.sh` pré-télécharge OWLv2 et SAM 2.1. Licences et
+  versions : `docs/demo_tri_usine.md`.
+
 ### Force estimée à la main, serrage en cartésien (constat GPU du 2026-10-30)
 
 Constat : contact vu, puis « serrage insuffisant (0,1 à 0,4 N·m) » : le

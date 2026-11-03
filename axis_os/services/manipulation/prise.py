@@ -43,7 +43,15 @@ class ReglagesPrise:
     # 2026-10-28 : mains à 0,331 m l'une de l'autre sur un carton de
     # 0,24 m qu'elles touchaient.
     demi_main_m: float = 0.045
-    jeu_ouverture_m: float = 0.04      # chaque main, à l'écart de sa face avant de fermer
+    # Chaque main, à l'écart de sa face perçue avant de fermer. L'ouverture
+    # dépasse l'erreur de position acceptée (`recalage_max_m`) d'au moins
+    # `marge_ouverture_m` : sinon la main pourrait reposer déjà sur un carton
+    # que la perception place à `recalage_max_m` de là, le zéro de la force
+    # serait pris en appui et le contact vu trop tard (constaté en simulation
+    # à 3 cm avec 4 cm d'ouverture : la main 2,5 cm dans la face). Vérifié à
+    # la construction des réglages (__post_init__).
+    jeu_ouverture_m: float = 0.05
+    marge_ouverture_m: float = 0.02
     tol_profondeur_m: float = 0.025    # mains au milieu des faces, en profondeur
     # et en hauteur ; constaté sur GPU (2026-10-29) : mains 3,3 cm plus bas
     # que leurs cibles (bras qui s'affaissent), d'où une tolérance serrée et
@@ -101,6 +109,18 @@ class ReglagesPrise:
     pas_serrage_max_m: float = 0.0005  # avance de la face commandée par pas, au plus
     pas_serrage_min_m: float = 0.0001
     duree_serrage_max_s: float = 6.0   # au-delà, on juge la force obtenue
+    # Recalage au toucher : les faces mesurées des deux mains au contact
+    # disent où est vraiment le carton, le long de sa normale ; au-delà de
+    # `recalage_max_m` de la perception (l'erreur de position acceptée), la
+    # prise est refusée. Jamais plus que jeu_ouverture_m - marge_ouverture_m.
+    recalage_max_m: float = 0.03
+    # Filet avant de fermer : la force ABSOLUE à chaque main (poids du bras
+    # retiré par le modèle, pas le zéro de la fermeture), au-delà de
+    # max(force_appui_n, sigmas_appui × bruit mesuré au repos), veut dire une
+    # main déjà en appui sur l'objet : prise refusée. Seuil provisoire, à
+    # régler sur les essais GPU (valeur mesurée au journal).
+    force_appui_n: float = 3.0
+    sigmas_appui: float = 4.0
     # Plafond de couple de CHAQUE articulation du bras (valeur absolue).
     effort_max_nm: float = 10.0        # jamais au-delà
     part_couple_garde: float = 0.5     # ni au-delà de cette part du couple max du garde-fou
@@ -119,6 +139,17 @@ class ReglagesPrise:
     # pas de prise mesurée (constaté sur GPU le 2026-10-28 : mains contre
     # la face avant du carton, ~10 cm du milieu des faces).
     ecart_modele_max_m: float = 0.015
+
+    def __post_init__(self):
+        # Refus au démarrage : une ouverture qui ne couvre pas l'erreur de
+        # position acceptée, marge comprise, ferait fermer une main déjà en
+        # appui sur l'objet.
+        if self.recalage_max_m > self.jeu_ouverture_m - self.marge_ouverture_m + 1e-12:
+            raise ValueError(
+                f"réglages de prise refusés : erreur de position acceptée (recalage_max_m = "
+                f"{self.recalage_max_m:.3f} m) au-delà de l'ouverture moins sa marge "
+                f"(jeu_ouverture_m - marge_ouverture_m = "
+                f"{self.jeu_ouverture_m - self.marge_ouverture_m:.3f} m)")
 
 
 @dataclass

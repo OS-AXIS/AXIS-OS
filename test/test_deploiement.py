@@ -116,6 +116,16 @@ pre = INSTALLER[INSTALLER.find("Pré-télécharge OWL-ViT"):]
 check("Le pré-téléchargement passe la révision et use_safetensors=True",
       "revision=r" in pre and "use_safetensors=True" in pre)
 
+from axis_os.services.perception.owlvit_detector import MODELE_OWLV2, OWLV2_REVISION  # noqa: E402
+from axis_os.services.perception.sam2_segmenteur import MODELE_SAM2, SAM2_REVISION  # noqa: E402
+
+for nom, modele, rev in (("OWLV2", MODELE_OWLV2, OWLV2_REVISION),
+                         ("SAM2", MODELE_SAM2, SAM2_REVISION)):
+    r_ = re.search(rf'^{nom}_REVISION="([0-9a-f]{{40}})"', INSTALLER, re.M)
+    check(f"{modele} : même révision au pré-téléchargement et au chargement, en safetensors",
+          r_ is not None and r_.group(1) == rev and f"'{modele}', revision=r" in INSTALLER
+          and f"'{modele}', revision=r, use_safetensors=True" in INSTALLER)
+
 section("5 — gh récent depuis le dépôt officiel, clé vérifiée ; vidéo réduite")
 gh = INSTALLER[INSTALLER.find("GH_EMPREINTES="):INSTALLER.find('etape "3/9')]
 check("installer.sh : gh depuis cli.github.com, plus le gh d'Ubuntu",

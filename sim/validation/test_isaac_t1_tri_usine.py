@@ -52,6 +52,10 @@ from axis_os.hal.drivers.isaac_sim.bridge import (
 
 POLICIES = Path("/isaac-sim/policies")
 VIDEOS = Path("/isaac-sim/videos")
+# Montage de la caméra de tête sur le bassin (m, repère du bassin) et point
+# visé : le banc la place là, l'OS connaît ce montage (voir main).
+CAM_MONTAGE = (0.2, 0.0, 0.4)
+CAM_VISEE = (1.5, 0.0, 0.05)
 FAIL = 0
 
 # Réglages des bras validés par W3/W4 (poignets raidis).
@@ -88,6 +92,17 @@ def main():
     # vérité simulation : pour la vidéo de démonstration.
     ap.add_argument("--vue-sans-calques", action="store_true")
     ap.add_argument("--graine", type=int, default=3)
+    # Perception du carton : détecteur (OWL-ViT validé à 0,06 ; OWLv2 à
+    # comparer, voir comparer_detecteurs.py), masque SAM 2.1, images
+    # enregistrées pour la comparaison hors ligne.
+    ap.add_argument("--detecteur", choices=("owlvit", "owlv2"), default="owlvit")
+    ap.add_argument("--seuil-detecteur", type=float, default=None,
+                    help="seuil de confiance (défaut : 0,06 OWL-ViT, 0,10 OWLv2)")
+    ap.add_argument("--sans-sam2", action="store_true",
+                    help="points du cadre du détecteur, sans masque SAM 2.1")
+    ap.add_argument("--images-perception", default=None, metavar="DOSSIER",
+                    help="enregistre les images perçues (couleur, profondeur, caméra, vérité) "
+                         "pour comparer_detecteurs.py")
     ap.add_argument("--port-direct", type=int, default=8080,
                     help="page de suivi en direct (0 : désactivée)")
     # La page refuse tout en-tête Host autre que localhost (protection contre
@@ -113,7 +128,8 @@ def main():
     from axis_os.apps.tri_colis.logique import ConfigTri, TriColis
     from axis_os.apps.tri_colis.superviseur import InterpreteurRegles, Superviseur
     from axis_os.hal.core.frames import (
-        FRAME_BASE, FRAME_CAMERA_OPTICAL, FRAME_WORLD, FrameTree, Transform,
+        FRAME_BASE, FRAME_CAMERA, FRAME_CAMERA_OPTICAL, FRAME_WORLD, FrameTree, Transform,
+        camera_optical_to_link,
     )
     from axis_os.hal.core.types import ActuatorCommand, ControlMode, Quaternion, Vector3
     from axis_os.hal.drivers.isaac_sim.direct import SuiviDirect
@@ -138,10 +154,12 @@ def main():
         Etat, ManipulationService, Postures, posture_bras,
     )
     from axis_os.services.navigation.service import NavigationService, Pose2D
-    from axis_os.services.perception.owlvit_detector import OwlViTDetector
+    from axis_os.services.perception.owlvit_detector import Owlv2Detector, OwlViTDetector
+    from axis_os.services.perception.sam2_segmenteur import Sam2Segmenteur
     from axis_os.services.perception.service import PerceptionService
     # Banc seulement (copiés à côté de ce script par copier_code.sh) : le juge
     # et la vue du robot lisent la vérité de la simulation, l'OS jamais.
+    from banc_perception import EnregistreurImages
     from banc_prise import CapteursContactIsaac, JugeContacts, gains_prise
     from banc_vue_robot import VueRobot, coins
 
@@ -627,9 +645,58 @@ def main():
         return True
 
     tree = FrameTree()
-    detecteur = OwlViTDetector(threshold=0.06)       # seuil de W4
+    # Caméra de tête : l'OS connaît son MONTAGE sur le bassin (ici, là où le
+    # banc la pose), comme l'URDF du vrai G1 ; la pose du bassin vient de
+    # sa localisation et de sa centrale inertielle. Jamais la pose de la
+    # caméra lue dans la scène USD.
+    tangage_cam = math.atan2(-(CAM_VISEE[2] - CAM_MONTAGE[2]), CAM_VISEE[0] - CAM_MONTAGE[0])
+    tree.set(Transform(FRAME_BASE, FRAME_CAMERA, translation=Vector3(*map(float, CAM_MONTAGE)),
+                       rotation=Quaternion(w=math.cos(tangage_cam / 2), x=0.0,
+                                           y=math.sin(tangage_cam / 2), z=0.0)))
+    tree.set(camera_optical_to_link())
+    seuil_det = args.seuil_detecteur if args.seuil_detecteur is not None else (
+        0.06 if args.detecteur == "owlvit" else 0.10)       # 0,06 : seuil de W4
+    detecteur = (Owlv2Detector if args.detecteur == "owlv2" else OwlViTDetector)(
+        threshold=seuil_det)
     detecteur.load()
-    perception = PerceptionService(cam, tree, detecteur, depth_camera=dep)
+    segmenteur = None
+    if not args.sans_sam2:
+        segmenteur = Sam2Segmenteur()
+        if not segmenteur.load():
+            print(f"  [sam2] {segmenteur.erreur} : points du cadre du détecteur", flush=True)
+            segmenteur = None
+    print(f"  perception : {args.detecteur} (seuil {seuil_det:.2f}), "
+          f"{'masque SAM 2.1' if segmenteur else 'sans masque'}", flush=True)
+    perception = PerceptionService(cam, tree, detecteur, depth_camera=dep,
+                                   segmenteur=segmenteur)
+
+    def pose_optique_os():
+        """Pose optique de la caméra de tête que l'OS tire du montage et de
+        la pose du bassin (rotation, position ; repère monde), ou None."""
+        tf_, _ = tree.lookup(FRAME_WORLD, FRAME_CAMERA_OPTICAL)
+        return None if tf_ is None else PerceptionService._pose_camera(tf_)
+
+    def ecart_montage(tf_scene):
+        """(cm, degrés) entre la pose optique de l'OS et celle de la scène."""
+        pose_ = pose_optique_os()
+        if pose_ is None:
+            return math.nan, math.nan
+        r_sc, t_sc = PerceptionService._pose_camera(tf_scene)
+        cos_ = (float(np.trace(pose_[0].T @ r_sc)) - 1.0) / 2.0
+        return (100 * float(np.linalg.norm(pose_[1] - t_sc)),
+                math.degrees(math.acos(max(-1.0, min(1.0, cos_)))))
+    audit_montage = []
+
+    def cartons_prise():
+        """VÉRITÉ SIMULATION (enregistrement des images seulement) : cartons
+        de la table de prise, (couleur, centre, lacet, demi-tailles)."""
+        for c_ in cartons:
+            if c_["lieu"] == "prise":
+                pc_, q_ = c_["obj"].get_world_pose()
+                yield (c_["couleur"], np.asarray(pc_, dtype=float), lacet(q_),
+                       (sd.LARGEUR_CARTON / 2, sd.PROFONDEUR_CARTON / 2, sd.HAUTEUR_CARTON / 2))
+    enregistreur = (EnregistreurImages(args.images_perception, cam, dep, pose_optique_os,
+                                       cartons_prise) if args.images_perception else None)
     percep_couleur = PerceptionCouleur(perception, cam, sd.COULEURS,
                                        requetes=("a box", "a cardboard box"))
     journal = []
@@ -665,11 +732,16 @@ def main():
             texte = msg.split("] ", 1)[-1][:70]
             rec.evenement(texte, sim_t[0], duree_s=3.0, couleur=couleur)
 
+    def points_lidar():
+        """Points du MID-360 (repère monde) : la façade garde ceux du carton."""
+        s_ = lidar.scan()
+        return None if s_ is None else s_.points
+
     facade = FacadeServices(nav, loco, manip, percep_couleur, pose2d, horloge, sd.CAP_PRISE,
                             journal=journaliser,
-                            cfg=ConfigFacade(requete="{couleur}", confiance_min=0.06,
+                            cfg=ConfigFacade(requete="{couleur}", confiance_min=seuil_det,
                                              z_min=0.70, z_max=1.20),
-                            postes_depose=sd.postes_depose())
+                            postes_depose=sd.postes_depose(), points_lidar=points_lidar)
     tri = TriColis(facade, ConfigTri(regles=dict(sd.REGLES_INITIALES), duree_mission_s=DUREE))
     sup = Superviseur(tri, list(sd.POSTES), sd.COULEURS, InterpreteurRegles())
     for s in (loco, nav, manip):
@@ -977,8 +1049,12 @@ def main():
 
         def monde(pb):
             return p_ + r_ @ np.asarray(pb, dtype=float)
+        couleur_ = {tuple(d_["bbox"]): d_["couleur"] for d_ in diag_.get("detections", [])
+                    if d_.get("bbox")}
         ca = {"detections": [(d_["bbox"], d_["couleur"], d_["confiance"])
                              for d_ in diag_.get("detections", []) if d_.get("bbox")],
+              "masques": [(m_, couleur_.get(b_)) for b_, m_ in perception.derniers_masques.items()
+                          if m_ is not None],
               "faces": list(perception.dernieres_faces.values()),
               "phase": v_["phase"],
               "contacts": {c_: bool(v_["contacts"].get(c_)) for c_ in ("left", "right")},
@@ -995,6 +1071,28 @@ def main():
             ca["centre"] = monde(pl_["centre"])
             ca["boite"] = np.array([monde(x_) for x_ in coins(
                 pl_["centre"], pl_["largeur"], ob_.profondeur, ob_.hauteur, pl_["lacet"])])
+            rec_ = v_.get("recalage")
+            if rec_ is not None:             # boîte recalée au toucher (repère du bassin)
+                ca["boite_recalee"] = np.array([monde(x_) for x_ in coins(
+                    rec_["apres"], pl_["largeur"], ob_.profondeur, ob_.hauteur, pl_["lacet"])])
+        # Boîte ajustée par la perception (repère monde), la plus proche du
+        # centre visé : pleine, avec les points retenus et le plan de la table.
+        boites_ = list(facade.derniere_boite.values())
+        if boites_:
+            ref_ = np.asarray(ca.get("centre", p_), dtype=float)
+            b_ = min(boites_, key=lambda x_: float(np.linalg.norm(np.asarray(x_.centre)[:2]
+                                                                  - ref_[:2])))
+            ca["boite"] = coins(b_.centre, sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON,
+                                sd.HAUTEUR_CARTON, b_.lacet)
+            ca["residu"] = b_.residu_m
+            if b_.points is not None and len(b_.points):
+                ca["faces"] = [b_.points]
+            if b_.hauteur_table is not None:
+                a_ = np.array([math.cos(b_.lacet), math.sin(b_.lacet), 0.0])
+                n_ = np.array([-a_[1], a_[0], 0.0])
+                z_ = np.array([b_.centre[0], b_.centre[1], b_.hauteur_table])
+                ca["table"] = np.array([z_ + sa_ * 0.25 * a_ + sn_ * 0.30 * n_ for sa_, sn_ in
+                                        ((-1, -1), (1, -1), (1, 1), (-1, 1))])
         reel_ = carton_aux_mains(0.35)
         verite_ = {"contacts": {c_: (juge.reel.get(c_) or {}).get("force")
                                 for c_ in ("left", "right")} if juge else {}}
@@ -1150,19 +1248,27 @@ def main():
         filmer = video_ok and k % pas_video == 0
         filmer_vue = video_ok and k % pas_vue == 0
         if percevoir or filmer or filmer_vue:
+            if percevoir and enregistreur is not None:
+                # Avant de déplacer la caméra : l'image du dernier rendu et la
+                # pose qui l'a produite, celles que la perception vient de lire.
+                enregistreur.prendre(sim_t[0])
             p_, q_ = robot.get_world_pose()
             R = quat_wxyz_to_matrix(q_)
             p_w = np.asarray(p_, dtype=float)
             for c in (cam, dep):
-                c._position = tuple(float(v) for v in (p_w + R @ np.array([0.2, 0.0, 0.4])))
-                c.look_at(tuple(float(v) for v in (p_w + R @ np.array([1.5, 0.0, 0.05]))))
+                c._position = tuple(float(v) for v in (p_w + R @ CAM_MONTAGE))
+                c.look_at(tuple(float(v) for v in (p_w + R @ CAM_VISEE)))
             tree.set(Transform(FRAME_WORLD, FRAME_BASE,
                                translation=Vector3(*(float(v) for v in p_w)),
                                rotation=Quaternion(w=float(q_[0]), x=float(q_[1]),
                                                    y=float(q_[2]), z=float(q_[3]))))
-            tf = cam.optical_transform(parent=FRAME_WORLD, child=FRAME_CAMERA_OPTICAL)
-            if tf is not None:
-                tree.set(tf)
+            # Pose optique de la scène : pour DESSINER les vues (banc), et
+            # comparée une fois à celle que l'OS tire du montage.
+            tf = cam.optical_transform(parent=FRAME_WORLD, child="optique_scene")
+            if tf is not None and not audit_montage:
+                audit_montage.append(ecart_montage(tf))
+                print(f"  montage de la caméra de tête : pose de l'OS à {audit_montage[0][0]:.1f} cm "
+                      f"et {audit_montage[0][1]:.1f}° de celle de la scène", flush=True)
             if filmer:
                 rec.cadrer()
             if filmer_vue:
@@ -1185,8 +1291,10 @@ def main():
                 if fd_ is not None and kd_ is not None and tfd_ is not None:
                     rgbd_ = np.frombuffer(fd_.data, dtype=np.uint8).reshape(fd_.height,
                                                                              fd_.width, 3)
+                    # Les masques sont en pixels de la caméra de tête : pas ici.
                     derniere_diag = vue_diag.image(rgbd_, kd_, tfd_, {} if args.vue_sans_calques
-                                                   else couches_vue())
+                                                   else {k_: v_ for k_, v_ in couches_vue().items()
+                                                         if k_ != "masques"})
                     if suivi is not None:
                         suivi.image_vue("diagnostic", derniere_diag)
         # send_targets (dans loco.tick) a déjà fait un pas de physique : on

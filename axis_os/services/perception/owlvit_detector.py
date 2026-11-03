@@ -67,6 +67,11 @@ from axis_os.services.perception.service import Detection, IObjectDetector
 # en simulation (voir docs/validation_perception.md, « Limites connues »).
 MODELE_OWLVIT = "google/owlvit-base-patch32"
 OWLVIT_REVISION = "85fa9bec488a03a73b7f29206b1550551d0a7556"
+# OWLv2 (Google, Apache-2.0), son successeur : commit du 31 octobre 2024,
+# poids en safetensors. À comparer à OWL-ViT sur les images du banc T1
+# (sim/validation/comparer_detecteurs.py) avant d'en changer.
+MODELE_OWLV2 = "google/owlv2-base-patch16-ensemble"
+OWLV2_REVISION = "cfd3195ba4ea9592eec887ded089f4c08eff231d"
 # Une révision épinglée est un hash de commit complet (empreinte unique
 # d'une version, 40 caractères hexadécimaux). Un nom de branche (« main »)
 # ou d'étiquette peut être déplacé vers d'autres poids : il ne fige rien.
@@ -92,10 +97,12 @@ class OwlViTDetector(IObjectDetector):
         detector.load()                       # coûteux, une seule fois
         svc = PerceptionService(camera, tree, detector)
     """
+    MODELE, REVISION = MODELE_OWLVIT, OWLVIT_REVISION
+    CLASSES = ("OwlViTProcessor", "OwlViTForObjectDetection")
 
     def __init__(
         self,
-        model_name: str = MODELE_OWLVIT,
+        model_name: Optional[str] = None,
         revision=_PAR_DEFAUT,
         threshold: float = 0.1,
         device: Optional[str] = None,
@@ -129,8 +136,9 @@ class OwlViTDetector(IObjectDetector):
         un pickle (le format de sérialisation natif de Python), qui peut
         exécuter du code au moment du chargement.
         """
+        model_name = model_name or self.MODELE
         if revision is _PAR_DEFAUT:
-            revision = OWLVIT_REVISION if model_name == MODELE_OWLVIT else None
+            revision = self.REVISION if model_name == self.MODELE else None
         self._model_name = model_name
         self._revision = revision
         self._autoriser_non_epingle = autoriser_non_epingle_SIMULATION
@@ -172,8 +180,10 @@ class OwlViTDetector(IObjectDetector):
             return False
         try:
             import torch
-            from transformers import OwlViTForObjectDetection, OwlViTProcessor
-        except ImportError as exc:
+            import transformers
+            OwlViTProcessor, OwlViTForObjectDetection = (getattr(transformers, n)
+                                                         for n in self.CLASSES)
+        except (ImportError, AttributeError) as exc:
             self._load_error = (
                 f"dépendances absentes ({exc}) — "
                 f"`pip install transformers torch pillow`"
@@ -274,7 +284,7 @@ class OwlViTDetector(IObjectDetector):
                 outputs = self._model(**inputs)
 
             target_sizes = torch.tensor(
-                [[frame.height, frame.width]]).to(self._device)
+                [self._taille_cible(frame)]).to(self._device)
             results = self._post_process(outputs, target_sizes, queries)[0]
         except Exception as exc:        # noqa: BLE001
             # L'erreur est mémorisée, pas seulement affichée : une
@@ -321,6 +331,10 @@ class OwlViTDetector(IObjectDetector):
 
         detections.sort(key=lambda d: -d.confidence)
         return detections[:self._max_detections]
+
+    def _taille_cible(self, frame: CameraFrame) -> List[int]:
+        """Taille (hauteur, largeur) à laquelle ramener les boîtes."""
+        return [frame.height, frame.width]
 
     def _post_process(self, outputs, target_sizes, queries):
         """Post-traitement (conversion de la sortie brute du modèle en
@@ -394,3 +408,16 @@ class OwlViTDetector(IObjectDetector):
             "load_error": self._load_error,
             "last_inference_error": self._last_inference_error,
         }
+
+
+class Owlv2Detector(OwlViTDetector):
+    """OWLv2 : même interface, mêmes règles d'épinglage. Il complète l'image
+    en carré (bas et droite) avant de la passer au modèle : ses boîtes se
+    rapportent à ce carré, d'où la taille cible (côté le plus long, deux
+    fois) ; elles restent justes dans l'image d'origine."""
+    MODELE, REVISION = MODELE_OWLV2, OWLV2_REVISION
+    CLASSES = ("Owlv2Processor", "Owlv2ForObjectDetection")
+
+    def _taille_cible(self, frame: CameraFrame) -> List[int]:
+        cote = max(frame.height, frame.width)
+        return [cote, cote]

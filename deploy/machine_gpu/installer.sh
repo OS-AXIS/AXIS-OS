@@ -293,6 +293,18 @@ OWLVIT_REVISION="85fa9bec488a03a73b7f29206b1550551d0a7556"
 dans /isaac-sim/python.sh -c "from transformers import OwlViTProcessor, OwlViTForObjectDetection as M; \
 r = '$OWLVIT_REVISION'; OwlViTProcessor.from_pretrained('google/owlvit-base-patch32', revision=r); \
 M.from_pretrained('google/owlvit-base-patch32', revision=r, use_safetensors=True); print('OWL-ViT prêt (révision', r, ')')"
+# Perception du carton, mêmes règles : OWLv2 (Google, Apache-2.0), à comparer
+# à OWL-ViT (sim/validation/banc_perception.py), et SAM 2.1 tiny (Meta,
+# Apache-2.0), le masque du carton dans le cadre du détecteur. Révisions :
+# OWLV2_REVISION et SAM2_REVISION du code, vérifiées par test_deploiement.py.
+OWLV2_REVISION="cfd3195ba4ea9592eec887ded089f4c08eff231d"
+SAM2_REVISION="de431c4043854a71d8101e17995dfe596bf101a5"
+dans /isaac-sim/python.sh -c "from transformers import Owlv2Processor, Owlv2ForObjectDetection as M; \
+r = '$OWLV2_REVISION'; Owlv2Processor.from_pretrained('google/owlv2-base-patch16-ensemble', revision=r); \
+M.from_pretrained('google/owlv2-base-patch16-ensemble', revision=r, use_safetensors=True); print('OWLv2 prêt (révision', r, ')')"
+dans /isaac-sim/python.sh -c "from transformers import Sam2Processor, Sam2Model as M; \
+r = '$SAM2_REVISION'; Sam2Processor.from_pretrained('facebook/sam2.1-hiera-tiny', revision=r); \
+M.from_pretrained('facebook/sam2.1-hiera-tiny', revision=r, use_safetensors=True); print('SAM 2.1 prêt (révision', r, ')')"
 
 etape "9/9 Code AXIS-OS dans le conteneur"
 # On passe par le même script que pour les mises à jour ultérieures du code.
