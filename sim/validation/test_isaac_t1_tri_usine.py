@@ -142,7 +142,7 @@ def main():
     from axis_os.services.perception.service import PerceptionService
     # Banc seulement (copiés à côté de ce script par copier_code.sh) : le juge
     # et la vue du robot lisent la vérité de la simulation, l'OS jamais.
-    from banc_prise import JugeContacts, capteurs_contact_isaac, gains_prise
+    from banc_prise import CapteursContactIsaac, JugeContacts, gains_prise
     from banc_vue_robot import VueRobot, coins
 
     cfg = GR00TWBCConfig()
@@ -283,6 +283,18 @@ def main():
                          position=(0.2, 0.0, 1.2), focal_length_mm=18.0)
     dep = IsaacSimCamera("tete_prof", prim_path="/World/tete_prof", width=640, height=480,
                          position=(0.2, 0.0, 1.2), depth=True, focal_length_mm=18.0)
+    # Vue de DIAGNOSTIC (banc seulement, jamais lue par l'OS) : au moment de
+    # la prise, mains et carton proche sortent du cadre de la caméra de tête
+    # (elle vise 1,5 m devant, 15° vers le bas : son bord bas passe ~40° sous
+    # l'horizontale, les mains sont à ~65°). Caméra plongeante, au-dessus et
+    # en arrière des mains, qui suit le bassin.
+    cam_diag = IsaacSimCamera("vue_diag", prim_path="/World/vue_diag", width=640, height=480,
+                              position=(0.0, 0.0, 2.0), focal_length_mm=12.0)
+    # Juge (vérité simulation) : rapport de contact PhysX posé sur les mains
+    # AVANT world.reset() (la physique le lit à son départ).
+    capteurs = CapteursContactIsaac(cfg.physics_dt)
+    capteurs.preparer(stage, str(getattr(robot, "prim_path", "/World/g1")),
+                      [c_["obj"].prim_path for c_ in cartons])
 
     g = pol.gains()
     for i, j in enumerate(cfg.body_joints[cfg.num_actions:]):
@@ -328,10 +340,12 @@ def main():
 
     mettre_debout()
 
-    for c in (cam, dep):
+    for c in (cam, dep, cam_diag):
         c.initialize()
     cam.wait_until_ready(world)
     dep.wait_until_ready(world)
+    cam_diag.wait_until_ready(world)
+    capteurs.initialiser()
 
     sim_t = [0.0]
     horloge = lambda: sim_t[0]
@@ -468,21 +482,22 @@ def main():
     # au dernier pas, d'où leur âge), hauteur du bassin, couple max du
     # garde-fou, inclinaison du carton tenu. Si le couple ne peut pas être
     # lu, la manipulation refuse de serrer (jamais « tout va bien »).
-    bras6 = [f"{c}_{a}" for c in ("left", "right")
-             for a in ("shoulder_pitch_joint", "shoulder_roll_joint", "elbow_joint")]
     t_physique = [0.0]                   # temps simulé du dernier pas de physique
     # Angles mesurés de toute la chaîne des bras, taille comprise : la
     # portée se calcule sur le bras tel qu'il est (lacet d'épaule, poignets).
     chaine_bras = [j for j in names if j.startswith(("waist_", "left_shoulder", "right_shoulder",
                                                      "left_elbow", "right_elbow", "left_wrist",
                                                      "right_wrist"))]
+    # Couples et plafonds : TOUTES les articulations des bras (épaule 3,
+    # coude, poignet 3) ; la force à la main s'estime sur elles.
+    bras_tous = [j for j in chaine_bras if not j.startswith("waist_")]
 
     def efforts_bras():
         # Couple ESTIMÉ (couple du solveur + erreurs d'estimation du G1), le
         # même que lit le JointSafetyGuard (IsaacSimBridge.read_feedback).
         e = bridge.bruit_couples(robot.get_applied_joint_efforts())
         age = sim_t[0] - t_physique[0]
-        return {j: (float(e[idx[j]]), age) for j in bras6}
+        return {j: (float(e[idx[j]]), age) for j in bras_tous}
 
     def inclinaison_carton():
         """VÉRITÉ SIMULATION (évaluation, juge) : inclinaison (degrés) du
@@ -533,10 +548,13 @@ def main():
         # Hauteur du bassin : cinématique des jambes et centrale inertielle.
         lambda: hauteur_bassin(angles_mesures(), rotation_imu()),
         couple_max={d.joint_id: d.limits.torque_max for d in _defs("29dof")
-                    if d.joint_id in bras6},
+                    if d.joint_id in bras_tous},
         inclinaison=inclinaison_os,
         raideur=regler_raideur,
         arret_urgence=lambda: hal.estop_active,
+        # Fermeture et serrage en cartésien sur tout le bras : lacet d'épaule
+        # et poignets commandés aussi (les cibles de bras de l'adaptateur).
+        commandables=tuple(adapt.pose_bras),
         # Repère complet du bassin (il penche un peu en équilibre) : celui
         # de la cinématique, pour les cibles comme pour les mains mesurées.
         vers_bassin=vers_robot)
@@ -923,24 +941,21 @@ def main():
           f"d'inclinaison, après {getattr(world, 'current_time_step_index', '?')} pas de "
           f"physique sans équilibre — remis debout", flush=True)
     mettre_debout()
-    # Juge (vérité simulation, banc_prise) : capteurs de contact PhysX sur les
-    # mains, pour noter le contact estimé par l'OS ; l'OS n'en lit rien.
-    corps_mains = {}
-    for cote_ in ("left", "right"):
-        for nom_ in (f"{cote_}_rubber_hand", f"{cote_}_wrist_yaw_link"):
-            prim_ = next((q_ for q_ in stage.Traverse() if q_.GetName() == nom_
-                          and "/World/g1" in str(q_.GetPath())
-                          and q_.HasAPI(UsdPhysics.RigidBodyAPI)), None)
-            if prim_ is not None:
-                corps_mains[cote_] = str(prim_.GetPath())
-                break
-    lire_contact = (capteurs_contact_isaac(stage, corps_mains,
-                                           [c_["obj"].prim_path for c_ in cartons],
-                                           cfg.physics_dt)
-                    if len(corps_mains) == 2 else None)
-    juge = JugeContacts(lire_contact) if lire_contact is not None else None
+    # Juge (vérité simulation, banc_prise) : contacts PhysX des mains avec
+    # les cartons, pour noter le contact estimé par l'OS ; l'OS n'en lit rien.
+    juge = JugeContacts(capteurs.lire) if capteurs.methode else None
     print(f"  juge des contacts (vérité simulation) : "
-          f"{'actif sur ' + str(corps_mains) if juge else 'indisponible'}", flush=True)
+          + (f"actif ({capteurs.methode}) sur {capteurs.corps}" if juge else "indisponible")
+          + (f" — {' ; '.join(capteurs.raisons)}" if capteurs.raisons else ""), flush=True)
+
+    def lacet_carton():
+        """VÉRITÉ SIMULATION : lacet (degrés) du carton le plus proche des
+        mains réelles, None s'il n'y en a pas."""
+        c_ = carton_aux_mains(0.35)
+        if c_ is None:
+            return None
+        w_, x_, y_, z_ = (float(v) for v in c_["obj"].get_world_pose()[1])
+        return math.degrees(math.atan2(2 * (w_ * z_ + x_ * y_), 1 - 2 * (y_ * y_ + z_ * z_)))
     print(f"  hauteur du bassin : estimée {hauteur_bassin(angles_mesures(), rotation_imu()):.3f} m "
           f"(jambes et centrale inertielle), vraie {float(robot.get_world_pose()[0][2]):.3f} m",
           flush=True)
@@ -948,8 +963,9 @@ def main():
     # images par seconde de vidéo, sur le même temps simulé que la vidéo
     # principale ; en incrustation dans celle-ci et sur la page de suivi.
     vue = VueRobot(str(VIDEOS / "t1_vue_robot.mp4"), ips=15) if video_ok else None
+    vue_diag = VueRobot(str(VIDEOS / "t1_vue_diagnostic.mp4"), ips=15) if video_ok else None
     pas_vue = max(1, round(pas_video * rec.fps / 15)) if video_ok else 0
-    derniere_vue = None
+    derniere_vue = derniere_diag = None
 
     def couches_vue():
         """Calques de la vue du robot, repère monde : l'état de l'OS (lecture
@@ -969,6 +985,11 @@ def main():
               "cibles": {n_: tuple(monde(x_) for x_ in pr_)
                          for n_, pr_ in v_["cibles"].items() if pr_ is not None},
               "mains": None if v_["mains"] is None else tuple(monde(x_) for x_ in v_["mains"])}
+        if v_["mains"] is not None:
+            # Force estimée à chaque main (repère du bassin -> monde).
+            ca["forces"] = [(monde(m_), r_ @ f_) for m_, f_ in
+                            zip(v_["mains"], (v_["forces"]["left"], v_["forces"]["right"]))
+                            if f_ is not None]
         if v_["plan"] is not None and v_["objet"] is not None:
             pl_, ob_ = v_["plan"], v_["objet"]
             ca["centre"] = monde(pl_["centre"])
@@ -1153,7 +1174,21 @@ def main():
                     derniere_vue = vue.image(rgb_, k_, tf, {} if args.vue_sans_calques
                                              else couches_vue())
                     if suivi is not None:
-                        suivi.image_robot(derniere_vue)
+                        suivi.image_vue("robot", derniere_vue)
+                # Vue de diagnostic : au-dessus et en arrière des mains, vers
+                # elles ; mêmes calques (vérité simulation comprise).
+                cam_diag._position = tuple(float(v) for v in (p_w + R @ np.array([0.0, 0.0, 0.85])))
+                cam_diag.look_at(tuple(float(v) for v in (p_w + R @ np.array([0.34, 0.0, 0.12]))))
+                fd_ = cam_diag.capture()
+                kd_ = cam_diag.get_intrinsics()
+                tfd_ = cam_diag.optical_transform(parent=FRAME_WORLD, child="vue_diag_optique")
+                if fd_ is not None and kd_ is not None and tfd_ is not None:
+                    rgbd_ = np.frombuffer(fd_.data, dtype=np.uint8).reshape(fd_.height,
+                                                                             fd_.width, 3)
+                    derniere_diag = vue_diag.image(rgbd_, kd_, tfd_, {} if args.vue_sans_calques
+                                                   else couches_vue())
+                    if suivi is not None:
+                        suivi.image_vue("diagnostic", derniere_diag)
         # send_targets (dans loco.tick) a déjà fait un pas de physique : on
         # complète la décimation. En faire un de trop décalerait le temps
         # simulé de 25 % et ferait tourner GR00T hors de sa fréquence.
@@ -1162,14 +1197,25 @@ def main():
         sim_t[0] += cfg.control_dt
         t_physique[0] = sim_t[0]
         k += 1
-        # Juge : une prise va de l'entrée en FERMETURE à sa sortie.
+        # Juge : une prise va de l'entrée en PLACEMENT à sa fin ; contacts
+        # réels relevés pendant la FERMETURE ; lacet réel du carton à chaque
+        # phase (tourne-t-il pendant la prise ?).
         if juge is not None:
-            if manip.etat is Etat.FERMETURE and not juge.en_cours:
+            e_ = manip.etat
+            if e_ is Etat.PLACEMENT and not juge.en_cours:
                 juge.debut()
-            juge.pas(sim_t[0])
-            if juge.en_cours and manip.etat is not Etat.FERMETURE:
-                for ligne_ in juge.fin(manip.contacts_estimes):
-                    journaliser(f"[{sim_t[0]:7.1f}s] {ligne_}")
+            if juge.en_cours:
+                juge.pas(sim_t[0], fermeture=e_ is Etat.FERMETURE)
+                if e_ is Etat.PLACEMENT:
+                    juge.noter_lacet("placement", lacet_carton())
+                if any(manip.contacts_estimes.values()):
+                    juge.noter_lacet("contact", lacet_carton())
+                if e_ is Etat.SERRAGE:
+                    juge.noter_lacet("serrage", lacet_carton())
+                if e_ in (Etat.TENU, Etat.ECHEC, Etat.LACHER, Etat.LIBRE):
+                    juge.noter_lacet(e_.name.lower(), lacet_carton())
+                    for ligne_ in juge.fin(manip.contacts_estimes):
+                        journaliser(f"[{sim_t[0]:7.1f}s] {ligne_}")
         # Invariant : le robot ne se rapproche jamais d'une personne proche.
         pa = pose2d()
         for f in figurants:
@@ -1216,7 +1262,7 @@ def main():
                     for md in dict.fromkeys(md_ for _, md_ in collecteur.essais)),
                 f"Sécurité : {v.raison[:38] if v else '—'}",
                 f"Garde-fou : {loco.stats['refused']} refus",
-            ], t, incrustation=derniere_vue)
+            ], t, incrustation=[derniere_vue, derniere_diag])
         elif filmer:
             b = tri.bilan
             v = loco.dernier_verdict
@@ -1231,7 +1277,7 @@ def main():
                 f"Tâche : {tri.etat}",
                 "Règles : " + ", ".join(f"{c}→{p}" for c, p in sorted(tri.cfg.regles.items())),
                 f"Garde-fou : {loco.stats['refused']} refus",
-            ], t, incrustation=derniere_vue)
+            ], t, incrustation=[derniere_vue, derniere_diag])
         if suivi is not None and k % 25 == 0:
             b_ = tri.bilan
             suivi.resume(f"{int(t // 60):02d}:{int(t % 60):02d} simulé · "
@@ -1252,6 +1298,7 @@ def main():
     if video_ok:
         rec.terminer()
         vue.terminer()
+        vue_diag.terminer()
     if suivi is not None:
         suivi.resume("test terminé — bilan dans le terminal")
 

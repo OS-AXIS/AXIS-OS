@@ -6,7 +6,9 @@ ici n'agit sur ses décisions.
 Dessiné depuis l'état de l'OS : cadres des détections (OWL-ViT, couleur et
 score), points de la face avant retenus par la perception, contour 3D du
 carton estimé et centre visé, cibles des mains (ouverture, contact, borne de
-fermeture) reliées à la main mesurée, phase et contact estimé par main.
+fermeture) reliées à la main mesurée, flèche de la force estimée à chaque
+main, phase et contact estimé par main. Les mêmes calques servent à la vue
+de diagnostic (caméra de simulation au-dessus des mains).
 En pointillé et d'une autre couleur, légendés « vérité simulation » : le
 contour RÉEL du carton et le contact réel du juge (banc_prise.JugeContacts).
 
@@ -26,6 +28,7 @@ COULEURS = {"rouge": (230, 60, 50), "bleu": (60, 130, 240), "vert": (60, 190, 90
 OS = (255, 220, 60)              # ce que l'OS estime
 VERITE = (255, 80, 220)          # vérité de la simulation (pointillés)
 MAIN = (90, 230, 255)
+ECHELLE_FORCE_M_N = 0.01          # flèche de force : 1 cm par newton
 ARETES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4),
           (0, 4), (1, 5), (2, 6), (3, 7)]
 
@@ -126,6 +129,19 @@ def dessiner(img, k, tf, couches: Dict, verite: bool = True):
     if mains is not None:
         for p in mains:
             _point(d, k, tf, p, MAIN, 5)
+    for p0, force in couches.get("forces", ()):
+        fv = np.asarray(force, dtype=float)
+        uv, ok = projeter([p0, np.asarray(p0, float) + ECHELLE_FORCE_M_N * fv], k, tf)
+        if ok.all() and float(np.linalg.norm(fv)) > 0.5:
+            a, b = uv
+            d.line([tuple(a), tuple(b)], fill=MAIN, width=3)
+            u = (b - a) / max(1e-6, float(np.linalg.norm(b - a)))
+            for s_ in (1, -1):                   # pointe de la flèche
+                c, sn = math.cos(2.6), s_ * math.sin(2.6)
+                d.line([tuple(b), tuple(b + 8 * np.array([c * u[0] - sn * u[1],
+                                                           sn * u[0] + c * u[1]]))],
+                       fill=MAIN, width=3)
+            d.text((b[0] + 4, b[1] + 2), f"{float(np.linalg.norm(fv)):.0f} N", fill=MAIN, font=f)
     contacts = couches.get("contacts", {})
     lignes = [f"phase {couches.get('phase', '?')}",
               "contact estimé : G " + ("oui" if contacts.get("left") else "non")

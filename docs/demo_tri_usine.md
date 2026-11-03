@@ -316,6 +316,57 @@ démo).
 bassin : estimée X, vraie Y » avant la boucle (écart attendu sous 1 cm) ;
 les nouvelles raisons d'échec, avec les écarts consigne-mesure.
 
+## Force estimée à la main, serrage en cartésien (2026-10-30)
+
+Constat (PR 16, 3 essais) : contact vu des deux mains, puis 3 fois « serrage
+insuffisant (0,1 / 0,4 / 0,1 N·m au plus serré) ». Le serrage ne bougeait
+que le roulis d'épaule et ne mesurait que son couple.
+
+Ce que dit la statique (cinématique de l'URDF, vérifiée contre Pinocchio
+4.1 à 1e-16) : aux postures de prise de T1, le roulis a un bras de levier de
+0,15 à 0,26 m pour une force latérale à la main, autant que le lacet d'épaule
+(0,23 m). Un couple de roulis de 0,1 à 0,4 N·m veut donc dire une force à la
+main de 1 à 2 N seulement : le carton s'est dérobé plutôt que la force n'est
+passée ailleurs. Cela concorde avec son lacet réel qui change pendant la prise
+(-3,5° → +13°) et avec des mains 2,5 à 5 cm trop en avant du milieu de ses
+faces (perception, PR B). La force estimée et le juge le diront au prochain
+essai.
+
+Ce qui change :
+- **Force à la main** : F = (J Jᵀ + λ² I)⁻¹ J Δτ sur les 7 articulations du
+  bras (λ = 2 cm), Δτ la hausse des couples depuis la fermeture, poids des
+  bras retiré (masses de l'URDF), composante le long de la normale du carton,
+  moyenne glissante sur 5 lectures. Bruit : 0,85 N par lecture pour 0,3 N·m
+  par couple, ~0,4 N filtré ; mesuré au repos avant chaque fermeture et donné
+  au journal (« bruit de la force estimée au repos »).
+- **Contact** : couple du roulis (poids retiré), retard du roulis, force à la
+  main (3 N, jamais sous 6 fois le bruit filtré mesuré), ou géométrie (retard
+  pris depuis le début de la fermeture : bras affaissés, la main mesurée est
+  déjà à côté de la commandée).
+- **Serrage** : la face commandée de chaque main avance vers le carton
+  (cinématique inverse sur tout le bras, pas de 0,1 à 0,5 mm), jusqu'à 8 N à
+  la main, refus sous 5 N ; jamais au-delà de largeur/2 - 2 cm (la main là où
+  elle est vraiment : consigne plus son décalage mesuré avant le contact).
+  Plafond de couple sur CHAQUE articulation du bras ; une main arrêtée par son
+  plafond ne serre plus. Pourquoi 8 N : aux gains du banc (raidis), le bras
+  fait ~500 N/m à la main, soit ~10 N au plus pour 2 cm ; un carton de 1 kg
+  entre deux mains caoutchouc demande 4,9 N à chacune.
+- Lacet d'épaule et poignets commandés pendant la fermeture et le serrage,
+  rendus à leur consigne d'avant en fin de prise ; lacet d'épaule raidi aussi.
+- Journal d'échec : force estimée par main et couple de chaque articulation.
+- **Juge** : rapport de contact PhysX posé sur les corps des mains AVANT
+  world.reset() (capteur de contact d'Isaac en repli, extension activée), avec
+  les raisons d'un échec au journal ; lacet réel du carton à chaque phase.
+- **Vue de diagnostic** (`t1_vue_diagnostic.mp4`, banc seulement) : la caméra
+  de tête ne voit ni les mains ni le carton proche au moment de la prise (son
+  bord bas passe ~40° sous l'horizontale, les mains sont à ~65°) ; caméra
+  plongeante au-dessus et en arrière des mains, incrustée avec la vue du robot
+  et sur la page de suivi ; flèche de la force estimée à chaque main.
+
+À vérifier au premier essai GPU : « juge des contacts : actif (…) » ; le
+bruit au repos (~0,85 N attendus, plus si le bassin bouge) ; la force estimée
+contre le contact réel du juge ; le lacet réel du carton à chaque phase.
+
 ## Budget GPU
 
 L'essentiel du développement se fait **sans rendu**, bien plus vite. Le
