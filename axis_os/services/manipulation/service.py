@@ -894,8 +894,10 @@ class ManipulationService(IService):
 
     def _borne(self, k: int, cote: str) -> float:
         """Borne de la face COMMANDÉE : la main, là où elle est vraiment (la
-        consigne plus son décalage), jamais au-delà de largeur/2 -
-        penetration_max_m dans l'objet attendu."""
+        consigne plus son décalage), jamais à plus de penetration_max_m dans
+        la face attendue : à largeur/2 du centre perçu pendant la fermeture
+        (celle de la seconde main suit la face touchée par la première), la
+        face mesurée au toucher pendant le serrage (_recaler)."""
         sens = 1.0 if k == 0 else -1.0
         return self._attendue[cote] - sens * self.r.penetration_max_m - self._decalage(cote)
 
@@ -1242,8 +1244,9 @@ class ManipulationService(IService):
     def _recaler(self, faces_m: Tuple[float, float]) -> bool:
         """Recalage au toucher, avant de serrer : les faces intérieures
         MESURÉES des deux mains au contact sont les faces du carton. Le
-        centre du plan est déplacé à leur milieu, le long de la normale ; au-
-        delà de `recalage_max_m`, la prise est refusée (la perception le
+        centre du plan est déplacé à leur milieu, le long de la normale, et
+        la borne du serrage de chaque main est prise depuis sa face mesurée ;
+        au-delà de `recalage_max_m`, la prise est refusée (la perception le
         voyait ailleurs). Le lacet n'est pas observable par deux mains plates
         à la même profondeur : seule la largeur mesurée en borne l'écart
         (|Δ| = arccos(largeur / écart des faces)), donné au journal."""
@@ -1265,10 +1268,20 @@ class ManipulationService(IService):
             return False
         self._noter(texte)
         plan["centre"] = avant + decalage * n
-        # Les faces se comptent désormais depuis le centre recalé ; les bornes
-        # du serrage, elles, restent où la fermeture les a mises (celle de la
-        # seconde main suit déjà la face touchée par la première).
-        self._attendue = {c: v - decalage for c, v in self._attendue.items()}
+        # Bornes du serrage depuis les faces MESURÉES au toucher (comptées
+        # depuis le centre recalé), et non depuis le centre estimé : aucune
+        # main ne va plus de penetration_max_m dans la face qu'elle touche,
+        # quelle que soit l'erreur de la perception.
+        self._attendue = {"left": faces_m[0] - decalage, "right": faces_m[1] - decalage}
+        # Une main déjà au-delà (sa fermeture visait la face perçue) recule
+        # jusqu'à sa borne avant de serrer.
+        q = dict(self._q)
+        for k, cote in enumerate(self._ROULIS):
+            reste = self._reste_avant_borne(q, k, cote)
+            if reste < 0.0:
+                q = self._avancer(q, cote, reste) or q
+        if q != self._q:
+            self._ecrire_q(q)
         return True
 
     def _pas_serrage_mesure(self, dt: float) -> None:

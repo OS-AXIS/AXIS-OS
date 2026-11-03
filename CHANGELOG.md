@@ -44,7 +44,8 @@ le centre perçu était celui de la face avant, dans un cadre qui déborde.
   la prise.
 - Prise : recalage au toucher avant de serrer (`ReglagesPrise.recalage_max_m`,
   `ManipulationService.recalage`, `stats["recalage_m"]`,
-  `etat_visible()["recalage"]`) ; les bornes du serrage ne changent pas.
+  `etat_visible()["recalage"]`) ; bornes du serrage depuis les faces
+  mesurées au toucher, une main déjà au-delà reculée jusqu'à sa borne.
 - Banc T1 : pose de la caméra de tête par son montage sur le bassin ;
   `--detecteur owlvit|owlv2`, `--seuil-detecteur`, `--sans-sam2`,
   `--images-perception` ; `banc_perception.py` compare les détecteurs ; vue

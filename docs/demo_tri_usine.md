@@ -413,9 +413,15 @@ la façade de l'app de tri) :
    (« recalage au toucher : carton à +2,0 cm de la perception », au journal) ;
    au-delà de 3 cm, prise refusée. Le centre recalé devient celui du plan de
    prise (dépose, journal, vue du robot) ; le levage et le transport suivent
-   déjà les mains mesurées. Les bornes du serrage restent celles de la
-   fermeture (celle de la seconde main suit déjà la face touchée par la
-   première). Le lacet n'est pas observable par deux mains
+   déjà les mains mesurées. Les bornes du serrage partent alors des faces
+   MESURÉES au toucher, plus du centre estimé : aucune main ne va plus de
+   2 cm dans la face qu'elle touche, et une main déjà au-delà recule jusqu'à
+   sa borne avant de serrer. Avant le toucher, la fermeture vise la face
+   perçue : à 3 cm d'erreur, la main est déjà contre le carton quand elle
+   commence (les mains l'encadrent à 2,5 mm en posture de port), le contact
+   n'est vu qu'à la force, et la première main va ~2,5 cm dans sa face
+   (relevé par `test_contact_geometrique`, section 7). Le lacet n'est pas
+   observable par deux mains
    plates à la même profondeur : la largeur mesurée en borne l'écart (au
    journal). La profondeur ne l'est pas non plus : elle reste celle de la
    perception.

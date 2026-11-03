@@ -304,11 +304,12 @@ section("7. Serrage borné : raideur extrême, objet mou")
 
 
 def borne_respectee(m, j):
-    """Aucune consigne n'a avancé la face COMMANDÉE d'une main au-delà de
-    largeur/2 - penetration_max_m, la face de l'objet étant celle que la
-    prise attendait alors (un premier contact situe l'objet, et la borne de
-    l'autre main suit ; une main déjà au-delà n'avance plus). Rend le pire
-    écart (m, négatif : au-delà)."""
+    """Aucune consigne n'a avancé la face COMMANDÉE d'une main à plus de
+    penetration_max_m dans la face que la prise attendait alors : largeur/2
+    du centre perçu à la fermeture (un premier contact situe l'objet, et la
+    borne de l'autre main suit), puis la face mesurée au toucher pendant le
+    serrage ; une main déjà au-delà n'avance plus. Rend le pire écart (m,
+    négatif : au-delà)."""
     pire, avant = math.inf, None
     for p in j.pas:
         if p["etat"] not in (Etat.FERMETURE, Etat.SERRAGE) or not p["attendue"]:
@@ -334,14 +335,23 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90), raideu
           f"articulations des bras, sous la moitié du couple max du garde-fou (12,5)",
           max(couples) <= 12.5, str(max(couples)))
     check("… et la prise tient", m.etat is Etat.TENU, m.raison)
+# Objet mou. Les bornes du serrage partent des faces MESURÉES au toucher, que
+# ce carton de 400 N/m a déjà cédées de 0,9 cm : 2 cm plus loin, il donne
+# 7,7 N à la main. Le minimum est donc mis hors d'atteinte (10 N, visé 12) :
+# le test vérifie toujours qu'un serrage qui n'y arrive pas dans sa borne est
+# refusé sans insister, la borne tenue.
+MOU = ReglagesPrise(force_min_n=10.0, force_serrage_n=12.0)
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90), raideur_n_m=400.0)],
                     time_scale=ECHELLE) as robot:
+    robot.manipulation.r = MOU
     res, j = prise(robot, carton(0.30))
     m = robot.manipulation
-    check("Objet mou (400 N/m) : « serrage insuffisant », on n'insiste pas", m.etat is Etat.ECHEC
+    check("Objet mou (400 N/m, 10 N exigés) : « serrage insuffisant », on n'insiste pas",
+          m.etat is Etat.ECHEC
           and "serrage insuffisant" in m.raison, m.raison)
     pire = borne_respectee(m, j)
-    check("… la face commandée de chaque main jamais au-delà de largeur/2 - 2 cm",
+    check("… la face commandée de chaque main jamais à plus de 2 cm dans la face attendue "
+          "(mesurée au toucher, pendant le serrage)",
           pire >= -1e-4, f"{pire:.4f} m")
 
 for raideur in (5e4, 2e5, 1e6):
