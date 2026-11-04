@@ -989,6 +989,10 @@ class FacadeServices:
             return e.name
         return "EN_COURS"
 
+    def raison_manipulation(self) -> str:
+        """Pourquoi la dernière prise ou dépose a échoué ("" sinon)."""
+        return getattr(self.manip, "raison", "") or ""
+
     def suspendre(self, au_contact: bool = False) -> None:
         """Un autre pilote prend la base : la façade cesse toute consigne.
 

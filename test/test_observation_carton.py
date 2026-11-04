@@ -210,6 +210,72 @@ f.accoster(colis)
 check("Nouvel accostage : l'observation précédente est oubliée", f._observe is None)
 r.__exit__(None, None, None)
 
+section("5. Prise hors de portée : nouvel accostage plutôt qu'une prise au bord")
+from axis_os.apps.tri_colis.logique import ConfigTri, TriColis  # noqa: E402
+from axis_os.services.manipulation.prise import ReglagesPrise  # noqa: E402
+from axis_os.services.navigation.service import Carte, Pose2D  # noqa: E402
+
+rg = ReglagesPrise()
+check("Mains au moins 7 cm derrière la face avant : avance vers elle bornée à 2.5 cm pour un "
+      "carton de 20 cm, 0.5 cm pour 15 cm, au milieu (2.5 cm) sous 14 cm",
+      abs(rg.avance_max(0.20) - 0.025) < 1e-12 and abs(rg.avance_max(0.15) - 0.005) < 1e-12
+      and abs(rg.avance_max(0.12) - 0.025) < 1e-12)
+
+
+def mission(trop_loin_a_chaque_fois, duree=150.0):
+    """TriColis sur le robot simulé ; l'insertion s'arrête 12 cm avant la
+    pose de prise (le premier accostage seulement, ou tous) : le carton est
+    alors à 0.41 m du bassin, hors de portée des bras."""
+    carte = Carte(-2.0, -2.0, 3.0, 2.0, postes={"prise": Pose2D(0.0, 0.0, 0.0)})
+    r = SimulatedRobot(carte=carte, objects=[SimulatedObject("carton bleu", (X_CARTON, 0.0, 0.90))],
+                       time_scale=2.0)
+    r.__enter__()
+    time.sleep(0.2)
+    journal = []
+    f = FacadeServices(r.navigation, r.locomotion, r.manipulation, r.perception, r._pose2d,
+                       r.clock, cap_prise=0.0, journal=journal.append,
+                       cfg=ConfigFacade(requete="{couleur}", position_face_avant=False))
+    insertions = [0]
+    lancer = f._lancer_insertion
+
+    def court():
+        insertions[0] += 1
+        if trop_loin_a_chaque_fois or insertions[0] == 1:
+            q = f._insertion
+            f._insertion = Pose2D(q.x - 0.12, q.y, q.cap)
+        lancer()
+
+    f._lancer_insertion = court
+    tri = TriColis(f, ConfigTri(regles={"bleu": "A"}, duree_mission_s=1e6))
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < duree:
+        tri.pas()
+        f.tick()
+        if tri.colis is None and tri.bilan.colis_abandonnes or any("en main" in l for l in journal):
+            break
+        time.sleep(0.005)
+    return r, f, tri, journal, insertions[0]
+
+
+r, f, tri, journal, n = mission(False)
+loin = [l for l in journal if "nouvel accostage, plus près (1/2)" in l]
+check("Robot arrêté trop loin : prise refusée « hors de portée », sans fermer les mains, puis "
+      "nouvel accostage", bool(loin) and "hors de portée" in loin[0]
+      and tri.bilan.prises_ratees == 0, str(journal))
+check("… le second accostage aboutit : carton tenu, mains au milieu", any(
+    "colis bleu en main" in l for l in journal) and r.manipulation.etat is Etat.TENU
+      and ecart_mains(r) < 0.015, f"{r.manipulation.etat} {journal[-3:]}")
+r.__exit__(None, None, None)
+r, f, tri, journal, n = mission(True)
+check("Toujours trop loin : 2 nouveaux accostages au plus, puis colis SIGNALÉ et laissé",
+      tri.bilan.colis_abandonnes == 1 and n == 3 and any(
+          "hors de portée après 2 nouveaux accostages" in l for l in journal)
+      and tri.bilan.prises_ratees == 0, f"{n} {journal[-4:]}")
+check("… bras jamais refermés sur le carton (aucun serrage)", r.manipulation.stats.get(
+    "prises", 0) == 0 and r.objects[0].position == (X_CARTON, 0.0, 0.90),
+      f"{r.manipulation.stats} {r.objects[0].position}")
+r.__exit__(None, None, None)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

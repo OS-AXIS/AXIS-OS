@@ -53,6 +53,13 @@ class ReglagesPrise:
     jeu_ouverture_m: float = 0.05
     marge_ouverture_m: float = 0.02
     tol_profondeur_m: float = 0.025    # mains au milieu des faces, en profondeur
+    # Point de prise : les mains au moins `recul_face_min_m` derrière la
+    # face avant de l'objet (celle tournée vers le robot), idéalement au
+    # milieu. Constaté sur GPU (essai T1, novembre 2026) : mains près du
+    # bord avant d'un carton. Avec un carton de 20 cm, la tolérance
+    # ci-dessus les garde déjà à 7.5 cm ; la règle borne la tolérance vers
+    # l'avant d'un objet moins profond (voir avance_max).
+    recul_face_min_m: float = 0.07
     # et en hauteur ; constaté sur GPU (2026-10-29) : mains 3,3 cm plus bas
     # que leurs cibles (bras qui s'affaissent), d'où une tolérance serrée et
     # la compensation ci-dessous.
@@ -167,6 +174,15 @@ class ReglagesPrise:
                 f"{self.recalage_max_m:.3f} m) au-delà de l'ouverture moins sa marge "
                 f"(jeu_ouverture_m - marge_ouverture_m = "
                 f"{self.jeu_ouverture_m - self.marge_ouverture_m:.3f} m)")
+
+    def avance_max(self, profondeur: float) -> float:
+        """Écart maximal (m) des mains vers la face avant, depuis le milieu
+        de l'objet : `recul_face_min_m` derrière la face avant au moins, et
+        jamais plus que `tol_profondeur_m`. Un objet de moins de deux fois
+        `recul_face_min_m` de profondeur est pris au milieu, à
+        `tol_profondeur_m` près (la règle ne peut pas y tenir)."""
+        reste = profondeur / 2.0 - self.recul_face_min_m
+        return self.tol_profondeur_m if reste <= 0.0 else min(self.tol_profondeur_m, reste)
 
 
 @dataclass

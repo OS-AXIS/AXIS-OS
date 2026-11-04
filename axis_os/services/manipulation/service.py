@@ -1064,12 +1064,25 @@ class ManipulationService(IService):
         axe = np.array([math.cos(plan["lacet"]), math.sin(plan["lacet"]), 0.0])
         erreurs = [m - c for m, c in zip((mg, md), plan["cibles"])]
         erreurs_mod = [m - c for m, c in zip(mod, plan["cibles"])]
-        prof = max(abs(float(e @ axe)) for e in erreurs + erreurs_mod)
+        # En profondeur : vers l'arrière (loin du robot), `tol_profondeur_m` ;
+        # vers la face avant, au plus avance_max (7 cm derrière elle au moins).
+        arriere = max(0.0, max(float(e @ axe) for e in erreurs + erreurs_mod))
+        avant = max(0.0, max(-float(e @ axe) for e in erreurs + erreurs_mod))
+        prof = max(arriere, avant)
         haut = max(abs(float(e[2])) for e in erreurs + erreurs_mod)
-        if prof <= r.tol_profondeur_m and haut <= r.tol_hauteur_m:
+        avance_max = r.avance_max(self.objet.profondeur)
+        if arriere <= r.tol_profondeur_m and avant <= avance_max and haut <= r.tol_hauteur_m:
             self._debut_fermeture()
             return
         if self._corrections >= r.corrections_max:
+            if avant > avance_max:
+                # Les mains restent trop près du bord avant : prendre là,
+                # c'est prendre au bord. Le robot doit se rapprocher.
+                self._echouer(f"prise refusée — mains à {100 * (self.objet.profondeur / 2 - avant):.1f}"
+                              f" cm derrière la face avant (il en faut "
+                              f"{100 * min(r.recul_face_min_m, self.objet.profondeur / 2):.0f}) après "
+                              f"{self._corrections} corrections : hors de portée, se rapprocher")
+                return
             self._echouer(f"prise refusée — mains mal placées après {self._corrections} "
                           f"corrections : {100 * prof:.1f} cm en profondeur, {100 * haut:.1f} cm "
                           f"en hauteur")

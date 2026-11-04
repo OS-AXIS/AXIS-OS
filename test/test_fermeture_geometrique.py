@@ -66,8 +66,12 @@ section("1. Le constat GPU : bras affaissés, borne q_vide atteinte avant les fa
 # Sans compensation (tolérances larges, aucune correction), comme sur le
 # GPU : le roulis atteint q_vide alors que les mains n'ont pas touché.
 # L'ancien critère (angle du roulis contre q_vide) concluait « rien entre
-# les mains » ; le critère géométrique continue jusqu'au contact.
-large = ReglagesPrise(tol_hauteur_m=0.12, tol_profondeur_m=0.06, corrections_max=0)
+# les mains » ; le critère géométrique continue jusqu'au contact. Cette
+# section imite le placement d'avant (tolérances larges) pour atteindre la
+# fermeture : sans la règle des 7 cm derrière la face avant, venue après
+# (recul_face_min_m), que l'affaissement non compensé enfreint (5,6 cm).
+large = ReglagesPrise(tol_hauteur_m=0.12, tol_profondeur_m=0.06, corrections_max=0,
+                      recul_face_min_m=0.0)
 r, etats, mains, _ = prise(0.25, reglages=large)
 m = r.manipulation
 check("Mains 6 à 7 cm sous leurs cibles à la fermeture (affaissement non compensé)",
