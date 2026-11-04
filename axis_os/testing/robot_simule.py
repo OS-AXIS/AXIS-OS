@@ -322,6 +322,8 @@ class SimulatedPerception:
         if not self._demarre:
             return ServiceResult(ok=False, reason="service non démarré")
         dets = []
+        # Caméra idéale : une image neuve à chaque appel, à l'heure du robot.
+        self.derniere_image_ns = int(self._robot.clock() * 1e9)
         for o in sorted(self._visibles(query), key=lambda o: -o.confidence):
             p = np.asarray(o.position, dtype=float)
             q = p if frame == FRAME_WORLD else self._robot._vers_robot(p)

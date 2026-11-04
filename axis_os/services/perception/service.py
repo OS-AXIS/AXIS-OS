@@ -205,6 +205,7 @@ class PerceptionService(IService):
         self._started = False
         self._detections_count = 0
         self._stale_frames = 0
+        self.derniere_image_ns: Optional[int] = None   # instant de la dernière image lue
         # Points de la face avant retenus pour chaque détection de la
         # dernière recherche ({bbox: tableau N×3, repère de sortie}) : lus
         # par les vues de diagnostic, jamais par une décision.
@@ -324,6 +325,9 @@ class PerceptionService(IService):
         if frame is None:
             return ServiceResult(
                 ok=False, reason="aucune image disponible")
+        # Instant de l'image analysée : l'app de tri n'accepte, pour prendre
+        # un carton, que des images prises après l'arrêt du robot.
+        self.derniere_image_ns = frame.timestamp_ns
 
         # Une image trop ancienne décrit une scène qui a pu changer : on
         # refuse de l'analyser plutôt que de rendre des positions

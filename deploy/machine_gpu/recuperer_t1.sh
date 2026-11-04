@@ -31,6 +31,10 @@ if sudo docker exec "$CONTENEUR" test -f /isaac-sim/videos/t1.fini; then
   # seulement) : t1_vue_diagnostic.mp4.
   sudo docker cp "$CONTENEUR:/isaac-sim/videos/t1_vue_diagnostic.mp4" "$HOME/videos/" \
     2>/dev/null && echo "Vue de diagnostic : $HOME/videos/t1_vue_diagnostic.mp4"
+  # Relevé pas à pas de chaque fermeture et serrage (forces estimée et
+  # réelle, faces, couples des bras) : t1_prise_AAAAMMJJ_HHMM.csv.
+  sudo docker cp "$CONTENEUR:/isaac-sim/videos/t1_prise.csv" "$HOME/videos/t1_prise_$H.csv" \
+    2>/dev/null && echo "Relevé des prises : $HOME/videos/t1_prise_$H.csv"
   echo "--- bilan ---"
   sed -n '/RÉSULTATS T1/,/Résultats :/p' "$HOME/videos/t1_$H.log" 2>/dev/null
   # Version réduite, prête à télécharger : 540 lignes, quelques Mo (sans
@@ -56,6 +60,7 @@ if sudo docker exec "$CONTENEUR" test -f /isaac-sim/videos/t1.fini; then
         $( [ -f "$PETITE" ] && basename "$PETITE" ) \
         $( [ -f "$VUE" ] && basename "$VUE" ) \
         $( [ -f "$DIAG" ] && basename "$DIAG" ) \
+        $( [ -f "t1_prise_$H.csv" ] && echo "t1_prise_$H.csv" ) \
         $( [ -f eval_vla.json ] && echo eval_vla.json ) ) \
       && echo "À télécharger : $HOME/videos/t1_$H.zip ($(du -h "$HOME/videos/t1_$H.zip" | cut -f1))"
   fi

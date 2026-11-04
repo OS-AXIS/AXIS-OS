@@ -297,10 +297,16 @@ def main():
 
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
+    # Images horodatées à l'instant simulé de leur rendu (et non à l'heure
+    # murale de leur lecture) : la perception refuse une image périmée, et
+    # la prise exige des images prises après l'arrêt du robot.
+    t_rendu_ns = [0]
     cam = IsaacSimCamera("tete_rgb", prim_path="/World/tete_rgb", width=640, height=480,
-                         position=(0.2, 0.0, 1.2), focal_length_mm=18.0)
+                         position=(0.2, 0.0, 1.2), focal_length_mm=18.0,
+                         horloge_ns=lambda: t_rendu_ns[0])
     dep = IsaacSimCamera("tete_prof", prim_path="/World/tete_prof", width=640, height=480,
-                         position=(0.2, 0.0, 1.2), depth=True, focal_length_mm=18.0)
+                         position=(0.2, 0.0, 1.2), depth=True, focal_length_mm=18.0,
+                         horloge_ns=lambda: t_rendu_ns[0])
     # Vue de DIAGNOSTIC (banc seulement, jamais lue par l'OS) : au moment de
     # la prise, mains et carton proche sortent du cadre de la caméra de tête
     # (elle vise 1,5 m devant, 15° vers le bas : son bord bas passe ~40° sous
@@ -624,6 +630,11 @@ def main():
             etat_calib["arrive"] = sim_t[0]
         if sim_t[0] - etat_calib["arrive"] < 0.6:  # le bras se pose
             return False
+        if sim_t[0] - etat_calib["arrive"] < 1.0:
+            # Bras posés et immobiles : couples estimés contre pesanteur du
+            # modèle, pour les biais des couples (0,4 s de relevés).
+            manip.echantillon_calibration_couples(nom)
+            return False
         st_ = read_state()
         g_, d_ = mains()
         calib.ajouter(nom, {j: st_.joint_pos[j] for j in chaine_bras},
@@ -635,6 +646,10 @@ def main():
         ok_, texte_ = calib.bilan()
         for ligne_ in texte_.splitlines():
             journaliser(ligne_)
+        # Biais des couples (une ligne par articulation, et le résidu) : la
+        # force à la main se calcule désormais sur les couples corrigés.
+        for ligne_ in manip.terminer_calibration_couples().splitlines():
+            journaliser(ligne_)
         if not ok_:
             manip.calibration_refus = (
                 f"cinématique des bras non calibrée : main réelle à "
@@ -642,6 +657,14 @@ def main():
                 f"{100 * calib.ecart_max_m:.1f}), voir « calibration des mains » au début du "
                 f"journal")
         manip.resynchroniser()               # bras revenus en posture de port
+        # Hauteur du bassin, robot posé et en équilibre depuis la remise
+        # debout (et non juste après elle, comme avant : le robot était
+        # encore à sa hauteur d'apparition, 1,3 cm au-dessus du sol, d'où
+        # l'écart de l'essai GPU de novembre 2026).
+        h_est_ = hauteur_bassin(angles_mesures(), rotation_imu())
+        h_vrai_ = float(robot.get_world_pose()[0][2])
+        journaliser(f"hauteur du bassin, robot posé : estimée {h_est_:.3f} m (jambes et centrale "
+                    f"inertielle), vraie {h_vrai_:.3f} m, écart {100 * (h_est_ - h_vrai_):+.1f} cm")
         return True
 
     tree = FrameTree()
@@ -1016,6 +1039,36 @@ def main():
     # Juge (vérité simulation, banc_prise) : contacts PhysX des mains avec
     # les cartons, pour noter le contact estimé par l'OS ; l'OS n'en lit rien.
     juge = JugeContacts(capteurs.lire) if capteurs.methode else None
+    # Relevé de chaque pas de fermeture et de serrage, par main (ajouté au
+    # .zip par recuperer_t1.sh) : force estimée (le long de la normale et
+    # vecteur), force réelle du juge, faces commandée et mesurée, couples
+    # des 7 articulations du bras. Pour expliquer une force de mauvais
+    # signe (essai GPU de novembre 2026) avec les chiffres de chaque pas.
+    import csv
+    ARTIC_CSV = ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll",
+                 "wrist_pitch", "wrist_yaw")
+    fichier_prise = open(VIDEOS / "t1_prise.csv", "w", newline="")
+    csv_prise = csv.writer(fichier_prise)
+    csv_prise.writerow(["t_s", "phase", "sous_phase", "main", "force_normale_n", "force_x_n",
+                        "force_y_n", "force_z_n", "serrage_filtre_n", "force_juge_n",
+                        "face_commandee_m", "face_mesuree_m"]
+                       + [f"couple_{a}_nm" for a in ARTIC_CSV])
+
+    def relever_prise(t):
+        rel_ = manip.releve_fermeture()
+        if rel_ is None:
+            return
+        for cote_ in ("left", "right"):
+            m_ = rel_[cote_]
+            f_ = m_["force"] or (None, None, None)
+            juge_ = capteurs.lire(cote_) if capteurs.methode else None
+            csv_prise.writerow(
+                [f"{t:.3f}", rel_["phase"], rel_["sous_phase"] or "", cote_]
+                + ["" if v is None else f"{v:.3f}" for v in (m_["normale"], *f_, m_["serrage"],
+                                                              juge_, m_["face_commandee"],
+                                                              m_["face_mesuree"])]
+                + [f"{m_['couples'][f'{cote_}_{a}_joint']:.3f}"
+                   if f"{cote_}_{a}_joint" in m_["couples"] else "" for a in ARTIC_CSV])
     print(f"  juge des contacts (vérité simulation) : "
           + (f"actif ({capteurs.methode}) sur {capteurs.corps}" if juge else "indisponible")
           + (f" — {' ; '.join(capteurs.raisons)}" if capteurs.raisons else ""), flush=True)
@@ -1028,9 +1081,12 @@ def main():
             return None
         w_, x_, y_, z_ = (float(v) for v in c_["obj"].get_world_pose()[1])
         return math.degrees(math.atan2(2 * (w_ * z_ + x_ * y_), 1 - 2 * (y_ * y_ + z_ * z_)))
-    print(f"  hauteur du bassin : estimée {hauteur_bassin(angles_mesures(), rotation_imu()):.3f} m "
-          f"(jambes et centrale inertielle), vraie {float(robot.get_world_pose()[0][2]):.3f} m",
-          flush=True)
+    # Robot à sa hauteur d'apparition, pas encore posé (aucun pas de
+    # physique depuis la remise debout) : la comparaison utile est faite
+    # robot posé, à la fin de la calibration, puis à chaque prise.
+    print(f"  hauteur du bassin à l'apparition (robot pas encore posé) : estimée "
+          f"{hauteur_bassin(angles_mesures(), rotation_imu()):.3f} m, prim à "
+          f"{float(robot.get_world_pose()[0][2]):.3f} m", flush=True)
     # Vue du robot : caméra de tête (celle de la perception), 640×480 à 15
     # images par seconde de vidéo, sur le même temps simulé que la vidéo
     # principale ; en incrustation dans celle-ci et sur la page de suivi.
@@ -1214,6 +1270,28 @@ def main():
                         else f"PAS une personne (la plus proche à {d_pers:.2f} m du point)")
                 sur_robot = math.hypot(pt[0] - pr_.x, pt[1] - pr_.y)
                 quoi += f", point à {sur_robot:.2f} m du centre du robot"
+                # Ce qui est là (vérité simulation, banc seulement). Essai
+                # GPU de novembre 2026 : arrêts à 0,5 m devant (4.35, 1.95),
+                # 5 cm devant le bord de la table de prise, en face du
+                # troisième emplacement. Un carton tiré hors de la table n'est
+                # pas un objet fixe : il doit rester « inexpliqué ».
+                pres_ = [(math.hypot(float(c_["obj"].get_world_pose()[0][0]) - pt[0],
+                                     float(c_["obj"].get_world_pose()[0][1]) - pt[1]), c_)
+                         for c_ in cartons if c_["lieu"] != "stock"]
+                if pres_:
+                    d_c, c_ = min(pres_, key=lambda e_: e_[0])
+                    pc_ = np.asarray(c_["obj"].get_world_pose()[0], dtype=float)
+                    avant_ = float(pc_[1]) - sd.PROFONDEUR_CARTON / 2
+                    quoi += (f" ; carton le plus proche : {c_['couleur']} à {d_c:.2f} m du point, "
+                             f"centre ({pc_[0]:.2f}, {pc_[1]:.2f}), face avant à y = {avant_:.3f}"
+                             + (f", DÉPASSE de {100 * (sd.TABLE_PRISE.ymin - avant_):.0f} cm le "
+                                f"bord de la table de prise (y = {sd.TABLE_PRISE.ymin:.2f})"
+                                if sd.TABLE_PRISE.contient(float(pc_[0]), sd.TABLE_PRISE.ymin + 0.01)
+                                and avant_ < sd.TABLE_PRISE.ymin else ""))
+                mr_ = [m_ for m_ in mains_reelles() if m_ is not None]
+                if mr_:
+                    quoi += (f" ; main la plus proche à "
+                             f"{min(math.hypot(m_[0] - pt[0], m_[1] - pt[1]) for m_ in mr_):.2f} m")
             msg = (f"[{t:7.1f}s] SÉCURITÉ arrêt : {v_.raison} — obstacle en "
                    f"{None if pt is None else (round(pt[0], 2), round(pt[1], 2))}, "
                    f"robot en ({pr_.x:.2f}, {pr_.y:.2f}) — {quoi}")
@@ -1291,10 +1369,13 @@ def main():
                 if fd_ is not None and kd_ is not None and tfd_ is not None:
                     rgbd_ = np.frombuffer(fd_.data, dtype=np.uint8).reshape(fd_.height,
                                                                              fd_.width, 3)
-                    # Les masques sont en pixels de la caméra de tête : pas ici.
+                    # Masques et cadres des détections sont en pixels de la
+                    # caméra de tête : pas ici (essai GPU de novembre 2026 :
+                    # un cadre « rouge 0.34 » était dessiné autour de la tête
+                    # du robot). Seules les boîtes 3D sont dessinées.
                     derniere_diag = vue_diag.image(rgbd_, kd_, tfd_, {} if args.vue_sans_calques
                                                    else {k_: v_ for k_, v_ in couches_vue().items()
-                                                         if k_ != "masques"})
+                                                         if k_ not in ("masques", "detections")})
                     if suivi is not None:
                         suivi.image_vue("diagnostic", derniere_diag)
         # send_targets (dans loco.tick) a déjà fait un pas de physique : on
@@ -1303,15 +1384,21 @@ def main():
         for i in range(cfg.decimation - 1):
             world.step(render=((percevoir or filmer or filmer_vue) and i == 0))
         sim_t[0] += cfg.control_dt
+        if percevoir or filmer or filmer_vue:
+            t_rendu_ns[0] = int(sim_t[0] * 1e9)     # instant du rendu de ce pas
         t_physique[0] = sim_t[0]
         k += 1
         # Juge : une prise va de l'entrée en PLACEMENT à sa fin ; contacts
         # réels relevés pendant la FERMETURE ; lacet réel du carton à chaque
         # phase (tourne-t-il pendant la prise ?).
+        relever_prise(sim_t[0])
         if juge is not None:
             e_ = manip.etat
             if e_ is Etat.PLACEMENT and not juge.en_cours:
                 juge.debut()
+                journaliser(f"[{sim_t[0]:7.1f}s] bassin à la prise : estimé "
+                            f"{hauteur_bassin(angles_mesures(), rotation_imu()):.3f} m, vrai "
+                            f"{float(robot.get_world_pose()[0][2]):.3f} m")
             if juge.en_cours:
                 juge.pas(sim_t[0], fermeture=e_ is Etat.FERMETURE)
                 if e_ is Etat.PLACEMENT:
@@ -1403,6 +1490,7 @@ def main():
                 print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
                       f"{tri.bilan.colis_tries} triés, état {tri.etat}")
 
+    fichier_prise.close()
     if video_ok:
         rec.terminer()
         vue.terminer()
@@ -1461,6 +1549,17 @@ def main():
           f"de 0.75 m ({viol_humain} pas en défaut ; {pas_vers_humain} pas d'oscillation, "
           f"rapprochement cumulé max {100 * rapproche_max:.1f} cm)", viol_humain == 0)
     check("Aucune consigne refusée par le garde-fou", loco.stats["refused"] == 0)
+    if not (tri.etat == "FIN" and manip.etat is Etat.LIBRE):
+        # Pourquoi la fin n'est pas propre. La mission ne s'achève que depuis
+        # CHERCHER, ATTENDRE ou PAUSE, une fois sa durée passée ; pendant un
+        # arrêt de sécurité, elle est gelée (TriColis.pas). La boucle, elle,
+        # s'arrête au plus tard DUREE + 300 s.
+        v_fin = loco.dernier_verdict
+        print(f"  fin non propre : tâche {tri.etat} (terminée : {tri.termine}), bras "
+              f"{manip.etat.name}, boucle arrêtée à {sim_t[0]:.0f} s (limite "
+              f"{DUREE + 300:.0f} s)"
+              + (f", robot ARRÊTÉ par la sécurité : {v_fin.raison}"
+                 if v_fin is not None and v_fin.facteur <= 0.0 else ""), flush=True)
     check("Fin propre, bras vides", tri.etat == "FIN" and manip.etat is Etat.LIBRE)
     print(f"\n{'=' * 66}")
     print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

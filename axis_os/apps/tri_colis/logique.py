@@ -73,6 +73,12 @@ class ConfigTri:
     essais_prise_max: int = 3
     essais_nav_max: int = 3
     essais_pose_max: int = 2
+    # Prise hors de portée (le robot trop loin pour que les mains atteignent
+    # le milieu du carton) : nouvel accostage, au plus `rapprochements_max`
+    # fois, avant d'abandonner le colis. Ce n'est pas une prise ratée : les
+    # mains n'ont pas serré. Constaté sur GPU (essai T1, novembre 2026) :
+    # « hors de portée (objet à 0.41 m) », et prise abandonnée.
+    rapprochements_max: int = 2
     # Durées maximales d'un trajet ou d'un accostage, puis d'une prise ou
     # d'une dépose ; pause entre deux recherches qui n'ont rien trouvé.
     delai_nav_s: float = 90.0
@@ -144,6 +150,7 @@ class TriColis:
         self._temps_etat = 0.0
         self._entree = True             # premier pas dans l'état courant
         self._essais_prise = 0
+        self._rapprochements = 0        # nouveaux accostages, colis hors de portée
         # Prises ratées par colis (position, couleur, essais) : un colis
         # garde son compte même si le robot en a pris un autre entre-temps.
         self._prises_ratees: List[Tuple[Tuple[float, float, float], str, int]] = []
@@ -306,6 +313,7 @@ class TriColis:
         self._inactif_depuis, self._inactivite_signalee = None, False
         # Le candidat le plus sûr, toutes couleurs confondues.
         self.colis = max(candidats, key=lambda c: c.confiance)
+        self._rapprochements = 0
         # Colis déjà raté (même couleur, même place) : ses essais continuent
         # de compter, même si un autre a été pris entre-temps.
         self._essais_prise = 0
@@ -371,9 +379,14 @@ class TriColis:
             self._entree = False
             ok, raison = self.robot.prendre(self.colis)
             if not ok:
-                self._prise_ratee(raison)
+                self._prise_impossible(raison)
             return
         etat = self.robot.manipulation()
+        if etat == "ECHEC":
+            raison = getattr(self.robot, "raison_manipulation", lambda: "")()
+            if "hors de portée" in raison:
+                self._prise_impossible(raison)
+                return
         if etat == "TENU":
             if self._essais_prise > 0:
                 self.bilan.reussies_apres_nouvel_essai += 1
@@ -383,6 +396,25 @@ class TriColis:
         elif etat == "ECHEC" or self._temps_etat > self.cfg.delai_manip_s:
             self._prise_ratee("prise non confirmée" if etat == "ECHEC"
                               else "prise trop longue")
+
+    def _prise_impossible(self, raison: str) -> None:
+        """Prise refusée ou échouée. Hors de portée : le robot se rapproche
+        par un nouvel accostage (au plus rapprochements_max fois), au lieu
+        de prendre au bord ; sinon, c'est une prise ratée. Dans les deux
+        cas, les mains, autour du carton, s'ouvrent en grand et le lâchent
+        avant le recul (jamais ramenées au port contre ses faces)."""
+        if "hors de portée" not in raison:
+            self._prise_ratee(raison)
+            return
+        self.robot.reinitialiser_manipulation()
+        if self._rapprochements >= self.cfg.rapprochements_max:
+            self._abandonner_colis(f"hors de portée après {self._rapprochements} nouveaux "
+                                   f"accostages ({raison})")
+            return
+        self._rapprochements += 1
+        self._log(f"prise impossible d'ici ({raison}) — nouvel accostage, plus près "
+                  f"({self._rapprochements}/{self.cfg.rapprochements_max})")
+        self._aller("ACCOSTER")
 
     def _prise_ratee(self, raison: str) -> None:
         self.bilan.prises_ratees += 1

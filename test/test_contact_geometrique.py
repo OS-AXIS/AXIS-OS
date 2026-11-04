@@ -186,7 +186,8 @@ section("5. Gains des poignets : raidis pour la prise, rendus au dépôt, à l'�
         "d'urgence")
 r = robot(objets=False)
 prendre(r, CARTON)
-check("Échec (rien entre les mains) : raidis à la fermeture, rendus à l'échec",
+check("Échec (rien entre les mains) : raidis pour la prise (dès le placement), rendus à "
+      "l'échec",
       r.changements_raideur == [True, False] and not r.raideur_active, str(r.changements_raideur))
 r.__exit__(None, None, None)
 r = robot()

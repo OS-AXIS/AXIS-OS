@@ -10,6 +10,49 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Essai GPU de main (T1) : carton revu après l'arrêt, biais des couples, prise au milieu
+
+Constat GPU (T1, 240 s, opérateur actif) : 0 trié ; 4 contacts manqués.
+- Carton revu après l'arrêt (`FacadeServices`, phase OBSERVATION) : toute
+  estimation est oubliée à chaque accostage et à chaque nouvel essai ; à la
+  pose d'attente, robot immobile et bras ouverts, la prise exige
+  `ConfigFacade.images_observation` (3) images prises APRÈS l'arrêt,
+  cohérentes à `tol_observation_m` (1 cm) et `tol_observation_deg` (3°)
+  près, sinon le robot regarde encore (`observation_max_s`), puis renonce.
+  Carton qui a bougé : « a BOUGÉ de … » au journal, cible suivie,
+  réalignement (`tol_realignement_m`, `realignements_max`).
+  `recul_insertion` 0,18 → 0,28 m (tout le dessus du carton dans le champ
+  de la caméra de tête du banc T1). Prise refusée sans ces images.
+  `chercher(couleur, fusion=False)`, `instant_image`.
+- Horodatage des images : `PerceptionService.derniere_image_ns` ;
+  `IsaacSimCamera(horloge_ns=…)` (banc T1 : instant simulé du rendu, et non
+  plus heure murale de la lecture) ; `SimulatedPerception.derniere_image_ns`.
+- Biais des couples : `CalibrationCouples` (prise.py) ;
+  `ManipulationService.echantillon_calibration_couples()`,
+  `terminer_calibration_couples()`, `biais_couples`,
+  `stats["biais_couples_nm"]`, `stats["residu_couples_nm"]` ; la force à la
+  main se calcule sur les couples corrigés (pas les plafonds de couple).
+  Banc T1 : relevés pendant la calibration des mains, biais et résidu au
+  journal.
+- Filet « main déjà en appui » : force corrigée des biais (seuil inchangé)
+  et géométrie, la main retenue en dehors de sa consigne à la pose
+  d'ouverture (`ReglagesPrise.retard_appui_m`,
+  `stats["retard_ouverture_cm"]`).
+- Zéro des couples : gains raidis dès le placement, τ0 pris au moins
+  `ReglagesPrise.duree_raidissement_s` (0,5 s) après le dernier changement
+  de gains (le bras qui bougeait pendant la fenêtre du zéro décalait la
+  force relative : mauvais signe, contacts manqués).
+- Point de prise : mains au moins `ReglagesPrise.recul_face_min_m` (7 cm)
+  derrière la face avant (`avance_max()`) ; sinon « hors de portée, se
+  rapprocher ». `ConfigTri.rapprochements_max` (2) : prise hors de portée →
+  nouvel accostage, puis colis signalé ; `FacadeServices.raison_manipulation()`.
+- Banc T1 : `t1_prise.csv` (chaque pas de fermeture et de serrage, par main :
+  forces estimée et réelle, faces, couples ; `ManipulationService.releve_fermeture()`),
+  ajouté au .zip par `recuperer_t1.sh` ; diagnostic d'arrêt de sécurité
+  (carton le plus proche, dépassement du bord, main la plus proche) et de
+  fin non propre ; hauteur du bassin comparée robot posé ; vue de diagnostic
+  sans les cadres 2D de la caméra de tête.
+
 ### Sécurité : marche sous batterie critique, fin de suivi sous arrêt d'urgence
 
 Deux courses présentes sur `main`, vues en CI (intermittentes) :

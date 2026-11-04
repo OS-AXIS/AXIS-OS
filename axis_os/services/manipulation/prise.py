@@ -53,6 +53,13 @@ class ReglagesPrise:
     jeu_ouverture_m: float = 0.05
     marge_ouverture_m: float = 0.02
     tol_profondeur_m: float = 0.025    # mains au milieu des faces, en profondeur
+    # Point de prise : les mains au moins `recul_face_min_m` derrière la
+    # face avant de l'objet (celle tournée vers le robot), idéalement au
+    # milieu. Constaté sur GPU (essai T1, novembre 2026) : mains près du
+    # bord avant d'un carton. Avec un carton de 20 cm, la tolérance
+    # ci-dessus les garde déjà à 7.5 cm ; la règle borne la tolérance vers
+    # l'avant d'un objet moins profond (voir avance_max).
+    recul_face_min_m: float = 0.07
     # et en hauteur ; constaté sur GPU (2026-10-29) : mains 3,3 cm plus bas
     # que leurs cibles (bras qui s'affaissent), d'où une tolérance serrée et
     # la compensation ci-dessous.
@@ -97,6 +104,15 @@ class ReglagesPrise:
     amorti_force_m: float = 0.02
     filtre_force: int = 5
     duree_bruit_s: float = 0.2
+    # Le zéro des couples (τ0) n'est pris qu'à `duree_raidissement_s` au
+    # moins du dernier changement de gains. Pourquoi (analyse de l'essai GPU
+    # T1 de novembre 2026, force estimée de mauvais signe pendant toute la
+    # fermeture, contacts réels manqués) : les gains étaient raidis au début
+    # même de la fenêtre du zéro ; le bras, moins affaissé sous son poids,
+    # bougeait pendant cette fenêtre, et le couple de ce mouvement, pris dans
+    # τ0, décalait la force relative jusqu'au bout. Les gains sont désormais
+    # raidis dès le placement des mains.
+    duree_raidissement_s: float = 0.5
     force_contact_n: float = 3.0
     sigmas_contact: float = 6.0
     # Serrage visé et minimal, à chaque main. Bras du G1 aux gains du banc
@@ -121,6 +137,14 @@ class ReglagesPrise:
     # régler sur les essais GPU (valeur mesurée au journal).
     force_appui_n: float = 3.0
     sigmas_appui: float = 4.0
+    # … et en géométrie : la main MESURÉE (cinématique sur les angles
+    # mesurés) retenue en dehors de sa main COMMANDÉE (cinématique sur la
+    # consigne), le long de la normale de l'objet, de `retard_appui_m` de
+    # plus qu'au début du placement (mains grandes ouvertes, libres) : la
+    # main est retenue par quelque chose à la pose d'ouverture.
+    # L'affaissement des bras sous leur poids, et sa compensation, sont les
+    # mêmes au départ et à l'arrivée : ils s'annulent.
+    retard_appui_m: float = 0.01
     # Plafond de couple de CHAQUE articulation du bras (valeur absolue).
     effort_max_nm: float = 10.0        # jamais au-delà
     part_couple_garde: float = 0.5     # ni au-delà de cette part du couple max du garde-fou
@@ -150,6 +174,15 @@ class ReglagesPrise:
                 f"{self.recalage_max_m:.3f} m) au-delà de l'ouverture moins sa marge "
                 f"(jeu_ouverture_m - marge_ouverture_m = "
                 f"{self.jeu_ouverture_m - self.marge_ouverture_m:.3f} m)")
+
+    def avance_max(self, profondeur: float) -> float:
+        """Écart maximal (m) des mains vers la face avant, depuis le milieu
+        de l'objet : `recul_face_min_m` derrière la face avant au moins, et
+        jamais plus que `tol_profondeur_m`. Un objet de moins de deux fois
+        `recul_face_min_m` de profondeur est pris au milieu, à
+        `tol_profondeur_m` près (la règle ne peut pas y tenir)."""
+        reste = profondeur / 2.0 - self.recul_face_min_m
+        return self.tol_profondeur_m if reste <= 0.0 else min(self.tol_profondeur_m, reste)
 
 
 @dataclass
@@ -318,6 +351,58 @@ def ecarts_modele(modele: ModeleBras, angles: Dict[str, float],
     pg, pd = modele.mains(angles)
     return (np.asarray(mains_reelles[0], dtype=float) - pg,
             np.asarray(mains_reelles[1], dtype=float) - pd)
+
+
+class CalibrationCouples:
+    """Biais des couples estimés, articulation par articulation. Bras en
+    l'air et immobiles, dans quelques postures (celles de la calibration des
+    mains), le couple estimé devrait être celui de la pesanteur sur le bras
+    (modèle de l'URDF, angles mesurés, centrale inertielle) ; l'écart moyen
+    est le biais (moindres carrés d'un décalage constant sur tous les
+    relevés), et ce qui reste, posture par posture, le résidu (le modèle
+    n'explique pas tout). Constaté sur GPU (essai T1, novembre 2026) : 4.6 N
+    puis 3.9 N à la main droite au repos, sans contact, pour un bruit de 0.6
+    à 1.05 N : un biais, pas du bruit. La force à la main se calcule ensuite
+    sur les couples corrigés (ManipulationService.biais_couples) ; les
+    plafonds de couple, eux, restent jugés sur le couple mesuré."""
+
+    def __init__(self):
+        self.releves: list = []          # (posture, {articulation: (couple, gravité)})
+
+    def ajouter(self, posture: str, couples: Dict[str, float],
+                gravite: Dict[str, float]) -> None:
+        self.releves.append((posture, {j: (float(couples[j]), float(gravite[j]))
+                                       for j in gravite if j in couples}))
+
+    def resoudre(self) -> Dict[str, Tuple[float, float, int]]:
+        """{articulation: (biais N·m, résidu N·m, relevés)} ; le résidu est
+        l'écart quadratique moyen, posture par posture (moyennes des relevés
+        de chaque posture), de ce que le biais n'explique pas."""
+        ecarts: Dict[str, Dict[str, list]] = {}
+        for posture, rel in self.releves:
+            for j, (t, g) in rel.items():
+                if math.isfinite(t) and math.isfinite(g):
+                    ecarts.setdefault(j, {}).setdefault(posture, []).append(t - g)
+        sortie = {}
+        for j, par_posture in ecarts.items():
+            tous = [e for es in par_posture.values() for e in es]
+            b = float(np.mean(tous))
+            moyennes = [float(np.mean(es)) - b for es in par_posture.values()]
+            sortie[j] = (b, float(np.sqrt(np.mean(np.square(moyennes)))), len(tous))
+        return sortie
+
+    @staticmethod
+    def bilan(biais: Dict[str, Tuple[float, float, int]], postures: int) -> str:
+        """Texte lisible : une ligne d'en-tête, puis une par articulation."""
+        if not biais:
+            return "calibration des couples : aucun relevé — force à la main sans correction"
+        pire = max(biais.items(), key=lambda kv: kv[1][1])
+        lignes = [f"calibration des couples ({postures} postures) : biais par articulation "
+                  f"(couple estimé - pesanteur du modèle), résidu max {pire[1][1]:.2f} N·m "
+                  f"({pire[0]})"]
+        for j, (b, res, n) in sorted(biais.items()):
+            lignes.append(f"    {j:28s} biais {b:+.2f} N·m, résidu {res:.2f} N·m ({n} relevés)")
+        return "\n".join(lignes)
 
 
 class CalibrationMains:

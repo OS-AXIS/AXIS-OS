@@ -95,8 +95,8 @@ from axis_os.services.base import IService, ServiceHealth, ServiceResult, sous_v
 from axis_os.store.sdk.manifest import Capability
 
 from .prise import (
-    MesuresBras, ReglagesPrise, cibles_mains, distance_ideale, efforts_valides, garde_plateau,
-    positions_valides, resoudre,
+    CalibrationCouples, MesuresBras, ReglagesPrise, cibles_mains, distance_ideale,
+    efforts_valides, garde_plateau, positions_valides, resoudre,
 )
 
 
@@ -318,6 +318,13 @@ class ManipulationService(IService):
         self.mesures = mesures
         self.r = reglages
         self._init_mesure()
+        # Biais des couples estimés (N·m, par articulation), trouvés au
+        # démarrage (voir calibration des couples, plus bas) ; retirés du
+        # couple mesuré dans le calcul de la force à la main seulement.
+        self.calibration_couples = CalibrationCouples()
+        self.biais_couples: Dict[str, float] = {}
+        self._t_raideur = -math.inf        # dernier changement de gains
+        self._hors_consigne0: Dict[str, float] = {}
 
     # ---- IService : l'interface commune des services système -------------
 
@@ -613,6 +620,7 @@ class ManipulationService(IService):
             self.stats["raideur_en_echec"] = self.stats.get("raideur_en_echec", 0) + 1
             return
         self.raideur_active = active
+        self._t_raideur = self._horloge()  # le bras bouge encore : pas de zéro avant longtemps
 
     def _consigne_complete(self) -> Dict[str, float]:
         """La consigne des bras, complétée des articulations qu'elle ne
@@ -645,6 +653,33 @@ class ManipulationService(IService):
         return (f"faces intérieures commandées à {fg_c - fd_c:.3f} m (G {fg_c:+.3f}, D "
                 f"{fd_c:+.3f}), mesurées à {fg_m - fd_m:.3f} m (G {fg_m:+.3f}, D {fd_m:+.3f}) ; "
                 f"écarts consigne-mesure : " + ", ".join(f"{j} {e:+.3f} rad" for e, j in ecarts))
+
+    def releve_fermeture(self) -> Optional[dict]:
+        """Pendant la fermeture et le serrage (None sinon), pour les relevés
+        du banc (jamais pour décider) : par main, la force estimée (vecteur,
+        repère du bassin ; le long de la normale, vers l'objet ; serrage
+        filtré), les faces intérieures commandée et mesurée (m, le long de
+        la normale, depuis le centre de l'objet) et les couples mesurés de
+        ses articulations (N·m, bruts, sans correction des biais)."""
+        if self.etat not in (Etat.FERMETURE, Etat.SERRAGE) or self._plan is None:
+            return None
+        try:
+            fc = self._faces(self.mesures.modele.mains(self._consigne_complete()))
+            mod = self._mains_modele()
+            fm = self._faces(mod) if mod is not None else (math.nan, math.nan)
+            brut = self.mesures.efforts()
+        except Exception:                 # noqa: BLE001 — relevé seulement : rien à casser
+            return None
+        sortie = {"phase": self.etat.name, "sous_phase": self._sous}
+        for k, cote in enumerate(("left", "right")):
+            f = self.forces.get(cote)
+            sortie[cote] = {
+                "force": None if f is None else tuple(float(v) for v in f),
+                "normale": None if f is None else float(f @ self._vers_objet(cote)),
+                "serrage": float(self.force_serrage.get(cote, 0.0)),
+                "face_commandee": fc[k], "face_mesuree": fm[k],
+                "couples": {j: float(brut[j][0]) for j in self._BRAS_COTE[cote] if j in brut}}
+        return sortie
 
     def _mains_modele(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """Mains calculées par la cinématique sur les angles MESURÉS
@@ -804,7 +839,8 @@ class ManipulationService(IService):
         qu'elle touche : F = (J Jᵀ + λ² I)⁻¹ J Δτ, pseudo-inverse amortie de
         Jᵀ, J la jacobienne de la main (angles mesurés) et Δτ la hausse des
         couples de toutes les articulations mesurées du bras depuis la
-        fermeture (ou depuis zéro), le poids des bras retiré (URDF)."""
+        fermeture (ou depuis zéro), le poids des bras retiré (URDF) et les
+        biais des couples aussi (calibration des couples)."""
         joints = [j for j in self._BRAS_COTE[cote]
                   if j in tau and (not depuis_fermeture or j in self._tau0)]
         if not joints:
@@ -812,9 +848,10 @@ class ManipulationService(IService):
         chaine = self._chaine(cote)
         jac = chaine.jacobienne(angles, joints)
         grav = chaine.couples_gravite(angles, joints, g)
-        d = np.array([tau[j] for j in joints]) - grav
+        b = self.biais_couples
+        d = np.array([tau[j] - b.get(j, 0.0) for j in joints]) - grav
         if depuis_fermeture:
-            d -= np.array([self._tau0[j] - self._g0.get(j, 0.0) for j in joints])
+            d -= np.array([self._tau0[j] - b.get(j, 0.0) - self._g0.get(j, 0.0) for j in joints])
         lam = self.r.amorti_force_m
         return np.linalg.solve(jac @ jac.T + lam * lam * np.eye(3), jac @ d)
 
@@ -1027,12 +1064,25 @@ class ManipulationService(IService):
         axe = np.array([math.cos(plan["lacet"]), math.sin(plan["lacet"]), 0.0])
         erreurs = [m - c for m, c in zip((mg, md), plan["cibles"])]
         erreurs_mod = [m - c for m, c in zip(mod, plan["cibles"])]
-        prof = max(abs(float(e @ axe)) for e in erreurs + erreurs_mod)
+        # En profondeur : vers l'arrière (loin du robot), `tol_profondeur_m` ;
+        # vers la face avant, au plus avance_max (7 cm derrière elle au moins).
+        arriere = max(0.0, max(float(e @ axe) for e in erreurs + erreurs_mod))
+        avant = max(0.0, max(-float(e @ axe) for e in erreurs + erreurs_mod))
+        prof = max(arriere, avant)
         haut = max(abs(float(e[2])) for e in erreurs + erreurs_mod)
-        if prof <= r.tol_profondeur_m and haut <= r.tol_hauteur_m:
+        avance_max = r.avance_max(self.objet.profondeur)
+        if arriere <= r.tol_profondeur_m and avant <= avance_max and haut <= r.tol_hauteur_m:
             self._debut_fermeture()
             return
         if self._corrections >= r.corrections_max:
+            if avant > avance_max:
+                # Les mains restent trop près du bord avant : prendre là,
+                # c'est prendre au bord. Le robot doit se rapprocher.
+                self._echouer(f"prise refusée — mains à {100 * (self.objet.profondeur / 2 - avant):.1f}"
+                              f" cm derrière la face avant (il en faut "
+                              f"{100 * min(r.recul_face_min_m, self.objet.profondeur / 2):.0f}) après "
+                              f"{self._corrections} corrections : hors de portée, se rapprocher")
+                return
             self._echouer(f"prise refusée — mains mal placées après {self._corrections} "
                           f"corrections : {100 * prof:.1f} cm en profondeur, {100 * haut:.1f} cm "
                           f"en hauteur")
@@ -1076,11 +1126,70 @@ class ManipulationService(IService):
             sortie.append(q)
         return sortie[0], sortie[1]
 
+    def _hors_consigne(self, angles: Dict[str, float]) -> Dict[str, float]:
+        """De combien (m) chaque main mesurée (cinématique sur `angles`) est
+        en dehors de sa main commandée (cinématique sur la consigne), le long
+        de la normale de l'objet, vers l'extérieur ; négatif vers l'objet."""
+        try:
+            mes = self.mesures.modele.mains({**self._fixes, **angles})
+            cmd = self.mesures.modele.mains(self._consigne_complete())
+        except Exception:                 # noqa: BLE001 — angles illisibles : rien à dire
+            return {}
+        return {c: float((m - k) @ -self._vers_objet(c))
+                for c, m, k in zip(("left", "right"), mes, cmd)}
+
+    def _retards_ouverture(self, angles: Dict[str, float]) -> Dict[str, float]:
+        """Retard (m) de chaque main sur sa consigne, vers l'extérieur, gagné
+        depuis le début du placement, où les mains grandes ouvertes ne
+        touchent rien : l'affaissement des bras sous leur poids (et sa
+        compensation) y est déjà, il s'annule ; reste ce qui retient la main."""
+        maintenant = self._hors_consigne(angles)
+        return {c: v - self._hors_consigne0.get(c, 0.0) for c, v in maintenant.items()}
+
+    # ---- calibration des couples (au démarrage, bras en l'air) -----------
+    def echantillon_calibration_couples(self, posture: str) -> bool:
+        """Un relevé, bras immobiles dans `posture` : couples estimés et
+        pesanteur du modèle sur les angles mesurés. Faux si une mesure
+        manque (rien n'est relevé)."""
+        if self.mesures is None:
+            return False
+        if not self._fixes:
+            self._fixes = self._articulations_fixes()
+        tau, _ = self._efforts()
+        angles = self._angles_mesures()
+        if tau is None or angles is None:
+            return False
+        g = self._gravite_bassin()
+        grav: Dict[str, float] = {}
+        for cote in self._ROULIS:
+            js = [j for j in self._BRAS_COTE[cote] if j in tau]
+            grav.update(zip(js, (float(v) for v in self._chaine(cote).couples_gravite(angles, js, g))))
+        self.calibration_couples.ajouter(posture, tau, grav)
+        return True
+
+    def terminer_calibration_couples(self) -> str:
+        """Biais trouvés (désormais retirés des couples dans la force à la
+        main) ; rend le bilan, aussi écrit au journal."""
+        biais = self.calibration_couples.resoudre()
+        self.biais_couples = {j: b for j, (b, _, _) in biais.items()}
+        postures = len({p for p, _ in self.calibration_couples.releves})
+        texte = CalibrationCouples.bilan(biais, postures)
+        for ligne in texte.splitlines():
+            self._noter(ligne)
+        self.stats["biais_couples_nm"] = {j: round(b, 2) for j, b in self.biais_couples.items()}
+        self.stats["residu_couples_nm"] = round(max((v[1] for v in biais.values()), default=0.0), 3)
+        return texte
+
     def _mesurer_bruit(self, tau: Dict[str, float]) -> bool:
         """Sous-phase « bruit » : lit les couples, bras immobiles, pendant
         `duree_bruit_s` ; puis τ0 (leur moyenne), le bruit de la force à
         chaque main et le seuil de contact. Vrai une fois fini."""
         r = self.r
+        if self._horloge() - self._t_raideur < r.duree_raidissement_s:
+            # Gains changés il y a peu : le bras bouge encore, la fenêtre
+            # du zéro repart plus tard (voir ReglagesPrise.duree_raidissement_s).
+            self._echantillons, self._t0 = [], self._horloge()
+            return False
         angles = self._angles_mesures()
         if angles is not None:
             self._echantillons.append((dict(tau), angles))
@@ -1122,11 +1231,27 @@ class ManipulationService(IService):
                                                  self.force_avant_fermeture.items()}
         self._noter("force absolue à la main avant de fermer : " + ", ".join(
             f"{nom} {f:.1f} N (seuil {seuil:.1f})" for nom, f, seuil in appui))
+        # … et en géométrie : la main mesurée retenue en dehors de sa consigne,
+        # le long de la normale de l'objet, à la pose d'ouverture.
+        retards = self._retards_ouverture(a0)
+        self.stats["retard_ouverture_cm"] = {c: round(100 * v, 1) for c, v in retards.items()}
+        self._noter("main mesurée hors de sa consigne à la pose d'ouverture (vers l'extérieur) : "
+                    + ", ".join(f"{'G' if c == 'left' else 'D'} {100 * v:+.1f} cm"
+                                for c, v in retards.items())
+                    + f" (au plus {100 * r.retard_appui_m:.0f})")
         trop = [(nom, f, seuil) for nom, f, seuil in appui if f > seuil]
         if trop:
             nom, f, seuil = trop[0]
             self._echouer(f"prise refusée — main {nom} déjà en appui sur l'objet avant de fermer "
                           f"({f:.1f} N, seuil {seuil:.1f} N) : la perception le voyait ailleurs")
+            return True
+        bloquees = [(c, v) for c, v in retards.items() if v > r.retard_appui_m]
+        if bloquees:
+            c, v = bloquees[0]
+            self._echouer(f"prise refusée — main {'G' if c == 'left' else 'D'} déjà en appui sur "
+                          f"l'objet avant de fermer (retenue à {100 * v:.1f} cm de sa consigne, "
+                          f"au plus {100 * r.retard_appui_m:.0f}) : la perception le voyait "
+                          f"ailleurs")
             return True
         self._sous, self._echantillons = "", []
         self._t0 = self._horloge()
@@ -1810,6 +1935,13 @@ class ManipulationService(IService):
                 return ServiceResult(ok=False, reason=f"exemption refusée — {r_e}")
         self.objet, self.raison, self._franchi = objet, "", None
         if self.mesures is not None:
+            # Mains encore libres : leur écart à la consigne sert de
+            # référence au contrôle géométrique d'appui (_retards_ouverture).
+            angles = self._angles_mesures()
+            self._hors_consigne0 = {} if angles is None else self._hors_consigne(angles)
+            # Gains raidis dès le placement : le bras se pose avec eux, et le
+            # zéro des couples, avant de fermer, se prend bras immobile.
+            self._regler_raideur(True)
             self._vers_placement(self._plan["q_ouvert"], self.r.duree_placement_s)
             return ServiceResult(ok=True)
         # Le serrage part de l'ouverture où sont les bras : large après une
