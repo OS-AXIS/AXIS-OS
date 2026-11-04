@@ -113,6 +113,9 @@ class Adaptateur(ILocomotionAdapter):
     @property
     def max_twist(self): return Twist(0.5, 0.3, 0.8)
 
+    @property
+    def bande_morte(self): return 0.05       # celle de Robot.pas
+
     def reset(self): pass
 
     def step(self, state, twist):

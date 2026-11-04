@@ -13,7 +13,9 @@ Désormais (axis_os/apps/tri_colis/facade.py, ConfigFacade) : attente de
 sécurité, robot à l'arrêt, délai suspendu, jamais de consigne remontée pour
 passer ; au-delà de attente_securite_max_s, l'accostage échoue avec la
 raison « attente de sécurité trop longue : personne à X m » et l'app le
-signale. GardienProximite n'est pas touché.
+signale. GardienProximite n'est pas touché. Le seuil est la bande morte
+que déclare l'adaptateur de locomotion (ILocomotionAdapter.bande_morte), ou
+0.06 m/s s'il ne la déclare pas (section 5).
 
 Monde factice déterministe : une base cinématique qui applique, comme le
 LocomotionService, le facteur du gardien à la consigne, avec la bande morte
@@ -52,12 +54,13 @@ class Monde:
     """Base cinématique, gardien factice (facteur imposé par le test),
     navigation et bras réduits à ce que la façade en lit."""
 
-    def __init__(self, bloquee=False):
+    def __init__(self, bloquee=False, bande_morte=None):
         self.t, self.x, self.y, self.cap = 0.0, 0.0, 0.0, 0.0
         self.cmd = (0.0, 0.0, 0.0)
         self.consignes = []            # (t, vx, vy, wz) demandées par la façade
         self.facteur, self.distance = 1.0, 1.8
         self.bloquee = bloquee         # quelque chose retient vraiment le robot
+        self.bande_morte = bande_morte # déclarée par l'« adaptateur », ou None
         self.dernier_verdict = None
         self.journal, self.instants = [], []     # lignes du journal, et leur instant
         self.etat = EtatNavigation.ARRIVE
@@ -219,10 +222,32 @@ while m.t < 30.0 and f.navigation() not in ("ARRIVE", "ECHEC"):
     m.pas()
     f.tick()
     noter()
-check("Ralenti ×0.9 : le robot recule tant que la consigne ralentie reste au-dessus de la "
-      "vitesse minimale (29 cm sur 35 au moins), attend pour les derniers centimètres, "
-      "puis finit", f.navigation() == "ARRIVE" and x_avant and x_avant[0] < -0.29
+check("Sans bande morte déclarée (seuil 0.06 m/s), ralenti ×0.9 : le robot recule tant que la "
+      "consigne ralentie reste au-dessus de 0.06 (29 cm sur 35 au moins), attend pour les "
+      "derniers centimètres, puis finit", f.navigation() == "ARRIVE" and x_avant and x_avant[0] < -0.29
       and not any("BLOQUÉ" in l for l in m.journal), f"{f.navigation()} {x_avant} {m.journal}")
+
+section("5. Bande morte déclarée par l'adaptateur (0.05 m/s, celle de cette base)")
+m = Monde(bande_morte=BANDE_MORTE)
+f = facade(m)
+etat, t_fin = reculer(m, f, 0.9, de=0.0)
+mini = min(max(abs(c[1]), abs(c[2]), abs(c[3])) for c in m.consignes)
+check("Ralenti ×0.9 tout le recul : près de la cible, la consigne ralentie (0.054 m/s) "
+      "reste au-dessus de la bande morte, le robot avance encore et arrive, sans attente",
+      etat == "ARRIVE" and not any("attente" in l for l in m.journal) and t_fin < 10.0,
+      f"{etat} {t_fin:.1f} {m.journal}")
+check("… consigne ralentie envoyée telle quelle, jamais remontée : la plus petite vaut le "
+      "plancher de la façade (0.06), aucune au-dessus de v_max",
+      abs(mini - ConfigFacade().v_min) < 1e-9 and all(
+          max(abs(c[1]), abs(c[2])) <= ConfigFacade().v_max + 1e-9 for c in m.consignes),
+      f"{mini}")
+m = Monde(bande_morte=BANDE_MORTE)
+f = facade(m)
+etat, t_fin = reculer(m, f, 0.8, de=0.0, a=10.0)
+check("Ralenti ×0.8 : près de la cible, 0.048 m/s, sous la bande morte : attente, puis "
+      "le recul finit quand le gardien relâche", etat == "ARRIVE" and t_fin > 10.0
+      and sum("attente de sécurité — le gardien" in l and "bande morte de la marche "
+              "(0.05 m/s)" in l for l in m.journal) == 1, f"{etat} {t_fin:.1f} {m.journal}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

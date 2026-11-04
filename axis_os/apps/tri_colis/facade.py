@@ -202,6 +202,11 @@ class ConfigFacade:
     # traverse la zone de ralentissement (2 m) en sort en quelques secondes.
     # Au-delà, quelqu'un travaille là : on le signale, on recule et on
     # réessaie plus tard plutôt que d'attendre sans fin.
+    # Le seuil n'est pas `v_min` (le plancher de la façade) mais la bande
+    # morte de la locomotion, celle où le robot ne bouge vraiment plus,
+    # déclarée par son adaptateur (ILocomotionAdapter.bande_morte) ; à
+    # défaut, `v_min`. Entre les deux, la consigne ralentie part telle
+    # quelle, et le robot avance encore.
     attente_securite_max_s: float = 30.0
     recul_sortie: float = 0.35     # recul en ligne droite avant de repartir
     # Un accostage qui diverge est abandonné : la distance à la cible dépasse
@@ -931,8 +936,9 @@ class FacadeServices:
         vy = self._franche(cfg.gain * ey, self._vmax) if abs(ey) > cfg.tol_position else 0.0
         wz = self._franche(cfg.gain * ecap, cfg.w_max) if abs(ecap) > cfg.tol_cap else 0.0
         plus_grande = max(abs(vx), abs(vy), abs(wz))
-        if v is not None and 0.0 < v.facteur < 1.0 and 0.0 < plus_grande * v.facteur < cfg.v_min:
-            # Le gardien ralentit la consigne sous la vitesse minimale de
+        if v is not None and 0.0 < v.facteur < 1.0 \
+                and 0.0 < plus_grande * v.facteur < self._bande_morte():
+            # Le gardien ralentit la consigne sous la bande morte de la
             # marche : le robot ne bougerait pas. Attente de sécurité, pas
             # blocage (voir ConfigFacade.attente_securite_max_s).
             return self._attendre(v, d, t)
@@ -975,6 +981,14 @@ class FacadeServices:
         self.loco.set_velocity(vx, vy, wz)
         return "EN_ROUTE"
 
+    def _bande_morte(self) -> float:
+        """Vitesse sous laquelle la locomotion ne bouge plus : celle que
+        déclare son adaptateur, sinon v_min (0.06 m/s)."""
+        b = getattr(self.loco, "bande_morte", None)
+        if isinstance(b, (int, float)) and math.isfinite(b) and b >= 0.0:
+            return float(b)
+        return self.cfg.v_min
+
     def _attendre(self, v, d: float, t: float) -> str:
         """Un pas d'attente de sécurité : robot à l'arrêt, en équilibre (la
         consigne n'est jamais remontée pour passer quand même), ni blocage
@@ -991,8 +1005,8 @@ class FacadeServices:
             self._attente_signalee = True
             self.stats["attentes_securite"] = self.stats.get("attentes_securite", 0) + 1
             self._journal(f"accostage ({self._phase}) : attente de sécurité — le gardien ralentit "
-                          f"le robot (×{v.facteur:.2f}, personne à {loin} m) sous la vitesse "
-                          f"minimale de marche ({cfg.v_min:.2f} m/s) : robot à l'arrêt")
+                          f"le robot (×{v.facteur:.2f}, personne à {loin} m) sous la bande "
+                          f"morte de la marche ({self._bande_morte():.2f} m/s) : robot à l'arrêt")
         if self._attente_s <= cfg.attente_securite_max_s:
             return "EN_ROUTE"
         self.raison_echec = f"attente de sécurité trop longue : personne à {loin} m"

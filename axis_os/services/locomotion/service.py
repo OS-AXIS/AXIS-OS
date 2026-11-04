@@ -165,6 +165,14 @@ class ILocomotionAdapter(ABC):
     @abstractmethod
     def is_fallen(self, state: BaseState) -> bool: ...
 
+    @property
+    def bande_morte(self) -> Optional[float]:
+        """Vitesse (m/s, rad/s en rotation) sous laquelle ce robot ne bouge
+        plus vraiment : la bande morte de sa marche, propre à chaque robot.
+        Lecture seule. None : non déclarée (l'app de tri garde alors son
+        plancher, 0.06 m/s)."""
+        return None
+
 
 class LocomotionState(Enum):
     """État du service.
@@ -308,6 +316,12 @@ class LocomotionService(IService):
         """Vitesse maximale acceptée sur chaque composante (celle de
         l'adaptateur) : au-delà, une consigne est bornée."""
         return self._adapter.max_twist
+
+    @property
+    def bande_morte(self) -> Optional[float]:
+        """Bande morte de la marche déclarée par l'adaptateur (voir
+        ILocomotionAdapter.bande_morte), ou None. Lecture seule."""
+        return getattr(self._adapter, "bande_morte", None)
 
     @property
     def is_guarded(self) -> bool:
