@@ -297,10 +297,16 @@ def main():
 
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
+    # Images horodatées à l'instant simulé de leur rendu (et non à l'heure
+    # murale de leur lecture) : la perception refuse une image périmée, et
+    # la prise exige des images prises après l'arrêt du robot.
+    t_rendu_ns = [0]
     cam = IsaacSimCamera("tete_rgb", prim_path="/World/tete_rgb", width=640, height=480,
-                         position=(0.2, 0.0, 1.2), focal_length_mm=18.0)
+                         position=(0.2, 0.0, 1.2), focal_length_mm=18.0,
+                         horloge_ns=lambda: t_rendu_ns[0])
     dep = IsaacSimCamera("tete_prof", prim_path="/World/tete_prof", width=640, height=480,
-                         position=(0.2, 0.0, 1.2), depth=True, focal_length_mm=18.0)
+                         position=(0.2, 0.0, 1.2), depth=True, focal_length_mm=18.0,
+                         horloge_ns=lambda: t_rendu_ns[0])
     # Vue de DIAGNOSTIC (banc seulement, jamais lue par l'OS) : au moment de
     # la prise, mains et carton proche sortent du cadre de la caméra de tête
     # (elle vise 1,5 m devant, 15° vers le bas : son bord bas passe ~40° sous
@@ -1303,6 +1309,8 @@ def main():
         for i in range(cfg.decimation - 1):
             world.step(render=((percevoir or filmer or filmer_vue) and i == 0))
         sim_t[0] += cfg.control_dt
+        if percevoir or filmer or filmer_vue:
+            t_rendu_ns[0] = int(sim_t[0] * 1e9)     # instant du rendu de ce pas
         t_physique[0] = sim_t[0]
         k += 1
         # Juge : une prise va de l'entrée en PLACEMENT à sa fin ; contacts

@@ -32,7 +32,7 @@ validé en simulation peut échouer sur une vraie image.
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Callable, Optional
 
 from axis_os.hal.core.interfaces import ICamera
 from axis_os.hal.core.types import (
@@ -69,6 +69,7 @@ class IsaacSimCamera(ICamera):
         focal_length_mm: float = 24.0,
         horizontal_aperture_mm: float = 20.955,
         depth: bool = False,
+        horloge_ns: Optional[Callable[[], int]] = None,
     ):
         """
         focal_length_mm, horizontal_aperture_mm : valeurs par défaut
@@ -78,6 +79,13 @@ class IsaacSimCamera(ICamera):
             quaternion (w, x, y, z), soit quatre nombres qui codent une
             rotation. None garde l'orientation par défaut du prim.
         depth : True pour une caméra de profondeur (voir ci-dessous).
+        horloge_ns : rend l'instant du dernier rendu, en nanosecondes, sur
+            l'horloge du robot (le temps simulé). Il horodate les images.
+            Pourquoi : constaté sur GPU (essai T1, novembre 2026), les
+            images étaient horodatées à l'heure murale de leur lecture ; le
+            contrôle « image périmée » de la perception, qui compare au
+            temps simulé, ne voyait jamais une vieille image. None : heure
+            murale de la lecture (à éviter en simulation).
         """
         # depth=True crée une caméra de profondeur. capture() rend toujours
         # l'image couleur ; capture_depth() rend la carte des distances et
@@ -96,6 +104,7 @@ class IsaacSimCamera(ICamera):
         self._orientation = orientation
         self._focal_mm = focal_length_mm
         self._aperture_mm = horizontal_aperture_mm
+        self._horloge_ns = horloge_ns
 
         self._camera = None
         self._frames_captured = 0
@@ -265,10 +274,11 @@ class IsaacSimCamera(ICamera):
         h, w = rgb.shape[0], rgb.shape[1]
         self._frames_captured += 1
 
-        return CameraFrame(
-            width=int(w), height=int(h),
-            encoding="rgb8", data=rgb.tobytes(),
-        )
+        if self._horloge_ns is None:
+            return CameraFrame(width=int(w), height=int(h), encoding="rgb8",
+                               data=rgb.tobytes())
+        return CameraFrame(width=int(w), height=int(h), encoding="rgb8",
+                           data=rgb.tobytes(), timestamp_ns=int(self._horloge_ns()))
 
     def get_intrinsics(self) -> Optional[CameraIntrinsics]:
         """Calibration déduite des paramètres de la caméra virtuelle.

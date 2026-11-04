@@ -107,7 +107,16 @@ class ConfigFacade:
     # `recul_insertion` de la cible, les mains encore devant le carton ;
     # il ouvre largement les bras, à l'arrêt ; puis il avance lentement
     # (`v_insertion`) pour les glisser autour du carton.
-    recul_insertion: float = 0.18
+    #
+    # 0.28 et non plus 0.18 : c'est à cette pose, bras ouverts, que le robot
+    # regarde le carton une dernière fois avant de le prendre (voir
+    # « observation » plus bas). Sur le banc T1 (caméra de tête montée à
+    # 0.40 m au-dessus du bassin, 15° vers le bas, champ vertical de 47°),
+    # le bord bas de l'image passe 38.7° sous l'horizontale : à 0.18 m, on
+    # ne voyait que 66 % du dessus du carton et pas sa face avant ; à
+    # 0.28 m, l'arête avant du dessus est à 35°, tout le dessus est vu. À
+    # la pose de prise, le carton est entièrement hors du champ.
+    recul_insertion: float = 0.28
     v_insertion: float = 0.08
     # Blocage : si le robot pousse sans se rapprocher de la cible d'au moins
     # 1 cm en `delai_blocage_s` (2 s), il est bloqué. Constaté sur GPU :
@@ -136,6 +145,27 @@ class ConfigFacade:
     # `correction_visee_max_m` : au-delà, ce n'est pas le même carton.
     duree_visee_s: float = 0.6
     correction_visee_max_m: float = 0.15
+    # Observation après l'arrêt. Constaté sur GPU (essai T1 de main,
+    # novembre 2026) : trois fois, le carton avait été déplacé de 3 à 10 cm
+    # pendant l'approche, et la prise visait la position estimée AVANT, sur
+    # une seule image prise depuis la pré-pose. Désormais, arrivé à la pose
+    # d'attente, robot immobile et bras ouverts, le robot regarde de
+    # nouveau : il faut au moins `images_observation` images prises APRÈS
+    # cet arrêt (horodatées par la caméra), distantes d'au moins
+    # `intervalle_observation_s`, dont les boîtes, ajustées chacune sur sa
+    # seule image, s'accordent à `tol_observation_m` et
+    # `tol_observation_deg` près. Sinon il regarde encore, jusqu'à
+    # `observation_max_s` ; au-delà, l'accostage échoue (l'app recule et
+    # cherche de nouveau). Si cette estimation déplace la cible de plus de
+    # `tol_realignement_m`, le robot se réaligne devant le carton (au plus
+    # `realignements_max` fois) et regarde de nouveau.
+    images_observation: int = 3
+    intervalle_observation_s: float = 0.1
+    tol_observation_m: float = 0.01
+    tol_observation_deg: float = 3.0
+    observation_max_s: float = 4.0
+    tol_realignement_m: float = 0.03
+    realignements_max: int = 2
     duree_stabilisation_s: float = 0.6
     # Après une prise ratée : temps laissé aux mains pour s'ouvrir en grand
     # avant de reculer (voir reinitialiser_manipulation).
@@ -230,6 +260,7 @@ class FacadeServices:
         #   ACCOSTAGE       contrôleur d'accostage fin vers la cible ;
         #   STABILISATION   attente que la base soit immobile ;
         #   PRESAISIE       ouverture des bras, robot à l'arrêt ;
+        #   OBSERVATION     le carton revu, robot immobile et bras ouverts ;
         #   INSERTION       avance lente, mains autour du carton ;
         #   RECUL           recul en ligne droite (-> NAV...) ;
         #   ECHEC           navigation refusée.
@@ -252,6 +283,13 @@ class FacadeServices:
         # Jusqu'à cet instant, les mains lâchent le carton : pas de recul.
         self._liberation_jusqua = 0.0
         self._colis_vise: Optional[Colis] = None   # colis à revoir de face
+        # Observation après l'arrêt : en cours (dict), son résultat (le colis
+        # revu, seul transmis à la prise), et si la prise l'exige (après un
+        # accostage de prise).
+        self._obs: Optional[dict] = None
+        self._observe: Optional[Colis] = None
+        self._observation_requise = False
+        self._realignements = 0
         self.veut_percevoir = False        # la boucle doit rendre la caméra
         self._t_visee = 0.0
         # Début de la stabilisation ; dernière position de référence
@@ -288,13 +326,19 @@ class FacadeServices:
         d = self.cfg.profondeur / 2.0
         return (x + d * math.cos(self.cap_prise), y + d * math.sin(self.cap_prise), z)
 
-    def chercher(self, couleur: str) -> List[Colis]:
+    def chercher(self, couleur: str, fusion: bool = True) -> List[Colis]:
         """Colis de cette couleur vus sur la table, du plus sûr au moins
         sûr. Sont écartées les détections sans position, peu confiantes ou
         hors de la hauteur admise ; deux détections trop proches comptent
-        pour un seul colis."""
+        pour un seul colis. fusion=False : boîte ajustée sur cette seule
+        image (l'observation compare les images entre elles).
+        self.instant_image : instant de l'image lue (horodatage de la
+        caméra ; à défaut, celui de l'appel)."""
+        maintenant = self._horloge()
         r = self.percep.find(self.cfg.requete.format(couleur=couleur),
-                             now_ns=int(self._horloge() * 1e9), frame=FRAME_WORLD)
+                             now_ns=int(maintenant * 1e9), frame=FRAME_WORLD)
+        t_ns = getattr(getattr(self.percep, "perception", self.percep), "derniere_image_ns", None)
+        self.instant_image = maintenant if t_ns is None else t_ns / 1e9
         if not r.ok or not r.value:
             return []
         colis: List[Colis] = []
@@ -306,7 +350,7 @@ class FacadeServices:
                 continue
             c = self._centre(p.x, p.y, p.z)
             lacet, mal_vu, vu = 0.0, "", ""
-            b = self._boite(couleur, d, c)
+            b = self._boite(couleur, d, c, fusion)
             if b is not None:
                 c, lacet, mal_vu, vu = b
             # Les détections arrivent triées par confiance : de deux
@@ -316,7 +360,7 @@ class FacadeServices:
             colis.append(Colis(couleur, c, d.confidence, lacet, mal_vu, vu))
         return colis
 
-    def _boite(self, couleur: str, d, c_face):
+    def _boite(self, couleur: str, d, c_face, fusion: bool = True):
         """Boîte orientée du carton de la détection `d` : ses points 3D
         (ceux que la perception a gardés, masque compris), fusionnés avec les
         images précédentes du même carton et les points du LiDAR proches,
@@ -327,12 +371,22 @@ class FacadeServices:
         pts = getattr(service, "derniers_points", {}).get(tuple(d.bbox))
         if pts is None or len(pts) < 30:
             return None
+        if not fusion:
+            # Cette image seule, sans toucher aux cartons suivis.
+            suivi = {"couleur": couleur, "fusion": FusionCarton(), "centre": c_face}
+            suivi["fusion"].ajouter(self._horloge(), pts)
+            return self._ajuster(suivi, c_face)
         suivi = next((s for s in self._suivis if s["couleur"] == couleur and math.dist(
             s["centre"][:2], c_face[:2]) < self.cfg.fusion_reset_m), None)
         if suivi is None:
             suivi = {"couleur": couleur, "fusion": FusionCarton(), "centre": c_face}
             self._suivis = [s for s in self._suivis if s["couleur"] != couleur][-4:] + [suivi]
         suivi["fusion"].ajouter(self._horloge(), pts)
+        return self._ajuster(suivi, c_face)
+
+    def _ajuster(self, suivi: dict, c_face):
+        """Boîte orientée ajustée aux nuages de `suivi` et aux points proches
+        du LiDAR (voir _boite)."""
         nuage = suivi["fusion"].points()
         if self._points_lidar is not None:
             try:
@@ -354,7 +408,7 @@ class FacadeServices:
         if b is None:
             return None
         suivi["centre"] = tuple(float(v) for v in b.centre)
-        self.derniere_boite[couleur] = b
+        self.derniere_boite[suivi["couleur"]] = b
         self.stats["boites"] = self.stats.get("boites", 0) + 1
         mal = ""
         if b.residu_m > self.cfg.residu_max_m:
@@ -383,6 +437,7 @@ class FacadeServices:
         self._dest, self._apres_nav = dest, accostage
         self._poste_depose = poste_depose
         self._colis_vise, self.veut_percevoir = None, False
+        self._obs, self._observe, self._observation_requise = None, None, False
         if self.manip.etat is Etat.PRET:
             self.manip.reinitialiser()      # pré-saisie abandonnée : bras au port
         if self._accoste:
@@ -428,17 +483,16 @@ class FacadeServices:
         devant le carton (accostage fin), puis la cible de prise, mains
         autour du carton (insertion, après l'ouverture des bras). Une cible
         à plus de 3 m du robot est refusée : ce colis n'est pas celui de la
-        table."""
+        table.
+
+        Toute estimation antérieure du carton est oubliée : il sera revu à
+        la visée, puis après l'arrêt devant lui (voir ConfigFacade,
+        observation)."""
         c, s = math.cos(self.cap_prise), math.sin(self.cap_prise)
-        cx, cy, _ = colis.position
-        d = self.cfg.distance_prise
-        if getattr(self.manip, "mesures", None) is not None:
-            d, raison = self.manip.distance_de_prise(
-                Objet(colis.position, self.cfg.largeur, self.cfg.profondeur, self.cfg.hauteur),
-                d_min=self.cfg.distance_prise)
-            if d is None:
-                return False, f"prise impossible : {raison}"
-        cible = Pose2D(cx - d * c, cy - d * s, self.cap_prise)
+        self._oublier(colis.couleur)
+        cible, raison = self._cible_prise(colis.position)
+        if cible is None:
+            return False, raison
         p = self._pose()
         if math.hypot(cible.x - p.x, cible.y - p.y) > 3.0:
             return False, "colis à plus de 3 m : ce n'est pas celui de la table"
@@ -448,7 +502,35 @@ class FacadeServices:
         ok, raison = self._partir(pre, attente)
         self._insertion = cible
         self._colis_vise = colis
+        self._observation_requise, self._realignements = True, 0
         return ok, raison
+
+    def _cible_prise(self, centre) -> Tuple[Optional[Pose2D], str]:
+        """Pose de prise devant un carton de centre `centre` : sur le cap de
+        prise, à la distance de prise (allongée par le service de
+        manipulation si les avant-bras doivent passer au-dessus du
+        plateau). (None, raison) si aucune ne convient."""
+        d = self.cfg.distance_prise
+        if getattr(self.manip, "mesures", None) is not None:
+            d, raison = self.manip.distance_de_prise(
+                Objet(tuple(centre), self.cfg.largeur, self.cfg.profondeur, self.cfg.hauteur),
+                d_min=self.cfg.distance_prise)
+            if d is None:
+                return None, f"prise impossible : {raison}"
+        c, s = math.cos(self.cap_prise), math.sin(self.cap_prise)
+        return Pose2D(centre[0] - d * c, centre[1] - d * s, self.cap_prise), ""
+
+    def _oublier(self, couleur: Optional[str] = None) -> None:
+        """Oublie les estimations d'un carton (de tous, sans couleur) :
+        nuages fusionnés, dernière boîte, colis visé et observé. À chaque
+        nouvel accostage et à chaque nouvel essai : un carton a pu bouger
+        entre-temps (constaté sur GPU, voir ConfigFacade, observation)."""
+        self._suivis = [s for s in self._suivis if couleur is not None and s["couleur"] != couleur]
+        if couleur is None:
+            self.derniere_boite.clear()
+        else:
+            self.derniere_boite.pop(couleur, None)
+        self._colis_vise, self._observe, self._obs = None, None, None
 
     def navigation(self) -> str:
         """État du déplacement en cours, vu par la logique de tri :
@@ -458,7 +540,7 @@ class FacadeServices:
         if ph == "ECHEC":
             return "ECHEC"
         if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION", "FRANCHISSEMENT",
-                  "STABILISATION", "VISEE"):
+                  "STABILISATION", "VISEE", "OBSERVATION"):
             return self._etat_accostage
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
@@ -492,6 +574,8 @@ class FacadeServices:
         if self.bloque_par_securite():
             self._t_accostage += dt
             self._t_stab0 += dt
+            if self._obs is not None:
+                self._obs["debut"] += dt
         if self.manip.etat is Etat.RAMENER or getattr(self.manip, "penche", False):
             # Carton en train de revenir contre le buste, ou penché : la
             # base ne bouge pas (le temps ne compte pas dans les délais).
@@ -569,14 +653,17 @@ class FacadeServices:
             return
         if self._phase == "PRESAISIE" and self._etat_accostage == "EN_ROUTE":
             if self.manip.etat is Etat.PRET:           # bras grands ouverts
-                self._phase, self._cible = "INSERTION", self._insertion
-                self._vmax = self.cfg.v_insertion
-                self._t_accostage = self._horloge()
-                p = self._pose()
-                self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
+                if self._observation_requise and self._colis_vise is not None:
+                    self._debut_observation()
+                else:
+                    self._lancer_insertion()
             elif self._horloge() - self._t_accostage > self.cfg.delai_accostage_s:
                 self._etat_accostage = "ECHEC"
                 self.stats["accostages_ratees"] += 1
+            return
+        if self._phase == "OBSERVATION" and self._etat_accostage == "EN_ROUTE":
+            self.loco.halt()
+            self._observer()
             return
         if self._phase not in ("ACCOSTAGE", "INSERTION", "RECUL") \
                 or self._etat_accostage != "EN_ROUTE":
@@ -602,6 +689,150 @@ class FacadeServices:
                 # Collé à quelque chose : la prochaine sortie commence par un
                 # recul, au lieu de repartir droit dans l'obstacle.
                 self._accoste = True
+
+    def _lancer_insertion(self) -> None:
+        """Avance lente, bras ouverts, jusqu'à la pose de prise."""
+        self._phase, self._cible = "INSERTION", self._insertion
+        self._vmax = self.cfg.v_insertion
+        self._t_accostage = self._horloge()
+        p = self._pose()
+        self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
+
+    def _debut_observation(self) -> None:
+        """Robot immobile, bras ouverts : on revoit le carton (voir
+        ConfigFacade, observation). Seules comptent les images prises après
+        cet instant."""
+        t, p = self._horloge(), self._pose()
+        self._phase = "OBSERVATION"
+        self._obs = {"debut": t, "t0": t, "pose": (p.x, p.y), "images": [], "appel": -math.inf,
+                     "image_prec": None, "lues": 0, "rejets": []}
+        self._observe = None
+        self.veut_percevoir = True
+        self.loco.halt()
+
+    @staticmethod
+    def _demi_tour(a: float) -> float:
+        """Écart de lacet ramené dans [-π/2, π/2[ : une boîte retournée d'un
+        demi-tour est la même boîte."""
+        return (a + math.pi / 2) % math.pi - math.pi / 2
+
+    def _dispersion(self, images: List[Colis]) -> Tuple[float, float]:
+        """Plus grands écarts, deux à deux, entre les boîtes de ces images :
+        centre (m) et lacet (degrés)."""
+        de, dl = 0.0, 0.0
+        for i, a in enumerate(images):
+            for b in images[i + 1:]:
+                de = max(de, math.dist(a.position, b.position))
+                dl = max(dl, abs(math.degrees(self._demi_tour(a.lacet - b.lacet))))
+        return de, dl
+
+    def _observer(self) -> None:
+        """Un pas de l'observation : une image de plus, si elle est neuve et
+        prise après l'arrêt ; fin quand les dernières s'accordent."""
+        cfg, o, v = self.cfg, self._obs, self._colis_vise
+        t, p = self._horloge(), self._pose()
+        if math.hypot(p.x - o["pose"][0], p.y - o["pose"][1]) > cfg.derive_stable_m:
+            # La base a bougé : les images d'avant ne comptent plus.
+            o.update(t0=t, pose=(p.x, p.y), images=[])
+        if t - o["debut"] > cfg.observation_max_s:
+            self._echec_observation()
+            return
+        if t - o["appel"] < cfg.intervalle_observation_s:
+            return
+        o["appel"] = t
+        vus = self.chercher(v.couleur, fusion=False)
+        t_img = self.instant_image
+        if t_img <= o["t0"] or t_img == o["image_prec"]:
+            return                         # image d'avant l'arrêt, ou déjà lue
+        o["image_prec"] = t_img
+        o["lues"] += 1
+        ref = o["images"][-1] if o["images"] else v
+        vus = [c for c in vus if math.dist(c.position[:2], ref.position[:2])
+               < cfg.correction_visee_max_m]
+        if not vus:
+            o["rejets"].append("carton pas vu")
+            return
+        n = min(vus, key=lambda c: math.dist(c.position[:2], ref.position[:2]))
+        if n.mal_vu:
+            o["rejets"].append(f"mal vu : {n.mal_vu}")
+            return
+        o["images"] = (o["images"] + [n])[-cfg.images_observation:]
+        if len(o["images"]) < cfg.images_observation:
+            return
+        de, dl = self._dispersion(o["images"])
+        if de < cfg.tol_observation_m and dl < cfg.tol_observation_deg:
+            self._fin_observation(o["images"], de, dl)
+
+    def _echec_observation(self) -> None:
+        o, v = self._obs, self._colis_vise
+        de, dl = self._dispersion(o["images"]) if len(o["images"]) > 1 else (0.0, 0.0)
+        rejets = sorted(set(o["rejets"]))
+        self._journal(f"carton {v.couleur} pas revu de façon cohérente après l'arrêt en "
+                      f"{self.cfg.observation_max_s:.0f} s : {o['lues']} image(s) neuve(s), "
+                      f"{len(o['images'])} retenue(s) (écart max {100 * de:.1f} cm, {dl:.1f}°)"
+                      + (f", rejets : {'; '.join(rejets)}" if rejets else "")
+                      + " — pas de prise, nouvel accostage")
+        self.stats["observations_ratees"] = self.stats.get("observations_ratees", 0) + 1
+        self._obs, self.veut_percevoir = None, False
+        self._etat_accostage = "ECHEC"
+        self.stats["accostages_ratees"] += 1
+
+    def _fin_observation(self, images: List[Colis], de: float, dl: float) -> None:
+        """Les images s'accordent : le carton revu devient celui de la prise ;
+        la cible suit, et s'il a trop bougé, le robot se réaligne."""
+        cfg, v = self.cfg, self._colis_vise
+        n = len(images)
+        centre = tuple(float(np.mean([c.position[k] for c in images])) for k in range(3))
+        l0 = images[0].lacet
+        lacet = l0 + float(np.mean([self._demi_tour(c.lacet - l0) for c in images]))
+        vu = (f"centre ({centre[0]:.3f}, {centre[1]:.3f}, {centre[2]:.3f}), lacet "
+              f"{math.degrees(lacet):+.1f}°, {n} images prises après l'arrêt (écart max "
+              f"{100 * de:.1f} cm, {dl:.1f}°)")
+        obs = Colis(v.couleur, centre, max(c.confiance for c in images), lacet, "", vu)
+        bouge = math.dist(centre[:2], v.position[:2])
+        tourne = abs(math.degrees(self._demi_tour(lacet - v.lacet)))
+        self._obs, self.veut_percevoir = None, False
+        self.stats["observations"] = self.stats.get("observations", 0) + 1
+        if bouge > cfg.tol_observation_m or tourne > cfg.tol_observation_deg:
+            self.stats["cartons_bouges"] = self.stats.get("cartons_bouges", 0) + 1
+            self._journal(f"carton {v.couleur} a BOUGÉ de {100 * bouge:.1f} cm et {tourne:.1f}° "
+                          f"depuis la dernière estimation ({v.vu or 'détection'}) — prise sur "
+                          f"la nouvelle : {vu}")
+        cible, raison = self._cible_prise(centre)
+        if cible is None:
+            self._journal(f"carton {v.couleur} revu : {raison}")
+            self._etat_accostage = "ECHEC"
+            self.stats["accostages_ratees"] += 1
+            return
+        decalage = math.hypot(cible.x - self._insertion.x, cible.y - self._insertion.y)
+        self._colis_vise, self._insertion = obs, cible
+        if decalage > cfg.tol_realignement_m:
+            if self._realignements >= cfg.realignements_max:
+                self._journal(f"carton {v.couleur} : cible déplacée de {100 * decalage:.1f} cm "
+                              f"après {self._realignements} réalignement(s) — nouvel accostage")
+                self._etat_accostage = "ECHEC"
+                self.stats["accostages_ratees"] += 1
+                return
+            # Se replacer devant le carton revu (bras ouverts, lentement),
+            # puis le regarder de nouveau.
+            self._realignements += 1
+            c, s = math.cos(self.cap_prise), math.sin(self.cap_prise)
+            ri = cfg.recul_insertion
+            self._cible = Pose2D(cible.x - ri * c, cible.y - ri * s, self.cap_prise)
+            self._phase, self._vmax = "ACCOSTAGE", cfg.v_insertion
+            self._t_accostage = self._horloge()
+            p = self._pose()
+            self._d0 = math.hypot(self._cible.x - p.x, self._cible.y - p.y)
+            self.stats["realignements"] = self.stats.get("realignements", 0) + 1
+            self._journal(f"carton {v.couleur} : cible déplacée de {100 * decalage:.1f} cm — "
+                          f"réalignement ({self._realignements}/{cfg.realignements_max}), "
+                          f"puis nouvelle observation")
+            return
+        if bouge <= cfg.tol_observation_m and tourne <= cfg.tol_observation_deg:
+            self._journal(f"carton {v.couleur} revu après l'arrêt : {vu}, à {100 * bouge:.1f} cm "
+                          f"et {tourne:.1f}° de la dernière estimation")
+        self._observe = obs
+        self._lancer_insertion()
 
     def _viser(self) -> None:
         """Corrige la position latérale de la cible d'après une nouvelle
@@ -717,8 +948,19 @@ class FacadeServices:
     def prendre(self, colis: Colis) -> Tuple[bool, str]:
         """Lance la prise du colis. Si la visée l'a revu de face, c'est sa
         position corrigée qui est transmise au service de manipulation."""
+        if self._observation_requise:
+            # Après un accostage de prise : seul compte le carton revu après
+            # l'arrêt (voir ConfigFacade, observation), jamais une estimation
+            # plus ancienne.
+            if self._observe is None or self._observe.couleur != colis.couleur:
+                self.stats["prises_sans_observation"] = \
+                    self.stats.get("prises_sans_observation", 0) + 1
+                return False, (f"prise refusée — carton {colis.couleur} pas revu après l'arrêt "
+                               f"du robot (il faut {self.cfg.images_observation} images "
+                               f"cohérentes)")
+            colis = self._observe
         v = self._colis_vise
-        if v is not None and v.couleur == colis.couleur \
+        if not self._observation_requise and v is not None and v.couleur == colis.couleur \
                 and math.dist(v.position[:2], colis.position[:2]) < self.cfg.correction_visee_max_m:
             colis = v                    # position corrigée par la visée
         if colis.vu:
@@ -763,6 +1005,7 @@ class FacadeServices:
         self.nav.annuler()
         self._phase, self._etat_accostage = "NAV", "ARRIVE"
         self._apres_nav, self._insertion, self._colis_vise = None, None, None
+        self._obs, self._observe, self._observation_requise = None, None, False
         self.veut_percevoir = False
         self._accoste = self._accoste or au_contact
         self.loco.halt()
@@ -779,3 +1022,4 @@ class FacadeServices:
         le carton avec lui."""
         self.manip.reinitialiser(large=True)
         self._liberation_jusqua = self._horloge() + self.cfg.duree_liberation_s
+        self._oublier()                    # nouvel essai : tout carton est à revoir
