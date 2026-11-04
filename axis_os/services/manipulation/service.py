@@ -324,7 +324,8 @@ class ManipulationService(IService):
         self.calibration_couples = CalibrationCouples()
         self.biais_couples: Dict[str, float] = {}
         self._t_raideur = -math.inf        # dernier changement de gains
-        self._hors_consigne0: Dict[str, float] = {}
+        self._hors_consigne0: Optional[Dict[str, float]] = {}
+        self._attente_pose: Optional[dict] = None
 
     # ---- IService : l'interface commune des services système -------------
 
@@ -1039,6 +1040,8 @@ class ManipulationService(IService):
             self._echouer(f"prise refusée — contact inattendu en plaçant les mains ({trop}) : "
                           f"l'objet est plus grand que détecté, ou ailleurs")
             return
+        if self._hors_consigne0 is None and not self._poser_bras():
+            return
         q, fini = self._interp_q(self._t_phase or self.r.duree_placement_s)
         self._ecrire_q(q)
         if not fini:
@@ -1144,7 +1147,32 @@ class ManipulationService(IService):
         touchent rien : l'affaissement des bras sous leur poids (et sa
         compensation) y est déjà, il s'annule ; reste ce qui retient la main."""
         maintenant = self._hors_consigne(angles)
-        return {c: v - self._hors_consigne0.get(c, 0.0) for c, v in maintenant.items()}
+        return {c: v - (self._hors_consigne0 or {}).get(c, 0.0) for c, v in maintenant.items()}
+
+    def _poser_bras(self) -> bool:
+        """Au début du placement : attend que les bras soient posés (voir
+        ReglagesPrise.duree_pose_s), puis prend la référence du contrôle
+        géométrique d'appui. Vrai une fois prise ; le geste de placement ne
+        commence qu'ensuite."""
+        r, t = self.r, self._horloge()
+        angles = self._angles_mesures()
+        h = {} if angles is None else self._hors_consigne(angles)
+        a = self._attente_pose
+        if a is None:
+            a = self._attente_pose = {"debut": t, "stable": t, "h": h}
+        elif not h or any(abs(h.get(c, 0.0) - a["h"].get(c, 0.0)) > r.stabilite_pose_m
+                          for c in set(h) | set(a["h"])):
+            a.update(stable=t, h=h)       # les bras bougent encore
+        if t - a["debut"] > r.pose_max_s:
+            self._attente_pose = None
+            self._echouer(f"prise refusée — bras toujours en mouvement après "
+                          f"{r.pose_max_s:.0f} s : pas de référence pour le contrôle d'appui")
+            return False
+        self._t0 = t                      # le placement n'a pas encore commencé
+        if t - a["stable"] < r.duree_pose_s or t - self._t_raideur < r.duree_raidissement_s:
+            return False
+        self._hors_consigne0, self._attente_pose = h, None
+        return True
 
     # ---- calibration des couples (au démarrage, bras en l'air) -----------
     def echantillon_calibration_couples(self, posture: str) -> bool:
@@ -1935,10 +1963,9 @@ class ManipulationService(IService):
                 return ServiceResult(ok=False, reason=f"exemption refusée — {r_e}")
         self.objet, self.raison, self._franchi = objet, "", None
         if self.mesures is not None:
-            # Mains encore libres : leur écart à la consigne sert de
-            # référence au contrôle géométrique d'appui (_retards_ouverture).
-            angles = self._angles_mesures()
-            self._hors_consigne0 = {} if angles is None else self._hors_consigne(angles)
+            # Référence du contrôle géométrique d'appui : prise au début du
+            # placement, bras posés (_poser_bras), pas maintenant.
+            self._hors_consigne0, self._attente_pose = None, None
             # Gains raidis dès le placement : le bras se pose avec eux, et le
             # zéro des couples, avant de fermer, se prend bras immobile.
             self._regler_raideur(True)

@@ -113,6 +113,18 @@ class ReglagesPrise:
     # τ0, décalait la force relative jusqu'au bout. Les gains sont désormais
     # raidis dès le placement des mains.
     duree_raidissement_s: float = 0.5
+    # Référence du contrôle géométrique d'appui (`retard_appui_m`, plus bas) :
+    # l'écart de chaque main à sa consigne, mains libres, pris au début du
+    # placement, une fois les bras posés (raidis depuis
+    # `duree_raidissement_s` au moins, et cet écart stable à
+    # `stabilite_pose_m` près pendant `duree_pose_s`) ; le geste ne commence
+    # qu'ensuite. Avant, il était pris à l'appel de prendre(), bras parfois
+    # encore en mouvement : « main déjà en appui (retenue à 1.6 cm) » sans
+    # aucun contact (CI de la PR 24, machine chargée). Bras qui ne se posent
+    # pas en `pose_max_s` : prise refusée.
+    duree_pose_s: float = 0.2
+    stabilite_pose_m: float = 0.001
+    pose_max_s: float = 3.0
     force_contact_n: float = 3.0
     sigmas_contact: float = 6.0
     # Serrage visé et minimal, à chaque main. Bras du G1 aux gains du banc
