@@ -240,6 +240,7 @@ class TriColis:
             self._aller(suivant)
         elif etat == "ECHEC" or self._temps_etat > self.cfg.delai_nav_s:
             self._log(f"navigation vers {poste} en échec ({etat})")
+            self._signaler_attente(etat, f"trajet vers {poste}")
             self._nav_en_echec(en_echec)
 
     def _nav_en_echec(self, en_echec: Callable[[], None]) -> None:
@@ -335,7 +336,17 @@ class TriColis:
         if etat == "ARRIVE":
             self._aller("PRENDRE")
         elif etat == "ECHEC" or self._temps_etat > self.cfg.delai_nav_s:
+            self._signaler_attente(etat, "accostage")
             self._accostage_rate(f"en échec ({etat})")
+
+    def _signaler_attente(self, etat: str, quoi: str) -> None:
+        """Un déplacement abandonné après une attente de sécurité trop longue
+        (le gardien ralentissait le robot sous sa vitesse minimale de
+        marche) : on le signale à l'opérateur, avec la distance de la
+        personne. Le nouvel essai suit, comme pour tout échec."""
+        raison = getattr(self.robot, "raison_navigation", lambda: "")() if etat == "ECHEC" else ""
+        if "attente de sécurité trop longue" in raison:
+            self._alerte(f"{raison} — {quoi} abandonné, nouvel essai")
 
     def _accostage_rate(self, raison: str) -> None:
         # Le robot n'est peut-être plus au poste de prise : il y retourne
