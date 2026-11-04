@@ -257,6 +257,38 @@ check("… force relative non décalée avant le contact (moins de 1 N, aucun ma
 check("… et la prise tient", m.etat is Etat.TENU, m.raison)
 r.__exit__(None, None, None)
 
+section("6. Référence du contrôle d'appui prise bras posés, pas à l'appel de prendre()")
+# Constat (CI de la PR 24, machine chargée) : prendre() appelé bras encore en
+# mouvement ; la référence de l'écart main-consigne, prise à cet instant,
+# était fausse, et « main G déjà en appui (retenue à 1.6 cm) » refusait la
+# prise sans aucun objet. Ici, le mouvement est simulé : pendant 0.3 s après
+# l'appel, le roulis gauche mesuré est en retard de 0.06 rad sur sa consigne.
+r = SimulatedRobot(objects=[], time_scale=2.0)
+r.__enter__()
+time.sleep(0.2)
+m = r.manipulation
+vrai, debut = m._angles_mesures, []
+
+
+def en_mouvement():
+    a = vrai()
+    if a is not None and debut and r.clock() - debut[0] < 0.3:
+        a = dict(a)
+        a["left_shoulder_roll_joint"] -= 0.06
+    return a
+
+
+m._angles_mesures = en_mouvement
+debut.append(r.clock())
+m = prendre(r)
+check("Bras encore en mouvement à l'appel, aucun objet : pas de fausse alarme d'appui, la "
+      "prise va jusqu'à « rien entre les mains »", m.etat is Etat.ECHEC
+      and "rien entre les mains" in m.raison and "déjà en appui" not in m.raison, m.raison)
+check("… référence prise bras posés : retard de la main à l'ouverture sous 1 mm",
+      max(abs(v) for v in m.stats["retard_ouverture_cm"].values()) < 0.1,
+      str(m.stats.get("retard_ouverture_cm")))
+r.__exit__(None, None, None)
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)
