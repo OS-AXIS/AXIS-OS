@@ -195,6 +195,10 @@ class PeopleService(IService):
         frame = None
         latence = (time.perf_counter() - t0) * 1000.0
         with self._verrou:
+            if not self.watching:
+                # release() est passé pendant ce cycle : il a promis que tout
+                # serait oublié, ce que le cycle a vu n'est pas gardé.
+                return ServiceResult(ok=True, value=0, reason="aucune app ne regarde")
             self._tracker.update(observations, t)
             if self._dernier_cycle is not None and t > self._dernier_cycle:
                 hz = 1.0 / (t - self._dernier_cycle)
