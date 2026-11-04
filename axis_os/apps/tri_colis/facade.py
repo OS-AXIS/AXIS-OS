@@ -156,6 +156,23 @@ class ConfigFacade:
     # Durée maximale d'un accostage ; le temps d'arrêt dû à la sécurité n'y
     # est pas compté (voir tick).
     delai_accostage_s: float = 25.0
+    # Attente de sécurité. Le gardien de proximité ralentit le robot en
+    # multipliant sa consigne par un facteur. Une consigne déjà proche de
+    # `v_min`, multipliée par 0,8, tombe sous la vitesse minimale de marche :
+    # le robot ne bouge plus. Avant, l'accostage se déclarait « BLOQUÉ » au
+    # bout de `delai_blocage_s` et échouait (constaté dans la pile logicielle,
+    # test_tri_pile_logicielle.py : 13 reculs bloqués sur 12 graines,
+    # 2 graines en échec). Désormais, c'est une attente de sécurité : robot à
+    # l'arrêt, en équilibre, délai d'accostage suspendu comme sous un arrêt,
+    # et jamais de consigne remontée pour « passer » quand même. L'attente
+    # est bornée par `attente_securite_max_s` : au-delà, l'accostage échoue
+    # avec sa raison et l'app le signale. 30 s : deux fois la pause du
+    # collègue qui vient près du poste de prise (scene_demo.figurants,
+    # 15 s), marche d'approche et de départ comprises ; une personne qui
+    # traverse la zone de ralentissement (2 m) en sort en quelques secondes.
+    # Au-delà, quelqu'un travaille là : on le signale, on recule et on
+    # réessaie plus tard plutôt que d'attendre sans fin.
+    attente_securite_max_s: float = 30.0
     recul_sortie: float = 0.35     # recul en ligne droite avant de repartir
     # Un accostage qui diverge est abandonné : la distance à la cible dépasse
     # la distance de départ plus cette marge. (La première version utilisait
@@ -263,6 +280,11 @@ class FacadeServices:
         self._penche_signale = False
         # Vitesse maximale de l'accostage en cours (réduite à l'insertion).
         self._vmax = cfg.v_max
+        # Attente de sécurité en cours (voir ConfigFacade) : sa durée, le pas
+        # de temps du tick courant, et la raison du dernier échec
+        # d'accostage (raison_navigation()).
+        self._attente_s, self._dt, self._attente_signalee = 0.0, 0.0, False
+        self.raison_echec = ""
         self.stats = {"accostages": 0, "accostages_ratees": 0,
                       "detections_filtrees": 0, "reculs": 0}
 
@@ -380,6 +402,7 @@ class FacadeServices:
         """Départ vers `dest` (un poste ou une pose), suivi de l'accostage
         `accostage` s'il est donné. Commence par un recul si le robot est
         collé à une table."""
+        self.raison_echec, self._attente_s, self._attente_signalee = "", 0.0, False
         self._dest, self._apres_nav = dest, accostage
         self._poste_depose = poste_depose
         self._colis_vise, self.veut_percevoir = None, False
@@ -488,7 +511,7 @@ class FacadeServices:
         # faisait échouer l'accostage par dépassement de délai.)
         maintenant = self._horloge()
         dt = 0.0 if self._t_tick is None else maintenant - self._t_tick
-        self._t_tick = maintenant
+        self._t_tick, self._dt = maintenant, dt
         if self.bloque_par_securite():
             self._t_accostage += dt
             self._t_stab0 += dt
@@ -661,9 +684,10 @@ class FacadeServices:
         sous le contrôle du gardien de proximité). Ne va jamais au-delà de
         la cible.
 
-        Rend EN_ROUTE, ARRIVE, BLOQUE (aucun progrès depuis
-        delai_blocage_s) ou ECHEC (divergence, cible trop lointaine ou délai
-        dépassé)."""
+        Rend EN_ROUTE (y compris pendant une attente de sécurité), ARRIVE,
+        BLOQUE (aucun progrès depuis delai_blocage_s) ou ECHEC (divergence,
+        cible trop lointaine, délai dépassé, attente de sécurité trop
+        longue)."""
         cfg, p, b = self.cfg, self._pose(), self._cible
         dxw, dyw = b.x - p.x, b.y - p.y
         c, s = math.cos(p.cap), math.sin(p.cap)
@@ -672,6 +696,16 @@ class FacadeServices:
         d = math.hypot(ex, ey)
         t = self._horloge()
         v = getattr(self.loco, "dernier_verdict", None)
+        vx = self._franche(cfg.gain * ex, self._vmax) if abs(ex) > cfg.tol_position else 0.0
+        vy = self._franche(cfg.gain * ey, self._vmax) if abs(ey) > cfg.tol_position else 0.0
+        wz = self._franche(cfg.gain * ecap, cfg.w_max) if abs(ecap) > cfg.tol_cap else 0.0
+        plus_grande = max(abs(vx), abs(vy), abs(wz))
+        if v is not None and 0.0 < v.facteur < 1.0 and 0.0 < plus_grande * v.facteur < cfg.v_min:
+            # Le gardien ralentit la consigne sous la vitesse minimale de
+            # marche : le robot ne bougerait pas. Attente de sécurité, pas
+            # blocage (voir ConfigFacade.attente_securite_max_s).
+            return self._attendre(v, d, t)
+        self._attente_s, self._attente_signalee = 0.0, False
         if self._progres is None or self._progres[2] is not self._cible \
                 or d < self._progres[0] - 0.01 \
                 or (v is not None and v.facteur < 0.5):
@@ -704,14 +738,44 @@ class FacadeServices:
                 or self._horloge() - self._t_accostage > cfg.delai_accostage_s:
             self.loco.halt()
             return "ECHEC"
-        vx = self._franche(cfg.gain * ex, self._vmax) if abs(ex) > cfg.tol_position else 0.0
-        vy = self._franche(cfg.gain * ey, self._vmax) if abs(ey) > cfg.tol_position else 0.0
-        wz = self._franche(cfg.gain * ecap, cfg.w_max) if abs(ecap) > cfg.tol_cap else 0.0
         if vx == vy == wz == 0.0:
             self.loco.halt()
             return "ARRIVE"
         self.loco.set_velocity(vx, vy, wz)
         return "EN_ROUTE"
+
+    def _attendre(self, v, d: float, t: float) -> str:
+        """Un pas d'attente de sécurité : robot à l'arrêt, en équilibre (la
+        consigne n'est jamais remontée pour passer quand même), ni blocage
+        ni délai d'accostage qui court ; au-delà de attente_securite_max_s,
+        l'accostage échoue avec sa raison (raison_navigation())."""
+        cfg = self.cfg
+        self.loco.halt()
+        self._progres = (d, t, self._cible)       # le délai de blocage repart à la reprise
+        self._t_accostage += self._dt             # suspendu, comme sous un arrêt de sécurité
+        self._attente_s += self._dt
+        loin = (f"{v.distance:.1f}" if v.distance is not None and math.isfinite(v.distance)
+                else "?")
+        if not self._attente_signalee:
+            self._attente_signalee = True
+            self.stats["attentes_securite"] = self.stats.get("attentes_securite", 0) + 1
+            self._journal(f"accostage ({self._phase}) : attente de sécurité — le gardien ralentit "
+                          f"le robot (×{v.facteur:.2f}, personne à {loin} m) sous la vitesse "
+                          f"minimale de marche ({cfg.v_min:.2f} m/s) : robot à l'arrêt")
+        if self._attente_s <= cfg.attente_securite_max_s:
+            return "EN_ROUTE"
+        self.raison_echec = f"attente de sécurité trop longue : personne à {loin} m"
+        self.stats["attentes_trop_longues"] = self.stats.get("attentes_trop_longues", 0) + 1
+        self._journal(f"accostage ({self._phase}) : {self.raison_echec} ({self._attente_s:.0f} s, "
+                      f"au plus {cfg.attente_securite_max_s:.0f}) — abandon")
+        self._attente_s, self._attente_signalee = 0.0, False
+        return "ECHEC"
+
+    def raison_navigation(self) -> str:
+        """Pourquoi le dernier déplacement a échoué, si la façade le sait
+        ("" sinon) ; par exemple « attente de sécurité trop longue :
+        personne à 1.8 m »."""
+        return self.raison_echec
 
     # ---- manipulation -----------------------------------------------------
     def prendre(self, colis: Colis) -> Tuple[bool, str]:

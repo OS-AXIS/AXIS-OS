@@ -11,7 +11,8 @@ Seule la physique est remplacée : un robot cinématique qui imite GR00T WBC
 humains qui circulent. C'est la répétition générale avant Isaac Sim : tout
 ce qui échoue ici échouerait sur le GPU, en coûtant des heures.
 
-Usage : python3 test/test_tri_pile_logicielle.py [durée_s]   (défaut 600)
+Usage : python3 test/test_tri_pile_logicielle.py [durée_s] [graine]
+        (défaut 600 s, graine 3 ; test_tri_pile_graines.py en lance d'autres)
 """
 import math
 import random
@@ -53,6 +54,10 @@ def section(t):
 
 
 DUREE = float(sys.argv[1]) if len(sys.argv) > 1 else 600.0
+# Graine du monde : cartons, bruit de la perception, erreur d'exécution de
+# la marche, prises ratées. Les personnes, elles, suivent toujours le même
+# trajet.
+GRAINE = int(sys.argv[2]) if len(sys.argv) > 2 else 3
 DT = 0.02
 # ── Le site : la MÊME définition que la scène Isaac Sim ─────────────────
 PLATEAU, CAP_PRISE = sd.PLATEAU, sd.CAP_PRISE
@@ -245,7 +250,7 @@ def collision(robot, rayon=0.12):
 
 # ── Montage de la pile ──────────────────────────────────────────────────
 section(f"Montage : pile AXIS-OS complète, {DUREE:.0f} s simulées")
-monde = Monde()
+monde = Monde(graine=GRAINE)
 R = monde.robot
 horloge = lambda: R.t
 gardien = GardienProximite(monde.scan, lambda: (R.x, R.y, R.cap), obstacles=OBSTACLES,
