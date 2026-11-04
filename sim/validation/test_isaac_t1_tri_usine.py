@@ -630,6 +630,11 @@ def main():
             etat_calib["arrive"] = sim_t[0]
         if sim_t[0] - etat_calib["arrive"] < 0.6:  # le bras se pose
             return False
+        if sim_t[0] - etat_calib["arrive"] < 1.0:
+            # Bras posés et immobiles : couples estimés contre pesanteur du
+            # modèle, pour les biais des couples (0,4 s de relevés).
+            manip.echantillon_calibration_couples(nom)
+            return False
         st_ = read_state()
         g_, d_ = mains()
         calib.ajouter(nom, {j: st_.joint_pos[j] for j in chaine_bras},
@@ -640,6 +645,10 @@ def main():
             return False
         ok_, texte_ = calib.bilan()
         for ligne_ in texte_.splitlines():
+            journaliser(ligne_)
+        # Biais des couples (une ligne par articulation, et le résidu) : la
+        # force à la main se calcule désormais sur les couples corrigés.
+        for ligne_ in manip.terminer_calibration_couples().splitlines():
             journaliser(ligne_)
         if not ok_:
             manip.calibration_refus = (
@@ -1022,6 +1031,36 @@ def main():
     # Juge (vérité simulation, banc_prise) : contacts PhysX des mains avec
     # les cartons, pour noter le contact estimé par l'OS ; l'OS n'en lit rien.
     juge = JugeContacts(capteurs.lire) if capteurs.methode else None
+    # Relevé de chaque pas de fermeture et de serrage, par main (ajouté au
+    # .zip par recuperer_t1.sh) : force estimée (le long de la normale et
+    # vecteur), force réelle du juge, faces commandée et mesurée, couples
+    # des 7 articulations du bras. Pour expliquer une force de mauvais
+    # signe (essai GPU de novembre 2026) avec les chiffres de chaque pas.
+    import csv
+    ARTIC_CSV = ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll",
+                 "wrist_pitch", "wrist_yaw")
+    fichier_prise = open(VIDEOS / "t1_prise.csv", "w", newline="")
+    csv_prise = csv.writer(fichier_prise)
+    csv_prise.writerow(["t_s", "phase", "sous_phase", "main", "force_normale_n", "force_x_n",
+                        "force_y_n", "force_z_n", "serrage_filtre_n", "force_juge_n",
+                        "face_commandee_m", "face_mesuree_m"]
+                       + [f"couple_{a}_nm" for a in ARTIC_CSV])
+
+    def relever_prise(t):
+        rel_ = manip.releve_fermeture()
+        if rel_ is None:
+            return
+        for cote_ in ("left", "right"):
+            m_ = rel_[cote_]
+            f_ = m_["force"] or (None, None, None)
+            juge_ = capteurs.lire(cote_) if capteurs.methode else None
+            csv_prise.writerow(
+                [f"{t:.3f}", rel_["phase"], rel_["sous_phase"] or "", cote_]
+                + ["" if v is None else f"{v:.3f}" for v in (m_["normale"], *f_, m_["serrage"],
+                                                              juge_, m_["face_commandee"],
+                                                              m_["face_mesuree"])]
+                + [f"{m_['couples'][f'{cote_}_{a}_joint']:.3f}"
+                   if f"{cote_}_{a}_joint" in m_["couples"] else "" for a in ARTIC_CSV])
     print(f"  juge des contacts (vérité simulation) : "
           + (f"actif ({capteurs.methode}) sur {capteurs.corps}" if juge else "indisponible")
           + (f" — {' ; '.join(capteurs.raisons)}" if capteurs.raisons else ""), flush=True)
@@ -1316,6 +1355,7 @@ def main():
         # Juge : une prise va de l'entrée en PLACEMENT à sa fin ; contacts
         # réels relevés pendant la FERMETURE ; lacet réel du carton à chaque
         # phase (tourne-t-il pendant la prise ?).
+        relever_prise(sim_t[0])
         if juge is not None:
             e_ = manip.etat
             if e_ is Etat.PLACEMENT and not juge.en_cours:
@@ -1411,6 +1451,7 @@ def main():
                 print(f"  … t={t:6.0f} s simulées, {time.monotonic() - t_mur:6.0f} s réelles, "
                       f"{tri.bilan.colis_tries} triés, état {tri.etat}")
 
+    fichier_prise.close()
     if video_ok:
         rec.terminer()
         vue.terminer()
