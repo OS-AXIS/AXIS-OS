@@ -233,6 +233,42 @@ class ReglagesPrise:
     rotation_max_deg: float = 10.0
     part_poids_min: float = 0.4
     duree_perte_s: float = 0.3
+    # Serrage d'après le poids (essai GPU T1 du 5 novembre 2026, 21 h 57 :
+    # carton de 10,9 N tenu à 6,5 N par main, soit un frottement d'au moins
+    # 0,84 rien que pour le porter, aucune marge ; il a glissé à la marche).
+    # Dès le levage, le poids mesuré par l'OS (le plus grand depuis le début
+    # du levage) fixe le serrage requis par main : securite_serrage × poids /
+    # (2 frottement_serrage) ; l'OS vise marge_serrage_n de plus, et se
+    # contente du requis s'il ne peut aller au-delà (au-dessus du serrage
+    # déjà atteint seulement : un objet léger garde celui d'avant).
+    # frottement_serrage : hypothèse prudente
+    # (caoutchouc sur carton ; 1,0 au banc). marge_serrage_n : à la marche, la
+    # charge passe d'une main à l'autre, la somme des deux forces normales
+    # varie de ~1 N (juge de l'essai). La face commandée peut alors entrer
+    # jusqu'à penetration_poids_max_m dans la face touchée (raideur ~310 N/m
+    # au point de contact sur GPU : 15 N demandent ~5 cm), plafonds de couple
+    # inchangés ; le levage attend en haut ce serrage. Aucune main ne peut
+    # plus avancer (borne atteinte, ou une articulation à moins de 0,3 N·m de
+    # son plafond) pendant duree_serrage_poids_max_s : le carton est reposé
+    # (trop lourd pour ces mains). Si les faces mesurées se rapprochent de
+    # plus de cede_max_m, le carton cède sous le serrage : reposé aussi.
+    frottement_serrage: float = 0.8
+    securite_serrage: float = 2.0
+    marge_serrage_n: float = 1.0
+    penetration_poids_max_m: float = 0.06
+    duree_serrage_poids_max_s: float = 3.0
+    cede_max_m: float = 0.01
+    # Au port, les mains gardent leur serrage : la consigne desserrée par un
+    # plafond est rendue dès que les bras le permettent ; si les mains
+    # mesurées s'écartent de plus de ecart_face_port_m de leur place au
+    # serrage (somme des deux mains : le balancement de la marche, ±2,5 cm
+    # sur GPU, les décale ensemble et s'y annule ; la rotation de la taille
+    # aussi), ou si la marge de frottement μ (N_G + N_D) / poids passe sous
+    # securite_serrage, la base s'arrête et l'on resserre ; si cela ne suffit
+    # pas en duree_resserrage_s, on s'arrête pour de bon et on le signale
+    # (à reposer).
+    ecart_face_port_m: float = 0.005
+    duree_resserrage_s: float = 1.0
     # Écart admis entre une main mesurée par le robot (le lien de la main,
     # rubber_hand) et la même main calculée par la cinématique sur les
     # angles mesurés. Au-delà, le modèle des bras ne décrit pas le robot :
