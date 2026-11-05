@@ -133,6 +133,19 @@ class ReglagesPrise:
     # deux mains caoutchouc (frottement ~1) demande 4,9 N à chacune.
     force_serrage_n: float = 8.0
     force_min_n: float = 5.0
+    # Couples estimés NON FIABLES (CalibrationCouples.fiabilite : ils ne
+    # suivent pas la pesanteur du modèle), la force à la main ne décide plus
+    # rien : le serrage se juge en géométrie. La face commandée avance
+    # jusqu'à sa borne (`penetration_max_m`), et chaque main doit y rester
+    # RETENUE par l'objet : face mesurée en retard d'au moins
+    # `retard_serrage_m` sur la commandée (depuis le début de la fermeture,
+    # comme le contact), à moins de `tol_face_contact_m` de la face touchée,
+    # et la main bloquée (sa face mesurée immobile à `glissement_serrage_m`
+    # près) pendant `duree_maintien_s`, consigne fixe. 1 cm : ~5 N (`force_min_n`) à ~500 N/m, la raideur
+    # à la main des gains raidis du banc T1 ; constaté sur GPU (essai T1 du
+    # 5 novembre 2026), 1.6 à 1.9 cm de retard pour 6 à 9.5 N réels.
+    retard_serrage_m: float = 0.01
+    glissement_serrage_m: float = 0.003
     force_deja_n: float = 16.0         # à la prise, avant de bouger : bras déjà en effort
     pas_serrage_max_m: float = 0.0005  # avance de la face commandée par pas, au plus
     pas_serrage_min_m: float = 0.0001
@@ -365,6 +378,34 @@ def ecarts_modele(modele: ModeleBras, angles: Dict[str, float],
             np.asarray(mains_reelles[1], dtype=float) - pd)
 
 
+def signal_contact(r: "ReglagesPrise", hausse_nm: float, retard_roulis_rad: float,
+                   force_n: float, seuil_force_n: float, retard_face_m: float,
+                   ecart_face_m: float, couples_fiables: bool = True) -> Optional[str]:
+    """Ce qui signe le contact d'une main en fermant, ou None : la hausse du
+    couple du roulis, le roulis en retard sur sa consigne, la force à la main
+    (au-delà du seuil mesuré au repos), ou la géométrie (face intérieure
+    mesurée en retard de `retard_face_m` sur la commandée, à moins de
+    `tol_face_contact_m` de la face attendue). Couples non fiables
+    (CalibrationCouples.fiabilite) : ni couple, ni force."""
+    if couples_fiables and hausse_nm >= r.hausse_contact_nm:
+        return "couple"
+    if retard_roulis_rad >= r.retard_contact_rad:
+        return "retard du roulis"
+    if couples_fiables and force_n >= seuil_force_n:
+        return "force"
+    if retard_face_m >= r.retard_face_m and ecart_face_m <= r.tol_face_contact_m:
+        return "géométrie"
+    return None
+
+
+def main_retenue(r: "ReglagesPrise", retard_m: float, ecart_face_m: float) -> bool:
+    """Serrage jugé en géométrie (couples non fiables) : la main est-elle
+    retenue par l'objet ? Face mesurée en retard d'au moins
+    `retard_serrage_m` sur la commandée, et à moins de `tol_face_contact_m`
+    de la face touchée (pas un objet qui s'enfonce)."""
+    return retard_m >= r.retard_serrage_m and ecart_face_m <= r.tol_face_contact_m
+
+
 class CalibrationCouples:
     """Biais des couples estimés, articulation par articulation. Bras en
     l'air et immobiles, dans quelques postures (celles de la calibration des
@@ -385,6 +426,38 @@ class CalibrationCouples:
                 gravite: Dict[str, float]) -> None:
         self.releves.append((posture, {j: (float(couples[j]), float(gravite[j]))
                                        for j in gravite if j in couples}))
+
+    def fiabilite(self, etendue_min_nm: float = 1.0, pente_min: float = 0.5,
+                  pente_max: float = 1.5) -> Tuple[Optional[bool], Dict[str, float]]:
+        """Les couples estimés suivent-ils la pesanteur du modèle ? Pour
+        chaque articulation dont la pesanteur varie d'au moins
+        `etendue_min_nm` d'une posture à l'autre : pente des couples moyens
+        contre la pesanteur moyenne, posture par posture (moindres carrés ;
+        1, ils la suivent ; 0, ils n'en ont rien). Rend (fiables, {pentes}) :
+        fiables si toutes les pentes sont entre `pente_min` et `pente_max`,
+        None si aucune articulation ne varie assez pour en juger.
+
+        Constaté sur GPU (essai T1 du 5 novembre 2026) : au tangage d'épaule,
+        pesanteur de -2.6 à -4.8 N·m selon la posture, couples lus à
+        quelques dixièmes de zéro ; les « biais » valaient l'opposé de la
+        pesanteur. Le banc lisait les efforts imposés aux articulations
+        (nuls, elles sont commandées en position), pas le couple des moteurs :
+        la force à la main n'était que du bruit."""
+        par: Dict[str, Dict[str, list]] = {}
+        for posture, rel in self.releves:
+            for j, (t, g) in rel.items():
+                if math.isfinite(t) and math.isfinite(g):
+                    par.setdefault(j, {}).setdefault(posture, []).append((t, g))
+        pentes = {}
+        for j, pp in par.items():
+            moy = np.array([np.mean(v, axis=0) for v in pp.values()])     # (posture, [τ, g])
+            if len(moy) < 2 or float(np.ptp(moy[:, 1])) < etendue_min_nm:
+                continue
+            g, t = moy[:, 1] - moy[:, 1].mean(), moy[:, 0] - moy[:, 0].mean()
+            pentes[j] = float(g @ t / (g @ g))
+        if not pentes:
+            return None, {}
+        return all(pente_min <= v <= pente_max for v in pentes.values()), pentes
 
     def resoudre(self) -> Dict[str, Tuple[float, float, int]]:
         """{articulation: (biais N·m, résidu N·m, relevés)} ; le résidu est

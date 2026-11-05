@@ -96,7 +96,7 @@ from axis_os.store.sdk.manifest import Capability
 
 from .prise import (
     CalibrationCouples, MesuresBras, ReglagesPrise, cibles_mains, distance_ideale,
-    efforts_valides, garde_plateau, positions_valides, resoudre,
+    efforts_valides, garde_plateau, main_retenue, positions_valides, resoudre, signal_contact,
 )
 
 
@@ -323,6 +323,11 @@ class ManipulationService(IService):
         # couple mesuré dans le calcul de la force à la main seulement.
         self.calibration_couples = CalibrationCouples()
         self.biais_couples: Dict[str, float] = {}
+        # Les couples estimés suivent-ils la pesanteur ? (calibration des
+        # couples ; None : pas jugé). Faux : la force à la main ne décide plus
+        # ni du contact, ni du serrage, ni de la confirmation ; elle reste au
+        # diagnostic, et les plafonds de couple restent jugés sur le couple.
+        self.couples_fiables: Optional[bool] = None
         self._t_raideur = -math.inf        # dernier changement de gains
         self._hors_consigne0: Optional[Dict[str, float]] = {}
         self._attente_pose: Optional[dict] = None
@@ -1202,6 +1207,16 @@ class ManipulationService(IService):
         self.biais_couples = {j: b for j, (b, _, _) in biais.items()}
         postures = len({p for p, _ in self.calibration_couples.releves})
         texte = CalibrationCouples.bilan(biais, postures)
+        self.couples_fiables, pentes = self.calibration_couples.fiabilite()
+        if self.couples_fiables is not None:
+            detail = ", ".join(f"{j} {v:.2f}" for j, v in sorted(pentes.items()))
+            texte += ("\n" + (f"couples estimés fiables : ils suivent la pesanteur du modèle "
+                               f"(pente {detail} ; attendu 1)" if self.couples_fiables else
+                               f"couples estimés NON FIABLES : ils ne suivent pas la pesanteur du "
+                               f"modèle (pente {detail} ; attendu 1) — la force à la main ne "
+                               f"décide plus ni du contact ni du serrage (géométrie et retard du "
+                               f"roulis) ; elle reste au diagnostic"))
+        self.stats["couples_fiables"] = self.couples_fiables
         for ligne in texte.splitlines():
             self._noter(ligne)
         self.stats["biais_couples_nm"] = {j: round(b, 2) for j, b in self.biais_couples.items()}
@@ -1268,6 +1283,11 @@ class ManipulationService(IService):
                                 for c, v in retards.items())
                     + f" (au plus {100 * r.retard_appui_m:.0f})")
         trop = [(nom, f, seuil) for nom, f, seuil in appui if f > seuil]
+        if trop and self.couples_fiables is False:
+            # Couples non fiables : cette force n'est que du bruit ; la
+            # géométrie (juste après) juge seule.
+            self._noter("force avant de fermer non jugée : couples estimés non fiables")
+            trop = []
         if trop:
             nom, f, seuil = trop[0]
             self._echouer(f"prise refusée — main {nom} déjà en appui sur l'objet avant de fermer "
@@ -1344,12 +1364,8 @@ class ManipulationService(IService):
             # commandée avant tout contact (constaté sur le robot simulé : 2 cm).
             retard_face = sens * ((faces_m[k] - faces_c[k]) - self._ecart_face0.get(cote, 0.0))
             force = forces.get(cote, 0.0) if forces is not None else 0.0
-            signal = ("couple" if hausse >= r.hausse_contact_nm else
-                      "retard du roulis" if retard >= r.retard_contact_rad else
-                      "force" if force >= self._seuil_contact else
-                      "géométrie" if (retard_face >= r.retard_face_m and
-                                      abs(faces_m[k] - attendue) <= r.tol_face_contact_m)
-                      else None)
+            signal = signal_contact(r, hausse, retard, force, self._seuil_contact, retard_face,
+                                    abs(faces_m[k] - attendue), self.couples_fiables is not False)
             if signal is not None:
                 # Contact probable : la consigne n'avance plus, on le
                 # confirme au pas suivant (jamais d'élan dans l'objet).
@@ -1466,8 +1482,10 @@ class ManipulationService(IService):
         (cinématique inverse sur tout le bras, petits pas), jusqu'à la force
         visée à la main, jamais au-delà de largeur/2 - penetration_max_m ;
         une articulation du bras au-delà de sa limite de couple fait
-        desserrer."""
+        desserrer. Couples non fiables : jusqu'à la borne, et le serrage se
+        juge en géométrie (voir ReglagesPrise.retard_serrage_m)."""
         r = self.r
+        geo = self.couples_fiables is False
         tau, raison = self._efforts()
         if tau is None:
             self._echouer(f"serrage refusé — {raison}")
@@ -1489,17 +1507,21 @@ class ManipulationService(IService):
                 self.stats["serrages_limites"] = self.stats.get("serrages_limites", 0) + 1
                 self._plafond[cote] = trop[0]
                 prets = False
-            elif f < r.force_serrage_n and not self._plafond.get(cote):
+            elif (geo or f < r.force_serrage_n) and not self._plafond.get(cote):
                 reste = self._reste_avant_borne(q, k, cote)
                 if reste <= r.pas_serrage_min_m:
                     continue                      # au bout : on juge ce qu'on a
-                raideur = self._raideur(cote, f)
-                # Pas réduit pour arriver à la force visée sans la dépasser ;
-                # le plus petit tant que la raideur n'est pas mesurée.
-                pas = (min(r.pas_serrage_max_m, max(r.pas_serrage_min_m,
-                                                    (r.force_serrage_n - f) / raideur))
-                       if raideur > 0.0 else r.pas_serrage_min_m)
-                d = min(pas, reste)
+                if geo:
+                    # Rien ne mesure la force : jusqu'à la borne, au plus petit pas.
+                    d = min(r.pas_serrage_min_m, reste)
+                else:
+                    raideur = self._raideur(cote, f)
+                    # Pas réduit pour arriver à la force visée sans la dépasser ;
+                    # le plus petit tant que la raideur n'est pas mesurée.
+                    pas = (min(r.pas_serrage_max_m, max(r.pas_serrage_min_m,
+                                                        (r.force_serrage_n - f) / raideur))
+                           if raideur > 0.0 else r.pas_serrage_min_m)
+                    d = min(pas, reste)
             else:
                 continue
             q2 = self._avancer(q, cote, d)
@@ -1516,6 +1538,31 @@ class ManipulationService(IService):
         if not prets and self._horloge() - self._t0 < r.duree_serrage_max_s:
             self._t_phase = None
             return
+        if geo:
+            retards, texte = self._retenues()
+            if not retards or not all(v[2] for v in retards.values()):
+                self._echouer(f"prise refusée — serrage insuffisant ({texte}) : l'objet cède ou "
+                              f"glisse, on n'insiste pas (force estimée non fiable, non jugée)")
+                return
+            if self._t_phase is None:
+                self._t_phase, self._retards_maintien = self._horloge(), retards
+            elif self._horloge() - self._t_phase >= r.duree_maintien_s:
+                # Main bloquée : sa face mesurée n'a pas bougé (consigne fixe).
+                glisse = [(c, abs(v[3] - self._retards_maintien[c][3]))
+                          for c, v in retards.items()
+                          if abs(v[3] - self._retards_maintien[c][3]) > r.glissement_serrage_m]
+                if glisse:
+                    c, g_ = glisse[0]
+                    self._echouer(f"prise refusée — serrage insuffisant (main "
+                                  f"{'G' if c == 'left' else 'D'} déplacée de {100 * g_:.1f} cm "
+                                  f"pendant le maintien, au plus "
+                                  f"{100 * r.glissement_serrage_m:.1f}) : l'objet cède ou glisse, "
+                                  f"on n'insiste pas")
+                    return
+                self._noter(f"serrage jugé en géométrie (couples non fiables) : {texte}")
+                self._q_serre = dict(self._q)
+                self._lever_de_quelques_cm()
+            return
         faible = min(forces.values())
         if faible < r.force_min_n:
             limites = ", ".join(f"main {'G' if c == 'left' else 'D'} arrêtée par "
@@ -1531,6 +1578,34 @@ class ManipulationService(IService):
         elif self._horloge() - self._t_phase >= r.duree_maintien_s:
             self._q_serre = dict(self._q)
             self._lever_de_quelques_cm()
+
+    def _retenues(self) -> Tuple[Dict[str, Tuple[float, float, bool, float]], str]:
+        """Serrage en géométrie (couples non fiables), par main : (retard,
+        écart à la face touchée, retenue, face mesurée) et le texte du
+        jugement. Retard :
+        la face mesurée en arrière de la commandée, le long de la normale,
+        depuis le début de la fermeture (comme le contact) ; retenue s'il
+        atteint `retard_serrage_m`, face mesurée à moins de
+        `tol_face_contact_m` de la face touchée (pas un objet qui s'enfonce).
+        Rien entre les mains : la face mesurée suit la commandée, pas de
+        retard, pas de retenue."""
+        r = self.r
+        mod = self._mains_modele()
+        if mod is None:
+            return {}, "angles des bras illisibles : retard inconnu"
+        fc = self._faces(self.mesures.modele.mains(self._consigne_complete()))
+        fm = self._faces(mod)
+        sortie, parts = {}, []
+        for k, cote in enumerate(self._ROULIS):
+            sens = 1.0 if k == 0 else -1.0
+            retard = sens * ((fm[k] - fc[k]) - self._ecart_face0.get(cote, 0.0))
+            ecart = abs(fm[k] - self._attendue.get(cote, fm[k]))
+            tenue = main_retenue(r, retard, ecart)
+            sortie[cote] = (retard, ecart, tenue, fm[k])
+            parts.append(f"main {'G' if k == 0 else 'D'} retenue à {100 * retard:.1f} cm de sa "
+                         f"consigne (au moins {100 * r.retard_serrage_m:.0f}), à {100 * ecart:.1f} "
+                         f"cm de la face touchée (au plus {100 * r.tol_face_contact_m:.1f})")
+        return sortie, " ; ".join(parts)
 
     def _raideur(self, cote: str, force: float) -> float:
         """Raideur mesurée (N/m) au serrage : hausse de la force à la main
@@ -1629,8 +1704,13 @@ class ManipulationService(IService):
         if not fini:
             return
         forces = self._mesurer_forces(tau)
-        confirme = (self._verifier() and forces is not None
-                    and min(forces.values()) >= r.force_min_n)
+        if self.couples_fiables is False:
+            # Force estimée non fiable : mains toujours retenues par l'objet.
+            retards, _ = self._retenues()
+            tient = bool(retards) and all(v[2] for v in retards.values())
+        else:
+            tient = forces is not None and min(forces.values()) >= r.force_min_n
+        confirme = self._verifier() and tient
         if not confirme and self._horloge() - self._t0 - r.duree_levage_test_s \
                 < p.attente_confirmation_s:
             return
