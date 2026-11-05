@@ -24,7 +24,10 @@ test/test_couleur_colis.py.
 from __future__ import annotations
 
 import colorsys
+import math
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 from axis_os.hal.core.frames import FRAME_WORLD
 from axis_os.services.base import ServiceResult
@@ -153,6 +156,30 @@ def mesure_couleur(data: bytes, largeur: int, hauteur: int, bbox: Sequence[int])
     return f"RGB moyen {moy} — {parts}"
 
 
+def bords_touches(bbox: Sequence[float], largeur: int, hauteur: int, tol: float = 1.0) -> List[str]:
+    """Bords de l'image (« gauche », « haut », « droit », « bas ») que
+    touche le cadre (x, y, largeur, hauteur), à `tol` pixel près."""
+    x, y, w, h = (float(v) for v in bbox)
+    return [nom for nom, touche in (("gauche", x <= tol), ("haut", y <= tol),
+                                    ("droit", x + w >= largeur - tol),
+                                    ("bas", y + h >= hauteur - tol)) if touche]
+
+
+def taille_metrique(points) -> Optional[Tuple[float, float]]:
+    """Étendue (m) d'un nuage N × 3 (z vertical) : à l'horizontale, le long
+    de ses axes principaux (la plus grande), et à la verticale, entre ses 5e
+    et 95e centiles (quelques pixels du bord du masque tombés sur le fond ne
+    la font pas exploser). None sous 30 points."""
+    if points is None or len(points) < 30:
+        return None
+    p = np.asarray(points, dtype=float)
+    xy = p[:, :2] - np.median(p[:, :2], axis=0)
+    _, _, axes = np.linalg.svd(xy, full_matrices=False)
+    lo, hi = np.percentile(xy @ axes.T, [5, 95], axis=0)
+    z_lo, z_hi = np.percentile(p[:, 2], [5, 95])
+    return float(np.max(hi - lo)), float(z_hi - z_lo)
+
+
 def _recouvrement(a, b) -> float:
     """Recouvrement de deux boîtes (x, y, largeur, hauteur) : aire de leur
     intersection divisée par celle de leur union, 0 si elles sont
@@ -194,17 +221,29 @@ class PerceptionCouleur:
 
     def __init__(self, perception, camera, couleurs: Iterable[str],
                  requetes: Sequence[str] = ("a box", "a cardboard box"),
-                 surface_max: float = 0.25):
+                 dims: Optional[Tuple[float, float, float]] = None):
         """perception : détecteur d'objets, avec la méthode find() du
         PerceptionService ; camera : source des images rgb8 dont on lit les
         pixels ; couleurs : couleurs de tri reconnues (clés de TEINTES) ;
-        requetes : formulations envoyées au détecteur.
+        requetes : formulations envoyées au détecteur ; dims : (largeur,
+        profondeur, hauteur) des cartons, en m.
 
-        surface_max : fraction de l'image au-delà de laquelle une détection
-        ne peut pas être un carton. Constaté sur GPU : OWL-ViT rend aussi une
-        boîte couvrant toute l'image ; le sol de la scène étant bleu, elle
-        aurait pu passer pour un carton bleu fantôme."""
-        self.surface_max = surface_max
+        Fantômes. Constaté sur GPU : OWL-ViT rend aussi un cadre couvrant
+        toute l'image ; le sol de la scène étant bleu, il aurait pu passer
+        pour un carton bleu fantôme. Une détection est donc écartée si son
+        cadre touche les quatre bords de l'image, ou si sa taille MÉTRIQUE
+        (points de son masque, d'après la profondeur ; voir taille_metrique)
+        ne peut pas être celle d'un carton de `dims` : plus de 1,5 fois la
+        diagonale de son dessus à l'horizontale ou 1,5 fois sa hauteur à la
+        verticale (le bord du masque déborde un peu), ou moins de la moitié
+        de sa plus petite dimension (un reflet, une étiquette). Sans masque,
+        les points du cadre comprennent le fond : seule la règle des quatre
+        bords s'applique (le sol reste écarté par la hauteur admise de la
+        façade). Avant, toute détection de plus de 25 % de l'image était
+        écartée : essai GPU de main (novembre 2026), le carton proche, vu
+        depuis la pose d'attente, l'était à chaque image, et la prise jamais
+        tentée."""
+        self.dims = None if dims is None else tuple(float(v) for v in dims)
         self.perception, self.camera = perception, camera
         self.couleurs = list(couleurs)
         self.requetes = tuple(requetes)
@@ -243,11 +282,15 @@ class PerceptionCouleur:
         if img is not None:
             aire_img = float(img.width * img.height)
             for d in dets:
-                if d.bbox[2] * d.bbox[3] > self.surface_max * aire_img:
-                    diag["detections"].append({"couleur": "écartée : trop grande",
-                                               "confiance": round(float(d.confidence), 3),
-                                               "bbox": tuple(int(v) for v in d.bbox),
-                                               "position": None})
+                bords = bords_touches(d.bbox, img.width, img.height)
+                entree = {"confiance": round(float(d.confidence), 3),
+                          "bbox": tuple(int(v) for v in d.bbox), "bords": bords,
+                          "part_image": round(d.bbox[2] * d.bbox[3] / aire_img, 2)}
+                rejet = self._fantome(d, bords)
+                if rejet:
+                    self.stats["fantomes"] = self.stats.get("fantomes", 0) + 1
+                    entree.update(couleur=f"écartée : {rejet}", rejet=rejet, position=None)
+                    diag["detections"].append(entree)
                     continue
                 c = couleur_boite(img.data, img.width, img.height, d.bbox, self.couleurs)
                 mesure = mesure_couleur(img.data, img.width, img.height, d.bbox)
@@ -255,16 +298,36 @@ class PerceptionCouleur:
                     self.stats["sans_couleur"] += 1
                 classees.append((c, d))
                 p = d.position_3d
-                diag["detections"].append({
-                    "couleur": c, "confiance": round(float(d.confidence), 3),
-                    "bbox": tuple(int(v) for v in d.bbox),
-                    "position": None if p is None else
-                    (round(p.x, 2), round(p.y, 2), round(p.z, 2)),
-                    "mesure": mesure})
+                entree.update(couleur=c, mesure=mesure, position=None if p is None else
+                              (round(p.x, 2), round(p.y, 2), round(p.z, 2)))
+                diag["detections"].append(entree)
+            diag["taille_image"] = (img.width, img.height)
         diag["image"] = img is not None
         self.diagnostic = diag
         self._cache_ns, self._cache = now_ns, classees
         return classees, (raison if not dets else None)
+
+    def _fantome(self, d, bords: List[str]) -> str:
+        """Pourquoi la détection `d` ne peut pas être un carton ("" si elle
+        le peut) ; voir __init__, fantômes."""
+        if len(bords) == 4:
+            return "cadre sur les quatre bords de l'image (le fond, pas un carton)"
+        cle = tuple(d.bbox)
+        if self.dims is None or (getattr(self.perception, "derniers_masques", None)
+                                 or {}).get(cle) is None:
+            return ""
+        t = taille_metrique((getattr(self.perception, "derniers_points", None) or {}).get(cle))
+        if t is None:
+            return ""
+        larg, prof, haut = self.dims
+        h_max, v_max, mini = 1.5 * math.hypot(larg, prof), 1.5 * haut, min(self.dims) / 2
+        if t[0] > h_max or t[1] > v_max:
+            return (f"{t[0]:.2f} × {t[1]:.2f} m (masque et profondeur), trop grand pour un "
+                    f"carton (au plus {h_max:.2f} × {v_max:.2f})")
+        if max(t) < mini:
+            return (f"{t[0]:.2f} × {t[1]:.2f} m (masque et profondeur), trop petit pour un "
+                    f"carton (au moins {mini:.2f})")
+        return ""
 
     def find(self, query: str, now_ns: Optional[int] = None,
              frame: str = FRAME_WORLD) -> ServiceResult:
