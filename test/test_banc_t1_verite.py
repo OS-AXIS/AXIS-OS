@@ -160,6 +160,25 @@ lignes = juge.fin({"left": None, "right": None})
 check("Lacet réel du carton à chaque phase (une fois chacune) : il tourne-t-il ?",
       lignes[-1] == "juge (vérité simulation), lacet réel du carton : placement -3.5°, "
                     "contact -1.5°, serrage +6.0°, echec +13.0°", lignes[-1])
+# Constat GPU (essai T1 du 5 novembre 2026) : 10 « contacts manqués » sur 10,
+# alors que l'OS les avait estimés (recalage au toucher, serrage) : l'app
+# réinitialise la prise dans le pas même de l'échec, estimations comprises,
+# avant que le juge les lise. Il les garde désormais dès qu'elles paraissent.
+force = {"left": 0.0, "right": 0.0}
+estimes = {"left": None, "right": None}
+efface = JugeContacts(lambda c: force[c])
+efface.debut()
+efface.pas(40.80, estimes=estimes)
+force.update(left=2.2, right=2.0)
+efface.pas(40.86, estimes=estimes)
+estimes.update(left={"t": 40.96, "signal": "géométrie"}, right={"t": 40.98, "signal": "géométrie"})
+efface.pas(41.00, estimes=estimes)
+efface.pas(42.40, fermeture=False, estimes=estimes)
+estimes = {"left": None, "right": None}      # reinitialiser() : effacées, puis le juge conclut
+lignes = efface.fin(estimes)
+check("Estimations effacées avant la fin de la prise : gardées, « vrai contact » sur les deux "
+      "mains (avant : « CONTACT MANQUÉ »)", all("vrai contact" in l and "géométrie" in l
+                                                 for l in lignes[:2]), str(lignes[:2]))
 muet = JugeContacts(lambda c: None)
 muet.debut()
 muet.pas(0.0)

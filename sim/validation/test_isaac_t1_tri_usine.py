@@ -1407,7 +1407,7 @@ def main():
                             f"{hauteur_bassin(angles_mesures(), rotation_imu()):.3f} m, vrai "
                             f"{float(robot.get_world_pose()[0][2]):.3f} m")
             if juge.en_cours:
-                juge.pas(sim_t[0], fermeture=e_ is Etat.FERMETURE)
+                juge.pas(sim_t[0], fermeture=e_ is Etat.FERMETURE, estimes=manip.contacts_estimes)
                 if e_ is Etat.PLACEMENT:
                     juge.noter_lacet("placement", lacet_carton())
                 if any(manip.contacts_estimes.values()):
