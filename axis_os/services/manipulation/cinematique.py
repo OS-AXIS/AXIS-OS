@@ -16,6 +16,7 @@ sont ceux du fichier : rien n'est recopié à la main.
 """
 from __future__ import annotations
 
+import copy
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -56,11 +57,14 @@ class _Lien:
 
 
 class ChaineBras:
-    """Un bras, du bassin à la main (le lien `fin` de l'URDF)."""
+    """Un bras, du bassin à la main (le lien `fin` de l'URDF). `bout_m` :
+    la « main » est le point à `bout_m` du repère de la main, le long de son
+    axe x (là où elle touche ; voir ModeleBras.au_contact)."""
 
-    def __init__(self, liens: Sequence[_Lien], cote: str):
+    def __init__(self, liens: Sequence[_Lien], cote: str, bout_m: float = 0.0):
         self._liens = list(liens)
         self.cote = cote
+        self.bout_m = float(bout_m)
         p = f"{cote}_"
         self.tangage, self.roulis = p + "shoulder_pitch_joint", p + "shoulder_roll_joint"
         self.coude = p + "elbow_joint"
@@ -118,7 +122,7 @@ class ChaineBras:
             nom = self._points.get(l.enfant)
             if nom is not None:
                 sortie[nom] = t[:3, 3].copy()
-        sortie[MAIN] = t[:3, 3].copy()
+        sortie[MAIN] = t[:3, 3] + self.bout_m * t[:3, 0]
         return sortie
 
     def main(self, q: Dict[str, float]) -> np.ndarray:
@@ -139,15 +143,21 @@ class ChaineBras:
                 r[:3, :3] = _rotation(l.axe, float(q.get(l.nom, 0.0)))
                 t = t @ r
             sortie.append((l.nom, art, t[:3, :3] @ np.asarray(l.centre) + t[:3, 3], l.masse))
-        return sortie, t[:3, 3].copy()
+        return sortie, t.copy()
 
-    def jacobienne(self, q: Dict[str, float], articulations: Sequence[str]) -> np.ndarray:
-        """Jacobienne (3 × n, m/rad) de la position de la main par rapport
-        aux `articulations` (colonne nulle pour une articulation hors de la
-        chaîne), repère du bassin : axe × (main − articulation)."""
-        reperes, main = self._reperes(q)
-        cols = {nom: np.cross(a[1], main - a[0]) for nom, a, _, _ in reperes if a is not None}
-        return np.stack([cols.get(j, np.zeros(3)) for j in articulations], axis=1)
+    def jacobienne(self, q: Dict[str, float], articulations: Sequence[str],
+                   rotation: bool = False) -> np.ndarray:
+        """Jacobienne (3 × n, m/rad) de la position de la main (voir main())
+        par rapport aux `articulations` (colonne nulle pour une articulation
+        hors de la chaîne), repère du bassin : axe × (main − articulation).
+        `rotation` : 6 × n, les axes des articulations en dessous (vitesse
+        angulaire)."""
+        reperes, t = self._reperes(q)
+        main = t[:3, 3] + self.bout_m * t[:3, 0]
+        cols = {nom: np.concatenate([np.cross(a[1], main - a[0]), a[1]]) if rotation
+                else np.cross(a[1], main - a[0]) for nom, a, _, _ in reperes if a is not None}
+        return np.stack([cols.get(j, np.zeros(6 if rotation else 3)) for j in articulations],
+                        axis=1)
 
     def couples_gravite(self, q: Dict[str, float], articulations: Sequence[str],
                         gravite=(0.0, 0.0, -9.81)) -> np.ndarray:
@@ -221,3 +231,11 @@ class ModeleBras:
 
     def mains(self, q: Dict[str, float]) -> Tuple[np.ndarray, np.ndarray]:
         return self.gauche.main(q), self.droite.main(q)
+
+    def au_contact(self, bout_m: float) -> "ModeleBras":
+        """Le même modèle, dont les « mains » sont les points de contact, à
+        `bout_m` du repère de chaque main le long de la main."""
+        m = copy.copy(self)
+        m.gauche, m.droite = copy.copy(self.gauche), copy.copy(self.droite)
+        m.gauche.bout_m = m.droite.bout_m = float(bout_m)
+        return m
