@@ -233,7 +233,17 @@ essai) :
 - **Le couple mesuré** : `get_applied_joint_efforts()` (celui que lit le
   garde-fou) donne-t-il bien l'effort du serrage au roulis d'épaule ? S'il
   reste nul, le contact n'est vu qu'au retard de la main, et le serrage
-  finit en « serrage insuffisant » (sûr, mais raté).
+  finit en « serrage insuffisant » (sûr, mais raté). *Constaté le
+  5 novembre 2026 : nul (efforts imposés, commande en position).* Le pont
+  lit désormais `get_measured_joint_efforts()` ; au prochain essai, vérifier
+  la ligne « couples lus : effort MESURÉ » au démarrage, puis le verdict de
+  la calibration des couples (« fiables », pente près de 1 ; près de -1 :
+  signe inversé). Non fiables : la géométrie décide du contact et du
+  serrage.
+- **L'alerte d'arrêt prolongé** : un carton dérangé par essai, le premier,
+  n'est remis en place par l'opérateur simulé qu'après 40 s (les autres :
+  20 s) ; le journal doit montrer, avant, l'ALERTE « robot arrêté par la
+  sécurité depuis 20 s, toujours pour la même cause ».
 - **Les seuils** : hausse de 1,5 N·m pour le contact (le poids des bras
   qui bougent peut la donner seul), 5 N·m de serrage pour tenir un carton
   de ce poids, 3,5 cm de rayon d'avant-bras.

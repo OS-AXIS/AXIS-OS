@@ -32,7 +32,19 @@ carton à 6 à 9,5 N.
   au bout de `ConfigTri.alerte_meme_cause_s` (20 s), reprises brèves
   comprises, avec la cause (`FacadeServices.cause_arret` : raison du
   gardien, de combien le point dépasse le bord de quelle table, carton
-  suivi le plus proche).
+  suivi le plus proche). Banc : un carton dérangé par essai attend 40 s
+  l'opérateur simulé, pour voir l'alerte.
+- Isaac Sim : le pont (`IsaacSimBridge.couples`, `read_feedback`,
+  `read_all_raw`), le backend et le banc T1 lisent l'effort MESURÉ par la
+  physique (`get_measured_joint_efforts`, choisi par
+  `bruit_couples.source_couples`), et non plus les efforts imposés
+  (`get_applied_joint_efforts`, nuls en commande de position) ; la source
+  est dite au démarrage, et le repli sur les imposés aussi. Les
+  vérifications du couple contre les limites de l'URDF faites jusqu'ici
+  dans Isaac Sim (campagne de validation S1.2, garde-fou, plafonds de la
+  prise) lisaient zéro : elles n'ont rien prouvé.
+- Calibration des couples : pente près de -1, le journal suggère un signe
+  inversé.
 
 ### Essai GPU de main (T1, 5 novembre 2026) : carton entier à la pose d'attente
 

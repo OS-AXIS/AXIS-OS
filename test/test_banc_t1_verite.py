@@ -320,9 +320,15 @@ s.arreter()
 
 section("8. Banc T1 et outils GPU (lecture des scripts, sans Isaac Sim)")
 T1 = (RACINE / "sim/validation/test_isaac_t1_tri_usine.py").read_text(encoding="utf-8")
-check("Couples estimés : bruit branché sur le pont (garde-fou) et sur la prise",
-      "bridge.bruit_couples = BruitCouples(" in T1
-      and "e = bridge.bruit_couples(robot.get_applied_joint_efforts())" in T1)
+check("Couples estimés : bruit branché sur le pont (garde-fou) et sur la prise, autour de "
+      "l'effort mesuré du pont (et non plus des efforts imposés, nuls en commande de position)",
+      "bridge.bruit_couples = BruitCouples(" in T1 and "e = bridge.couples()" in T1
+      and "get_applied_joint_efforts" not in T1)
+check("Opérateur simulé : un seul carton dérangé attend 40 s avant d'être remis en place "
+      "(l'alerte « même cause » de l'app part à 20 s), les autres 20 s",
+      'stats.setdefault("carton_lent", c)' in T1
+      and "if t - c[\"t_derange\"] > (40.0 if lent else 20.0):" in T1
+      and 'stats["carton_lent"] = None' in T1)
 check("Mains de l'OS : cinématique sur les angles mesurés (les prims USD : banc seulement)",
       "g_, d_ = mesures_bras.modele.mains({j: read_state().joint_pos[j] for j in chaine_bras})"
       in T1 and "def mains_reelles():" in T1)

@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, "/isaac-sim")
 
 from axis_os.hal.core.types import ActuatorFeedback, ActuatorState, HALStatus
+from axis_os.hal.drivers.isaac_sim.bruit_couples import source_couples
 from axis_os.hal.drivers.unitree_g1.robot import (
     UnitreeG1HAL, _build_g1_joint_definitions, build_g1_joint_definitions,
 )
@@ -305,6 +306,11 @@ class IsaacSimBridge:
         # Couples estimés (bruit_couples.py) : None, le couple exact du
         # solveur (campagne de validation : vérifier les limites de l'URDF).
         self.bruit_couples = None
+        # Lecture des couples, choisie au setup (bruit_couples.source_couples) :
+        # l'effort mesuré par la physique, sinon les efforts imposés ; et ce
+        # qu'en dit le journal.
+        self._lire_couples = None
+        self.source_couples = "couples : pas encore lus (setup() à faire)"
 
     def setup(self, fix_base: bool = False, require_meshes: bool = False,
               ground_clearance: float = 0.0,
@@ -492,6 +498,13 @@ class IsaacSimBridge:
             )
         print(f"[bridge] {len(self._joint_index)}/{len(self._joint_defs)} joints "
               f"mappés avec Isaac Sim ({self._variante}).")
+        self._choisir_source_couples(len(dof_names))
+
+    def _choisir_source_couples(self, n: int) -> None:
+        """Choisit la lecture des couples (source_couples), l'articulation
+        initialisée, et la dit."""
+        self._lire_couples, self.source_couples = source_couples(self._robot, n)
+        print(f"[bridge] {self.source_couples}")
 
     def _author_root_translation(self, z: float) -> None:
         """Écrit la hauteur `z` du prim racine /World/g1 dans la scène USD,
@@ -799,11 +812,20 @@ class IsaacSimBridge:
         idx = self._joint_index[joint_id]
         return float(self._robot.get_joint_positions()[idx])
 
+    def couples(self):
+        """Couples de toutes les articulations, dans l'ordre des DOF
+        d'Isaac Sim : la source choisie au setup (source_couples), plus les
+        erreurs d'estimation de bruit_couples s'il y en a. None s'ils ne se
+        lisent pas."""
+        efforts = self._lire_couples() if self._lire_couples is not None else None
+        if efforts is not None and self.bruit_couples is not None:
+            efforts = self.bruit_couples(efforts)
+        return efforts
+
     def read_all_raw(self) -> Dict[str, tuple]:
         """Lit tous les joints d'un coup : {joint_id: (position, vitesse,
-        couple appliqué)}. Le couple vaut NaN (« not a number », valeur
-        indéfinie) si cette version d'Isaac Sim n'expose pas
-        get_applied_joint_efforts().
+        couple)}, le couple de couples(). Il vaut NaN (« not a number »,
+        valeur indéfinie) s'il ne se lit pas.
 
         Thread principal UNIQUEMENT : c'est cette méthode que
         MainThreadSimPump appelle pour publier son instantané. Une seule
@@ -812,12 +834,7 @@ class IsaacSimBridge:
         entre elles."""
         positions = self._robot.get_joint_positions()
         velocities = self._robot.get_joint_velocities()
-        try:
-            efforts = self._robot.get_applied_joint_efforts()
-        except AttributeError:
-            efforts = None
-        if efforts is not None and self.bruit_couples is not None:
-            efforts = self.bruit_couples(efforts)
+        efforts = self.couples()
         out = {}
         for joint_id, idx in self._joint_index.items():
             out[joint_id] = (
@@ -829,8 +846,8 @@ class IsaacSimBridge:
 
     def read_feedback(self, joint_id: str) -> ActuatorFeedback:
         """État réel d'un joint, lu depuis le solveur physique d'Isaac
-        Sim : position, vitesse et couple réellement appliqué (pas le
-        couple commandé).
+        Sim : position, vitesse et couple mesuré par la physique (pas le
+        couple commandé ; voir couples()).
 
         Si une pompe est attachée et tourne (mode sandbox, multi-thread),
         la méthode lit son instantané plutôt que d'appeler Isaac Sim.
@@ -857,16 +874,12 @@ class IsaacSimBridge:
         idx = self._joint_index[joint_id]
         pos = float(self._robot.get_joint_positions()[idx])
         vel = float(self._robot.get_joint_velocities()[idx])
-        # applied_joint_efforts = couple réellement exercé par le solveur
-        # physique. C'est la seule source fiable pour vérifier que le couple
-        # ne dépasse jamais la limite de l'URDF (campagne de validation, §2).
-        try:
-            efforts = self._robot.get_applied_joint_efforts()
-            if self.bruit_couples is not None:
-                efforts = self.bruit_couples(efforts)
-            eff = float(efforts[idx])
-        except AttributeError:
-            eff = float("nan")  # à vérifier selon la version d'Isaac Sim
+        # Effort mesuré par la physique : la seule source pour vérifier que
+        # le couple ne dépasse jamais la limite de l'URDF (campagne de
+        # validation, §2). Les efforts imposés (get_applied_joint_efforts),
+        # lus jusqu'au 5 novembre 2026, sont nuls en commande de position.
+        efforts = self.couples()
+        eff = float(efforts[idx]) if efforts is not None else float("nan")
         return ActuatorFeedback(
             joint_id=joint_id,
             state=ActuatorState.ACTIVE,

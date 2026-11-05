@@ -176,8 +176,10 @@ def main():
     robot, world = bridge._robot, bridge._world
     idx = bridge._joint_index
     names = sorted(idx, key=lambda j: idx[j])
-    # Couples ESTIMÉS (bruit_couples.py), comme ceux du vrai G1 : c'est ce
-    # que lisent le garde-fou (IsaacSimBridge) et la prise (efforts_bras).
+    # Couples ESTIMÉS (bruit_couples.py), comme ceux du vrai G1 : l'effort
+    # mesuré par la physique (bridge.source_couples, au journal) et les
+    # erreurs d'estimation. C'est ce que lisent le garde-fou (IsaacSimBridge)
+    # et la prise (efforts_bras).
     bridge.bruit_couples = BruitCouples(len(names), graine=args.graine)
     stage = omni.usd.get_context().get_stage()
 
@@ -519,9 +521,11 @@ def main():
     bras_tous = [j for j in chaine_bras if not j.startswith("waist_")]
 
     def efforts_bras():
-        # Couple ESTIMÉ (couple du solveur + erreurs d'estimation du G1), le
-        # même que lit le JointSafetyGuard (IsaacSimBridge.read_feedback).
-        e = bridge.bruit_couples(robot.get_applied_joint_efforts())
+        # Couple ESTIMÉ (effort mesuré + erreurs d'estimation du G1), le même
+        # que lit le JointSafetyGuard (IsaacSimBridge.read_feedback).
+        e = bridge.couples()
+        if e is None:
+            return None
         age = sim_t[0] - t_physique[0]
         return {j: (float(e[idx[j]]), age) for j in bras_tous}
 
@@ -767,6 +771,9 @@ def main():
                                              z_min=0.70, z_max=1.20),
                             postes_depose=sd.postes_depose(), points_lidar=points_lidar)
     tri = TriColis(facade, ConfigTri(regles=dict(sd.REGLES_INITIALES), duree_mission_s=DUREE))
+    # D'où viennent les couples que lit l'OS (garde-fou, prise) : effort
+    # mesuré par la physique, ou, faute de mieux, efforts imposés (nuls).
+    journaliser(f"[{sim_t[0]:7.1f}s] {bridge.source_couples}")
     sup = Superviseur(tri, list(sd.POSTES), sd.COULEURS, InterpreteurRegles())
     for s in (loco, nav, manip):
         s.start()
@@ -821,7 +828,10 @@ def main():
         #     qui reste bloqué et le signale. Dans un vrai atelier, l'opérateur
         #     alerté vient remettre le carton en place : on fait de même
         #     après 20 s, et on le journalise (le déplacement aussi, pour
-        #     comprendre quel geste l'a causé).
+        #     comprendre quel geste l'a causé). Un seul carton de l'essai, le
+        #     premier dérangé, attend 40 s : l'alerte « même cause » de l'app
+        #     (20 s) doit paraître au journal (essai du 5 novembre 2026 :
+        #     arrêts de 15 à 19 s, elle ne pouvait pas partir).
         pr_op = pose2d()
         for c in cartons:
             if c["lieu"] != "prise" or c is carton_aux_mains():
@@ -842,16 +852,23 @@ def main():
                             f"manipulation {manip.etat.name}")
             depasse = pc[1] - sd.PROFONDEUR_CARTON / 2 < sd.TABLE_PRISE.ymin - 0.01
             if (depasse or lacet > 15.0 or depl > 0.08):
-                c.setdefault("t_derange", t)
-                if t - c["t_derange"] > 20.0:
+                if "t_derange" not in c:
+                    c["t_derange"] = t
+                    stats.setdefault("carton_lent", c)
+                lent = c is stats.get("carton_lent")
+                if t - c["t_derange"] > (40.0 if lent else 20.0):
                     x_ = min(sd.EMPLACEMENTS_X, key=lambda v: abs(v - pc[0]))
                     poser_carton(c, (x_, sd.Y_CARTON, sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003))
                     c["place"] = np.array([x_, sd.Y_CARTON, pc[2]])
                     c.pop("t_derange", None)
                     c["deplace_signale"] = False
                     stats["remises_en_place"] = stats.get("remises_en_place", 0) + 1
+                    if lent:
+                        stats["carton_lent"] = None          # une seule fois
                     journaliser(f"[{t:7.1f}s] OPÉRATEUR : carton {c['couleur']} remis en "
-                                f"place (il dépassait ou était de travers)")
+                                f"place (il dépassait ou était de travers)"
+                                + (" — après 40 s (une fois par essai : l'app doit avoir "
+                                   "alerté à 20 s)" if lent else ""))
             else:
                 c.pop("t_derange", None)
         # 3. Réapprovisionner : table remplie au départ, puis un emplacement

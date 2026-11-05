@@ -17,9 +17,15 @@ contact en géométrie (et retard du roulis), serrage jugé sur la main
 retenue par l'objet (retard tenu, main bloquée). Les plafonds de couple
 restent jugés sur le couple. Rien entre les mains : toujours refusé.
 
+Le banc lit maintenant l'effort MESURÉ par la physique
+(bruit_couples.source_couples), et les efforts imposés seulement si l'effort
+mesuré manque ; sections 5 à 7 : les couples que l'OS reçoit alors, selon la
+source, et ce qu'il en fait.
+
 Robot simulé léger, sur une horloge simulée (le test fait chaque pas).
 `bruit_couples` remplace les couples lus par ceux du banc Isaac : du bruit
-autour d'un décalage par articulation, sans la pesanteur ni le contact.
+autour d'un décalage par articulation, sans la pesanteur ni le contact
+(sections 1 à 3), ou ce que rend le banc selon sa source (5 à 7).
 """
 import sys
 from pathlib import Path
@@ -28,6 +34,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from axis_os.hal.drivers.isaac_sim.bruit_couples import BruitCouples, source_couples  # noqa: E402
 from axis_os.services.manipulation.prise import CalibrationCouples, ReglagesPrise  # noqa: E402
 from axis_os.services.manipulation.service import (  # noqa: E402
     Etat, Objet, Postures, posture_bras,
@@ -69,15 +76,49 @@ class CouplesIsaac:
         return self.decalage + self.rng.normal(0.0, 0.3, len(v))
 
 
+class ArticulationIsaac:
+    """L'articulation d'Isaac Sim vue du banc : l'effort mesuré par la
+    physique (ici, les couples du robot simulé : pesanteur et contact), s'il
+    existe, et les efforts imposés (nuls : articulations commandées en
+    position)."""
+
+    def __init__(self, n, mesure=True):
+        self.v = np.zeros(n)
+        if mesure:
+            self.get_measured_joint_efforts = lambda: self.v.copy()
+
+    def get_applied_joint_efforts(self):
+        return np.zeros_like(self.v)
+
+
+def banc_isaac(mesure):
+    """Les couples que le banc T1 donne à l'OS : la source choisie par
+    source_couples, plus les erreurs d'estimation (BruitCouples)."""
+    def fabrique(n):
+        art = ArticulationIsaac(n, mesure)
+        lire, texte = source_couples(art, n)
+        bruit = BruitCouples(n, graine=3)
+
+        def couples(v):
+            art.v = np.asarray(v, dtype=float)
+            return bruit(lire())
+        couples.texte = texte
+        return couples
+    return fabrique
+
+
 class Banc:
-    def __init__(self, objets=True, isaac=True):
+    def __init__(self, objets=True, isaac=True, couples=None):
         self.t = [0.0]
         self.r = SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))]
                                 if objets else [], horloge=lambda: self.t[0])
         self.r.start(fil=False)
         self.r.poignets_cedent = True
-        if isaac:
-            self.r.bruit_couples = CouplesIsaac(len(self.r._BRAS) + len(self.r._poignets))
+        n = len(self.r._BRAS) + len(self.r._poignets)
+        if couples is not None:
+            self.r.bruit_couples = couples(n)
+        elif isaac:
+            self.r.bruit_couples = CouplesIsaac(n)
         self.m = self.r.manipulation
         self.journal = []
         self.m._journal = self.journal.append
@@ -173,6 +214,54 @@ etats = vrai.prendre()
 check("Couples justes : prise tenue, serrage jugé sur la force (comme avant)",
       vrai.m.etat is Etat.TENU and not any(l.startswith("serrage jugé en géométrie")
                                            for l in vrai.journal), f"{vrai.m.etat} {vrai.m.raison}")
+
+section("5. Banc Isaac, effort mesuré par la physique : fiables, la force reprend son rôle")
+b = Banc(couples=banc_isaac(mesure=True))
+check("Source dite : effort MESURÉ (get_measured_joint_efforts)",
+      b.r.bruit_couples.texte.startswith("couples lus : effort MESURÉ"), b.r.bruit_couples.texte)
+texte = b.calibrer()
+check("Effort mesuré + erreurs d'estimation : couples jugés fiables (pente près de 1)",
+      b.m.couples_fiables is True and "couples estimés fiables" in texte, texte.splitlines()[-1])
+etats = b.prendre()
+check("Prise tenue, serrage jugé sur la force (pas en géométrie)",
+      b.m.etat is Etat.TENU and Etat.SERRAGE in etats
+      and not any(l.startswith("serrage jugé en géométrie") for l in b.journal),
+      f"{b.m.etat} {b.m.raison}")
+check("… sans consigne refusée par le garde-fou", b.r.locomotion.stats["refused"] == 0)
+
+section("6. Effort mesuré indisponible : efforts imposés (nuls), la géométrie décide")
+b = Banc(couples=banc_isaac(mesure=False))
+check("Source dite : efforts IMPOSÉS, nuls en commande de position, NON FIABLES annoncés",
+      "efforts IMPOSÉS" in b.r.bruit_couples.texte and "méthode absente" in b.r.bruit_couples.texte
+      and "NON FIABLES" in b.r.bruit_couples.texte, b.r.bruit_couples.texte)
+texte = b.calibrer()
+check("Imposés nuls + erreurs d'estimation : verdict NON FIABLES",
+      b.m.couples_fiables is False and "couples estimés NON FIABLES" in texte,
+      texte.splitlines()[-1])
+etats = b.prendre()
+check("Prise tenue, serrage jugé en géométrie",
+      b.m.etat is Etat.TENU and any(l.startswith("serrage jugé en géométrie") for l in b.journal),
+      f"{b.m.etat} {b.m.raison}")
+
+section("7. Couples nuls, sans bruit : NON FIABLES aussi")
+b = Banc(couples=lambda n: (lambda v: np.zeros(len(v))))
+texte = b.calibrer()
+check("Couples tous nuls : verdict NON FIABLES (ils ne suivent pas la pesanteur)",
+      b.m.couples_fiables is False and "couples estimés NON FIABLES" in texte,
+      texte.splitlines()[-1])
+etats = b.prendre()
+check("… prise tenue, serrage jugé en géométrie",
+      b.m.etat is Etat.TENU and any(l.startswith("serrage jugé en géométrie") for l in b.journal),
+      f"{b.m.etat} {b.m.raison}")
+
+section("8. Couples de signe inversé : NON FIABLES, et le journal le suggère")
+b = Banc(couples=lambda n: (lambda v: -np.asarray(v, dtype=float)))
+texte = b.calibrer()
+check("Couples justes mais de signe opposé : NON FIABLES, « près de -1 : signe inversé ? »",
+      b.m.couples_fiables is False and "près de -1 : signe inversé ?" in texte,
+      texte.splitlines()[-1])
+check("… pas suggéré quand les couples ne sont que du bruit",
+      "signe inversé" not in Banc(couples=banc_isaac(mesure=False)).calibrer())
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

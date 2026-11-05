@@ -1213,9 +1213,12 @@ class ManipulationService(IService):
             texte += ("\n" + (f"couples estimés fiables : ils suivent la pesanteur du modèle "
                                f"(pente {detail} ; attendu 1)" if self.couples_fiables else
                                f"couples estimés NON FIABLES : ils ne suivent pas la pesanteur du "
-                               f"modèle (pente {detail} ; attendu 1) — la force à la main ne "
-                               f"décide plus ni du contact ni du serrage (géométrie et retard du "
-                               f"roulis) ; elle reste au diagnostic"))
+                               f"modèle (pente {detail} ; attendu 1"
+                               + (", près de -1 : signe inversé ?" if all(
+                                   -1.5 <= v <= -0.5 for v in pentes.values()) else "")
+                               + ") — la force à la main ne décide plus ni du contact ni du "
+                               "serrage (géométrie et retard du roulis) ; elle reste au "
+                               "diagnostic"))
         self.stats["couples_fiables"] = self.couples_fiables
         for ligne in texte.splitlines():
             self._noter(ligne)
