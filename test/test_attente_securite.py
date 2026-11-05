@@ -104,7 +104,10 @@ class Monde:
                                        f"obstacle à {self.distance:.2f} m — vitesse ×{f:.2f}"
                                        if f < 1.0 else "zone dégagée")
         vx, vy, wz = (c * f for c in self.cmd) if f > 0.0 else (0.0, 0.0, 0.0)
-        if self.bloquee or math.sqrt(vx * vx + vy * vy + wz * wz) < BANDE_MORTE:
+        # La base a la bande morte que déclare son adaptateur ; non déclarée,
+        # celle du robot de test_tri_pile_logicielle.py.
+        seuil = BANDE_MORTE if self.bande_morte is None else self.bande_morte
+        if self.bloquee or math.sqrt(vx * vx + vy * vy + wz * wz) < seuil:
             return
         c, s = math.cos(self.cap), math.sin(self.cap)
         self.x += (vx * c - vy * s) * DT
@@ -248,6 +251,39 @@ check("Ralenti ×0.8 : près de la cible, 0.048 m/s, sous la bande morte : atten
       "le recul finit quand le gardien relâche", etat == "ARRIVE" and t_fin > 10.0
       and sum("attente de sécurité — le gardien" in l and "bande morte de la marche "
               "(0.05 m/s)" in l for l in m.journal) == 1, f"{etat} {t_fin:.1f} {m.journal}")
+
+section("6. Bande morte des vrais adaptateurs : ralenti ×0.95 près de la cible")
+# Constat GPU (essai T1 de main, novembre 2026) : « attente de sécurité — le
+# gardien ralentit le robot (×0.99, personne à 2.0 m) sous la bande morte de
+# la marche (0.06 m/s) » : l'adaptateur d'Isaac (GR00T WBC) ne déclarait pas
+# la sienne, l'app gardait son plancher (0.06), et 1 % de ralentissement
+# arrêtait le robot près du carton.
+from axis_os.hal.drivers.unitree_g1.gr00t_wbc_policy import (  # noqa: E402
+    GR00TWBCAdapter, GR00TWBCPolicy)
+from axis_os.hal.drivers.unitree_g1.locomotion_policy import (  # noqa: E402
+    G1LocomotionAdapter, G1LocomotionPolicy)
+from axis_os.testing import SimulatedRobot  # noqa: E402
+
+# Lu comme le fait le LocomotionService : non déclarée, None.
+declarees = {"GR00T WBC (Isaac Sim, vrai G1)": getattr(GR00TWBCAdapter(GR00TWBCPolicy()),
+                                                       "bande_morte", None),
+             "robot simulé léger": getattr(SimulatedRobot().adapter, "bande_morte", None)}
+check("Déclarées : GR00T WBC 0.05 (son seuil de politique d'équilibre), robot simulé léger 0 "
+      "(il intègre toute vitesse) ; politique d'Unitree : non connue (None, plancher 0.06)",
+      declarees == {"GR00T WBC (Isaac Sim, vrai G1)": 0.05, "robot simulé léger": 0.0}
+      and getattr(G1LocomotionAdapter(G1LocomotionPolicy()), "bande_morte", None) is None,
+      str(declarees))
+for nom, bande in declarees.items():
+    m = Monde(bande_morte=bande)        # la base de ce monde a celle de l'adaptateur
+    f = facade(m)
+    etat, t_fin = reculer(m, f, 0.95, de=0.0)
+    mini = min(max(abs(c[1]), abs(c[2]), abs(c[3])) for c in m.consignes)
+    check(f"{nom} : ralenti ×0.95 tout le recul, la consigne près de la cible (0.057 m/s) "
+          f"reste au-dessus de sa bande morte ({bande}) : le robot avance encore et arrive, "
+          f"sans attente", etat == "ARRIVE" and t_fin < 10.0
+          and not any("attente" in l for l in m.journal), f"{etat} {t_fin:.1f} {m.journal}")
+    check("… consigne ralentie envoyée telle quelle, jamais remontée (la plus petite : le "
+          "plancher de la façade)", abs(mini - ConfigFacade().v_min) < 1e-9, f"{mini}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
