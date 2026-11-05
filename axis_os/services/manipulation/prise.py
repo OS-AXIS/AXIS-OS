@@ -27,7 +27,7 @@ Repère : celui du bassin du robot (x devant, y à gauche, z en haut).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import numpy as np
@@ -43,6 +43,19 @@ class ReglagesPrise:
     # 2026-10-28 : mains à 0,331 m l'une de l'autre sur un carton de
     # 0,24 m qu'elles touchaient.
     demi_main_m: float = 0.045
+    # Point de contact : à `contact_main_m` du repère de la main, le long de
+    # la main (axe x de rubber_hand), vers son bout. C'est là que la force à
+    # la main s'estime (jacobienne) et là que la prise vise le milieu des
+    # faces. Mesuré sur GPU (essai T1 du 5 novembre 2026, 16 h 06) : estimée
+    # au repère de la main, la force valait 1,3 à 1,4 fois celle du juge
+    # (8,4 N contre 6,4, sans décalage à zéro : une erreur de bras de levier,
+    # pas de biais) ; elle la rejoint avec le contact à 11 cm, sur les deux
+    # mains (couples du lacet d'épaule et du poignet, test_rejeu_prise_t1606).
+    # Les mains visaient donc le centre du carton avec leur repère, et le
+    # touchaient 11 cm plus loin, près de sa face arrière : le carton levé a
+    # pivoté autour de la ligne des mains. À confirmer par les points de
+    # contact PhysX relevés désormais par le banc (t1_prise.csv).
+    contact_main_m: float = 0.11
     # Chaque main, à l'écart de sa face perçue avant de fermer. L'ouverture
     # dépasse l'erreur de position acceptée (`recalage_max_m`) d'au moins
     # `marge_ouverture_m` : sinon la main pourrait reposer déjà sur un carton
@@ -176,12 +189,50 @@ class ReglagesPrise:
     duree_maintien_s: float = 0.3
     age_max_effort_s: float = 0.10
     hauteur_test_m: float = 0.04       # levage de vérification
-    duree_levage_test_s: float = 0.8
+    # Levage lent et progressif (2 cm/s ; 5 cm/s jusqu'au 5 novembre 2026) :
+    # le carton qui commence à tourner est vu avant d'être loin de la table.
+    duree_levage_test_s: float = 2.0
     essais_max: int = 2
     distance_torse_m: float = 0.10     # face arrière de l'objet porté, devant le bassin
     hausse_transport_m: float = 0.05
-    duree_ramener_s: float = 1.2
+    duree_ramener_s: float = 2.5
     inclinaison_max_deg: float = 15.0
+    # Carton CONTRE le torse : un troisième appui, qui l'empêche de tourner
+    # autour de la ligne des mains (essai GPU du 5 novembre 2026, 16 h 06 :
+    # tenu à deux mains seulement, il a basculé puis glissé). On le ramène
+    # jusqu'à `appui_torse_m` au-delà du buste attendu (`distance_torse_m`),
+    # en s'arrêtant au toucher : les mains tirent de `force_torse_n` vers le
+    # robot (couples fiables), ou restent en retard de `retard_torse_m` sur
+    # leur consigne. 2 cm au-delà au plus : à 4, la consigne des mains
+    # s'enfonçait de 2,9 cm dans le carton en chemin (2 + 0,2 au plus).
+    appui_torse_m: float = 0.02
+    force_torse_n: float = 3.0
+    retard_torse_m: float = 0.01
+    # Basculement autour de la ligne des mains. Les mains caoutchouc touchent
+    # presque en un point : le couple qu'elles retiennent autour de la ligne
+    # qui les joint n'est que leur frottement en rotation, 2 × (2/3) μ N r
+    # (deux disques de contact de rayon r, pression uniforme ; couple_retenu).
+    # Le poids, à e de cette ligne en profondeur, fait basculer de m g e ;
+    # à h au-dessus, il ne fait tourner qu'une fois le carton penché de θ,
+    # de m g h sin θ. D'où les tolérances de la ligne des mains autour du
+    # centre de gravité (tolerances_cg) : e, h ≤ couple retenu / (sécurité ×
+    # m g [× sin θ]), soit, aux valeurs ci-dessous (frottement statique du
+    # carton du banc ; caoutchouc écrasé sur ~2 cm de rayon sous 8 N ; 25 %
+    # de marge), 1,7 cm en profondeur et 10 cm en hauteur. Essai GPU du
+    # 5 novembre 2026 : 11 cm en profondeur, 6 fois la tolérance. Valeurs
+    # à confirmer sur GPU (frottement du caoutchouc, rayon du contact).
+    frottement_main: float = 1.0
+    rayon_contact_main_m: float = 0.02
+    masse_max_kg: float = 1.0          # la charge prévue (carton de la scène T1 : 1 kg)
+    securite_basculement: float = 1.25
+    # Le carton tenu qui tourne de plus de `rotation_max_deg` autour de la
+    # ligne des mains (caméra de tête quand elle le voit), ou qui ne pèse
+    # plus sur les mains pendant le port (moins de `part_poids_min` du poids
+    # du début du port, pendant `duree_perte_s`) : on le repose au lieu de
+    # marcher avec (ou, en marche, on s'arrête et on le signale).
+    rotation_max_deg: float = 10.0
+    part_poids_min: float = 0.4
+    duree_perte_s: float = 0.3
     # Écart admis entre une main mesurée par le robot (le lien de la main,
     # rubber_hand) et la même main calculée par la cinématique sur les
     # angles mesurés. Au-delà, le modèle des bras ne décrit pas le robot :
@@ -235,6 +286,12 @@ class MesuresBras:
                   plus du tangage, du roulis et du coude : lacet d'épaule,
                   poignets) pour la fermeture et le serrage en cartésien.
                   None : tangage, roulis et coude seulement.
+    rotation    : () -> rotation de l'objet tenu autour de la ligne des mains
+                  (degrés, depuis la prise), vue par la caméra de tête ; None
+                  quand elle ne le voit pas. None : pas de caméra pour cela.
+    contact_main_m : où les mains de CE robot touchent, le long de la main,
+                  depuis son repère (voir ReglagesPrise.contact_main_m, la
+                  valeur du G1, prise si None).
     """
     modele: ModeleBras
     positions: Callable[[], Dict[str, float]]
@@ -246,6 +303,8 @@ class MesuresBras:
     raideur: Optional[Callable[[bool], None]] = None
     arret_urgence: Optional[Callable[[], bool]] = None
     commandables: Optional[Tuple[str, ...]] = None
+    rotation: Optional[Callable[[], Optional[float]]] = None
+    contact_main_m: Optional[float] = None
 
 
 def efforts_valides(mesures: MesuresBras, joints: Iterable[str], age_max: float,
@@ -304,9 +363,46 @@ def faces(centre: np.ndarray, largeur: float, lacet: float
 
 def cibles_mains(centre: np.ndarray, largeur: float, lacet: float, ecart: float
                  ) -> Tuple[np.ndarray, np.ndarray]:
-    """Repères des mains à `ecart` de chaque face, vers l'extérieur."""
+    """Mains à `ecart` de chaque face, vers l'extérieur (les « mains » du
+    modèle : leur point de contact avec un modèle au_contact())."""
     fg, fd, n = faces(centre, largeur, lacet)
     return fg + n * ecart, fd - n * ecart
+
+
+def couple_retenu(r: "ReglagesPrise", force_n: float) -> float:
+    """Couple (N·m) que les deux mains retiennent autour de la ligne qui
+    les joint, serrées de `force_n` chacune : leur frottement en rotation
+    (voir ReglagesPrise, basculement)."""
+    return 2.0 * (2.0 / 3.0) * r.frottement_main * max(0.0, force_n) * r.rayon_contact_main_m
+
+
+def tolerances_cg(r: "ReglagesPrise", force_n: Optional[float] = None,
+                  masse_kg: Optional[float] = None) -> Tuple[float, float]:
+    """Écarts admis (m) entre la ligne des mains et le centre de gravité de
+    l'objet : (en profondeur, en hauteur), serré à `force_n` (par défaut
+    force_serrage_n), pour un objet de `masse_kg` (par défaut masse_max_kg)."""
+    poids = 9.81 * (r.masse_max_kg if masse_kg is None else masse_kg)
+    retenu = couple_retenu(r, r.force_serrage_n if force_n is None else force_n)
+    e = retenu / (r.securite_basculement * poids)
+    return e, e / math.sin(math.radians(r.rotation_max_deg))
+
+
+def ecart_ligne_cg(contact_g: np.ndarray, contact_d: np.ndarray, cg: np.ndarray
+                   ) -> Tuple[float, float]:
+    """Où passe la ligne qui joint les points de contact des mains, par
+    rapport au centre de gravité `cg` (repère du bassin) : (en profondeur,
+    en hauteur), en m, signés : la ligne en arrière du centre (loin du
+    robot) et au-dessus de lui sont positifs."""
+    g, d, c = (np.asarray(v, dtype=float) for v in (contact_g, contact_d, cg))
+    a = d - g
+    a = a / max(1e-9, float(np.linalg.norm(a)))
+    p = g + float((c - g) @ a) * a              # point de la ligne le plus proche du centre
+    v = p - c
+    haut = np.array([0.0, 0.0, 1.0])
+    prof = np.cross(haut, a)                    # horizontale, perpendiculaire à la ligne
+    if prof[0] < 0:
+        prof = -prof                            # vers l'avant du robot (loin de lui)
+    return float(v @ (prof / max(1e-9, float(np.linalg.norm(prof))))), float(v @ haut)
 
 
 def resoudre(modele: ModeleBras, cg: np.ndarray, cd: np.ndarray, depart: Dict[str, float],
@@ -347,6 +443,21 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
     l'objet au bord de la table. La plus courte qui convient (le carton
     reste près du corps) ; (None, raison) s'il n'y en a aucune."""
     r = reglages
+    if r.contact_main_m:
+        # Les points de contact au milieu des faces, avec les bras dans la
+        # posture où leurs REPÈRES y seraient : celle de la distance trouvée
+        # pour les repères, l'objet `contact_main_m` plus loin. Plus près, la
+        # main ne pointe plus vers l'objet (coude replié en arrière) et le
+        # roulis ne ferme presque plus (constaté sur le robot simulé). La
+        # garde des avant-bras est jugée comme si le bord de la table était
+        # resté où il était pour les repères : `contact_main_m` plus près
+        # d'eux qu'en vrai, donc plus sévère ; les doigts, au-delà, sont à mi-
+        # hauteur de l'objet, loin du plateau.
+        rep = replace(r, contact_main_m=0.0)
+        d, raison = distance_ideale(modele, largeur, profondeur, hauteur, centre_z, depart,
+                                    bord_m=bord_m, reglages=rep,
+                                    distances=distances)
+        return (None, raison) if d is None else (d + r.contact_main_m, "")
     plateau = centre_z - hauteur / 2.0
     meilleure_garde = -math.inf
     for d in distances:

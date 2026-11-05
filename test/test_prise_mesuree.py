@@ -465,7 +465,10 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
     check("Trop près de la table : refus « avant-bras … du plateau », bras immobiles",
           not res.ok and "avant-bras" in res.reason and immobiles(robot, avant),
           res.reason)
-d, raison = distance_ideale(modele, 0.24, 0.20, 0.20, 0.18, q_port, bord_m=0.05)
+# Pour les mains de CE robot (le robot simulé : contact à leur repère ; le G1
+# touche 11 cm plus loin, voir ReglagesPrise.contact_main_m).
+d, raison = distance_ideale(modele, 0.24, 0.20, 0.20, 0.18, q_port, bord_m=0.05,
+                            reglages=ReglagesPrise(contact_main_m=SimulatedRobot.CONTACT_MAIN_M))
 check("distance_ideale() choisit une distance plus grande", d is not None and d > 0.30,
       f"{d} {raison}")
 with SimulatedRobot(objects=[SimulatedObject("carton", (d, 0.0, 0.90))],

@@ -156,6 +156,7 @@ def main():
         Etat, ManipulationService, Postures, posture_bras,
     )
     from axis_os.services.navigation.service import NavigationService, Pose2D
+    from axis_os.services.perception.boite import points_du_masque, rotation_dessus
     from axis_os.services.perception.owlvit_detector import detecteur_carton
     from axis_os.services.perception.sam2_segmenteur import Sam2Segmenteur
     from axis_os.services.perception.service import PerceptionService
@@ -587,13 +588,57 @@ def main():
         commandables=tuple(adapt.pose_bras),
         # Repère complet du bassin (il penche un peu en équilibre) : celui
         # de la cinématique, pour les cibles comme pour les mains mesurées.
-        vers_bassin=vers_robot)
+        vers_bassin=vers_robot,
+        # Rotation du carton tenu, vue par la caméra de profondeur de la tête
+        # quand il est dans l'image (rotation_tete, plus bas).
+        rotation=lambda: rotation_tete())
     # Le ManipulationService écrit dans le dictionnaire de bras de
     # l'adaptateur : il en est le seul écrivain.
     manip = ManipulationService(adapt.pose_bras, mains, vers_robot, verifier_prise,
                                 gardien=gardien, horloge=horloge, mesures=mesures_bras,
                                 journal=lambda m: journaliser(f"[{sim_t[0]:7.1f}s] {m} ; "
                                                               f"{cartons_reels()}"))
+
+    def rotation_tete():
+        """Rotation (degrés) du carton tenu autour de la ligne des mains, vue
+        par la caméra de profondeur de la tête : signal du vrai G1, sans
+        vérité de la simulation. Le carton est placé par l'OS (points de
+        contact des mains, cinématique sur les angles mesurés, et sa taille) ;
+        s'il tombe en entier dans l'image, les points de son dessus donnent
+        la pente (rotation_dessus). None sinon : en T1, à la prise, il est
+        sous le bord bas de l'image (voir la vue de diagnostic)."""
+        if manip.etat not in (Etat.LEVAGE, Etat.RAMENER, Etat.TENU) or manip.objet is None:
+            return None
+        try:
+            modele_c = mesures_bras.modele.au_contact(manip.r.contact_main_m)
+            g_, d_ = modele_c.mains({j: read_state().joint_pos[j] for j in chaine_bras})
+            o_ = manip.objet
+            c_b = (g_ + d_) / 2.0
+            p_, q_ = robot.get_world_pose()
+            r_w = quat_wxyz_to_matrix(q_)
+            coins_ = np.array([c_b + np.array([sx * o_.profondeur, sy * o_.largeur,
+                                               sz * o_.hauteur]) / 2.0
+                               for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+            proj_ = perception.projeter(np.asarray(p_, dtype=float) + coins_ @ r_w.T)
+            prof_ = dep.capture_depth()
+            pose_ = pose_optique_os()
+            k_ = dep.get_intrinsics()
+            if proj_ is None or prof_ is None or pose_ is None or k_ is None:
+                return None
+            uv_, z_, (w_, h_) = proj_
+            if np.any(z_ < 0.1) or np.any(uv_ < 0) or np.any(uv_[:, 0] > w_) \
+                    or np.any(uv_[:, 1] > h_):
+                return None
+            (u0, v0), (u1, v1) = uv_.min(axis=0), uv_.max(axis=0)
+            pts_ = points_du_masque(np.asarray(prof_), k_, pose_[0], pose_[1],
+                                    bbox=(u0, v0, u1 - u0, v1 - v0))
+            pts_b = (pts_ - np.asarray(p_, dtype=float)) @ r_w
+            dedans_ = np.all(np.abs(pts_b - c_b) <= np.array(
+                [o_.profondeur, o_.largeur, o_.hauteur]) / 2.0 + 0.03, axis=1) \
+                & (pts_b[:, 2] > c_b[2])
+            return rotation_dessus(pts_b[dedans_], g_ - d_)
+        except Exception:                           # noqa: BLE001 — vue en panne : sans elle
+            return None
 
     def cartons_reels():
         """Position réelle (repère du bassin) des cartons sur la table de
@@ -1057,36 +1102,78 @@ def main():
     # Juge (vérité simulation, banc_prise) : contacts PhysX des mains avec
     # les cartons, pour noter le contact estimé par l'OS ; l'OS n'en lit rien.
     juge = JugeContacts(capteurs.lire) if capteurs.methode else None
-    # Relevé de chaque pas de fermeture et de serrage, par main (ajouté au
-    # .zip par recuperer_t1.sh) : force estimée (le long de la normale et
-    # vecteur), force réelle du juge, faces commandée et mesurée, couples
-    # des 7 articulations du bras. Pour expliquer une force de mauvais
-    # signe (essai GPU de novembre 2026) avec les chiffres de chaque pas.
+    # Relevé de chaque pas de la prise, de la fermeture au port (ajouté au
+    # .zip par recuperer_t1.sh), par main : force estimée (le long de la
+    # normale et vecteur), force réelle du juge, faces commandée et mesurée,
+    # couples et angles des 7 articulations du bras ; la tâche de l'app ; ce
+    # que l'OS estime de la prise (ligne des mains par rapport au centre de
+    # gravité, poids et poussée vers le robot, rotation vue) ; et la VÉRITÉ
+    # de la simulation : orientation du carton dans le repère du bassin
+    # (roulis, tangage autour de la ligne des mains, lacet), son centre par
+    # rapport au milieu des mains réelles, et le point de contact réel de la
+    # main par rapport au centre du carton (repère du bassin). Pour rejouer
+    # un essai (test_rejeu_prise_t1606.py) : constaté le 5 novembre 2026,
+    # 16 h 06, le relevé s'arrêtait à la fin du serrage, la chute (au port)
+    # n'y était pas. Au port (TENU), un relevé tous les 5 pas.
     import csv
     ARTIC_CSV = ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll",
                  "wrist_pitch", "wrist_yaw")
     fichier_prise = open(VIDEOS / "t1_prise.csv", "w", newline="")
     csv_prise = csv.writer(fichier_prise)
-    csv_prise.writerow(["t_s", "phase", "sous_phase", "main", "force_normale_n", "force_x_n",
-                        "force_y_n", "force_z_n", "serrage_filtre_n", "force_juge_n",
-                        "face_commandee_m", "face_mesuree_m"]
-                       + [f"couple_{a}_nm" for a in ARTIC_CSV])
+    csv_prise.writerow(["t_s", "phase", "sous_phase", "main", "tache", "force_normale_n",
+                        "force_x_n", "force_y_n", "force_z_n", "serrage_filtre_n",
+                        "force_juge_n", "face_commandee_m", "face_mesuree_m"]
+                       + [f"couple_{a}_nm" for a in ARTIC_CSV]
+                       + [f"angle_{a}_rad" for a in ARTIC_CSV]
+                       + ["ligne_cg_prof_m", "ligne_cg_haut_m", "poids_os_n", "poussee_os_n",
+                          "rotation_vue_deg", "carton_roulis_deg", "carton_tangage_deg",
+                          "carton_lacet_deg", "carton_rel_x_m", "carton_rel_y_m", "carton_rel_z_m",
+                          "contact_rel_x_m", "contact_rel_y_m", "contact_rel_z_m"])
+    pas_releve = [0]
+    suivi_port = {"actif": False}
+
+    def orientation_carton(c_):
+        """VÉRITÉ SIMULATION : (roulis, tangage, lacet) du carton `c_` dans le
+        repère du bassin (degrés, ZYX), et son centre dans ce repère."""
+        pc_, qc_ = c_["obj"].get_world_pose()
+        r_ = quat_wxyz_to_matrix(robot.get_world_pose()[1]).T @ quat_wxyz_to_matrix(qc_)
+        roulis_ = math.degrees(math.atan2(r_[2, 1], r_[2, 2]))
+        tangage_ = math.degrees(math.asin(max(-1.0, min(1.0, -r_[2, 0]))))
+        lacet_ = math.degrees(math.atan2(r_[1, 0], r_[0, 0]))
+        return (roulis_, tangage_, lacet_), vers_robot(pc_)
 
     def relever_prise(t):
         rel_ = manip.releve_fermeture()
         if rel_ is None:
             return
+        pas_releve[0] += 1
+        if rel_["phase"] == "TENU" and pas_releve[0] % 5:
+            return
+        c_ = carton_aux_mains(0.35)
+        ori_, centre_ = orientation_carton(c_) if c_ is not None else ((None,) * 3, None)
+        mr_ = mains_reelles()
+        rel_c = (None,) * 3
+        if centre_ is not None and all(m_ is not None for m_ in mr_):
+            rel_c = tuple(centre_ - vers_robot((mr_[0] + mr_[1]) / 2.0))
+        lig_ = rel_["ligne_cg"] or (None, None)
+        ch_ = rel_["charge"] or (None, None)
+
+        def f3(v):
+            return "" if v is None else f"{v:.3f}"
         for cote_ in ("left", "right"):
             m_ = rel_[cote_]
             f_ = m_["force"] or (None, None, None)
             juge_ = capteurs.lire(cote_) if capteurs.methode else None
+            pt_ = capteurs.point(cote_) if capteurs.methode else None
+            rel_p = (None,) * 3 if pt_ is None or centre_ is None else \
+                tuple(vers_robot(np.asarray(pt_, dtype=float)) - centre_)
             csv_prise.writerow(
-                [f"{t:.3f}", rel_["phase"], rel_["sous_phase"] or "", cote_]
-                + ["" if v is None else f"{v:.3f}" for v in (m_["normale"], *f_, m_["serrage"],
-                                                              juge_, m_["face_commandee"],
-                                                              m_["face_mesuree"])]
-                + [f"{m_['couples'][f'{cote_}_{a}_joint']:.3f}"
-                   if f"{cote_}_{a}_joint" in m_["couples"] else "" for a in ARTIC_CSV])
+                [f"{t:.3f}", rel_["phase"], rel_["sous_phase"] or "", cote_, tri.etat]
+                + [f3(v) for v in (m_["normale"], *f_, m_["serrage"], juge_,
+                                   m_["face_commandee"], m_["face_mesuree"])]
+                + [f3(m_["couples"].get(f"{cote_}_{a}_joint")) for a in ARTIC_CSV]
+                + [f3(m_["angles"].get(f"{cote_}_{a}_joint")) for a in ARTIC_CSV]
+                + [f3(v) for v in (*lig_, *ch_, rel_["rotation_vue"], *ori_, *rel_c, *rel_p)])
     print(f"  juge des contacts (vérité simulation) : "
           + (f"actif ({capteurs.methode}) sur {capteurs.corps}" if juge else "indisponible")
           + (f" — {' ; '.join(capteurs.raisons)}" if capteurs.raisons else ""), flush=True)
@@ -1425,6 +1512,10 @@ def main():
                             f"{float(robot.get_world_pose()[0][2]):.3f} m")
             if juge.en_cours:
                 juge.pas(sim_t[0], fermeture=e_ is Etat.FERMETURE, estimes=manip.contacts_estimes)
+                c_or = carton_aux_mains(0.35)
+                if c_or is not None:
+                    (ro_, ta_, _), _ = orientation_carton(c_or)
+                    juge.noter_orientation(e_.name.lower(), ro_, ta_)
                 if e_ is Etat.PLACEMENT:
                     juge.noter_lacet("placement", lacet_carton())
                 if any(manip.contacts_estimes.values()):
@@ -1435,6 +1526,25 @@ def main():
                     juge.noter_lacet(e_.name.lower(), lacet_carton())
                     for ligne_ in juge.fin(manip.contacts_estimes):
                         journaliser(f"[{sim_t[0]:7.1f}s] {ligne_}")
+                    if e_ is Etat.TENU:
+                        suivi_port.update(debut=sim_t[0], tangage=0.0, roulis=0.0, actif=True)
+            # Pendant le port (TENU) : le carton tourne-t-il autour de la
+            # ligne des mains ? Dit à la fin du port, ou à sa chute.
+            if suivi_port.get("actif"):
+                c_or = carton_aux_mains(0.35)
+                if c_or is not None:
+                    (ro_, ta_, _), _ = orientation_carton(c_or)
+                    if abs(ta_) > abs(suivi_port["tangage"]):
+                        suivi_port["tangage"] = ta_
+                    if abs(ro_) > abs(suivi_port["roulis"]):
+                        suivi_port["roulis"] = ro_
+                if c_or is None or manip.etat is not Etat.TENU:
+                    suivi_port["actif"] = False
+                    journaliser(f"[{sim_t[0]:7.1f}s] juge (vérité simulation), port : "
+                                f"{'carton plus entre les mains' if c_or is None else 'fin du port'}"
+                                f" après {sim_t[0] - suivi_port['debut']:.1f} s, tangage réel au "
+                                f"plus {suivi_port['tangage']:+.1f}°, roulis {suivi_port['roulis']:+.1f}° "
+                                f"; OS : {manip.etat.name}, {manip.raison or 'aucune alerte'}")
         # Invariant : le robot ne se rapproche jamais d'une personne proche.
         pa = pose2d()
         for f in figurants:

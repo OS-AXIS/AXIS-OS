@@ -160,6 +160,17 @@ lignes = juge.fin({"left": None, "right": None})
 check("Lacet réel du carton à chaque phase (une fois chacune) : il tourne-t-il ?",
       lignes[-1] == "juge (vérité simulation), lacet réel du carton : placement -3.5°, "
                     "contact -1.5°, serrage +6.0°, echec +13.0°", lignes[-1])
+# Constat GPU (essai T1 du 5 novembre 2026, 16 h 06) : levé, le carton a
+# pivoté autour de la ligne des mains (tangage) ; le lacet seul ne le disait pas.
+juge.debut()
+for phase, ro, ta in (("serrage", 0.5, -0.4), ("levage", -1.0, 12.0), ("levage", 0.2, -30.5),
+                      ("ramener", None, 3.0)):
+    juge.noter_orientation(phase, ro, ta)
+lignes = juge.fin({"left": None, "right": None})
+check("Orientation réelle du carton par phase : tangage autour de la ligne des mains et roulis, "
+      "les plus grands (signe gardé)", lignes[-1] == "juge (vérité simulation), carton au plus "
+      "penché (tangage autour de la ligne des mains / roulis, repère du bassin) : serrage -0.4° / "
+      "+0.5°, levage -30.5° / -1.0°", lignes[-1])
 # Constat GPU (essai T1 du 5 novembre 2026) : 10 « contacts manqués » sur 10,
 # alors que l'OS les avait estimés (recalage au toucher, serrage) : l'app
 # réinitialise la prise dans le pas même de l'échec, estimations comprises,
@@ -346,6 +357,21 @@ check("Juge : rapport de contact PhysX posé sur les mains AVANT world.reset(), 
       and "' ; '.join(capteurs.raisons)" in T1)
 check("… lacet réel du carton noté au placement, au contact, au serrage et à la fin",
       all(f'juge.noter_lacet("{ph}"' in T1 for ph in ("placement", "contact", "serrage")))
+check("t1_prise.csv : de la fermeture au port (levage, ramené, tenu, reposé), avec la tâche de "
+      "l'app, les angles des bras, ce que l'OS estime (ligne des mains, poids, poussée, rotation "
+      "vue) et la vérité (orientation du carton, son centre par rapport aux mains, point de "
+      "contact réel)", all(c in T1 for c in (
+          '"tache", "force_normale_n"', '[f"angle_{a}_rad" for a in ARTIC_CSV]',
+          '"ligne_cg_prof_m", "ligne_cg_haut_m", "poids_os_n", "poussee_os_n"',
+          '"rotation_vue_deg", "carton_roulis_deg", "carton_tangage_deg"',
+          '"contact_rel_x_m", "contact_rel_y_m", "contact_rel_z_m"', "capteurs.point(cote_)")))
+check("Juge : orientation du carton à chaque phase, et pendant le port jusqu'à la chute",
+      "juge.noter_orientation(e_.name.lower(), ro_, ta_)" in T1
+      and "juge (vérité simulation), port : " in T1)
+check("Caméra de tête branchée sur la prise (rotation du carton tenu, vue quand il est dans "
+      "l'image), sans vérité de la simulation",
+      "rotation=lambda: rotation_tete())" in T1 and "def rotation_tete():" in T1
+      and "rotation_dessus(pts_b[dedans_], g_ - d_)" in T1)
 check("Juge : prise par prise au journal, compteurs dans l'évaluation",
       "juge.fin(manip.contacts_estimes)" in T1 and "**(juge.compteurs if juge" in T1)
 check("Vue du robot : vidéo, incrustation, page de suivi, réglage pour la démo",

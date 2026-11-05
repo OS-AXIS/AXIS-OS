@@ -408,6 +408,22 @@ class SimulatedRobot:
     COUPLE_REPOS_NM = 0.4
     # Un objet tenu entre deux mains caoutchouc (frottement 1,2) : 1 kg.
     FROTTEMENT, MASSE_OBJET_KG = 1.2, 1.0
+    # Où la main touche, le long de la main depuis son repère : au repère par
+    # défaut (mains idéales) ; contact_main_m=0.11 au constructeur, celles du
+    # G1 d'Isaac Sim (essai T1 du 5 novembre 2026 ; voir
+    # ReglagesPrise.contact_main_m). Les mains caoutchouc touchent presque en
+    # un point : autour de la ligne qui les joint, elles ne retiennent que
+    # leur frottement en rotation (disques de RAYON_CONTACT_M) ; au-delà,
+    # l'objet tenu tourne (VITESSE_ROTATION_DEG_S), et passé
+    # ROTATION_CHUTE_DEG, il glisse et tombe. Le torse, plan vertical à
+    # TORSE_X_M devant le bassin, de raideur RAIDEUR_TORSE_N_M, arrête
+    # l'objet porté qu'on ramène contre lui.
+    CONTACT_MAIN_M = 0.0
+    RAYON_CONTACT_M = 0.015
+    VITESSE_ROTATION_DEG_S = 40.0
+    ROTATION_CHUTE_DEG = 60.0
+    TORSE_X_M = 0.10
+    RAIDEUR_TORSE_N_M = 500.0
     _BRAS = tuple(f"{c}_{a}" for c in ("left", "right") for a in (
         "shoulder_pitch_joint", "shoulder_roll_joint", "shoulder_yaw_joint", "elbow_joint",
         "wrist_roll_joint"))
@@ -422,7 +438,10 @@ class SimulatedRobot:
                  speech: bool = False, seed: int = 0, time_scale: float = 1.0,
                  site_map: Optional[SiteMap] = None, battery_drain_per_s: float = 0.0,
                  battery_drain_per_m: float = 0.0, charge_per_s: float = 1.0,
-                 horloge: Optional[Callable[[], float]] = None):
+                 horloge: Optional[Callable[[], float]] = None,
+                 contact_main_m: Optional[float] = None):
+        if contact_main_m is not None:
+            self.CONTACT_MAIN_M = float(contact_main_m)
         if horloge is not None:
             self.clock = horloge
         elif time_scale == 1.0:
@@ -471,6 +490,7 @@ class SimulatedRobot:
         # Bras : cinématique de l'URDF, contact avec l'objet, efforts mesurés
         # (voir _envoyer) : la prise mesurée du service de manipulation.
         self.modele_bras = ModeleBras()
+        self.modele_contact = self.modele_bras.au_contact(self.CONTACT_MAIN_M)
         self._limites_couple = {d.joint_id: d.limits.torque_max
                                 for d in self.raw_hal.get_joint_definitions()}
         self.effort_fault: Optional[str] = None
@@ -480,7 +500,11 @@ class SimulatedRobot:
         self.affaissement_rad = 0.0
         # Poignets, coude et lacet d'épaule qui CÈDENT au contact (constaté
         # sur GPU le 2026-10-29) : leur raideur multipliée par
-        # `souplesse_poignets` (le quart par défaut). Le lacet du
+        # `souplesse_poignets` (le quart par défaut, réglé pour des mains qui
+        # touchent à leur repère ; avec celles du G1, contact_main_m=0.11, 0,75
+        # donne ~460 N/m au point de contact, gains raidis, comme mesuré sur
+        # GPU le 5 novembre 2026 : 6,6 N pour 1,3 cm de consigne au-delà de
+        # la face ; le quart y donnerait 160). Le lacet du
         # poignet n'est pas une articulation du HAL simulé (23 DOF) : il est
         # rendu dans les angles et les couples mesurés, comme l'encodeur et le
         # couple estimé du vrai G1 29 DOF (consigne 0, non commandable ici).
@@ -499,12 +523,22 @@ class SimulatedRobot:
         self._suivre_consignes_roulis()
         self.object_tilt_deg: Optional[float] = None
         self._decalage_prise: Optional[float] = None
+        # Objet tenu (vérité du monde simulé) : centre moins milieu des points
+        # de contact au moment de la prise (repère du robot), sa rotation
+        # autour de la ligne des mains (degrés) et s'il est vu par la caméra
+        # de tête (`objet_visible`, None : jamais).
+        self._centre_tenu: Optional[np.ndarray] = None
+        self.rotation_objet_deg = 0.0
+        self.objet_visible: Optional[bool] = True
+        self.force_torse = 0.0
         self.forearm_table_contacts = 0
         mesures = MesuresBras(self.modele_bras, self._angles_bras, self._efforts_bras,
                               lambda: self.PELVIS_HEIGHT_M,
                               couple_max={**{j: self._limites_couple[j] for j in self._BRAS},
                                           **{j: 5.0 for j in self._poignets}},
                               inclinaison=self._inclinaison, raideur=self._regler_raideur,
+                              rotation=self._rotation_vue,
+                              contact_main_m=self.CONTACT_MAIN_M,
                               arret_urgence=lambda: self.hal.estop_active,
                               commandables=self._BRAS)
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
@@ -779,7 +813,7 @@ class SimulatedRobot:
 
     def _objet_entre_les_mains(self, q: Dict[str, float]):
         """L'objet dont une main toucherait une face, à ces angles."""
-        g, d = (self._vers_monde_bassin(p) for p in self.modele_bras.mains(q))
+        g, d = (self._vers_monde_bassin(p) for p in self.modele_contact.mains(q))
         milieu = (g + d) / 2.0
         for o in self.objects:
             w, prof, h = o.size
@@ -820,8 +854,9 @@ class SimulatedRobot:
         cmd = dict(q)
         o = self._objet_entre_les_mains(cmd)
         couples = {}
+        externes = self._efforts_objet_tenu(cmd)
         for cote, signe in (("left", 1.0), ("right", -1.0)):
-            chaine = self.modele_bras.gauche if cote == "left" else self.modele_bras.droite
+            chaine = self.modele_contact.gauche if cote == "left" else self.modele_contact.droite
             joints = [j for j in list(self._BRAS) + list(self._poignets) if j.startswith(cote)]
             lam = 0.0
             if o is not None:
@@ -843,6 +878,13 @@ class SimulatedRobot:
                     for j, dq in zip(joints, souplesse * g * lam):
                         q[j] = cmd[j] + float(dq)
             self.forces_contact[cote] = lam
+            w = externes.get(cote)
+            if w is not None:
+                # Ce que l'objet tenu (poids, basculement) et le torse
+                # imposent à la main : les articulations cèdent d'autant.
+                tau = chaine.jacobienne(q, joints, rotation=True).T @ w
+                for j, t_ in zip(joints, tau):
+                    q[j] += float(t_) / self._kp(j)
             grav = chaine.couples_gravite(q, joints)
             for j, gj in zip(joints, grav):
                 couples[j] = float(gj) + self._kp(j) * (cmd[j] - q[j])
@@ -855,6 +897,43 @@ class SimulatedRobot:
             act._position, act._torque = q[j], couples[j]
         for j in self._poignets:
             self._poignets[j], self._couples_poignets[j] = q[j], couples[j]
+
+    def _efforts_objet_tenu(self, q: Dict[str, float]) -> Dict[str, np.ndarray]:
+        """Effort (force et moment, 6 valeurs, repère du bassin) que l'objet
+        tenu exerce sur chaque main : la moitié de son poids, le couple de
+        basculement de son centre décalé de la ligne des mains, plafonné à ce
+        que le frottement en rotation des mains retient (au-delà, il tourne,
+        puis tombe : voir _porter), et la poussée du torse s'il y est appuyé
+        (torse et carton : RAIDEUR_TORSE_N_M, sur l'enfoncement commandé)."""
+        if self.held is None or self._centre_tenu is None:
+            self.force_torse = 0.0
+            return {}
+        g, d = self.modele_contact.mains(q)
+        milieu = (g + d) / 2.0
+        a = (g - d) / max(1e-9, float(np.linalg.norm(g - d)))
+        poids = self.MASSE_OBJET_KG * 9.81
+        e = float(self._centre_tenu[0])           # centre devant (+) ou derrière la ligne
+        retenu = 2.0 * (2.0 / 3.0) * self.FROTTEMENT * min(self.forces_contact.values()) \
+            * self.RAYON_CONTACT_M
+        couple = max(-retenu, min(retenu, poids * e * math.cos(math.radians(
+            self.rotation_objet_deg))))
+        prof = self.held.size[1]
+        avant = float(milieu[0] + self._centre_tenu[0]) - prof / 2.0
+        p = max(0.0, self.TORSE_X_M - avant)
+        self.force_torse = self.RAIDEUR_TORSE_N_M * p
+        sortie = {}
+        for cote in ("left", "right"):
+            f = np.array([self.force_torse / 2.0, 0.0, -poids / 2.0])
+            m = a * (couple / 2.0)
+            sortie[cote] = np.concatenate([f, m])
+        return sortie
+
+    def _rotation_vue(self) -> Optional[float]:
+        """Rotation de l'objet tenu autour de la ligne des mains (degrés),
+        vue par la caméra de tête ; None sans objet, ou s'il n'est pas vu."""
+        if self.held is None or not self.objet_visible:
+            return None
+        return float(self.rotation_objet_deg)
 
     def _inclinaison(self) -> Optional[float]:
         """Inclinaison de l'objet tenu (degrés) : 5° par cm de décalage des
@@ -917,26 +996,83 @@ class SimulatedRobot:
         # Le frottement des deux mains porte l'objet (vérité du monde simulé).
         serre = all(f * 2.0 * self.FROTTEMENT >= self.MASSE_OBJET_KG * 9.81
                     for f in self.forces_contact.values())
-        g, d = self._mains()
+        g, d = self._contacts()
         m = self._vers_robot((g + d) / 2.0)
         c = self._vers_robot(proche.position)
-        if not serre or abs(m[0] - c[0]) > 0.04 or abs((g[2] + d[2]) / 2.0 - proche.position[2]) \
+        # En profondeur : mains idéales, 4 cm du milieu au plus ; mains du G1,
+        # n'importe où sur le carton, jusqu'à son arête : serré, il est levé,
+        # puis il bascule autour de la ligne des mains s'il en est loin
+        # (_porter ; constaté sur GPU le 5 novembre 2026, contact 11 cm
+        # derrière le centre d'un carton de 20 cm, à son arête arrière).
+        prof_max = 0.04 if not self.CONTACT_MAIN_M else proche.size[1] / 2.0 + 0.01
+        if not serre or abs(m[0] - c[0]) > prof_max or abs((g[2] + d[2]) / 2.0 - proche.position[2]) \
                 > proche.size[2] / 2.0 + 0.02:
             return False
         self._decalage_prise = float(m[0] - c[0])
+        self._centre_tenu = np.array([c[0] - m[0], c[1] - m[1],
+                                      proche.position[2] - (g[2] + d[2]) / 2.0])
+        self._pose_prise = tuple(proche.position)      # où il reposait sur la table
+        self.rotation_objet_deg = 0.0
         self.held = proche
         return True
+
+    def _contacts(self):
+        """Points de contact des mains (CONTACT_MAIN_M le long de chaque
+        main), repère monde."""
+        g, d = self.modele_contact.mains(self._angles_bras())
+        return self._vers_monde_bassin(g), self._vers_monde_bassin(d)
 
     def _porter(self) -> None:
         """L'objet porté suit le milieu des mains ; une fois les bras
         rouverts (plus d'objet en main), il reste où il a été posé."""
         if self.held is None or self.manipulation is None:
             return
-        g, d = self._mains()
+        g, d = self._contacts()
         milieu = (g + d) / 2.0
+        if self._centre_tenu is not None:
+            # Il garde sa place par rapport aux points de contact.
+            c, s_ = math.cos(self.heading), math.sin(self.heading)
+            dx, dy, dz = (float(v) for v in self._centre_tenu)
+            milieu = milieu + np.array([c * dx - s_ * dy, s_ * dx + c * dy, dz])
         if self.manipulation.objet is None and self.manipulation.etat in (Etat.LIBRE, Etat.LACHER):
             self.held.position = (float(milieu[0]), float(milieu[1]),
                                   float(milieu[2]))
-            self.held = None
+            self.held, self._centre_tenu = None, None
+            return
+        if self.CONTACT_MAIN_M and min(self.forces_contact.values()) < 0.5 \
+                and self.manipulation.etat not in (Etat.SERRAGE, Etat.FERMETURE):
+            # Mains du G1 qui ne serrent plus : il est lâché, là où il est ;
+            # au-dessus de sa place, il y retombe, à plat.
+            x0, y0, z0 = getattr(self, "_pose_prise", (None, None, None))
+            o = self.held
+            pres = x0 is not None and math.hypot(o.position[0] - x0, o.position[1] - y0) \
+                < o.size[1] / 2.0
+            o.position = (x0, y0, z0) if pres else (o.position[0], o.position[1], o.size[2] / 2.0)
+            self.held, self._centre_tenu, self.rotation_objet_deg = None, None, 0.0
             return
         self.held.position = (float(milieu[0]), float(milieu[1]), float(milieu[2]))
+        # Basculement (mains du G1 ; les mains idéales gardent l'objet à
+        # plat, comme avant) : au-delà de ce que le frottement des mains
+        # retient, l'objet tourne autour de la ligne des mains ; trop penché,
+        # il glisse et tombe.
+        if self.CONTACT_MAIN_M and self._centre_tenu is not None \
+                and self.held.position[2] > self.PELVIS_HEIGHT_M - 0.3:
+            poids = self.MASSE_OBJET_KG * 9.81
+            retenu = 2.0 * (2.0 / 3.0) * self.FROTTEMENT * min(self.forces_contact.values()) \
+                * self.RAYON_CONTACT_M
+            e = float(self._centre_tenu[0])
+            if self.force_torse <= 0.0 and poids * abs(e) > retenu:
+                self.rotation_objet_deg += self.VITESSE_ROTATION_DEG_S * self._dt
+            # Encore au-dessus de sa place, peu levé : son arête touche la table,
+            # qui l'arrête (à 4 cm de levage, vers 24°) et le remet à plat
+            # quand on le repose.
+            x0, y0, z0 = getattr(self, "_pose_prise", (None, None, None))
+            if x0 is not None and math.hypot(self.held.position[0] - x0,
+                                             self.held.position[1] - y0) < self.held.size[1] / 2.0:
+                leve = max(0.0, self.held.position[2] - z0)
+                self.rotation_objet_deg = min(self.rotation_objet_deg, math.degrees(
+                    math.asin(min(1.0, leve / (self.held.size[1] / 2.0)))))
+            if self.rotation_objet_deg >= self.ROTATION_CHUTE_DEG:
+                x, y, _ = self.held.position
+                self.held.position = (x, y, self.held.size[2] / 2.0)
+                self.held, self._centre_tenu = None, None
