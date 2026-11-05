@@ -10,6 +10,44 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Essai GPU de main (T1, 5 novembre 2026, 16 h 06) : carton levé, il pivote et tombe
+
+Constat GPU : couples mesurés et fiables, contact vu par la force, serrage,
+levage ; puis le carton pivote autour de la ligne des mains et tombe ; force
+estimée 35 % au-dessus de celle du juge.
+- Point de contact des mains : 11 cm au-delà du repère de la main, le long
+  de la main (`ReglagesPrise.contact_main_m`, déclarable par le robot :
+  `MesuresBras.contact_main_m` ; `ChaineBras.bout_m`, `ModeleBras.au_contact`).
+  C'est la « main » de toute la géométrie de la prise et de l'estimation de
+  la force : la surestimation était un bras de levier (gain 1,3 à 1,4, sans
+  biais), rejouée sur les couples de l'essai (`test_rejeu_prise_t1606.py`).
+  Les repères des mains ne servent plus qu'au contrôle capteur contre
+  modèle ; la règle « objet entre les mains » (exemption du gardien) se juge
+  au point de contact, mêmes marges.
+- Ligne des mains par le centre de gravité : la prise vise les points de
+  contact au milieu des faces ; avant de lever, la ligne des points de
+  contact mesurés doit passer par le centre de gravité, à `tolerances_cg`
+  près (1,7 cm en profondeur, 10 cm en hauteur), tirées du couple que les
+  mains caoutchouc retiennent (`couple_retenu` : `frottement_main`,
+  `rayon_contact_main_m`, `masse_max_kg`, `securite_basculement`). Dans
+  l'essai, elle passait à 11 cm. `distance_ideale` garde la posture des bras
+  d'avant, l'objet `contact_main_m` plus loin.
+- Port : levage lent et progressif (4 cm en 2 s, départ et arrivée en
+  douceur) ; carton ramené vers le torse au plus près que les bras le
+  permettent sans changer de posture en chemin, avant-bras au-dessus du
+  plateau, arrêt au toucher du torse (`appui_torse_m`, `force_torse_n`,
+  `retard_torse_m`) ; le journal dit s'il le touche, sinon où il s'arrête.
+- Rotation : caméra de tête quand elle voit le carton (`MesuresBras.rotation`,
+  `rotation_dessus`) : au-delà de `rotation_max_deg`, il est reposé doucement
+  sur la table, la prise échoue avec la raison. Les couples ne voient pas
+  cette rotation (couple plafonné au frottement des mains, sous leur bruit) :
+  ils voient ses suites, le poids qui quitte les mains au port
+  (`part_poids_min`, `duree_perte_s`) : la base s'arrête, c'est signalé.
+- Banc T1 : `t1_prise.csv` de la fermeture au port (tâche de l'app, angles,
+  ce que l'OS estime, orientation réelle du carton, son centre par rapport
+  aux mains, point de contact réel PhysX) ; juge : orientation par phase et
+  pendant le port, jusqu'à la chute.
+
 ### Essai GPU de main (T1, 5 novembre 2026, 12 h 50) : prises refusées sur une force fausse
 
 Constat GPU : 5 prises, 0 triée, toutes « serrage insuffisant (-2.9 à

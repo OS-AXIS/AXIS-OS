@@ -244,6 +244,18 @@ essai) :
   n'est remis en place par l'opérateur simulé qu'après 40 s (les autres :
   20 s) ; le journal doit montrer, avant, l'ALERTE « robot arrêté par la
   sécurité depuis 20 s, toujours pour la même cause ».
+- **Le point de contact des mains** (essai du 5 novembre 2026, 16 h 06 : le
+  carton levé a pivoté autour de la ligne des mains, puis il est tombé) :
+  dans `t1_prise.csv`, les colonnes `contact_rel_*` (point de contact PhysX
+  par rapport au centre du carton) doivent être près de zéro en profondeur
+  et en hauteur, et `force_normale_n` suivre `force_juge_n` à ~10 % près ;
+  sinon, corriger `ReglagesPrise.contact_main_m` (11 cm, estimé sur les
+  couples de l'essai). Au journal : « ligne des mains au serrage » sous les
+  tolérances, puis « carton contre le torse », ou « ramené sans toucher le
+  torse : face arrière à … cm » (sur le robot simulé, mains du G1 : 22 cm,
+  le buste à 10 : les bras n'y arrivent pas sans changer de posture ; à voir
+  sur GPU, et piste : les poignets dans la cinématique inverse). Le tangage
+  réel du carton (`carton_tangage_deg`, juge « port ») doit rester sous 10°.
 - **Les seuils** : hausse de 1,5 N·m pour le contact (le poids des bras
   qui bougent peut la donner seul), 5 N·m de serrage pour tenir un carton
   de ce poids, 3,5 cm de rayon d'avant-bras.

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from axis_os.hal.core.types import CameraIntrinsics  # noqa: E402
 from axis_os.services.perception.boite import (  # noqa: E402
     FusionCarton, ajuster_boite, plan_ransac, points_du_masque, rectangle_minimal,
+    rotation_dessus,
 )
 
 FAIL = 0
@@ -383,6 +384,22 @@ texte = bp.rapport(bilans, {"bon": 0.10, "myope": 0.10})
 check("Rapport : tableau par seuil, boîte ajustée, verdict pour le détecteur qui voit le plus",
       "vus 3/3" in texte and "vus 2/3" in texte and "masque SAM 2.1" in texte
       and "Verdict : garder bon" in texte, texte)
+
+print("\n  Rotation d'un carton tenu autour de la ligne des mains (caméra de tête)")
+# Essai GPU du 5 novembre 2026, 16 h 06 : levé, le carton a pivoté autour de
+# la ligne des mains (axe y) ; rotation_dessus la mesure sur son dessus.
+_rng = np.random.default_rng(3)
+_dessus = np.c_[_rng.uniform([-0.10, -0.12], [0.10, 0.12], (400, 2)), np.full(400, 0.10)]
+_face = np.c_[np.full(150, -0.10), _rng.uniform(-0.12, 0.12, 150), _rng.uniform(-0.1, 0.1, 150)]
+for _ang in (0.0, 15.0, -25.0):
+    _a = math.radians(_ang)
+    _r = np.array([[math.cos(_a), 0, math.sin(_a)], [0, 1, 0], [-math.sin(_a), 0, math.cos(_a)]])
+    _pts = np.r_[_dessus, _face] @ _r.T + _rng.normal(0, 0.002, (550, 3))
+    _v = rotation_dessus(_pts, np.array([0.0, 1.0, 0.0]))
+    check(f"Dessus tourné de {_ang:+.0f}° (face avant vue aussi, bruit 2 mm) : mesuré à 1° près",
+          _v is not None and abs(_v - _ang) < 1.0, str(_v))
+check("Trop peu de points : rien (None), jamais un angle inventé",
+      rotation_dessus(_dessus[:10], np.array([0.0, 1.0, 0.0])) is None)
 
 print(f"\n  {'TOUT PASSE' if FAIL == 0 else f'{FAIL} ÉCHEC(S)'}")
 sys.exit(1 if FAIL else 0)

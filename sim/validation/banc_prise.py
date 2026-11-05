@@ -81,18 +81,35 @@ class JugeContacts:
         self.reel: Dict[str, Optional[Dict[str, float]]] = {"left": None, "right": None}
         self.estimes: Dict[str, Optional[Dict]] = {"left": None, "right": None}
         self.lacets: Dict[str, float] = {}
+        # Orientation réelle du carton dans le repère du bassin, par phase :
+        # (roulis, tangage) les plus grands en valeur absolue (degrés). Le
+        # tangage, c'est la rotation autour de la ligne des mains (essai GPU
+        # du 5 novembre 2026, 16 h 06 : levé, le carton y a pivoté, puis est
+        # tombé ; le lacet seul ne le montrait pas).
+        self.orientations: Dict[str, Tuple[float, float]] = {}
         self.en_cours = False
 
     def debut(self) -> None:
         self.reel = {"left": None, "right": None}
         self.estimes = {"left": None, "right": None}
         self.lacets = {}
+        self.orientations = {}
         self.en_cours = True
 
     def noter_lacet(self, phase: str, lacet_deg: Optional[float]) -> None:
         """Lacet réel du carton (degrés) à l'entrée d'une phase, une fois."""
         if self.en_cours and lacet_deg is not None and phase not in self.lacets:
             self.lacets[phase] = float(lacet_deg)
+
+    def noter_orientation(self, phase: str, roulis_deg: Optional[float],
+                          tangage_deg: Optional[float]) -> None:
+        """Orientation réelle du carton pendant une phase : garde les plus
+        grands roulis et tangage (valeur absolue, signe conservé)."""
+        if not self.en_cours or roulis_deg is None or tangage_deg is None:
+            return
+        r0, t0 = self.orientations.get(phase, (0.0, 0.0))
+        self.orientations[phase] = (roulis_deg if abs(roulis_deg) > abs(r0) else r0,
+                                    tangage_deg if abs(tangage_deg) > abs(t0) else t0)
 
     def pas(self, t: float, fermeture: bool = True,
             estimes: Optional[Dict[str, Optional[Dict]]] = None) -> None:
@@ -141,6 +158,11 @@ class JugeContacts:
         if self.lacets:
             lignes.append("juge (vérité simulation), lacet réel du carton : " + ", ".join(
                 f"{p} {v:+.1f}°" for p, v in self.lacets.items()))
+        if self.orientations:
+            lignes.append("juge (vérité simulation), carton au plus penché (tangage autour de la "
+                          "ligne des mains / roulis, repère du bassin) : " + ", ".join(
+                              f"{p} {t:+.1f}° / {r:+.1f}°"
+                              for p, (r, t) in self.orientations.items()))
         return lignes
 
 
@@ -161,6 +183,11 @@ class CapteursContactIsaac:
         self.raisons: List[str] = []
         self._cartons: List[str] = []
         self._force = {"left": 0.0, "right": 0.0}
+        # Point de contact réel de chaque main (repère monde) : barycentre des
+        # points du rapport PhysX, pondérés par leur impulsion ; None sans
+        # contact. Où la main touche-t-elle le carton (ReglagesPrise.contact_main_m) ?
+        self._point: Dict[str, Optional[Tuple[float, float, float]]] = {"left": None,
+                                                                        "right": None}
         self._capteurs: Dict[str, object] = {}
         self._abonnement = None
         self._physx = None
@@ -232,6 +259,7 @@ class CapteursContactIsaac:
     def _sur_contacts(self, entetes, donnees) -> None:
         from pxr import PhysicsSchemaTools
         force = {"left": 0.0, "right": 0.0}
+        somme = {"left": [0.0, 0.0, 0.0, 0.0], "right": [0.0, 0.0, 0.0, 0.0]}
         for h in entetes:
             a = str(PhysicsSchemaTools.intToSdfPath(h.actor0))
             b = str(PhysicsSchemaTools.intToSdfPath(h.actor1))
@@ -241,8 +269,22 @@ class CapteursContactIsaac:
                     for i in range(h.contact_data_offset,
                                    h.contact_data_offset + h.num_contact_data):
                         imp = donnees[i].impulse
-                        force[cote] += math.sqrt(imp[0] ** 2 + imp[1] ** 2 + imp[2] ** 2) / self.dt
+                        f_ = math.sqrt(imp[0] ** 2 + imp[1] ** 2 + imp[2] ** 2) / self.dt
+                        force[cote] += f_
+                        pos = getattr(donnees[i], "position", None)
+                        if pos is not None and f_ > 0.0:
+                            for k in range(3):
+                                somme[cote][k] += f_ * float(pos[k])
+                            somme[cote][3] += f_
         self._force = force
+        self._point = {c: (tuple(v / s_[3] for v in s_[:3]) if s_[3] > 0.0 else None)
+                       for c, s_ in somme.items()}
+
+    def point(self, cote: str) -> Optional[Tuple[float, float, float]]:
+        """Point de contact réel de la main `cote` au dernier relevé (repère
+        monde), None sans contact ou sans rapport PhysX."""
+        return self._point.get(cote) if self.methode and self.methode.startswith("rapport") \
+            else None
 
     def lire(self, cote: str) -> Optional[float]:
         """Force du dernier pas de physique ; la main gauche (lue la première

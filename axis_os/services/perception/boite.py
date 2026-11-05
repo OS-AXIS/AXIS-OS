@@ -270,3 +270,47 @@ def points_du_masque(depth: np.ndarray, intrinsics, rotation: np.ndarray, transl
     k = intrinsics
     opt = np.stack([(u - k.cx) / k.fx * d, (v - k.cy) / k.fy * d, d], axis=1)
     return opt @ np.asarray(rotation).T + np.asarray(translation)
+
+
+def rotation_dessus(points: np.ndarray, axe: np.ndarray, haut: np.ndarray = HAUT,
+                    seuil_m: float = 0.006, iterations: int = 150, graine: int = 0,
+                    min_points: int = 30, inclinaison_max_deg: float = 60.0
+                    ) -> Optional[float]:
+    """Rotation (degrés) d'un carton tenu autour de l'axe horizontal `axe`
+    (la ligne qui joint les mains), d'après les points vus de son dessus :
+    le plan qui en porte le plus (RANSAC à trois points, normale à moins de
+    `inclinaison_max_deg` de la verticale), sa normale ramenée dans le plan
+    perpendiculaire à `axe`, et son angle avec la verticale ; positif dans
+    le sens direct autour de `axe`. None : trop peu de points, ou aucun plan.
+    Contrairement à plan_ransac, le plan n'est pas supposé horizontal : c'est
+    justement sa pente que l'on cherche (essai GPU du 5 novembre 2026 : le
+    carton levé a pivoté autour de la ligne des mains)."""
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    if len(pts) < min_points:
+        return None
+    a = np.asarray(axe, dtype=float)
+    a = a / max(1e-9, float(np.linalg.norm(a)))
+    rng = np.random.default_rng(graine)
+    cos_max = math.cos(math.radians(inclinaison_max_deg))
+    meilleur = None
+    for _ in range(iterations):
+        p0, p1, p2 = pts[rng.choice(len(pts), 3, replace=False)]
+        n = np.cross(p1 - p0, p2 - p0)
+        if float(np.linalg.norm(n)) < 1e-9:
+            continue
+        n = n / np.linalg.norm(n)
+        if abs(float(n @ haut)) < cos_max:
+            continue
+        dedans = np.abs((pts - p0) @ n) < seuil_m
+        if meilleur is None or dedans.sum() > meilleur.sum():
+            meilleur = dedans
+    if meilleur is None or meilleur.sum() < min_points // 2:
+        return None
+    q = pts[meilleur]
+    _, _, vt = np.linalg.svd(q - q.mean(axis=0))
+    n = vt[2] if vt[2] @ haut > 0 else -vt[2]
+    n = n - float(n @ a) * a                     # dans le plan perpendiculaire à l'axe
+    if float(np.linalg.norm(n)) < 1e-9:
+        return None
+    n = n / np.linalg.norm(n)
+    return math.degrees(math.atan2(float(np.cross(haut, n) @ a), float(haut @ n)))
