@@ -28,6 +28,9 @@ grande » ; attentes de sécurité à ×0,99.
   `taille_metrique`) ne peut pas être un carton. Diagnostic par détection :
   `rejet`, `bords`, `part_image`.
 - Observation : raison exacte de chaque image écartée, au journal.
+- Arrivée à un poste par la seule navigation : phases ARRET puis POSTE,
+  la base s'arrête et `navigation()` ne rend ARRIVE qu'au bout de
+  `duree_visee_s` ; la recherche du carton part donc base immobile.
 - Bande morte déclarée : `GR00TWBCAdapter.bande_morte` (0,05, son seuil de
   politique d'équilibre), robot simulé léger 0, `G1LocomotionAdapter` None.
 - Détecteur des cartons : `detecteur_carton()` (owlvit_detector.py), OWLv2

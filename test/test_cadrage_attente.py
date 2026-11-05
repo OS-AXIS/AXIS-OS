@@ -16,7 +16,10 @@ Désormais (axis_os/apps/tri_colis/facade.py, couleur.py) :
     l'image, ou si sa taille métrique (masque et profondeur) ne peut pas
     être celle d'un carton ; un carton proche qui remplit 40 % de l'image
     est gardé ;
-  - chaque image d'observation écartée l'est avec sa raison exacte.
+  - chaque image d'observation écartée l'est avec sa raison exacte ;
+  - la recherche du carton ne part qu'une fois la base arrêtée depuis
+    duree_visee_s (le critère de la visée) : deux recherches lancées tête
+    encore en rotation l'avaient situé à 2 et 3 cm de côté.
 
 Banc synthétique : la vraie chaîne (PerceptionService, PerceptionCouleur,
 FacadeServices), la caméra de tête du banc T1 (0,2 m devant et 0,4 m
@@ -309,6 +312,54 @@ check("Carton bien cadré, détecteur et masque idéaux : revu après l'arrêt (
       "près", b.facade._observe is not None and "3 images prises après l'arrêt"
       in b.facade._observe.vu and math.dist(b.facade._observe.position, CARTON) < 0.01,
       f"{etat} {b.journal}")
+
+section("4. La recherche du carton ne part qu'une fois la base immobile")
+# Constat GPU (essai T1 de main) : deux recherches lancées dès l'arrivée de la
+# navigation au poste, tête encore en rotation, ont situé le carton à +2.1 et
+# -3.3 cm de côté ; la visée, robot arrêté depuis 0.6 s, les a corrigées.
+from axis_os.apps.tri_colis.logique import ConfigTri, TriColis  # noqa: E402
+
+b = Banc(4.0, 1.0)
+f = b.facade
+moments = {"nav": None, "recherches": [], "consignes": [], "arrets": []}
+f.loco.set_velocity = lambda *a: moments["consignes"].append(b.t)
+f.loco.halt = lambda: moments["arrets"].append(b.t)
+aller, trouver = f.aller_au_poste, b.percep.find
+
+
+def aller_au_poste(poste):
+    moments["nav"] = b.t                      # la navigation (factice) arrive aussitôt
+    return aller(poste)
+
+
+def find(*a, **k):
+    moments["recherches"].append((b.t, f.veut_percevoir))
+    return trouver(*a, **k)
+
+
+f.aller_au_poste, b.percep.find = aller_au_poste, find
+tri = TriColis(f, ConfigTri(regles={"rouge": "A"}, duree_mission_s=1e6))
+percevoir = []
+while b.t < 3.0 and not moments["recherches"]:
+    b.t += 0.02
+    tri.pas()
+    f.tick()
+    percevoir.append((b.t, f._phase, f.veut_percevoir))
+t_nav, t_rech = moments["nav"], moments["recherches"][0][0] if moments["recherches"] else None
+duree = ConfigFacade().duree_visee_s
+check(f"Arrivée au poste de prise : la recherche attend {duree} s, base arrêtée (le critère de "
+      f"la visée)", t_nav is not None and t_rech is not None
+      and t_rech - t_nav >= duree - 1e-9, f"navigation à {t_nav}, recherche à {t_rech}")
+check("… pendant l'attente : aucune consigne de marche, la base mise à l'arrêt à chaque pas",
+      t_rech is not None and not [t for t in moments["consignes"] if t_nav <= t < t_rech]
+      and len([t for t in moments["arrets"] if t_nav < t < t_rech]) >= 25,
+      str(moments["consignes"][:3]))
+arret = [(t, v) for t, ph, v in percevoir if ph == "ARRET"]
+check("… et images neuves demandées (veut_percevoir) tout l'arrêt, assez longtemps",
+      arret and all(v for _, v in arret) and arret[-1][0] - arret[0][0] >= duree - 0.05,
+      str(percevoir[:5]))
+check("… puis la recherche trouve le carton, et l'accostage part", tri.colis is not None
+      and tri.etat == "ACCOSTER", f"{tri.etat} {tri.colis}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

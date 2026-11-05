@@ -157,6 +157,12 @@ class ConfigFacade:
     # est bien plus faible. La correction est bornée par
     # `correction_visee_max_m` : au-delà, ce n'est pas le même carton.
     duree_visee_s: float = 0.6
+    # Même arrêt à l'arrivée à un poste par la seule navigation (le poste de
+    # prise, d'où part la recherche) : la base s'arrête, et navigation() ne
+    # rend ARRIVE qu'au bout de `duree_visee_s`. Pourquoi : essai GPU de main
+    # (novembre 2026), deux recherches lancées dès l'arrivée, tête encore en
+    # rotation, ont situé le carton à 2.1 et 3.3 cm de côté ; la visée, robot
+    # arrêté depuis 0.6 s, les a corrigées au millimètre.
     correction_visee_max_m: float = 0.15
     # Observation après l'arrêt. Constaté sur GPU (essai T1 de main,
     # novembre 2026) : trois fois, le carton avait été déplacé de 3 à 10 cm
@@ -289,6 +295,8 @@ class FacadeServices:
         self.filtrees: Dict[tuple, str] = {}
         # Phase courante de la façade :
         #   NAV             navigation simple vers un poste ;
+        #   ARRET           arrivé au poste : la base s'arrête (duree_visee_s) ;
+        #   POSTE           arrivé et immobile ;
         #   NAV_ACCOSTAGE   navigation vers une pré-pose, suivie d'un
         #                   accostage fin (-> VISEE, FRANCHISSEMENT ou
         #                   ACCOSTAGE) ;
@@ -321,6 +329,9 @@ class FacadeServices:
         # Jusqu'à cet instant, les mains lâchent le carton : pas de recul.
         self._liberation_jusqua = 0.0
         self._colis_vise: Optional[Colis] = None   # colis à revoir de face
+        # Arrêt à faire à l'arrivée de la navigation lancée par _lancer_nav
+        # (voir ConfigFacade.duree_visee_s) ; son début.
+        self._arret_a_faire, self._t_arret = False, 0.0
         # Observation après l'arrêt : en cours (dict), son résultat (le colis
         # revu, seul transmis à la prise), et si la prise l'exige (après un
         # accostage de prise).
@@ -507,6 +518,7 @@ class FacadeServices:
 
     def _lancer_nav(self) -> Tuple[bool, str]:
         self._phase = "NAV" if self._apres_nav is None else "NAV_ACCOSTAGE"
+        self._arret_a_faire = self._phase == "NAV"
         r = self.nav.aller_vers(self._dest)
         if not r.ok:
             self._phase = "ECHEC"
@@ -641,10 +653,14 @@ class FacadeServices:
             return self._etat_accostage
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
+        if ph == "POSTE":
+            return "ARRIVE"
+        if ph == "ARRET":
+            return "EN_ROUTE"
         e = self.nav.etat
         if e is EtatNavigation.ECHEC:
             return "ECHEC"
-        if e is EtatNavigation.ARRIVE and ph == "NAV":
+        if e is EtatNavigation.ARRIVE and ph == "NAV" and not self._arret_a_faire:
             return "ARRIVE"
         # Y compris NAV_ACCOSTAGE arrivé : c'est tick() qui enchaîne sur
         # l'accostage fin.
@@ -684,6 +700,19 @@ class FacadeServices:
                 self._journal(f"transport arrêté : {self.manip.raison}")
             return
         self._penche_signale = False
+        if self._phase == "NAV" and self._arret_a_faire \
+                and self.nav.etat is EtatNavigation.ARRIVE:
+            # Arrivé au poste : la base s'arrête avant que l'on regarde (voir
+            # ConfigFacade.duree_visee_s) ; images neuves pendant ce temps.
+            self._arret_a_faire = False
+            self._phase, self._t_arret, self.veut_percevoir = "ARRET", self._horloge(), True
+        if self._phase == "ARRET":
+            self.loco.halt()
+            if self._horloge() - self._t_arret < self.cfg.duree_visee_s:
+                return
+            self._phase, self.veut_percevoir = "POSTE", False
+            self.stats["arrets_poste"] = self.stats.get("arrets_poste", 0) + 1
+            return
         if self._phase == "NAV_ACCOSTAGE" and self.nav.etat is EtatNavigation.ARRIVE:
             self._cible = self._apres_nav
             self._vmax = self.cfg.v_max
@@ -1209,7 +1238,7 @@ class FacadeServices:
         au_contact : l'autre pilote a laissé le robot contre une table ; la
         prochaine sortie commencera par un recul, comme après un accostage."""
         self.nav.annuler()
-        self._phase, self._etat_accostage = "NAV", "ARRIVE"
+        self._phase, self._etat_accostage, self._arret_a_faire = "NAV", "ARRIVE", False
         self._apres_nav, self._insertion, self._colis_vise = None, None, None
         self._obs, self._observe, self._observation_requise = None, None, False
         self.veut_percevoir = False

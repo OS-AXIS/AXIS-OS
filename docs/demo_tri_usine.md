@@ -524,9 +524,12 @@ l'arrêt », et des attentes de sécurité sans raison.
   démontrée : la recherche part dès l'arrivée de la navigation, tête encore
   en rotation (environ 27°/s dans la vue du robot à 41 s), et sur le banc
   l'image couleur (anticrénelage temporel du rendu) peut retarder d'un rendu
-  sur la profondeur et sur la pose. La ligne PERCEPTION donne désormais la
-  vitesse de lacet de la base ; les images de `--images-perception` diront
-  si le carton est décalé entre couleur et profondeur.
+  sur la profondeur et sur la pose. Remède : arrivé au poste par la seule
+  navigation, la base s'arrête, et la recherche ne part qu'au bout de
+  `duree_visee_s` (0,6 s), le critère de la visée. La ligne PERCEPTION
+  donne la vitesse de lacet de la base, à vérifier au prochain essai ; les
+  images de `--images-perception` diront si le carton était décalé entre
+  couleur et profondeur.
 
 ## Budget GPU
 
