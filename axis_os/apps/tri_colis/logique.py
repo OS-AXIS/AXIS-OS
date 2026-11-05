@@ -59,6 +59,8 @@ class Robot(Protocol):
     def manipulation(self) -> str: ...          # LIBRE / TENU / ECHEC / en cours
     def reinitialiser_manipulation(self) -> None: ...
     def journal(self, message: str) -> None: ...
+    # Facultatif : cause_arret() -> (point (x, y) ou None, texte), ce qui
+    # arrête le robot, pour l'alerte « même cause » (ConfigTri).
 
 
 @dataclass
@@ -94,6 +96,13 @@ class ConfigTri:
     pause_prise_inaccessible_s: float = 30.0
     alerte_inactivite_s: float = 120.0     # rien à trier depuis ce temps
     alerte_arret_prolonge_s: float = 60.0  # bloqué par la sécurité depuis ce temps
+    # Arrêté par la sécurité pour la même cause (même point à rayon_ignore_m
+    # près, reprises de moins de reprise_breve_s comprises) depuis ce temps :
+    # l'opérateur en reçoit la cause. Essai GPU T1 de novembre 2026 : carton
+    # poussé de 5 cm hors de la table, robot arrêté par à-coups ; chaque
+    # reprise remettait à zéro le compte des 60 s, on attendait en silence.
+    alerte_meme_cause_s: float = 20.0
+    reprise_breve_s: float = 5.0
 
 
 @dataclass
@@ -162,6 +171,9 @@ class TriColis:
         self._inactif_depuis: Optional[float] = None   # rien à trier depuis
         self._bloque_s = 0.0            # durée de l'arrêt de sécurité en cours
         self._blocage_signale = False
+        # Cause de l'arrêt de sécurité en cours : point, début, dernier
+        # instant vu, déjà signalée.
+        self._cause: Optional[dict] = None
         self._inactivite_signalee = False
 
     # ------------------------------------------------------------------
@@ -191,6 +203,7 @@ class TriColis:
                 self._alerte(f"arrêt de sécurité depuis {self._bloque_s:.0f} s "
                              f"({self.etat}) — une personne ou un objet bloque "
                              "le robot ; merci de dégager le passage")
+            self._meme_cause(t)
             return
         self._bloque_s, self._blocage_signale = 0.0, False
         if self.etat in ("LIVRER", "RAMENER") and self.robot.manipulation() == "ECHEC":
@@ -204,6 +217,24 @@ class TriColis:
         self._temps_etat += dt
         # Chaque état a sa méthode : CHERCHER -> _etat_chercher(), etc.
         getattr(self, "_etat_" + self.etat.lower())()
+
+    def _meme_cause(self, t: float) -> None:
+        """Arrêt de sécurité qui dure pour la même cause : signalé une fois,
+        avec ce que le robot en sait (voir ConfigTri.alerte_meme_cause_s)."""
+        lire = getattr(self.robot, "cause_arret", None)
+        if lire is None:
+            return
+        point, texte = lire()
+        c = self._cause
+        if c is None or t - c["vu"] > self.cfg.reprise_breve_s \
+                or (point is None) != (c["point"] is None) \
+                or (point is not None and math.dist(point, c["point"]) > self.cfg.rayon_ignore_m):
+            c = self._cause = {"point": point, "debut": t, "signale": False}
+        c["vu"] = t
+        if not c["signale"] and t - c["debut"] >= self.cfg.alerte_meme_cause_s:
+            c["signale"] = True
+            self._alerte(f"robot arrêté par la sécurité depuis {t - c['debut']:.0f} s, toujours "
+                         f"pour la même cause : {texte} ; merci d'intervenir")
 
     def _aller(self, etat: str) -> None:
         """Passe dans `etat`, avec un compteur de temps remis à zéro."""

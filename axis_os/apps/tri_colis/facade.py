@@ -368,6 +368,42 @@ class FacadeServices:
         v = getattr(self.loco, "dernier_verdict", None)
         return v is not None and v.facteur <= 0.0
 
+    def cause_arret(self) -> Tuple[Optional[Tuple[float, float]], str]:
+        """Ce qui arrête le robot : le point du gardien et ce que l'OS en
+        sait, d'après la carte (bord d'une table chargée) et les cartons
+        suivis. Un carton ne dépasse pas d'une table de plus que sa
+        profondeur sans tomber : au-delà, on ne parle pas de la table."""
+        v = getattr(self.loco, "dernier_verdict", None)
+        if v is None:
+            return None, ""
+        if v.point is None:
+            return None, v.raison
+        x, y = v.point
+        texte = f"{v.raison}, point en ({x:.2f}, {y:.2f})"
+        carte = getattr(self.nav, "carte", None)
+        tables = [o for o in (carte.obstacles if carte else []) if o.zmax is not None]
+
+        def ecart(o):
+            return math.hypot(max(o.xmin - x, 0.0, x - o.xmax), max(o.ymin - y, 0.0, y - o.ymax))
+
+        table = min(tables, key=ecart, default=None)
+        if table is not None and 0.0 < ecart(table) <= self.cfg.profondeur:
+            poste = min(carte.postes, default=None, key=lambda n: math.hypot(
+                max(table.xmin - carte.postes[n].x, 0.0, carte.postes[n].x - table.xmax),
+                max(table.ymin - carte.postes[n].y, 0.0, carte.postes[n].y - table.ymax)))
+            texte += (f" ; il dépasse de {100 * ecart(table):.0f} cm le bord de la table"
+                      + (f" du poste « {poste} »" if poste else ""))
+        else:
+            table = None
+        pres = min(((math.dist((x, y), s["centre"][:2]), s) for s in self._suivis),
+                   key=lambda e: e[0], default=None)
+        if pres and pres[0] <= math.hypot(self.cfg.largeur, self.cfg.profondeur) / 2 + 0.10:
+            c = pres[1]["centre"]
+            texte += (f" ; carton {pres[1]['couleur']} à {pres[0]:.2f} m (vu en dernier en "
+                      f"({c[0]:.2f}, {c[1]:.2f}))"
+                      + (" : sans doute ce carton, à remettre en place sur la table" if table else ""))
+        return (x, y), texte
+
     def journal(self, message: str) -> None:
         self._journal(message)
 
