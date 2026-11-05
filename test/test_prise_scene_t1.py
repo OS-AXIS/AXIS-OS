@@ -55,10 +55,14 @@ def carton(largeur=CFG.largeur, lacet_deg=0.0, dy=0.0):
 
 
 def robot_devant(d, largeur=CFG.largeur, dy=0.0, lacet_deg=0.0):
-    """Robot simulé face à la table (cap +y), bassin à `d` du centre du carton."""
+    """Robot simulé face à la table (cap +y), bassin à `d` du centre du carton ;
+    ses mains : celles du G1, qui touchent 11 cm au-delà de leur repère
+    (ReglagesPrise.contact_main_m, essai GPU du 5 novembre 2026), comme les
+    distances calculées ici."""
     r = SimulatedRobot(objects=[SimulatedObject("carton", (X_CARTON, sd.Y_CARTON + dy, Z_CARTON),
                                                 size=(largeur, CFG.profondeur, CFG.hauteur))],
-                       start=(X_CARTON, sd.Y_CARTON + dy - d, sd.CAP_PRISE), time_scale=2.0)
+                       start=(X_CARTON, sd.Y_CARTON + dy - d, sd.CAP_PRISE), time_scale=2.0,
+                       contact_main_m=R.contact_main_m)
     r.PELVIS_HEIGHT_M = BASSIN_GPU
     return r
 

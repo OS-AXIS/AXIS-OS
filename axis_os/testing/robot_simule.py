@@ -1051,10 +1051,12 @@ class SimulatedRobot:
             self.held, self._centre_tenu, self.rotation_objet_deg = None, None, 0.0
             return
         self.held.position = (float(milieu[0]), float(milieu[1]), float(milieu[2]))
-        # Basculement : au-delà de ce que le frottement des mains retient,
-        # l'objet tourne autour de la ligne des mains ; trop penché, il
-        # glisse et tombe.
-        if self._centre_tenu is not None and self.held.position[2] > self.PELVIS_HEIGHT_M - 0.3:
+        # Basculement (mains du G1 ; les mains idéales gardent l'objet à
+        # plat, comme avant) : au-delà de ce que le frottement des mains
+        # retient, l'objet tourne autour de la ligne des mains ; trop penché,
+        # il glisse et tombe.
+        if self.CONTACT_MAIN_M and self._centre_tenu is not None \
+                and self.held.position[2] > self.PELVIS_HEIGHT_M - 0.3:
             poids = self.MASSE_OBJET_KG * 9.81
             retenu = 2.0 * (2.0 / 3.0) * self.FROTTEMENT * min(self.forces_contact.values()) \
                 * self.RAYON_CONTACT_M
