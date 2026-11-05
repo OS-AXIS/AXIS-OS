@@ -99,6 +99,43 @@ svc = PerceptionService(FakeCamera("c", Path("/tmp/axisos_inexistant")),
 check("PerceptionService accepte OwlViTDetector sans modification",
       svc._detector is d)
 
+section("6 — Détecteur des cartons : OWLv2 par défaut, OWL-ViT en repli")
+# Verdict du banc de perception (essai GPU T1, novembre 2026) : OWLv2 au
+# seuil 0,10 (30 cartons sur 30, 47 fausses détections), contre OWL-ViT à
+# 0,06 (30 sur 30, 66). Chargement simulé : pas de poids ici.
+from axis_os.services.perception.owlvit_detector import (  # noqa: E402
+    Owlv2Detector, detecteur_carton)
+
+
+def charge(ok):
+    def load(self):
+        self._load_error = None if ok else "poids absents"
+        return ok
+    return load
+
+
+charges = {OwlViTDetector: OwlViTDetector.load, Owlv2Detector: Owlv2Detector.load}
+messages = []
+try:
+    Owlv2Detector.load, OwlViTDetector.load = charge(True), charge(True)
+    det, nom, seuil = detecteur_carton(journal=messages.append)
+    check("Par défaut : OWLv2, seuil 0,10 (celui du banc)",
+          type(det) is Owlv2Detector and nom == "owlv2" and seuil == 0.10 and det._threshold == 0.10)
+    det, nom, seuil = detecteur_carton(seuil=0.12, journal=messages.append)
+    check("… seuil donné : appliqué à OWLv2", seuil == 0.12 and det._threshold == 0.12)
+    Owlv2Detector.load = charge(False)
+    det, nom, seuil = detecteur_carton(seuil=0.12, journal=messages.append)
+    check("OWLv2 ne se charge pas : repli sur OWL-ViT, à SON seuil validé (0,06), et on le dit",
+          type(det) is OwlViTDetector and nom == "owlvit" and seuil == 0.06
+          and det._threshold == 0.06 and any("repli sur owlvit" in m and "poids absents" in m
+                                             for m in messages))
+    OwlViTDetector.load = charge(False)
+    det, nom, seuil = detecteur_carton(journal=messages.append)
+    check("Aucun ne se charge : le dernier essayé, non chargé, avec sa raison",
+          nom == "owlvit" and det.stats["load_error"] == "poids absents")
+finally:
+    OwlViTDetector.load, Owlv2Detector.load = charges[OwlViTDetector], charges[Owlv2Detector]
+
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
 print("=" * 66)

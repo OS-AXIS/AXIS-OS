@@ -35,7 +35,7 @@ or by the test suite. Licenses are taken from each package's metadata.
 | pyzmq | VLA connectors (ZeroMQ) | BSD 3-Clause |
 | protobuf | `VLACppConnector` | BSD 3-Clause |
 | msgpack, msgpack-numpy | GR00T connector | Apache 2.0 / BSD 3-Clause |
-| transformers | OWL-ViT detector, Whisper recognizer | Apache 2.0 |
+| transformers | OWL-ViT and OWLv2 detectors, SAM 2.1, Whisper recognizer | Apache 2.0 |
 | pillow | images for perception and tests | MIT-CMU (HPND) |
 | onnxruntime | GR00T Whole-Body Control policy | MIT |
 | torch | neural policies, perception | BSD 3-Clause |
@@ -53,6 +53,8 @@ All of these licenses allow use from an Apache 2.0 project. Note that
 | Model | Used by | License, as published by its authors |
 |-------|---------|--------------------------------------|
 | [google/owlvit-base-patch32](https://huggingface.co/google/owlvit-base-patch32), revision pinned | open-vocabulary object detection (`owlvit_detector.py`); fallback person detector (`ObjectDetectorPersons`) | Apache 2.0 |
+| [google/owlv2-base-patch16-ensemble](https://huggingface.co/google/owlv2-base-patch16-ensemble), revision pinned | default carton detector of the sorting app (`Owlv2Detector`, `detecteur_carton`), OWL-ViT as fallback | Apache 2.0 |
+| [facebook/sam2.1-hiera-tiny](https://huggingface.co/facebook/sam2.1-hiera-tiny), revision pinned | carton mask inside the detector box (`sam2_segmenteur.py`) | Apache 2.0 |
 | [PekingU/rtdetr_r18vd](https://huggingface.co/PekingU/rtdetr_r18vd), revision `ac77a11ff0170a41b771c03264987f8ce2b0d753` pinned, `model.safetensors` only; code [lyuwenyu/RT-DETR](https://github.com/lyuwenyu/RT-DETR) | person detection for following (`axis_os/services/people/rtdetr_detector.py`): boxes and scores only, no identity | Apache 2.0 (code and weights, as published by the authors) |
 | [openai/whisper-small](https://huggingface.co/openai/whisper-small) | speech recognition (`whisper_recognizer.py`) | Apache 2.0 |
 | Unitree locomotion policy (`g1_motion.pt`), from [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) | walking in simulation | BSD 3-Clause |

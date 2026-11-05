@@ -92,12 +92,14 @@ def main():
     # vérité simulation : pour la vidéo de démonstration.
     ap.add_argument("--vue-sans-calques", action="store_true")
     ap.add_argument("--graine", type=int, default=3)
-    # Perception du carton : détecteur (OWL-ViT validé à 0,06 ; OWLv2 à
-    # comparer, voir comparer_detecteurs.py), masque SAM 2.1, images
-    # enregistrées pour la comparaison hors ligne.
-    ap.add_argument("--detecteur", choices=("owlvit", "owlv2"), default="owlvit")
+    # Perception du carton : détecteur (OWLv2 à 0,10, verdict du banc de
+    # perception ; OWL-ViT à 0,06 en repli s'il ne se charge pas, voir
+    # detecteur_carton), masque SAM 2.1, images enregistrées pour la
+    # comparaison hors ligne (banc_perception.py).
+    ap.add_argument("--detecteur", choices=("owlvit", "owlv2"), default="owlv2",
+                    help="détecteur préféré ; l'autre en repli s'il ne se charge pas")
     ap.add_argument("--seuil-detecteur", type=float, default=None,
-                    help="seuil de confiance (défaut : 0,06 OWL-ViT, 0,10 OWLv2)")
+                    help="seuil du détecteur préféré (défaut : 0,10 OWLv2, 0,06 OWL-ViT)")
     ap.add_argument("--sans-sam2", action="store_true",
                     help="points du cadre du détecteur, sans masque SAM 2.1")
     ap.add_argument("--images-perception", default=None, metavar="DOSSIER",
@@ -154,7 +156,7 @@ def main():
         Etat, ManipulationService, Postures, posture_bras,
     )
     from axis_os.services.navigation.service import NavigationService, Pose2D
-    from axis_os.services.perception.owlvit_detector import Owlv2Detector, OwlViTDetector
+    from axis_os.services.perception.owlvit_detector import detecteur_carton
     from axis_os.services.perception.sam2_segmenteur import Sam2Segmenteur
     from axis_os.services.perception.service import PerceptionService
     # Banc seulement (copiés à côté de ce script par copier_code.sh) : le juge
@@ -677,18 +679,15 @@ def main():
                        rotation=Quaternion(w=math.cos(tangage_cam / 2), x=0.0,
                                            y=math.sin(tangage_cam / 2), z=0.0)))
     tree.set(camera_optical_to_link())
-    seuil_det = args.seuil_detecteur if args.seuil_detecteur is not None else (
-        0.06 if args.detecteur == "owlvit" else 0.10)       # 0,06 : seuil de W4
-    detecteur = (Owlv2Detector if args.detecteur == "owlv2" else OwlViTDetector)(
-        threshold=seuil_det)
-    detecteur.load()
+    detecteur, nom_det, seuil_det = detecteur_carton(args.detecteur, args.seuil_detecteur,
+                                                    journal=lambda m: print(m, flush=True))
     segmenteur = None
     if not args.sans_sam2:
         segmenteur = Sam2Segmenteur()
         if not segmenteur.load():
             print(f"  [sam2] {segmenteur.erreur} : points du cadre du détecteur", flush=True)
             segmenteur = None
-    print(f"  perception : {args.detecteur} (seuil {seuil_det:.2f}), "
+    print(f"  perception : {nom_det} (seuil {seuil_det:.2f}), "
           f"{'masque SAM 2.1' if segmenteur else 'sans masque'}", flush=True)
     perception = PerceptionService(cam, tree, detecteur, depth_camera=dep,
                                    segmenteur=segmenteur)
@@ -721,7 +720,9 @@ def main():
     enregistreur = (EnregistreurImages(args.images_perception, cam, dep, pose_optique_os,
                                        cartons_prise) if args.images_perception else None)
     percep_couleur = PerceptionCouleur(perception, cam, sd.COULEURS,
-                                       requetes=("a box", "a cardboard box"))
+                                       requetes=("a box", "a cardboard box"),
+                                       dims=(sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON,
+                                             sd.HAUTEUR_CARTON))
     journal = []
     rec = None
     suivi = None
@@ -1201,10 +1202,16 @@ def main():
                        default=None)
             if reel is not None:
                 pr_ = np.asarray(reel["obj"].get_world_pose()[0], dtype=float)
+                # Vitesse de lacet de la base à cet instant (vérité) : essai
+                # GPU de novembre 2026, les écarts de +2,1 et -3,3 cm venaient
+                # de recherches faites tête encore en rotation, à l'arrivée au
+                # poste de prise.
+                w_ = math.degrees(float(np.asarray(robot.get_angular_velocity())[2]))
                 msg_ = (f"[{t:7.1f}s] PERCEPTION : colis {tri.colis.couleur} perçu en "
                         f"({pp[0]:.3f}, {pp[1]:.3f}, {pp[2]:.3f}), réel {reel['couleur']} en "
                         f"({pr_[0]:.3f}, {pr_[1]:.3f}, {pr_[2]:.3f}) — écart x "
-                        f"{100 * (pp[0] - pr_[0]):+.1f} cm, y {100 * (pp[1] - pr_[1]):+.1f} cm")
+                        f"{100 * (pp[0] - pr_[0]):+.1f} cm, y {100 * (pp[1] - pr_[1]):+.1f} cm, "
+                        f"base en lacet à {w_:+.0f}°/s")
                 journaliser(msg_)
         if etat_prec == "CHERCHER" and tri.etat not in ("CHERCHER", "ATTENDRE") \
                 and suivi is not None:
