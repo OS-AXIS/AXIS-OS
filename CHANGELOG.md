@@ -10,6 +10,42 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Essai GPU de main (T1, 5 novembre 2026, 12 h 50) : prises refusées sur une force fausse
+
+Constat GPU : 5 prises, 0 triée, toutes « serrage insuffisant (-2.9 à
+-3.4 N) » ; juge : 10 contacts manqués, alors que les mains serraient le
+carton à 6 à 9,5 N.
+- Contact : l'OS l'avait vu en géométrie sur les 10 mains ; le juge du banc
+  le perdait (contacts effacés au même pas que l'échec). Il garde désormais
+  chaque contact estimé dès qu'il paraît (`JugeContacts.pas(estimes=…)`).
+- Couples : le banc lisait les efforts imposés aux articulations (nuls en
+  commande de position), l'OS ne recevait que du bruit. La calibration des
+  couples juge s'ils suivent la pesanteur du modèle
+  (`CalibrationCouples.fiabilite`, `ManipulationService.couples_fiables`).
+  S'ils ne la suivent pas, la force à la main ne décide plus ni du contact,
+  ni du serrage, ni de la confirmation au levage : géométrie et retard du
+  roulis (contact), main retenue par l'objet à au moins
+  `ReglagesPrise.retard_serrage_m` de sa consigne et immobile à
+  `glissement_serrage_m` près (serrage). Rien entre les mains : toujours
+  refusé.
+- Arrêt de sécurité qui dure pour la même cause : l'app de tri le signale
+  au bout de `ConfigTri.alerte_meme_cause_s` (20 s), reprises brèves
+  comprises, avec la cause (`FacadeServices.cause_arret` : raison du
+  gardien, de combien le point dépasse le bord de quelle table, carton
+  suivi le plus proche). Banc : un carton dérangé par essai attend 40 s
+  l'opérateur simulé, pour voir l'alerte.
+- Isaac Sim : le pont (`IsaacSimBridge.couples`, `read_feedback`,
+  `read_all_raw`), le backend et le banc T1 lisent l'effort MESURÉ par la
+  physique (`get_measured_joint_efforts`, choisi par
+  `bruit_couples.source_couples`), et non plus les efforts imposés
+  (`get_applied_joint_efforts`, nuls en commande de position) ; la source
+  est dite au démarrage, et le repli sur les imposés aussi. Les
+  vérifications du couple contre les limites de l'URDF faites jusqu'ici
+  dans Isaac Sim (campagne de validation S1.2, garde-fou, plafonds de la
+  prise) lisaient zéro : elles n'ont rien prouvé.
+- Calibration des couples : pente près de -1, le journal suggère un signe
+  inversé.
+
 ### Essai GPU de main (T1, 5 novembre 2026) : carton entier à la pose d'attente
 
 Constat GPU : aucune prise tentée, 0 trié ; à chaque accostage, carton

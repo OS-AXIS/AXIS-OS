@@ -50,6 +50,7 @@ import time
 import threading
 from typing import Optional, Dict, List
 
+from axis_os.hal.drivers.isaac_sim.bruit_couples import source_couples
 from axis_os.hal.drivers.sim_common.interfaces import (
     ISimBackend, SimJointState, SimIMUState, SimCommand
 )
@@ -212,6 +213,10 @@ class IsaacSimBackend(ISimBackend):
         self._world = None
         self._articulation = None
         self._joint_indices: Dict[str, int] = {}
+        # Lecture des couples (bruit_couples.source_couples), choisie à la
+        # connexion : l'effort mesuré par la physique, sinon les imposés.
+        self._lire_couples = None
+        self.source_couples = "couples : pas encore lus (connect() à faire)"
 
     def connect(self) -> bool:
         # Isaac Sim est détecté par l'import de omni.isaac.core ; s'il
@@ -254,6 +259,9 @@ class IsaacSimBackend(ISimBackend):
             self._articulation.initialize()
 
             real_joint_names = list(self._articulation.dof_names)
+            self._lire_couples, self.source_couples = source_couples(
+                self._articulation, len(real_joint_names))
+            print(f"[IsaacBackend] {self.source_couples}")
             self._joint_indices = {}
             missing = []
             for axis_name, isaac_name in self._joint_map.items():
@@ -303,10 +311,10 @@ class IsaacSimBackend(ISimBackend):
         try:
             positions = self._articulation.get_joint_positions()
             velocities = self._articulation.get_joint_velocities()
-            efforts = self._articulation.get_applied_joint_efforts()
+            efforts = self._lire_couples() if self._lire_couples is not None else None
             pos = float(positions[0][idx])
             vel = float(velocities[0][idx])
-            torque = float(efforts[0][idx]) if efforts is not None else 0.0
+            torque = float(efforts[idx]) if efforts is not None else 0.0
             return SimJointState(
                 name=joint_name, position=pos, velocity=vel, torque=torque,
                 temperature=self.STUB_TEMP + abs(torque) * 0.02,

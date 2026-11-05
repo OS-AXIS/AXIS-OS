@@ -1,7 +1,7 @@
 """
 Couples ESTIMÉS, comme le vrai G1 les donne : ses moteurs n'ont pas de
 capteur de couple, le couple est estimé du courant (tau_est). On ajoute au
-couple exact du solveur (get_applied_joint_efforts) les erreurs d'une telle
+couple mesuré par la physique (source_couples) les erreurs d'une telle
 estimation, choisies prudentes (plutôt plus que moins) :
   - gain : constante de couple propre à chaque moteur, ±5 % ;
   - biais : frottement du réducteur et décalage du courant, constant par
@@ -28,3 +28,44 @@ class BruitCouples:
     def __call__(self, efforts) -> np.ndarray:
         e = np.asarray(efforts, dtype=float)
         return e * self._gain + self._biais + self._rng.normal(0.0, self.sigma_nm, e.shape)
+
+
+def source_couples(articulation, n: int):
+    """Lecture des couples des articulations dans Isaac Sim : (fonction qui
+    rend les n couples à plat, ou None ; texte pour le journal).
+
+    L'effort MESURÉ par la physique (get_measured_joint_efforts : la force
+    de l'articulation projetée sur son axe de mouvement), sinon les efforts
+    IMPOSÉS (get_applied_joint_efforts : ceux passés à set_joint_efforts,
+    nuls quand l'articulation est commandée en position). Essai GPU T1 du
+    5 novembre 2026 : on lisait les imposés, l'OS ne recevait que le bruit
+    ajouté ici, et les couples vérifiés contre les limites de l'URDF
+    valaient zéro.
+
+    À appeler l'articulation initialisée (après world.reset()) : on vérifie
+    que la lecture rend n valeurs finies."""
+    raison = "méthode absente de cette version d'Isaac Sim"
+    mesure = getattr(articulation, "get_measured_joint_efforts", None)
+    if mesure is not None:
+        try:
+            v = _a_plat(mesure)()
+        except Exception as e:      # noqa: BLE001 — version ou vue physique : on le dit
+            raison = f"lecture impossible ({type(e).__name__} : {e})"
+        else:
+            if v is not None and v.size == n and np.all(np.isfinite(v)):
+                return _a_plat(mesure), ("couples lus : effort MESURÉ par la physique "
+                                         "(get_measured_joint_efforts)")
+            raison = (f"{0 if v is None else v.size} valeur(s) pour {n} articulations, "
+                      f"ou des valeurs non finies")
+    impose = getattr(articulation, "get_applied_joint_efforts", None)
+    return (_a_plat(impose) if impose is not None else None), (
+        f"couples lus : efforts IMPOSÉS (get_applied_joint_efforts), nuls en commande de "
+        f"position — effort mesuré indisponible : {raison} ; la calibration jugera les "
+        f"couples NON FIABLES")
+
+
+def _a_plat(lire):
+    def couples():
+        v = lire()
+        return None if v is None else np.asarray(v, dtype=float).reshape(-1)
+    return couples

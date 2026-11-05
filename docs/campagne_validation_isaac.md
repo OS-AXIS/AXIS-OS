@@ -47,8 +47,20 @@ moitié du système — le watchdog, `position_delta_max` et `check_feedback_hea
 ont tous besoin du retour physique réel.
 
 Il doit exposer **le couple réellement appliqué** par le solveur physique
-(`applied_joint_efforts` de l'articulation Isaac), pas le couple commandé. C'est
-la seule façon de valider la suite S2, et c'est impossible en test unitaire.
+(`get_measured_joint_efforts` de l'articulation Isaac : la force de
+l'articulation projetée sur son axe), pas le couple commandé. C'est la seule
+façon de valider la suite S2, et c'est impossible en test unitaire.
+
+> **Correction du 5 novembre 2026.** Jusqu'à cette date, le pont, le backend
+> et le banc T1 lisaient `get_applied_joint_efforts` : les efforts passés à
+> `set_joint_efforts`, **nuls quand les articulations sont commandées en
+> position** (le cas de tous les essais). Les vérifications du couple contre
+> les limites de l'URDF (S1.2, le garde-fou, les plafonds de la prise) ont
+> donc lu zéro, plus le bruit d'estimation du banc : **elles n'ont rien
+> prouvé dans Isaac Sim** et sont à refaire. Le pont lit désormais l'effort
+> mesuré (`bruit_couples.source_couples`) et dit au démarrage quelle source
+> il utilise (`[bridge] couples lus : …`) ; si l'effort mesuré manque, il
+> retombe sur les efforts imposés et le dit.
 
 Il doit gérer le réimport propre du USD. Ton blocage `is_homogeneous` vient d'un
 `.usd` déjà présent sur disque : supprime-le systématiquement avant import, dans
@@ -71,7 +83,9 @@ pas seulement en unitaire.
 *Critère :* 115/115 rejetées, et le joint ne bouge pas dans Isaac.
 
 **S1.2 — Couple réellement appliqué.** Pour chaque joint, une consigne de
-position légale mais éloignée, et tu relèves le couple appliqué par le solveur.
+position légale mais éloignée, et tu relèves le couple appliqué par le solveur
+(l'effort mesuré : vérifier d'abord, au démarrage, la ligne `couples lus :
+effort MESURÉ`).
 *Critère :* jamais au-dessus de l'`effort` de l'URDF, sur les 23 joints. C'est le
 test que `position_delta_max` est censé garantir — il n'a jamais été vérifié
 contre une vraie physique.

@@ -161,11 +161,13 @@ check("Biais trouvés à 0.05 N·m près, pour chacune des 12 articulations mesu
       f"{ {j: round(e, 3) for j, e in ecarts.items()} }")
 check("Résidu faible (le modèle explique le reste) : moins de 0.05 N·m",
       m.stats["residu_couples_nm"] < 0.05, str(m.stats["residu_couples_nm"]))
-check("Journal : biais trouvés et résidu, une ligne par articulation",
+check("Journal : biais trouvés et résidu, une ligne par articulation, puis le verdict (les "
+      "couples suivent la pesanteur : fiables)",
       journal and journal[0].startswith("calibration des couples (4 postures)")
-      and "résidu max" in journal[0] and len(journal) == 13
-      and any("right_elbow_joint" in l and "biais -1.0" in l for l in journal),
-      "\n".join(journal[:3]))
+      and "résidu max" in journal[0] and len(journal) == 14
+      and any("right_elbow_joint" in l and "biais -1.0" in l for l in journal)
+      and journal[-1].startswith("couples estimés fiables"),
+      "\n".join(journal[:3] + journal[-1:]))
 m = prendre(r)
 check("Après calibration : plus de fausse alarme, la prise tient",
       m.etat is Etat.TENU, m.raison)

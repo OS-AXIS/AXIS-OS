@@ -64,6 +64,11 @@ class JugeContacts:
       vrai contact   : estimé, et réel au plus tard `tolerance_s` après ;
       faux contact   : estimé sans contact réel à ce moment-là ;
       contact manqué : réel, jamais estimé pendant la fermeture.
+    Les contacts estimés sont gardés dès qu'ils paraissent (pas(estimes=…)) :
+    l'app réinitialise la prise dans le pas même de son échec, et ses
+    estimations avec. Constaté sur GPU (essai T1 du 5 novembre 2026) : 10
+    « contacts manqués » sur 10 mains, toutes estimées en fait (recalage au
+    toucher et serrage à chaque essai), effacées avant que le juge les lise.
     """
 
     def __init__(self, lire: Callable[[str], Optional[float]], seuil_n: float = 2.0,
@@ -74,11 +79,13 @@ class JugeContacts:
         self.compteurs = {"contacts_vrais": 0, "contacts_manques": 0, "faux_contacts": 0}
         self.disponible = True
         self.reel: Dict[str, Optional[Dict[str, float]]] = {"left": None, "right": None}
+        self.estimes: Dict[str, Optional[Dict]] = {"left": None, "right": None}
         self.lacets: Dict[str, float] = {}
         self.en_cours = False
 
     def debut(self) -> None:
         self.reel = {"left": None, "right": None}
+        self.estimes = {"left": None, "right": None}
         self.lacets = {}
         self.en_cours = True
 
@@ -87,8 +94,17 @@ class JugeContacts:
         if self.en_cours and lacet_deg is not None and phase not in self.lacets:
             self.lacets[phase] = float(lacet_deg)
 
-    def pas(self, t: float, fermeture: bool = True) -> None:
-        if not self.en_cours or not fermeture:
+    def pas(self, t: float, fermeture: bool = True,
+            estimes: Optional[Dict[str, Optional[Dict]]] = None) -> None:
+        """Un pas : `estimes`, les contacts estimés par l'OS à cet instant
+        (gardés dès qu'ils paraissent) ; contacts réels relevés pendant la
+        fermeture."""
+        if not self.en_cours:
+            return
+        for cote, e in (estimes or {}).items():
+            if e is not None and self.estimes.get(cote) is None:
+                self.estimes[cote] = dict(e)
+        if not fermeture:
             return
         for cote in ("left", "right"):
             f = self._lire(cote)
@@ -103,7 +119,7 @@ class JugeContacts:
         self.en_cours = False
         lignes = []
         for cote, nom in (("left", "G"), ("right", "D")):
-            e, r = estimes.get(cote), self.reel.get(cote)
+            e, r = self.estimes.get(cote) or estimes.get(cote), self.reel.get(cote)
             if e is not None and r is not None and r["t"] <= e["t"] + self.tolerance_s:
                 verdict = "vrai contact"
                 self.compteurs["contacts_vrais"] += 1
