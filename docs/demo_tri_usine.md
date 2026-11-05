@@ -499,10 +499,11 @@ l'arrêt », et des attentes de sécurité sans raison.
 
 - **Pose d'attente** : elle était à 0,28 m fixe derrière la pose de prise ;
   le carton proche y remplissait le bas de l'image et en sortait (son arête
-  avant basse 58° sous l'horizontale, le bord de l'image à 38,6°). Elle est
+  avant basse 52° sous l'horizontale, le bord de l'image à 38,6°). Elle est
   désormais calculée : la plus proche d'où les 8 coins du carton tombent
   dans l'image, à 5 % du bord, d'après la caméra (paramètres, montage),
-  la hauteur de la base et le carton. Sur la scène T1 : 0,49 m. Au journal,
+  la hauteur de la base et le carton : 0,49 m sur la scène T1 (banc
+  synthétique de `test/test_cadrage_attente.py`). Au journal,
   « pose d'attente à … m de la pose de prise : carton entier dans l'image ».
 - **Fantômes** : plus de seuil en part d'image (25 %, qui écartait le carton
   proche). Écartée : une détection dont le cadre touche les quatre bords de

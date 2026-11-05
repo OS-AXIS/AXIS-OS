@@ -121,7 +121,7 @@ class ConfigFacade:
     # essai GPU de main (novembre 2026), à 0.28 m fixe, le carton proche
     # remplissait le bas de l'image et en sortait (sur le banc T1, caméra à
     # 0.40 m au-dessus du bassin, 15° vers le bas, champ vertical de 47° :
-    # l'arête avant du bas du carton passait 58° sous l'horizontale, le bord
+    # l'arête avant du bas du carton passait 52° sous l'horizontale, le bord
     # de l'image à 38.6°) ; la prise n'a jamais été tentée. 5 % de marge
     # (32 pixels sur 640, environ 3°) : la tolérance de cap de l'accostage
     # (`tol_cap`, 2.3°) et un peu de balancement du buste. Sans modèle de
