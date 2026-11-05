@@ -30,7 +30,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -379,6 +379,14 @@ class SimulatedRobot:
                        que le temps réel (2 : un essai de 20 s en dure 10).
                        Tout ce qui mesure le temps du robot (services, apps
                        par ctx.now() et ctx.sleep()) suit cette horloge.
+    horloge          : l'horloge du robot (secondes), à la place de l'heure
+                       réelle (et de time_scale). Avec start(fil=False), le
+                       test fait lui-même chaque pas de la boucle (pas()) sur
+                       cette horloge simulée, et lit l'état entre deux pas :
+                       rien ne dépend plus de la charge de la machine, et
+                       aucune lecture ne tombe au milieu d'un pas (un bras
+                       simulé reçoit sa consigne, puis sa position physique,
+                       affaissement compris, dans le même pas).
     """
 
     PEOPLE_EVERY = 5
@@ -413,8 +421,11 @@ class SimulatedRobot:
                  max_twist: Twist = Twist(0.4, 0.2, 0.8), people=(),
                  speech: bool = False, seed: int = 0, time_scale: float = 1.0,
                  site_map: Optional[SiteMap] = None, battery_drain_per_s: float = 0.0,
-                 battery_drain_per_m: float = 0.0, charge_per_s: float = 1.0):
-        if time_scale == 1.0:
+                 battery_drain_per_m: float = 0.0, charge_per_s: float = 1.0,
+                 horloge: Optional[Callable[[], float]] = None):
+        if horloge is not None:
+            self.clock = horloge
+        elif time_scale == 1.0:
             self.clock = time.monotonic
         else:
             t0 = time.monotonic()
@@ -440,7 +451,7 @@ class SimulatedRobot:
         # Instant de la mesure lidar : le début du pas en cours, toujours
         # antérieur à l'instant où le gardien l'évalue (un horodatage pris
         # après lui paraîtrait venir du futur et arrêterait le robot).
-        self._t_mesure = self.clock()
+        self._t_mesure = self._t_prec = self.clock()
         self.adapter = _BaseGlissante(self, self._dt, max_twist)
         self.guard = (GardienProximite(self._scan, self._pose_xyc,
                                        obstacles=self.carte.obstacles, horloge=self.clock)
@@ -570,8 +581,9 @@ class SimulatedRobot:
 
     # ---- cycle de vie ----------------------------------------------------
 
-    def start(self) -> "SimulatedRobot":
-        """Démarre les services et la boucle qui les cadence."""
+    def start(self, fil: bool = True) -> "SimulatedRobot":
+        """Démarre les services et la boucle qui les cadence ; fil=False :
+        sans la boucle, le test fait lui-même les pas (pas(), voir horloge)."""
         self.locomotion.start()
         self.navigation.start()
         if self.manipulation is not None:
@@ -582,8 +594,10 @@ class SimulatedRobot:
         if self.speech is not None:
             self.speech.start()
         self._arret.clear()
-        self._fil = threading.Thread(target=self._boucle, daemon=True, name="robot-simule")
-        self._fil.start()
+        self._t_prec = self.clock()
+        if fil:
+            self._fil = threading.Thread(target=self._boucle, daemon=True, name="robot-simule")
+            self._fil.start()
         return self
 
     def stop(self) -> None:
@@ -625,31 +639,34 @@ class SimulatedRobot:
         personnes (à 10 Hz), suivi, navigation, locomotion, manipulation,
         puis l'objet porté suit les mains. Une exception d'un service est
         notée dans `errors`, sans arrêter la boucle."""
-        t_prec = self.clock()
         while not self._arret.is_set():
             t0 = time.monotonic()
-            self._t_mesure = self.clock()
-            for p in list(self.people):
-                p._avancer(self._t_mesure - t_prec)
-            t_prec = self._t_mesure
-            self._batterie(self._t_mesure)
-            services = [self.health, self.follow_service, self.navigation, self.locomotion,
-                        self.manipulation]
-            if self.ticks % self.PEOPLE_EVERY == 0:
-                services.insert(0, self.people_service)
-            for service in services:
-                if service is None:
-                    continue
-                try:
-                    service.tick()
-                except Exception as exc:        # noqa: BLE001 — noté pour le test
-                    if len(self.errors) < 100:
-                        self.errors.append(f"{service.service_id} : {exc!r}"[:300])
-            if self.manipulation is not None:
-                self._contact()
-            self._porter()
-            self.ticks += 1
+            self.pas()
             self._arret.wait(max(0.0, self._dt / self._echelle - (time.monotonic() - t0)))
+
+    def pas(self) -> None:
+        """Un pas de la boucle du robot, à l'instant de son horloge."""
+        self._t_mesure = self.clock()
+        for p in list(self.people):
+            p._avancer(self._t_mesure - self._t_prec)
+        self._t_prec = self._t_mesure
+        self._batterie(self._t_mesure)
+        services = [self.health, self.follow_service, self.navigation, self.locomotion,
+                    self.manipulation]
+        if self.ticks % self.PEOPLE_EVERY == 0:
+            services.insert(0, self.people_service)
+        for service in services:
+            if service is None:
+                continue
+            try:
+                service.tick()
+            except Exception as exc:        # noqa: BLE001 — noté pour le test
+                if len(self.errors) < 100:
+                    self.errors.append(f"{service.service_id} : {exc!r}"[:300])
+        if self.manipulation is not None:
+            self._contact()
+        self._porter()
+        self.ticks += 1
 
     # ---- base, capteurs et mains simulés ----------------------------------
 

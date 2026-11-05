@@ -9,9 +9,17 @@ atteint la borne q_vide, calculée pour des bras à la hauteur visée.
 
 Robot simulé léger (axis_os.testing) : `affaissement_rad` ajoute au
 tangage d'épaule mesuré un écart à sa consigne (main plus basse).
+
+Horloge simulée : le test fait lui-même chaque pas du robot (r.pas()) et lit
+les mains entre deux pas. Constat (CI de la PR 26, puis 1 fois sur 3 sur main
+sous charge) : « mains à 3,2 cm de la mi-hauteur à la fermeture » alors que
+la prise, elle, avait décidé de fermer mains à 0,1 cm. Le test lisait les
+mains depuis son propre fil pendant que celui du robot simulé écrivait un
+pas : entre la consigne du bras et sa position physique (affaissement
+compris), le tangage mesuré valait la consigne, mains 3,2 cm trop haut. La
+prise lit ses mesures dans le fil du robot, jamais au milieu d'un pas.
 """
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -37,27 +45,35 @@ def section(t):
     print(f"\n{'=' * 66}\n  {t}\n{'=' * 66}")
 
 
-def prise(affaissement, objets=True, reglages=None, duree=15.0):
-    """Lance une prise ; rend (robot, états vus, mains à l'entrée en
-    FERMETURE, roulis gauche le plus fermé commandé)."""
+def prise(affaissement, objets=True, reglages=None, duree=30.0, pas_s=None):
+    """Lance une prise sur une horloge simulée (le test fait chaque pas du
+    robot, `duree` secondes du robot au plus ; `pas_s()` : durée de chaque
+    pas, par défaut celle de la boucle du robot) ; rend (robot, états vus,
+    mains à l'entrée en FERMETURE, roulis gauche le plus fermé commandé)."""
+    horloge = [0.0]
     r = SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))] if objets else [],
-                       time_scale=2.0)
-    r.__enter__()
+                       horloge=lambda: horloge[0])
+    r.start(fil=False)
     r.affaissement_rad = affaissement
     m = r.manipulation
     if reglages is not None:
         m.r = reglages
-    time.sleep(0.2)
+
+    def pas():
+        horloge[0] += r._dt if pas_s is None else pas_s()
+        r.pas()
+
+    for _ in range(20):                    # 0,4 s du robot avant la prise
+        pas()
     m.prendre(CARTON)
     etats, mains, roulis = [], None, []
-    t0 = time.monotonic()
-    while m.etat not in (Etat.TENU, Etat.ECHEC) and time.monotonic() - t0 < duree:
+    while m.etat not in (Etat.TENU, Etat.ECHEC) and horloge[0] < duree:
         if not etats or etats[-1] is not m.etat:
             etats.append(m.etat)
         if m.etat is Etat.FERMETURE and mains is None:
             mains = m._mains_bassin()
         roulis.append(m._q["left_shoulder_roll_joint"])
-        time.sleep(0.005)
+        pas()
     etats.append(m.etat)
     return r, etats, mains, min(roulis) if roulis else None
 
@@ -106,7 +122,24 @@ for aff in (0.11, 0.25):
     check("… sans consigne refusée par le garde-fou", r.locomotion.stats["refused"] == 0)
     r.__exit__(None, None, None)
 
-section("4. Compensation bornée")
+section("4. Pas irréguliers, comme sur une machine chargée")
+# La prise suit son horloge : chaque pas dure ici de 20 à 100 ms (un robot
+# dont la boucle de commande prend du retard), au hasard mais à graine fixe.
+import random  # noqa: E402
+
+for aff in (0.11, 0.25):
+    alea = random.Random(7)
+    r, etats, mains, _ = prise(aff, pas_s=lambda: alea.uniform(0.02, 0.10))
+    m = r.manipulation
+    ecart = None if mains is None else max(abs(mains[0][2] - Z_CIBLE), abs(mains[1][2] - Z_CIBLE))
+    check(f"Affaissement de {aff} rad, pas de 20 à 100 ms : mains à "
+          f"{100 * (ecart if ecart is not None else 0):.1f} cm de la mi-hauteur à la fermeture "
+          f"(1,5 au plus), et la prise tient", ecart is not None and ecart <= R.tol_hauteur_m
+          and m.etat is Etat.TENU, f"{mains} {m.raison}")
+    check("… sans consigne refusée par le garde-fou", r.locomotion.stats["refused"] == 0)
+    r.__exit__(None, None, None)
+
+section("5. Compensation bornée")
 r, etats, mains, _ = prise(0.30)
 m = r.manipulation
 check("Affaissement de plus de 10 cm : refus clair, avant toute fermeture",
