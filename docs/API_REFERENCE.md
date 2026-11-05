@@ -855,7 +855,8 @@ with AppTestHarness(MyApp(), objects=[SimulatedObject("red box", (1.2, 0.0, 0.9)
 - `SimulatedRobot(carte=None, start=(0, 0, 0), proximity_guard=True,
   manipulation=True, objects=(), battery_percent=None, grasp_succeeds=True,
   people=(), speech=False, seed=0, time_scale=1.0, site_map=None,
-  battery_drain_per_s=0.0, battery_drain_per_m=0.0, charge_per_s=1.0)` —
+  battery_drain_per_s=0.0, battery_drain_per_m=0.0, charge_per_s=1.0,
+  horloge=None)` —
   the battery drains and recharges within 0.3 m of the site map's charging
   station (no real docking); `set_motor_temperature(joint, celsius)` sets
   what a motor's simulated sensor measures; `notification_sink.delivered`,
@@ -865,7 +866,11 @@ with AppTestHarness(MyApp(), objects=[SimulatedObject("red box", (1.2, 0.0, 0.9)
   guard and the simulated camera), `clear_people()`, `hear(text,
   after_s=0)` (with `speech=True`), `set_battery(percent)`, `fall()`,
   `pose`, `voice.spoken`, `make_runtime(**kw)`. `time_scale=2` runs robot
-  time twice as fast as real time.
+  time twice as fast as real time. `horloge` (a callable returning seconds)
+  replaces the robot clock; with `start(fil=False)` no loop thread runs and
+  the test calls `pas()` for each step of the robot loop, reading state
+  between steps: deterministic under load, and no read lands in the middle
+  of a step.
 - `SimulatedPerson(x, y, *, torso, legs)` — `.walk_to(x, y, speed_mps)`,
   `.wait(seconds)` (chainable). Hidden from the camera by map obstacles and
   by nearer people.
