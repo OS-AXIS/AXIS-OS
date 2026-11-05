@@ -442,9 +442,13 @@ de T1, carton pris à 0,34 m, approche de 1,20 à 0,85 m ;
 | Profondeur bruitée (0,5 % de la distance) | 0,59 cm | 0,09° |
 | Sans masque, cadre débordant sur les mains | résidu 72 cm : refusé | — |
 
-**Détecteur** : OWL-ViT reste celui par défaut (validé, seuil 0,06) ;
-`--detecteur owlv2` prend OWLv2 (seuil 0,10 par défaut, à régler). Pour
-garder le meilleur des deux : lancer T1 avec `--images-perception DOSSIER`
+**Détecteur** : OWLv2, seuil 0,10, par défaut ; OWL-ViT (seuil 0,06) en
+repli s'il ne se charge pas, ce que dit le journal (`detecteur_carton`,
+`owlvit_detector.py`). Verdict du banc sur les images de l'essai GPU du
+5 novembre 2026 : OWLv2 voit 30 cartons sur 30 au seuil 0,10 avec 47 fausses
+détections, OWL-ViT 30 sur 30 au seuil 0,06 avec 66. `--detecteur owlvit`
+inverse la préférence. Pour comparer de nouveau : lancer T1 avec
+`--images-perception DOSSIER`
 (une image par seconde de recherche, avec la vérité de la simulation),
 puis, dans le conteneur :
 `/isaac-sim/python.sh /isaac-sim/axis_os/banc_perception.py DOSSIER`. Par
@@ -484,6 +488,48 @@ comparaison des deux détecteurs sur les images enregistrées ; « force absolue
 à la main avant de fermer » à chaque prise (seuil provisoire de 3 N, à régler),
 et que l'ouverture de 5 cm passe la portée et la garde de l'avant-bras
 au-dessus du plateau de T1.
+
+## Essai GPU du 5 novembre 2026 : aucune prise tentée, ce qui a changé
+
+Bon : boîte ajustée par masque SAM 2.1, centre à 0,4 cm (90 % sous 1 cm),
+lacet 0,0°, aucune refusée sur 30 ; calibration des couples (biais de
+tangage d'épaule +3,75 et +3,53 N·m, résidu max 0,81 N·m). Mais aucune
+prise : à chaque accostage, « carton pas revu de façon cohérente après
+l'arrêt », et des attentes de sécurité sans raison.
+
+- **Pose d'attente** : elle était à 0,28 m fixe derrière la pose de prise ;
+  le carton proche y remplissait le bas de l'image et en sortait (son arête
+  avant basse 52° sous l'horizontale, le bord de l'image à 38,6°). Elle est
+  désormais calculée : la plus proche d'où les 8 coins du carton tombent
+  dans l'image, à 5 % du bord, d'après la caméra (paramètres, montage),
+  la hauteur de la base et le carton : 0,49 m sur la scène T1 (banc
+  synthétique de `test/test_cadrage_attente.py`). Au journal,
+  « pose d'attente à … m de la pose de prise : carton entier dans l'image ».
+- **Fantômes** : plus de seuil en part d'image (25 %, qui écartait le carton
+  proche). Écartée : une détection dont le cadre touche les quatre bords de
+  l'image, ou dont la taille métrique (masque et profondeur) ne peut pas
+  être celle d'un carton.
+- **Raisons** : chaque image d'observation écartée l'est avec sa raison
+  exacte (« n°<images> : détection <confiance> (<part> % de l'image, coupée
+  par le bord bas) <raison> »), et non plus « carton pas vu ».
+- **Bande morte** : GR00T WBC déclare la sienne, 0,05 (son seuil de
+  politique d'équilibre) ; près du carton, une consigne au plancher (0,06)
+  ralentie à ×0,95 part telle quelle, le robot avance encore.
+- **Écarts x de +2,1 et −3,3 cm** (recherches de 41,0 et 119,9 s, avant les
+  2ᵉ et 5ᵉ accostages, cartons rouges de gauche puis de droite) : erreurs de
+  direction (1,2° et 1,9° à 1 m), pas de position du carton, que la visée,
+  robot arrêté, corrige au millimètre (« correction latérale +2,2 » et
+  « −3,4 cm »). Ni la fusion (une seule image par recherche), ni le masque
+  (le même, robot arrêté, donne 0,4 cm). Hypothèse la plus probable, pas
+  démontrée : la recherche part dès l'arrivée de la navigation, tête encore
+  en rotation (environ 27°/s dans la vue du robot à 41 s), et sur le banc
+  l'image couleur (anticrénelage temporel du rendu) peut retarder d'un rendu
+  sur la profondeur et sur la pose. Remède : arrivé au poste par la seule
+  navigation, la base s'arrête, et la recherche ne part qu'au bout de
+  `duree_visee_s` (0,6 s), le critère de la visée. La ligne PERCEPTION
+  donne la vitesse de lacet de la base, à vérifier au prochain essai ; les
+  images de `--images-perception` diront si le carton était décalé entre
+  couleur et profondeur.
 
 ## Budget GPU
 

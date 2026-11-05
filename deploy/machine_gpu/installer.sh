@@ -281,8 +281,9 @@ dans_root /isaac-sim/python.sh -m pip install -q onnxruntime-gpu "transformers==
 dans /isaac-sim/python.sh -c "import onnxruntime, transformers, imageio; \
 print('Versions : onnxruntime', onnxruntime.__version__, '- transformers', transformers.__version__, \
 '- imageio', imageio.__version__)" || true
-# Pré-télécharge OWL-ViT maintenant (sinon, ce serait au premier test), à la
-# révision épinglée (une version précise du modèle sur Hugging Face) et au
+# Pré-télécharge OWL-ViT maintenant (sinon, ce serait au premier test) :
+# détecteur des autres essais, et repli de l'app de tri si OWLv2 ne se
+# charge pas (detecteur_carton). À la révision épinglée (une version précise du modèle sur Hugging Face) et au
 # format safetensors (un format de poids qui, à la différence de pickle, le
 # format de sérialisation de Python, n'exécute aucun code au chargement) :
 # exactement ce que charge OwlViTDetector (OWLVIT_REVISION dans
@@ -293,9 +294,12 @@ OWLVIT_REVISION="85fa9bec488a03a73b7f29206b1550551d0a7556"
 dans /isaac-sim/python.sh -c "from transformers import OwlViTProcessor, OwlViTForObjectDetection as M; \
 r = '$OWLVIT_REVISION'; OwlViTProcessor.from_pretrained('google/owlvit-base-patch32', revision=r); \
 M.from_pretrained('google/owlvit-base-patch32', revision=r, use_safetensors=True); print('OWL-ViT prêt (révision', r, ')')"
-# Perception du carton, mêmes règles : OWLv2 (Google, Apache-2.0), à comparer
-# à OWL-ViT (sim/validation/banc_perception.py), et SAM 2.1 tiny (Meta,
-# Apache-2.0), le masque du carton dans le cadre du détecteur. Révisions :
+# Perception du carton, mêmes règles : OWLv2 (Google, Apache-2.0), le
+# détecteur des cartons par défaut, au seuil 0,10 (verdict du banc de
+# perception, sim/validation/banc_perception.py, essai GPU de novembre 2026 :
+# 30 cartons sur 30, 47 fausses détections, contre 66 pour OWL-ViT), et
+# SAM 2.1 tiny (Meta, Apache-2.0), le masque du carton dans le cadre du
+# détecteur. Révisions :
 # OWLV2_REVISION et SAM2_REVISION du code, vérifiées par test_deploiement.py.
 OWLV2_REVISION="cfd3195ba4ea9592eec887ded089f4c08eff231d"
 SAM2_REVISION="de431c4043854a71d8101e17995dfe596bf101a5"

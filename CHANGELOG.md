@@ -10,6 +10,33 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Essai GPU de main (T1, 5 novembre 2026) : carton entier à la pose d'attente
+
+Constat GPU : aucune prise tentée, 0 trié ; à chaque accostage, carton
+« pas revu de façon cohérente après l'arrêt », détection « écartée : trop
+grande » ; attentes de sécurité à ×0,99.
+- Pose d'attente calculée (`FacadeServices._recul_attente`) : la plus proche,
+  entre `ConfigFacade.recul_insertion` (0,28) et `recul_attente_max`
+  (0,80 m), d'où les 8 coins du carton tombent dans l'image de la caméra
+  de tête, à `marge_cadrage` (5 %) du bord. Nouveau :
+  `PerceptionService.projeter(points, base=None)` (pixels et profondeur
+  d'après la calibration et l'arbre de repères, pour la pose actuelle ou
+  une pose de base donnée) et `PerceptionService.taille_image`.
+- Fantômes (`PerceptionCouleur`) : `surface_max` (25 % de l'image)
+  remplacé par `dims` (dimensions des cartons) : écartée si le cadre touche
+  les quatre bords, ou si la taille métrique (masque et profondeur,
+  `taille_metrique`) ne peut pas être un carton. Diagnostic par détection :
+  `rejet`, `bords`, `part_image`.
+- Observation : raison exacte de chaque image écartée, au journal.
+- Arrivée à un poste par la seule navigation : phases ARRET puis POSTE,
+  la base s'arrête et `navigation()` ne rend ARRIVE qu'au bout de
+  `duree_visee_s` ; la recherche du carton part donc base immobile.
+- Bande morte déclarée : `GR00TWBCAdapter.bande_morte` (0,05, son seuil de
+  politique d'équilibre), robot simulé léger 0, `G1LocomotionAdapter` None.
+- Détecteur des cartons : `detecteur_carton()` (owlvit_detector.py), OWLv2
+  au seuil 0,10 par défaut, OWL-ViT (0,06) en repli s'il ne se charge pas ;
+  banc T1 : `--detecteur owlv2` par défaut.
+
 ### Essai GPU de main (T1) : carton revu après l'arrêt, biais des couples, prise au milieu
 
 Constat GPU (T1, 240 s, opérateur actif) : 0 trié ; 4 contacts manqués.

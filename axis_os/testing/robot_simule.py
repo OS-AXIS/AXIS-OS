@@ -274,6 +274,12 @@ class _BaseGlissante(ILocomotionAdapter):
     def max_twist(self) -> Twist:
         return self._max
 
+    @property
+    def bande_morte(self) -> float:
+        """Aucune (ILocomotionAdapter.bande_morte) : _avancer() intègre la
+        vitesse demandée, si petite soit-elle."""
+        return 0.0
+
     def reset(self) -> None:
         pass
 

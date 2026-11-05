@@ -467,6 +467,14 @@ class G1LocomotionAdapter:
         m = self._policy.cfg.max_cmd
         return Twist(m[0], m[1], m[2])
 
+    @property
+    def bande_morte(self) -> None:
+        """Non connue (ILocomotionAdapter.bande_morte) : le code de
+        déploiement d'Unitree n'a pas de seuil de consigne (la politique
+        piétine à vitesse nulle), et personne ne l'a mesurée ; l'app de tri
+        garde donc son plancher (0.06 m/s)."""
+        return None
+
     def reset(self) -> None:
         self._policy.reset()
         self._cap_ref = None

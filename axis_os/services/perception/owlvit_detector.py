@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from axis_os.hal.core.types import CameraFrame
 from axis_os.services.perception.service import Detection, IObjectDetector
@@ -421,3 +421,31 @@ class Owlv2Detector(OwlViTDetector):
     def _taille_cible(self, frame: CameraFrame) -> List[int]:
         cote = max(frame.height, frame.width)
         return [cote, cote]
+
+
+# Détecteur des cartons de l'app de tri, et son seuil : OWLv2 à 0,10. Verdict
+# du banc de perception (sim/validation/banc_perception.py, images de l'essai
+# GPU T1 de novembre 2026) : OWLv2 voit 30 cartons sur 30 au seuil 0,10 avec
+# 47 fausses détections, OWL-ViT 30 sur 30 au seuil 0,06 avec 66. OWL-ViT
+# reste le repli, à son seuil validé (0,06), si OWLv2 ne se charge pas.
+DETECTEURS_CARTON = (("owlv2", Owlv2Detector, 0.10), ("owlvit", OwlViTDetector, 0.06))
+
+
+def detecteur_carton(prefere: str = "owlv2", seuil: Optional[float] = None,
+                     journal=print) -> Tuple[OwlViTDetector, str, float]:
+    """Charge le détecteur des cartons : `prefere` (« owlv2 » par défaut),
+    puis l'autre s'il ne se charge pas (poids absents, réseau, mémoire), ce
+    que `journal` dit. `seuil` : celui du détecteur préféré (à défaut, le
+    sien, voir DETECTEURS_CARTON) ; le repli garde le sien. Rend (détecteur,
+    nom, seuil) ; si aucun ne se charge, le dernier essayé, non chargé (sa
+    raison dans stats["load_error"])."""
+    ordre = sorted(DETECTEURS_CARTON, key=lambda d: d[0] != prefere)
+    for i, (nom, cls, seuil_defaut) in enumerate(ordre):
+        s = seuil if (i == 0 and seuil is not None) else seuil_defaut
+        det = cls(threshold=s)
+        if det.load():
+            return det, nom, s
+        if i + 1 < len(ordre):
+            journal(f"  [détecteur] {nom} ne se charge pas ({det.stats['load_error']}) : repli "
+                    f"sur {ordre[i + 1][0]}")
+    return det, nom, s

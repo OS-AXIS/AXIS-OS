@@ -42,6 +42,7 @@ sérieux.
 """
 from __future__ import annotations
 
+import math
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -206,6 +207,7 @@ class PerceptionService(IService):
         self._detections_count = 0
         self._stale_frames = 0
         self.derniere_image_ns: Optional[int] = None   # instant de la dernière image lue
+        self.taille_image: Optional[Tuple[int, int]] = None   # (largeur, hauteur), pixels
         # Points de la face avant retenus pour chaque détection de la
         # dernière recherche ({bbox: tableau N×3, repère de sortie}) : lus
         # par les vues de diagnostic, jamais par une décision.
@@ -328,6 +330,7 @@ class PerceptionService(IService):
         # Instant de l'image analysée : l'app de tri n'accepte, pour prendre
         # un carton, que des images prises après l'arrêt du robot.
         self.derniere_image_ns = frame.timestamp_ns
+        self.taille_image = (frame.width, frame.height)
 
         # Une image trop ancienne décrit une scène qui a pu changer : on
         # refuse de l'analyser plutôt que de rendre des positions
@@ -471,6 +474,42 @@ class PerceptionService(IService):
         self.derniers_points.update(points)
         self.derniers_masques.update(masques)
         return out, warn
+
+    def projeter(self, points, base: Optional[Tuple[float, float, float]] = None):
+        """Où des points du monde (N × 3) tombent dans l'image de la caméra
+        couleur : pixels (u, v), N × 2, et profondeur (m, le long de l'axe
+        optique ; négative derrière la caméra). Vus de la pose actuelle de la
+        caméra, ou, avec base = (x, y, cap), de celle qu'elle aurait la base
+        posée là : même hauteur qu'à présent, à plat, la caméra à son montage
+        (FRAME_BASE -> FRAME_CAMERA_OPTICAL dans l'arbre de repères : cou ou
+        taille compris, s'ils y figurent). Rend (uv, profondeur, (largeur,
+        hauteur)), ou None sans calibration, sans arbre ou avant la première
+        image (sa taille n'est pas encore connue)."""
+        import numpy as np
+        k = self._camera.get_intrinsics()
+        if k is None or self._tree is None or self.taille_image is None:
+            return None
+        if base is None:
+            tf, _ = self._tree.lookup(FRAME_WORLD, FRAME_CAMERA_OPTICAL)
+            if tf is None:
+                return None
+            rot, t = self._pose_camera(tf)
+        else:
+            tf_bo, _ = self._tree.lookup(FRAME_BASE, FRAME_CAMERA_OPTICAL)
+            tf_wb, _ = self._tree.lookup(FRAME_WORLD, FRAME_BASE)
+            if tf_bo is None or tf_wb is None:
+                return None
+            r_bo, t_bo = self._pose_camera(tf_bo)
+            x, y, cap = (float(v) for v in base)
+            c, s_ = math.cos(cap), math.sin(cap)
+            r_wb = np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]])
+            z_base = tf_wb.apply(Vector3(0.0, 0.0, 0.0)).z
+            rot, t = r_wb @ r_bo, np.array([x, y, z_base]) + r_wb @ t_bo
+        p = (np.asarray(points, dtype=float).reshape(-1, 3) - t) @ rot     # repère optique
+        prof = p[:, 2]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            uv = np.stack([k.fx * p[:, 0] / prof + k.cx, k.fy * p[:, 1] / prof + k.cy], axis=1)
+        return uv, prof, self.taille_image
 
     @staticmethod
     def _pose_camera(tf):

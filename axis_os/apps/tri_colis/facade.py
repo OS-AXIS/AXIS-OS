@@ -108,15 +108,28 @@ class ConfigFacade:
     # il ouvre largement les bras, à l'arrêt ; puis il avance lentement
     # (`v_insertion`) pour les glisser autour du carton.
     #
-    # 0.28 et non plus 0.18 : c'est à cette pose, bras ouverts, que le robot
-    # regarde le carton une dernière fois avant de le prendre (voir
-    # « observation » plus bas). Sur le banc T1 (caméra de tête montée à
-    # 0.40 m au-dessus du bassin, 15° vers le bas, champ vertical de 47°),
-    # le bord bas de l'image passe 38.7° sous l'horizontale : à 0.18 m, on
-    # ne voyait que 66 % du dessus du carton et pas sa face avant ; à
-    # 0.28 m, l'arête avant du dessus est à 35°, tout le dessus est vu. À
-    # la pose de prise, le carton est entièrement hors du champ.
+    # C'est à cette pose d'attente, bras ouverts, que le robot regarde le
+    # carton une dernière fois avant de le prendre (voir « observation »
+    # plus bas) : il doit l'y voir en entier. Son recul n'est donc plus fixe
+    # mais calculé (FacadeServices._recul_attente) : le plus petit, entre
+    # `recul_insertion` et `recul_attente_max`, d'où les 8 coins du carton
+    # tombent dans l'image de la caméra de tête, à `marge_cadrage` du bord
+    # (part de la largeur et de la hauteur de l'image). La géométrie est
+    # celle que l'OS connaît : paramètres de la caméra, son montage sur la
+    # base (cou ou taille compris s'ils figurent dans l'arbre de repères),
+    # hauteur de la base, dimensions et position du carton. Pourquoi :
+    # essai GPU de main (novembre 2026), à 0.28 m fixe, le carton proche
+    # remplissait le bas de l'image et en sortait (sur le banc T1, caméra à
+    # 0.40 m au-dessus du bassin, 15° vers le bas, champ vertical de 47° :
+    # l'arête avant du bas du carton passait 52° sous l'horizontale, le bord
+    # de l'image à 38.6°) ; la prise n'a jamais été tentée. 5 % de marge
+    # (32 pixels sur 640, environ 3°) : la tolérance de cap de l'accostage
+    # (`tol_cap`, 2.3°) et un peu de balancement du buste. Sans modèle de
+    # caméra (robot simulé léger) : `recul_insertion`. Une pré-pose plus
+    # proche que la pose d'attente recule jusqu'à elle.
     recul_insertion: float = 0.28
+    recul_attente_max: float = 0.80
+    marge_cadrage: float = 0.05
     v_insertion: float = 0.08
     # Blocage : si le robot pousse sans se rapprocher de la cible d'au moins
     # 1 cm en `delai_blocage_s` (2 s), il est bloqué. Constaté sur GPU :
@@ -144,6 +157,12 @@ class ConfigFacade:
     # est bien plus faible. La correction est bornée par
     # `correction_visee_max_m` : au-delà, ce n'est pas le même carton.
     duree_visee_s: float = 0.6
+    # Même arrêt à l'arrivée à un poste par la seule navigation (le poste de
+    # prise, d'où part la recherche) : la base s'arrête, et navigation() ne
+    # rend ARRIVE qu'au bout de `duree_visee_s`. Pourquoi : essai GPU de main
+    # (novembre 2026), deux recherches lancées dès l'arrivée, tête encore en
+    # rotation, ont situé le carton à 2.1 et 3.3 cm de côté ; la visée, robot
+    # arrêté depuis 0.6 s, les a corrigées au millimètre.
     correction_visee_max_m: float = 0.15
     # Observation après l'arrêt. Constaté sur GPU (essai T1 de main,
     # novembre 2026) : trois fois, le carton avait été déplacé de 3 à 10 cm
@@ -271,8 +290,13 @@ class FacadeServices:
         # Cartons suivis : couleur, nuages fusionnés, dernière boîte ajustée.
         self._suivis: List[dict] = []
         self.derniere_boite: Dict[str, object] = {}
+        # Détections que la dernière recherche a écartées elle-même (sans
+        # position, peu confiantes, hors de la table), par cadre : pourquoi.
+        self.filtrees: Dict[tuple, str] = {}
         # Phase courante de la façade :
         #   NAV             navigation simple vers un poste ;
+        #   ARRET           arrivé au poste : la base s'arrête (duree_visee_s) ;
+        #   POSTE           arrivé et immobile ;
         #   NAV_ACCOSTAGE   navigation vers une pré-pose, suivie d'un
         #                   accostage fin (-> VISEE, FRANCHISSEMENT ou
         #                   ACCOSTAGE) ;
@@ -305,6 +329,9 @@ class FacadeServices:
         # Jusqu'à cet instant, les mains lâchent le carton : pas de recul.
         self._liberation_jusqua = 0.0
         self._colis_vise: Optional[Colis] = None   # colis à revoir de face
+        # Arrêt à faire à l'arrivée de la navigation lancée par _lancer_nav
+        # (voir ConfigFacade.duree_visee_s) ; son début.
+        self._arret_a_faire, self._t_arret = False, 0.0
         # Observation après l'arrêt : en cours (dict), son résultat (le colis
         # revu, seul transmis à la prise), et si la prise l'exige (après un
         # accostage de prise).
@@ -366,13 +393,20 @@ class FacadeServices:
                              now_ns=int(maintenant * 1e9), frame=FRAME_WORLD)
         t_ns = getattr(getattr(self.percep, "perception", self.percep), "derniere_image_ns", None)
         self.instant_image = maintenant if t_ns is None else t_ns / 1e9
+        self.filtrees = {}                         # cadre -> pourquoi la façade l'écarte
         if not r.ok or not r.value:
             return []
         colis: List[Colis] = []
+        cfg = self.cfg
         for d in r.value:
             p = d.position_3d
-            if p is None or d.confidence < self.cfg.confiance_min \
-                    or not (self.cfg.z_min <= p.z <= self.cfg.z_max):
+            pourquoi = ("sans position 3D" if p is None else
+                        f"confiance {d.confidence:.2f} (au moins {cfg.confiance_min:.2f})"
+                        if d.confidence < cfg.confiance_min else
+                        f"à {p.z:.2f} m de haut, hors de la table ({cfg.z_min:.2f} à "
+                        f"{cfg.z_max:.2f})" if not (cfg.z_min <= p.z <= cfg.z_max) else "")
+            if pourquoi:
+                self.filtrees[tuple(int(v) for v in d.bbox)] = pourquoi
                 self.stats["detections_filtrees"] += 1
                 continue
             c = self._centre(p.x, p.y, p.z)
@@ -484,6 +518,7 @@ class FacadeServices:
 
     def _lancer_nav(self) -> Tuple[bool, str]:
         self._phase = "NAV" if self._apres_nav is None else "NAV_ACCOSTAGE"
+        self._arret_a_faire = self._phase == "NAV"
         r = self.nav.aller_vers(self._dest)
         if not r.ok:
             self._phase = "ECHEC"
@@ -524,14 +559,60 @@ class FacadeServices:
         p = self._pose()
         if math.hypot(cible.x - p.x, cible.y - p.y) > 3.0:
             return False, "colis à plus de 3 m : ce n'est pas celui de la table"
-        r0, ri = self.cfg.recul_pre_pose, self.cfg.recul_insertion
+        ri, cadrage = self._recul_attente(colis, cible)
+        r0 = max(self.cfg.recul_pre_pose, ri)
         pre = Pose2D(cible.x - r0 * c, cible.y - r0 * s, self.cap_prise)
         attente = Pose2D(cible.x - ri * c, cible.y - ri * s, self.cap_prise)
         ok, raison = self._partir(pre, attente)
+        if cadrage:
+            self._journal(f"pose d'attente à {ri:.2f} m de la pose de prise : {cadrage}")
         self._insertion = cible
         self._colis_vise = colis
         self._observation_requise, self._realignements = True, 0
         return ok, raison
+
+    def _coins(self, colis: Colis) -> np.ndarray:
+        """Les 8 coins (8 × 3, repère monde) du carton `colis` : sa
+        profondeur selon son lacet s'il a été ajusté (colis.vu), sinon selon
+        le cap de prise."""
+        a = colis.lacet if colis.vu else self.cap_prise
+        c, s = math.cos(a), math.sin(a)
+        p, l, h = self.cfg.profondeur / 2, self.cfg.largeur / 2, self.cfg.hauteur / 2
+        x, y, z = colis.position
+        return np.array([(x + i * p * c - j * l * s, y + i * p * s + j * l * c, z + k * h)
+                         for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)])
+
+    def _recul_attente(self, colis: Colis, cible: Pose2D) -> Tuple[float, str]:
+        """Recul de la pose d'attente en arrière de `cible`, et ce qu'en voit
+        la caméra (texte pour le journal ; "" sans modèle de caméra) : voir
+        ConfigFacade.recul_insertion."""
+        cfg = self.cfg
+        projeter = getattr(getattr(self.percep, "perception", self.percep), "projeter", None)
+        if projeter is None:
+            return cfg.recul_insertion, ""
+        coins = self._coins(colis)
+        c, s = math.cos(cible.cap), math.sin(cible.cap)
+        meilleur = None                    # (marge, recul) le plus favorable
+        for i in range(int(round((cfg.recul_attente_max - cfg.recul_insertion) / 0.01)) + 1):
+            r = cfg.recul_insertion + 0.01 * i
+            vue = projeter(coins, base=(cible.x - r * c, cible.y - r * s, cible.cap))
+            if vue is None:
+                return cfg.recul_insertion, ""
+            uv, prof, (w, h) = vue
+            # Marge du coin le plus près d'un bord, en part de l'image ;
+            # négative s'il en sort (ou s'il est derrière la caméra).
+            marge = float(np.min(np.minimum.reduce([uv[:, 0] / w, (w - 1 - uv[:, 0]) / w,
+                                                     uv[:, 1] / h, (h - 1 - uv[:, 1]) / h])))
+            marge = marge if np.all(prof > 0) else -1.0
+            if meilleur is None or marge > meilleur[0]:
+                meilleur = (marge, r)
+            if marge >= cfg.marge_cadrage:
+                return r, (f"carton entier dans l'image (8 coins, marge {100 * marge:.0f} %, "
+                           f"au moins {100 * cfg.marge_cadrage:.0f})")
+        marge, r = meilleur
+        return r, (f"carton JAMAIS entier dans l'image entre {cfg.recul_insertion:.2f} et "
+                   f"{cfg.recul_attente_max:.2f} m (au mieux, marge {100 * marge:.0f} %, au "
+                   f"moins {100 * cfg.marge_cadrage:.0f}) : vu au mieux")
 
     def _cible_prise(self, centre) -> Tuple[Optional[Pose2D], str]:
         """Pose de prise devant un carton de centre `centre` : sur le cap de
@@ -572,10 +653,14 @@ class FacadeServices:
             return self._etat_accostage
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
+        if ph == "POSTE":
+            return "ARRIVE"
+        if ph == "ARRET":
+            return "EN_ROUTE"
         e = self.nav.etat
         if e is EtatNavigation.ECHEC:
             return "ECHEC"
-        if e is EtatNavigation.ARRIVE and ph == "NAV":
+        if e is EtatNavigation.ARRIVE and ph == "NAV" and not self._arret_a_faire:
             return "ARRIVE"
         # Y compris NAV_ACCOSTAGE arrivé : c'est tick() qui enchaîne sur
         # l'accostage fin.
@@ -615,6 +700,19 @@ class FacadeServices:
                 self._journal(f"transport arrêté : {self.manip.raison}")
             return
         self._penche_signale = False
+        if self._phase == "NAV" and self._arret_a_faire \
+                and self.nav.etat is EtatNavigation.ARRIVE:
+            # Arrivé au poste : la base s'arrête avant que l'on regarde (voir
+            # ConfigFacade.duree_visee_s) ; images neuves pendant ce temps.
+            self._arret_a_faire = False
+            self._phase, self._t_arret, self.veut_percevoir = "ARRET", self._horloge(), True
+        if self._phase == "ARRET":
+            self.loco.halt()
+            if self._horloge() - self._t_arret < self.cfg.duree_visee_s:
+                return
+            self._phase, self.veut_percevoir = "POSTE", False
+            self.stats["arrets_poste"] = self.stats.get("arrets_poste", 0) + 1
+            return
         if self._phase == "NAV_ACCOSTAGE" and self.nav.etat is EtatNavigation.ARRIVE:
             self._cible = self._apres_nav
             self._vmax = self.cfg.v_max
@@ -775,14 +873,14 @@ class FacadeServices:
         o["image_prec"] = t_img
         o["lues"] += 1
         ref = o["images"][-1] if o["images"] else v
-        vus = [c for c in vus if math.dist(c.position[:2], ref.position[:2])
-               < cfg.correction_visee_max_m]
-        if not vus:
-            o["rejets"].append("carton pas vu")
+        proches = [c for c in vus if math.dist(c.position[:2], ref.position[:2])
+                   < cfg.correction_visee_max_m]
+        if not proches:
+            o["rejets"].append((o["lues"], self._pourquoi_pas_vu(v.couleur, ref, vus)))
             return
-        n = min(vus, key=lambda c: math.dist(c.position[:2], ref.position[:2]))
+        n = min(proches, key=lambda c: math.dist(c.position[:2], ref.position[:2]))
         if n.mal_vu:
-            o["rejets"].append(f"mal vu : {n.mal_vu}")
+            o["rejets"].append((o["lues"], f"mal vu : {n.mal_vu}"))
             return
         o["images"] = (o["images"] + [n])[-cfg.images_observation:]
         if len(o["images"]) < cfg.images_observation:
@@ -791,14 +889,66 @@ class FacadeServices:
         if de < cfg.tol_observation_m and dl < cfg.tol_observation_deg:
             self._fin_observation(o["images"], de, dl)
 
+    def _detection_attendue(self, dets: List[dict], position) -> dict:
+        """Parmi les détections d'une image (PerceptionCouleur.diagnostic),
+        celle du carton attendu en `position` : dont le cadre est le plus près
+        de sa projection dans l'image ; sans modèle de caméra, la plus sûre."""
+        projeter = getattr(getattr(self.percep, "perception", self.percep), "projeter", None)
+        vue = projeter(np.asarray([position], dtype=float)) if projeter else None
+        if vue is None or not (vue[1][0] > 0):
+            return dets[0]
+        u, v = vue[0][0]
+
+        def ecart(e):
+            x, y, w, h = e["bbox"]
+            return math.hypot(max(x - u, 0.0, u - x - w), max(y - v, 0.0, v - y - h))
+        return min(dets, key=ecart)
+
+    def _pourquoi_pas_vu(self, couleur: str, ref: Colis, vus: List[Colis]) -> str:
+        """Pourquoi cette image d'observation ne donne pas le carton : la
+        raison exacte, d'après ce que la recherche a vu et écarté."""
+        cfg = self.cfg
+        if vus:
+            loin = min(math.dist(c.position[:2], ref.position[:2]) for c in vus)
+            return (f"carton {couleur} vu à {100 * loin:.0f} cm de l'attendu (au plus "
+                    f"{100 * cfg.correction_visee_max_m:.0f})")
+        dg = getattr(self.percep, "diagnostic", None)
+        if not isinstance(dg, dict):
+            return f"aucune détection {couleur} rendue"
+        dets = dg.get("detections") or []
+        if not dets:
+            raisons = dg.get("raisons") or []
+            return "aucune détection" + (f" ({'; '.join(raisons)})" if raisons else "")
+        e = self._detection_attendue(dets, ref.position)
+        pourquoi = (f"écartée : {e['rejet']}" if e.get("rejet") else
+                    self.filtrees.get(tuple(e["bbox"])) or
+                    (f"couleur lue : {e.get('couleur') or 'pas franche'} ({e.get('mesure', '')})"
+                     if e.get("couleur") != couleur else "non retenue"))
+        cadre = f"{100 * e.get('part_image', 0.0):.0f} % de l'image"
+        if 0 < len(e.get("bords") or ()) < 4:
+            cadre += f", coupée par le bord {', '.join(e['bords'])}"
+        return f"détection {e['confiance']:.2f} ({cadre}) {pourquoi}"
+
+    @staticmethod
+    def _regrouper(rejets: List[Tuple[int, str]]) -> str:
+        """« n°1–30 : raison ; n°31 : autre » : les raisons, image par image,
+        les images consécutives de même raison regroupées."""
+        groupes: List[list] = []
+        for i, r in rejets:
+            if groupes and groupes[-1][2] == r and groupes[-1][1] == i - 1:
+                groupes[-1][1] = i
+            else:
+                groupes.append([i, i, r])
+        return "; ".join(f"n°{a}{f'–{b}' if b != a else ''} : {r}" for a, b, r in groupes)
+
     def _echec_observation(self) -> None:
         o, v = self._obs, self._colis_vise
         de, dl = self._dispersion(o["images"]) if len(o["images"]) > 1 else (0.0, 0.0)
-        rejets = sorted(set(o["rejets"]))
         self._journal(f"carton {v.couleur} pas revu de façon cohérente après l'arrêt en "
                       f"{self.cfg.observation_max_s:.0f} s : {o['lues']} image(s) neuve(s), "
                       f"{len(o['images'])} retenue(s) (écart max {100 * de:.1f} cm, {dl:.1f}°)"
-                      + (f", rejets : {'; '.join(rejets)}" if rejets else "")
+                      + (f", images écartées : {self._regrouper(o['rejets'])}" if o["rejets"]
+                         else "")
                       + " — pas de prise, nouvel accostage")
         self.stats["observations_ratees"] = self.stats.get("observations_ratees", 0) + 1
         self._obs, self.veut_percevoir = None, False
@@ -810,6 +960,9 @@ class FacadeServices:
         la cible suit, et s'il a trop bougé, le robot se réaligne."""
         cfg, v = self.cfg, self._colis_vise
         n = len(images)
+        if self._obs["rejets"]:
+            self._journal(f"carton {v.couleur} revu après l'arrêt, images écartées en chemin : "
+                          f"{self._regrouper(self._obs['rejets'])}")
         centre = tuple(float(np.mean([c.position[k] for c in images])) for k in range(3))
         l0 = images[0].lacet
         lacet = l0 + float(np.mean([self._demi_tour(c.lacet - l0) for c in images]))
@@ -845,7 +998,7 @@ class FacadeServices:
             # puis le regarder de nouveau.
             self._realignements += 1
             c, s = math.cos(self.cap_prise), math.sin(self.cap_prise)
-            ri = cfg.recul_insertion
+            ri, _ = self._recul_attente(obs, cible)
             self._cible = Pose2D(cible.x - ri * c, cible.y - ri * s, self.cap_prise)
             self._phase, self._vmax = "ACCOSTAGE", cfg.v_insertion
             self._t_accostage = self._horloge()
@@ -1085,7 +1238,7 @@ class FacadeServices:
         au_contact : l'autre pilote a laissé le robot contre une table ; la
         prochaine sortie commencera par un recul, comme après un accostage."""
         self.nav.annuler()
-        self._phase, self._etat_accostage = "NAV", "ARRIVE"
+        self._phase, self._etat_accostage, self._arret_a_faire = "NAV", "ARRIVE", False
         self._apres_nav, self._insertion, self._colis_vise = None, None, None
         self._obs, self._observe, self._observation_requise = None, None, False
         self.veut_percevoir = False

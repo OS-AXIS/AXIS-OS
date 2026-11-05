@@ -406,6 +406,16 @@ class GR00TWBCAdapter:
         m = self._policy.cfg.max_cmd
         return Twist(m[0], m[1], m[2])
 
+    @property
+    def bande_morte(self) -> float:
+        """ILocomotionAdapter.bande_morte : seuil_equilibre (0.05). Sous
+        cette norme de consigne, step() fait tourner la politique
+        d'équilibre, comme le code de déploiement de NVIDIA : le robot tient
+        debout et n'avance plus. Constaté sur GPU (docs/
+        validation_port_carton.md) : 2 à 3 cm/s ne le font pas bouger. Au
+        même seuil sur le vrai G1 : c'est la même politique."""
+        return self._policy.cfg.seuil_equilibre
+
     def reset(self) -> None:
         """Réinitialise la politique, donc son historique (piège 2)."""
         self._policy.reset()
