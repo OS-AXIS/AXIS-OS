@@ -10,6 +10,33 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Essai GPU de main (T1, 5 novembre 2026, 21 h 57) : prise parfaite, glissement au port
+
+Constat GPU : prise parfaite, puis le carton glisse au port ; l'OS le voit
+(« ne pèse plus sur les mains »), arrêt propre. Rejoué dans
+`test_rejeu_port_t2157.py` : 6,3 N par main pour 10,9 N de poids (marge de
+frottement 0,9), consigne droite desserrée de 5 mm par le plafond du
+poignet sans jamais être rendue, traction de 3 N vers un torse hors
+d'atteinte ; les mains ne s'écartent pas, la marche balance mains et carton.
+- Serrage d'après le poids (`ReglagesPrise.securite_serrage`,
+  `frottement_serrage`, `marge_serrage_n`, `penetration_poids_max_m`,
+  `duree_serrage_poids_max_s`, `cede_max_m`) : requis
+  `securite × poids / (2 μ)`, atteint en haut du levage avant de ramener,
+  plafonds de couple inchangés ; sinon le carton est reposé, « trop lourd
+  pour ces mains ».
+- Ramener : torse hors d'atteinte, rapproché en position, sans arrêt sur un
+  effort vers le robot.
+- Port (`ecart_face_port_m`, `duree_resserrage_s`) : consigne desserrée par
+  un plafond rendue dès que possible ; mains écartées ou marge de frottement
+  sous le coefficient : base arrêtée, resserrage, sinon à reposer
+  (`marge_frottement`, `serrage_requis`, `serrage_vise` lisibles sur le
+  service).
+- `test_contact_geometrique.py` : la borne de 2 cm dans la vraie face vaut
+  du toucher au levage ; au-delà, celle du serrage d'après le poids (6 cm).
+- À savoir : sur les données de cet essai, le serrage requis (13,9 N par
+  main) demanderait aux poignets plus que leur plafond : le prochain essai
+  devrait reposer ce carton, « trop lourd pour ces mains ».
+
 ### Essai GPU de main (T1, 5 novembre 2026, 16 h 06) : carton levé, il pivote et tombe
 
 Constat GPU : couples mesurés et fiables, contact vu par la force, serrage,

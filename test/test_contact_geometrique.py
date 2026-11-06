@@ -134,8 +134,9 @@ def penetrations(r):
     (consigne plus son décalage mesuré avant le contact), entre dans la VRAIE
     face du carton (vérité de la simulation, repère du robot, lacet nul).
     Rend {"fermeture": pire avant le toucher, "toucher": pire du toucher au
-    port (m), toutes mains}."""
-    m, pire = r.manipulation, {"fermeture": -1.0, "toucher": -1.0}
+    serrage d'après le poids (la prise confirmée en haut du levage), "port":
+    pire de ce serrage au port (m), toutes mains}."""
+    m, pire = r.manipulation, {"fermeture": -1.0, "toucher": -1.0, "port": -1.0}
     ecrire = m._ecrire_q
     phases = {Etat.FERMETURE: "fermeture", Etat.SERRAGE: "toucher", Etat.LEVAGE: "toucher",
               Etat.RAMENER: "toucher", Etat.TENU: "toucher"}
@@ -143,6 +144,9 @@ def penetrations(r):
     def releve(q):
         ecrire(q)
         phase = phases.get(m.etat)
+        if phase == "toucher" and (m.etat is not Etat.SERRAGE and m.etat is not Etat.LEVAGE
+                                   or m._t_attente_serrage is not None):
+            phase = "port"
         if phase is not None:
             g, d = r.modele_bras.mains({**m._fixes, **m._q})
             c, demi = r.objects[0].position, r.objects[0].size[0] / 2.0
@@ -233,8 +237,10 @@ check("… le centre de la prise suit, 2 mm près (milieu des faces mesurées), 
       and abs(float(m._plan["centre"][1]) - float(rec["avant"][1]) - 0.02) <= 0.002
       and m.etat is Etat.TENU, f"{rec} {m.raison}")
 check(f"… bornes du serrage depuis les faces mesurées : au plus {100 * pire['toucher']:.2f} cm "
-      f"dans la vraie face, du toucher au port", pire["toucher"] <= m.r.penetration_max_m + COMPRESSION_M,
-      str(pire))
+      f"dans la vraie face, du toucher au levage ; {100 * pire['port']:.2f} cm du serrage "
+      f"d'après le poids au port (au plus {100 * m.r.penetration_poids_max_m:.0f})",
+      pire["toucher"] <= m.r.penetration_max_m + COMPRESSION_M
+      and pire["port"] <= m.r.penetration_poids_max_m + COMPRESSION_M, str(pire))
 r.__exit__(None, None, None)
 r = robot(y=0.02, cedent=False)
 etats = prendre(r, CARTON, ReglagesPrise(recalage_max_m=0.01))
@@ -296,9 +302,11 @@ for dy in (0.03, -0.03):
     check(f"Décalé de {100 * dy:+.0f} cm : aucune main ne touche le carton avant de fermer "
           f"(au plus {max(au_repos, default=-1.0):.1f} N réels au repos), au plus "
           f"{100 * pire['fermeture']:.2f} cm dans la vraie face à la fermeture, "
-          f"{100 * pire['toucher']:.2f} cm du toucher au port ; la prise tient",
+          f"{100 * pire['toucher']:.2f} cm du toucher au levage, {100 * pire['port']:.2f} "
+          f"du serrage d'après le poids au port ; la prise tient",
           au_repos and max(au_repos) == 0.0 and m.etat is Etat.TENU
-          and max(pire.values()) <= m.r.penetration_max_m + COMPRESSION_M,
+          and max(pire["fermeture"], pire["toucher"]) <= m.r.penetration_max_m + COMPRESSION_M
+          and pire["port"] <= m.r.penetration_poids_max_m + COMPRESSION_M,
           f"{max(au_repos, default=None)} {pire} {m.raison} {etats}")
     r.__exit__(None, None, None)
 # Main en appui forcé : au début de la fermeture, la face gauche du carton est

@@ -138,3 +138,70 @@ sa caméra.
 - Tout le déroulé vit dans un script de test, pas encore dans une **app** du
   Play Store : il faut d'abord l'arbitrage des actionneurs entre services et
   la correction des étiquettes anatomiques.
+
+---
+
+## 6. Essai T1 du 5 novembre 2026, 21 h 57 : prise parfaite, glissement au port
+
+Prise parfaite (point de contact au milieu de la face, force estimée 6,46 N
+contre 6,5 au juge, ligne des mains à 0,0 cm du centre de gravité), levée ;
+puis le carton glisse au port. L'OS le voit (« le carton ne pèse plus sur
+les mains (3.5 N, 11.3 au levage) ») et s'arrête proprement, aucun carton au
+sol. Rejoué dans `test/test_rejeu_port_t2157.py`
+(`test/donnees/t1_prise_20261105_2157.csv`).
+
+### Ce que disent les données
+
+| Constat | Valeur |
+|---|---|
+| Poids mesuré par l'OS | 10,6 N en haut du levage, 11,1 au plus (vrai : 9,8) |
+| Serrage réel (juge) | 6,3 N par main |
+| Marge de frottement μ (N_G + N_D) / poids, μ = 0,8 | 0,8 à 0,9 au port |
+| Écart des faces mesurées au port | constant à 2 mm près ; chaque face bouge de 5 cm |
+| Consigne de la main droite | desserrée de 5 mm au port, jamais resserrée |
+| « Contre le torse » | à 3 N, face arrière du carton à 33 cm du bassin, torse attendu à 10 |
+
+- **Les mains ne s'écartent pas** : la marche balance l'ensemble mains et
+  carton (± 2,5 cm) ; une face prise seule semble s'écarter, l'écart des
+  deux ne bouge pas.
+- **La consigne qui change** : le tangage du poignet droit porte 2,0 à
+  2,7 N·m, surtout du poids ; à chaque pointe au-delà de son plafond
+  (2,5 N·m), `_garder_sous_la_limite` desserre d'un pas : 5 mm, soit ~1 N de
+  serrage perdu, pour 0,04 N·m de moins au poignet.
+- **La traction** : torse hors d'atteinte, la poussée de 3 N vers le robot
+  n'était pas le torse.
+
+### Ce qui change
+
+- **Serrage d'après le poids** (`ReglagesPrise.securite_serrage` = 2,
+  `frottement_serrage` = 0,8, `marge_serrage_n` = 1) : en haut du levage, la
+  prise confirmée, l'OS serre jusqu'au serrage requis
+  `securite × poids / (2 μ)` (le plus grand poids mesuré depuis le levage),
+  visé avec 1 N de marge, avant de ramener. Consigne au plus
+  `penetration_poids_max_m` = 6 cm dans la face touchée (raideur au contact
+  ~300 N/m sur GPU : 15 N demandent ~5 cm). Plafonds de couple inchangés :
+  on ne serre plus si une articulation des deux bras est à moins de 0,3 N·m
+  du sien. Bloqué sous le requis pendant 3 s : le carton est reposé
+  doucement, « trop lourd pour ces mains ». Faces mesurées qui se
+  rapprochent de plus de 1 cm : « le carton cède sous le serrage », reposé.
+  Au journal : `serrage d'après le poids : G … N, D … N par main pour … N
+  de poids (requis …, visé …)`.
+- **Ramener** : si le carton ramené ne peut pas toucher le torse, il est
+  rapproché en position, sans arrêt sur un effort vers le robot (au journal :
+  « (torse hors d'atteinte) »). Torse atteignable : l'arrêt au toucher reste.
+- **Port** : la consigne desserrée par un plafond est rendue dès que les
+  bras le permettent ; mains écartées de plus de 5 mm de leur serrage (somme
+  des deux mains), ou marge de frottement sous 2 : la base s'arrête, on
+  resserre ; sans retour en 1 s, à reposer (« serrage perdu au port »).
+
+### Ce que le rejeu prévoit pour le prochain essai
+
+Le serrage, au point de contact 11 cm le long de la main, charge les
+poignets (lacet surtout, ~0,15 N·m par newton). Pour ce carton (11,1 N
+mesurés), il faut 13,9 N par main : les poignets y seraient à 2,1 N·m en
+médiane, 2,6 en pointe, pour un plafond de 2,5. L'OS s'arrêterait vers 13 N
+par main (marge 1,9) et **reposerait le carton, « trop lourd pour ces
+mains »**, de peu. Les leviers sont des réglages, pas du code :
+`frottement_serrage` (le banc : caoutchouc 1,0, carton 0,8 en frottement
+dynamique), `securite_serrage`, le poids mesuré par l'OS (13 % au-dessus du
+vrai sur cet essai), ou la part du plafond des poignets.
