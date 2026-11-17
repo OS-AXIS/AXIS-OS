@@ -128,6 +128,12 @@ class ChaineBras:
     def main(self, q: Dict[str, float]) -> np.ndarray:
         return self.points(q)[MAIN]
 
+    def pose(self, q: Dict[str, float]) -> Tuple[np.ndarray, np.ndarray]:
+        """La main (voir main()) et l'orientation de son repère (3 × 3),
+        repère du bassin."""
+        _, t = self._reperes(q)
+        return t[:3, 3] + self.bout_m * t[:3, 0], t[:3, :3].copy()
+
     def _reperes(self, q: Dict[str, float]):
         """Pour chaque lien : (articulation, position et axe de l'articulation
         ou None si elle est fixe, centre de masse et masse du lien enfant),

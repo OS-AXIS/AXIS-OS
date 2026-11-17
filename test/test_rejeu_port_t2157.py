@@ -26,14 +26,15 @@ couples des lignes plus ce que le serrage ajoute (Jᵀ, au point de contact),
 les forces du juge plus le serrage ajouté et la consigne rendue.
 
 Ce que le rejeu montre aussi : le serrage, au point de contact 11 cm le long
-de la main, charge les POIGNETS (lacet surtout, ~0,15 N·m par newton). Pour
-ce carton (11,1 N mesurés par l'OS, 9,8 en vrai ; μ = 0,8, sécurité 2), il
-faut 13,9 N par main ; les poignets y seraient à 2,1 N·m en médiane, 2,6 en
-pointe, pour un plafond de 2,5 (inchangé) : l'OS s'arrête vers 13 N par
-main, marge 1,9, et repose le carton (« trop lourd pour ces mains »), de
-peu. Aucun port, donc, avec une marge sous le coefficient de sécurité :
-soit le serrage visé est atteint dans les plafonds et la marge le dépasse
-pendant tout le port, soit le carton est reposé avant de marcher.
+de la main, charge les POIGNETS (lacet surtout, ~0,15 N·m par newton). Avec
+la référence de poids d'avant (le plus grand lu depuis le levage, 11,1 N,
+9,8 en vrai), il fallait 13,9 N par main, au-delà de ce que les poignets
+donnent dans leurs plafonds (2,5 N·m, inchangés) : « trop lourd », de peu.
+Avec le poids pesé une fois, bras immobiles en haut du levage (essai de
+18 h 21 : test_rejeu_port_t1821.py ; ici, les dernières lectures du levage :
+10,0 N, à 2 % du vrai), il en faut 12,5 : les poignets les donnent, le
+carton est porté, marge de frottement au-dessus de 2 pendant tout le port
+rejoué.
 """
 from types import SimpleNamespace
 import csv
@@ -86,7 +87,12 @@ PHASE = {t: d["left"]["phase"] for t, d in PAS.items()}
 TENU = [t for t in PAS if PHASE[t] == "TENU"]
 LEVAGE = [t for t in PAS if PHASE[t] == "LEVAGE"]
 HAUT = LEVAGE[-10:]                        # en haut du levage, avant de ramener
-POIDS = np.nanmax([f(r, "poids_os_n") for r in LIGNES])     # poids de référence de l'OS
+POIDS = np.nanmax([f(r, "poids_os_n") for r in LIGNES])     # référence d'avant : le plus grand
+# Le poids pesé (service.py, en haut du levage, bras immobiles : médiane d'une
+# fenêtre de filtre_force × 3 lectures) ; ici, les dernières du levage.
+PESEE = float(np.median([f(PAS[t]["left"], "poids_os_n")
+                         for t in [t for t in PAS if PAS[t]["left"]["phase"] == "LEVAGE"]
+                         [-3 * R.filtre_force:]]))
 MU, S = R.frottement_serrage, R.securite_serrage
 
 
@@ -98,6 +104,10 @@ section("1. Le constat : un serrage sans marge, le carton glisse au port")
 n_haut = {c: np.mean([f(PAS[t][c], "force_juge_n") for t in HAUT]) for c in ("left", "right")}
 check(f"Poids mesuré par l'OS : {np.nanmax([f(PAS[t]['left'], 'poids_os_n') for t in LEVAGE]):.1f} "
       f"N en haut du levage, {POIDS:.1f} au plus (carton de 1 kg : 9,8)", 10.0 <= POIDS <= 11.5)
+check(f"Référence de poids de l'OS : le plus grand lu depuis le levage, {POIDS:.1f} N "
+      f"({100 * (POIDS / 9.81 - 1):+.0f} % du vrai) ; pesé, bras presque immobiles en haut du "
+      f"levage (médiane des {3 * R.filtre_force} dernières lectures) : {PESEE:.1f} N, à 5 % "
+      f"du vrai", POIDS > 1.1 * 9.81 and abs(PESEE - 9.81) <= 0.05 * 9.81)
 check(f"Serrage réel en haut du levage (juge) : G {n_haut['left']:.2f} N, D {n_haut['right']:.2f} N "
       f"— soit {POIDS / 2:.1f} N de poids par main à tenir par le seul frottement",
       all(6.0 <= v <= 6.8 for v in n_haut.values()))
@@ -162,11 +172,11 @@ check("Désormais : torse hors d'atteinte, aucun « contre le torse » sur un ef
       avant.startswith("mains qui tirent de 3.0 N") and ManipulationService._appui_torse(m) == "",
       avant)
 
-section("3. Avec les corrections : la marge reste au-dessus du coefficient de sécurité")
-requis = S * POIDS / (2.0 * MU)
+section("3. Avec les corrections : poids pesé, serrage d'après lui, marge au-dessus de 2")
+requis = S * PESEE / (2.0 * MU)
 vise = requis + R.marge_serrage_n
-check(f"Serrage requis d'après le poids : {S:.0f} × {POIDS:.1f} / (2 × {MU}) = {requis:.1f} N par "
-      f"main ; visé avec {R.marge_serrage_n:.0f} N de marge : {vise:.1f}", 13.0 <= requis <= 15.0)
+check(f"Serrage requis d'après le poids pesé : {S:.0f} × {PESEE:.1f} / (2 × {MU}) = {requis:.1f} N "
+      f"par main ; visé avec {R.marge_serrage_n:.0f} N de marge : {vise:.1f}", 11.5 <= requis <= 13.5)
 # Raideur au point de contact : force du juge sur l'avance de la consigne dans
 # la face mesurée, en haut du levage.
 raideur = {c: np.mean([f(PAS[t][c], "force_juge_n")
@@ -178,10 +188,9 @@ avance = max((vise - n_haut[c]) / raideur[c] + abs(f(PAS[HAUT[-1]][c], "face_mes
 check(f"Raideur au contact {raideur['left']:.0f} et {raideur['right']:.0f} N/m : consigne à "
       f"{100 * avance:.1f} cm dans la face, sous la borne de {100 * R.penetration_poids_max_m:.0f} "
       f"(penetration_poids_max_m)", avance <= R.penetration_poids_max_m)
-# Ce que le serrage visé demanderait aux articulations, en haut du levage
-# (couples des lignes plus Jᵀ n × le serrage ajouté), et jusqu'où l'OS peut
-# serrer : aucune articulation des deux bras à moins de 0,3 N·m de son
-# plafond (_marge_plafonds, rejoué tel quel).
+# Jusqu'où l'OS peut serrer, en haut du levage (couples des lignes plus Jᵀ n
+# × le serrage ajouté) : aucune articulation des deux bras à moins de 0,3 N·m
+# de son plafond (_marge_plafonds, rejoué tel quel).
 m.mesures = SimpleNamespace(couple_max={f"{c}_{a}_joint": 2.0 * PLAFOND[a]
                                         for c in ("left", "right") for a in ART})
 
@@ -202,42 +211,40 @@ def porte(t, ajout):
     return ManipulationService._marge_plafonds(m, couples(t, {"left": ajout, "right": ajout}))
 
 
-ajout_vise = max(vise - n_haut[c] for c in n_haut)
-POIGNETS = [f"{c}_wrist_{a}_joint" for c in ("left", "right") for a in ("pitch", "yaw")]
-au_vise = [couples(t, {c: ajout_vise for c in n_haut}) for t in FIN]
-mediane = max(np.median([abs(tau[j]) for tau in au_vise]) for j in POIGNETS)
-pointe = max(abs(tau[j]) for tau in au_vise for j in POIGNETS)
-fermee = np.mean([not ManipulationService._marge_plafonds(m, tau) for tau in au_vise])
-check(f"Ce serrage mettrait les poignets (tangage, lacet) à {mediane:.2f} N·m (médiane), "
-      f"{pointe:.2f} en pointe (plafond {PLAFOND['wrist_yaw']}, inchangé) : la porte de l'OS "
-      f"(_marge_plafonds, 0,3 N·m sous le plafond) resterait fermée sur {100 * fermee:.0f} % des "
-      f"relevés de la fin du levage", pointe > PLAFOND["wrist_yaw"] and fermee >= 0.5)
-ajouts = []
-for t in FIN:
-    a_ = 0.0
-    while a_ < ajout_vise and porte(t, a_ + 0.1):
-        a_ += 0.1
-    ajouts.append(a_)
-atteint = {c: n_haut[c] + float(np.median(ajouts)) for c in n_haut}
-marge_atteinte = MU * sum(atteint.values()) / POIDS
-check(f"… il s'arrête vers G {atteint['left']:.1f} N, D {atteint['right']:.1f} N par main, sous "
-      f"le requis ({requis:.1f}), marge {marge_atteinte:.2f} < {S:.0f} : bloqué "
-      f"{R.duree_serrage_poids_max_s:.0f} s, le carton est reposé, « trop lourd pour ces mains » — "
-      f"on ne marche pas avec", max(atteint.values()) < requis and marge_atteinte < S)
+def jusqua(ajout_max):
+    ajouts = []
+    for t in FIN:
+        a_ = 0.0
+        while a_ < ajout_max and porte(t, a_ + 0.1):
+            a_ += 0.1
+        ajouts.append(a_)
+    return {c: n_haut[c] + float(np.median(ajouts)) for c in n_haut}
+
+
+avant = S * POIDS / (2.0 * MU)
+bloque = jusqua(avant + R.marge_serrage_n - min(n_haut.values()))
+check(f"Avec la référence d'avant ({POIDS:.1f} N), il fallait {avant:.1f} N par main : les "
+      f"poignets arrêtent le serrage vers {min(bloque.values()):.1f} (plafonds inchangés) — "
+      f"« trop lourd pour ces mains », de peu", min(bloque.values()) < avant)
+atteint = jusqua(vise - min(n_haut.values()))
+check(f"Avec le poids pesé : la porte laisse monter le serrage jusque vers G "
+      f"{atteint['left']:.1f} N, D {atteint['right']:.1f} N par main, au moins le requis "
+      f"({requis:.1f}) — le carton est porté", min(atteint.values()) >= requis)
 poids_max = 2.0 * MU * min(atteint.values()) / S
-check(f"… ces mains, dans leurs plafonds, porteraient au plus {poids_max:.1f} N ainsi "
-      f"({poids_max / 9.81:.2f} kg mesurés) ; ce carton en pèse {POIDS:.1f}", poids_max < POIDS)
+check(f"… ces mains, dans leurs plafonds, porteraient {poids_max:.1f} N ainsi ; ce carton en pèse "
+      f"{PESEE:.1f} (pesé)", poids_max >= PESEE)
+serre = {c: min(atteint[c], vise) for c in atteint}
 corrigees, par_main = [], []
 for t in TENU:
-    n = {c: f(PAS[t][c], "force_juge_n") + (vise - n_haut[c])
+    n = {c: f(PAS[t][c], "force_juge_n") + (serre[c] - n_haut[c])
          + raideur[c] * abs(f(PAS[t][c], "face_commandee_m") - f(PAS[HAUT[-1]][c],
                                                                  "face_commandee_m"))
          for c in ("left", "right")}
-    corrigees.append(MU * (n["left"] + n["right"]) / POIDS)
-    par_main.append(MU * min(n.values()) / (POIDS / 2.0))
-check(f"Serrage visé atteint (un carton dans les moyens des mains, ou des plafonds qui le "
-      f"permettraient) : port rejoué (forces du juge, plus le serrage ajouté, plus la consigne "
-      f"rendue), marge de frottement {min(corrigees):.2f} à {max(corrigees):.2f}, au-dessus de "
+    corrigees.append(MU * (n["left"] + n["right"]) / PESEE)
+    par_main.append(MU * min(n.values()) / (PESEE / 2.0))
+check(f"Port rejoué (forces du juge, plus le serrage ajouté jusqu'à "
+      f"{min(serre.values()):.1f} N par main, plus la consigne rendue), sur le poids pesé : marge "
+      f"de frottement {min(corrigees):.2f} à {max(corrigees):.2f}, au-dessus de "
       f"{S:.0f} pendant tout le port (d'une main à l'autre, au pire instant du balancement : "
       f"{min(par_main):.2f})", min(corrigees) >= S)
 check("Sans les corrections, le contrôle du port (_garder_serrage) aurait arrêté la base dès "

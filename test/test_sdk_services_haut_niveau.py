@@ -244,7 +244,9 @@ with SimulatedRobot() as robot:
           str(r))
 
 section("3. pick / place : cas normal et issues")
-with SimulatedRobot() as robot:
+# Bras à 7 articulations (G1 29 DOF) : l'objet tenu est ramené et monté
+# (retour en corps rigide, qui demande le tangage du poignet).
+with SimulatedRobot(poignets_29dof=True) as robot:
     ctx = contexte(robot)
     boite = boite_devant(robot)
     r = silencieux(ctx.pick, ObjectSpec(boite.position, (0.24, 0.20, 0.20)), timeout_s=15.0)
@@ -272,7 +274,7 @@ with SimulatedRobot() as robot:
     check("place() sans rien en main : REFUSED (FAILED)", r.status == "REFUSED"
           and r.code == RefusalCode.FAILED.value, str(r))
 
-with SimulatedRobot(start=(1.0, 0.0, 0.0)) as robot:
+with SimulatedRobot(start=(1.0, 0.0, 0.0), poignets_29dof=True) as robot:
     ctx = contexte(robot)
     boite = boite_devant(robot)
     vues = silencieux(ctx.look_for, "red", FRAME_WORLD)

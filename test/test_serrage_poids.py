@@ -53,7 +53,7 @@ class Banc:
         self.x = x
         self.r = SimulatedRobot(objects=[SimulatedObject("carton", (x, 0.0, 0.90))]
                                 if objets else [], horloge=lambda: self.t[0],
-                                contact_main_m=contact)
+                                contact_main_m=contact, poignets_29dof=True)
         self.r.MASSE_OBJET_KG = masse
         self.r.start(fil=False)
         self.m = self.r.manipulation
@@ -92,12 +92,15 @@ class Banc:
 section("1. Carton de 1 kg : serrage d'après le poids, atteint avant de ramener")
 b = Banc().prendre()
 m, r = b.m, b.r
-poids = m._poids_ref or 0.0
+poids = m.poids_carton or 0.0
 check("Carton pris et tenu", m.etat is Etat.TENU, m.raison)
 check(f"Serrage requis {m.serrage_requis:.1f} N par main = {R.securite_serrage:.0f} × "
       f"{poids:.1f} N / (2 × {R.frottement_serrage}), visé {m.serrage_vise:.1f}",
       abs(poids - 9.81) <= 1.5 and abs(m.serrage_requis - R.securite_serrage * poids
                                        / (2 * R.frottement_serrage)) < 0.3)
+check(f"Poids pesé une fois, bras immobiles en haut du levage, avant de serrer plus : "
+      f"« {b.ligne('poids du carton')} », à 5 % du vrai (9,81)",
+      b.ligne("poids du carton : ") != "" and abs(poids - 9.81) <= 0.05 * 9.81)
 check(f"… atteint en haut du levage, au journal : « {b.ligne('serrage d')} »",
       b.ligne("serrage d'après le poids : G") != ""
       and min(m.force_serrage.values()) >= m.serrage_requis, str(m.force_serrage))
@@ -194,13 +197,20 @@ check(f"Marge de frottement {marge0:.2f}, coefficient de sécurité porté à {m
       f"{e.m.marge_frottement} {e.journal[-3:]}")
 d = Banc().prendre()
 d.pas(30)
-d.r.MASSE_OBJET_KG = 1.4                          # au-delà de ce que les poignets donnent
+# Plus de marge sous les plafonds pour serrer davantage : le poignet le plus
+# chargé à 0,2 N·m du sien ; le coefficient de sécurité passe au-dessus de la
+# marge (le poids pesé, lui, ne change pas : le carton ne s'alourdit pas).
+tau, _ = d.m._efforts()
+pg = max((j for j in tau if "wrist" in j), key=lambda j: abs(tau[j]))
+d.m.mesures.couple_max[pg] = 2.0 * (abs(tau[pg]) + 0.2)
+d.m.r = replace(d.m.r, securite_serrage=(d.m.marge_frottement or 0.0) + 0.6)
 penche = False
 for _ in range(150):
     d.pas()
     penche = penche or d.m.penche
-check("Carton alourdi à 1,4 kg : base arrêtée, le resserrage n'y suffit pas dans les plafonds : "
-      "« serrage perdu au port », à reposer (la façade arrête la base et le signale)",
+check("Marge sous le coefficient de sécurité, plus de marge sous les plafonds pour resserrer : "
+      "base arrêtée, le resserrage n'y suffit pas : « serrage perdu au port », à reposer (la "
+      "façade arrête la base et le signale)",
       penche and d.m.a_reposer and d.m.raison.startswith("serrage perdu au port")
       and d.r.held is not None, f"{d.m.raison} {d.journal[-3:]}")
 d.pas(50)

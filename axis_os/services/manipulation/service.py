@@ -174,6 +174,13 @@ class Postures:
     jeu_depose: float = 0.01           # m : on ouvre juste au-dessus
 
 
+def _rotation_vecteur(m: np.ndarray) -> np.ndarray:
+    """Vecteur rotation (axe × angle, radians) de la rotation `m` (3 × 3)."""
+    a = math.acos(max(-1.0, min(1.0, (float(np.trace(m)) - 1.0) / 2.0)))
+    v = np.array([m[2, 1] - m[1, 2], m[0, 2] - m[2, 0], m[1, 0] - m[0, 1]])
+    return v / 2.0 if a < 1e-6 else v * (a / (2.0 * math.sin(a)))
+
+
 def posture_bras(roulis: float, tangage: float, coude: float) -> Dict[str, float]:
     """Cibles des six articulations des bras, pour une posture symétrique.
 
@@ -412,8 +419,13 @@ class ManipulationService(IService):
         return a + f * (b - a), f >= 1.0
 
     def _aller(self, etat: Etat) -> None:
-        """Passe dans `etat`, et note l'instant de départ du geste."""
+        """Passe dans `etat`, et note l'instant de départ du geste (au
+        retour, les mains mesurées : la référence de _rotation_estimee)."""
         self.etat, self._t0 = etat, self._horloge()
+        if etat is Etat.RAMENER:
+            angles = self._angles_mesures()
+            self._poses_mesurees0 = None if angles is None else self._poses(angles)
+            self.rotation_carton = None
 
     def _lever_exemption(self) -> None:
         if self._gardien is not None:
@@ -576,6 +588,19 @@ class ManipulationService(IService):
         self.marge_frottement: Optional[float] = None
         self._t_resserrage: Optional[float] = None
         self._torse_possible = True
+        # Poids du carton (N), pesé une fois, bras immobiles, en haut du
+        # levage, avant de serrer plus : celui du serrage requis et de la
+        # marge de frottement au port (le plus grand porté, _poids_ref, ne
+        # sert plus qu'au contrôle de glissement du port).
+        self.poids_carton: Optional[float] = None
+        # Retour en corps rigide : (centre de départ, pose de chaque main
+        # commandée, serrage) au début du geste ; poses des mains MESURÉES
+        # au début du geste ; roulis et tangage estimés du carton (degrés) ;
+        # resserrage demandé par un carton qui a tourné au retour.
+        self._rigide: Optional[tuple] = None
+        self._poses_mesurees0: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
+        self.rotation_carton: Optional[Tuple[float, float]] = None
+        self._resserrage_force = False
 
     def _vers_bassin(self, p_monde) -> np.ndarray:
         """Point du repère monde -> repère du bassin (x, y du robot ; z
@@ -1782,7 +1807,12 @@ class ManipulationService(IService):
         même en cartésien, quelle que soit la posture), plus la variation
         du serrage. Le lacet d'épaule et les poignets restent ceux du
         serrage : la cinématique inverse ne résout que tangage, roulis et
-        coude, les autres angles pris dans sa graine."""
+        coude, les autres angles pris dans sa graine. Depuis le retour
+        (_rigide), les deux mains suivent l'objet comme un seul corps rigide,
+        orientation comprise (_q_rigide), ou None : la cinématique d'avant,
+        partie des angles du serrage, leur ferait tourner d'un coup."""
+        if self._rigide is not None:
+            return self._q_rigide(centre_mains, ecart)
         cg, cd = self._modele.mains({**self._fixes, **self._q_serre})
         t = np.asarray(centre_mains, dtype=float) - self._c_serre
         e = np.array([0.0, (ecart - self._ecart_mains) / 2.0, 0.0])
@@ -1801,6 +1831,107 @@ class ManipulationService(IService):
                 if sortie is None:
                     return None
         return sortie
+
+    def _poses(self, q: Dict[str, float]) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """Pose (point de contact, orientation 3 × 3) de chaque main pour
+        les angles `q`, complétés des articulations fixes (repère du bassin)."""
+        return {c: self._chaine(c).pose({**self._fixes, **q}) for c in self._ROULIS}
+
+    def _vers_pose(self, q: Dict[str, float], cote: str, cible: np.ndarray,
+                   orientation: np.ndarray) -> Optional[Dict[str, float]]:
+        """Angles du bras `cote` qui mettent sa main (point de contact) en
+        `cible`, avec l'orientation `orientation`, en partant de `q` :
+        moindres carrés amortis sur les articulations que la prise commande
+        (la pose entière : six au moins). None hors des tolérances
+        (tol_rigide_m, tol_rigide_deg) ou des bornes de l'URDF."""
+        r = self.r
+        chaine, joints = self._chaine(cote), self._commandables(cote)
+        echelle = 0.1                     # m par radian : rotation et position comparables
+        base = {**self._fixes, **q}
+        for _ in range(12):
+            p, rot = chaine.pose(base)
+            e = np.concatenate([cible - p, echelle * _rotation_vecteur(orientation @ rot.T)])
+            if float(np.linalg.norm(e[:3])) < 0.1 * r.tol_rigide_m and float(
+                    np.linalg.norm(e[3:])) < 0.1 * echelle * math.radians(r.tol_rigide_deg):
+                break
+            jac = chaine.jacobienne(base, joints, rotation=True)
+            jac[3:] *= echelle
+            dq = jac.T @ np.linalg.solve(jac @ jac.T + 1e-6 * np.eye(6), e)
+            for j, v in zip(joints, np.clip(dq, -0.2, 0.2)):
+                base[j] += float(v)
+        p, rot = chaine.pose(base)
+        tourne = _rotation_vecteur(orientation @ rot.T)
+        if float(np.linalg.norm(cible - p)) > r.tol_rigide_m \
+                or math.degrees(float(np.linalg.norm(tourne))) > r.tol_rigide_deg \
+                or not chaine.dans_les_bornes({j: base[j] for j in joints}):
+            return None
+        sortie = dict(q)
+        sortie.update({j: base[j] for j in joints})
+        return sortie
+
+    def _q_rigide(self, centre: np.ndarray, ecart: Optional[float] = None,
+                  graine: Optional[Dict[str, float]] = None) -> Optional[Dict[str, float]]:
+        """Bras qui portent les deux mains COMMANDÉES comme un seul corps
+        rigide avec l'objet : chaque main à sa pose du début du retour
+        (_rigide), translatée de `centre` moins le centre de départ, la même
+        translation pour les deux, orientation inchangée (l'objet ne roule ni
+        ne tangue), plus la variation du serrage (et de l'écart des mains)
+        le long de la ligne des mains de départ. None si un bras n'y arrive pas."""
+        c0, poses, delta0, ecart0 = self._rigide
+        t = np.asarray(centre, dtype=float) - c0
+        de = 0.0 if ecart is None else (ecart - ecart0) / 2.0
+        q = dict(self._q if graine is None else graine)
+        for cote in self._ROULIS:
+            p, rot, u = poses[cote]
+            q = self._vers_pose(q, cote, p + t + (self._delta[cote] - delta0[cote] - de) * u, rot)
+            if q is None:
+                return None
+        return q
+
+    def _chemin_rigide(self, de: np.ndarray, vers: np.ndarray,
+                       plateau: Optional[float]) -> Optional[Dict[str, float]]:
+        """Angles des bras au bout du chemin rigide de l'objet tenu, de `de`
+        à `vers` (son centre), si TOUT le chemin passe : chaque étape
+        (pas_chemin_rigide_m) atteinte aux tolérances du corps rigide, aucune
+        articulation qui saute de plus de saut_rigide_rad d'une étape à
+        l'autre (un bras replié contre le corps change de solution en chemin :
+        la consigne saute, le garde-fou la refuse), avant-bras jamais plus près
+        du plateau qu'ils survolent encore que marge_plateau_m, ni qu'au départ
+        s'ils en partent plus près (en haut du levage) ; None sinon."""
+        r = self.r
+        n = max(1, math.ceil(float(np.linalg.norm(vers - de)) / r.pas_chemin_rigide_m))
+        prec = self._q
+
+        def garde(q):
+            return math.inf if plateau is None else garde_plateau(
+                self._modele, self._graine(q), plateau, r.bord_min_m, r.rayon_avant_bras_m)
+        plancher = min(r.marge_plateau_m, garde(prec)) - 1e-4
+        for k in range(1, n + 1):
+            q = self._q_rigide(de + (k / n) * (vers - de), graine=prec)
+            if q is None or max(abs(v - prec.get(j, v)) for j, v in q.items()) > r.saut_rigide_rad \
+                    or garde(q) < plancher:
+                return None
+            prec = q
+        return prec
+
+    def _rotation_estimee(self) -> Optional[Tuple[float, float]]:
+        """Roulis (autour de l'axe avant) et tangage (autour de la ligne des
+        mains) de l'objet tenu depuis le début du retour (degrés), estimés sur
+        les mains MESURÉES : il tourne avec les paumes qui le serrent
+        (rotation moyenne des deux mains), et roule si la ligne des mains
+        penche (leurs hauteurs). Les couples ne s'y prêtent pas : le couple
+        de basculement passe sous leur bruit (voir _surveiller_rotation)."""
+        angles = self._angles_mesures()
+        if angles is None or self._poses_mesurees0 is None:
+            return None
+        mes = self._poses(angles)
+        rv = sum(_rotation_vecteur(mes[c][1] @ self._poses_mesurees0[c][1].T)
+                 for c in self._ROULIS) / 2.0
+        ligne, ligne0 = (mes["left"][0] - mes["right"][0],
+                         self._poses_mesurees0["left"][0] - self._poses_mesurees0["right"][0])
+        penche = math.atan2(ligne[2], ligne[1]) - math.atan2(ligne0[2], ligne0[1])
+        roulis = max((float(rv[0]), penche), key=abs)
+        return math.degrees(roulis), math.degrees(float(rv[1]))
 
     def _lever_de_quelques_cm(self) -> None:
         # Avant de lever : la ligne des points de contact MESURÉS (angles
@@ -1823,7 +1954,8 @@ class ManipulationService(IService):
         self._poids_ref, self._t_sans_poids, self.appui_torse = None, None, None
         r = self.r
         self.serrage_vise, self.serrage_requis, self.charge = None, None, None
-        self._t_attente_serrage = None
+        self.poids_carton, self._t_attente_serrage = None, None
+        self._rigide, self._resserrage_force = None, False
         self._t_serrage_bloque = None
         self._delta_max_poids = {c: self._delta_max.get(c, 0.0) + r.penetration_poids_max_m
                                  - r.penetration_max_m for c in self._ROULIS}
@@ -1855,23 +1987,30 @@ class ManipulationService(IService):
         if tourne:
             self._reposer(tourne)
             return
-        serre = self._serrer_selon_poids(tau)
-        if isinstance(serre, str):
-            self._reposer(serre)
-            return
         if not fini:
             return
         if self._t_attente_serrage is not None:
-            # Prise confirmée, en haut : le serrage visé d'après le poids,
-            # mesuré sur une fenêtre entière de charge depuis la confirmation,
-            # avant de ramener ; au plus duree_serrage_poids_max_s.
-            if serre is True and (self.charge is None or len(self._hist_charge)
-                                  == self._hist_charge.maxlen):
+            # Prise confirmée, en haut : on pèse le carton, bras immobiles,
+            # sur une fenêtre entière de lectures depuis la confirmation (leur
+            # médiane), puis on serre d'après ce poids, avant de ramener ; au
+            # plus duree_serrage_poids_max_s bloqué.
+            if self.poids_carton is None and self.charge is not None:
+                if len(self._hist_charge) < self._hist_charge.maxlen:
+                    return
+                self.poids_carton = float(np.median([v[0] for v in self._hist_charge]))
+                self._noter(f"poids du carton : {self.poids_carton:.1f} N (médiane de "
+                            f"{len(self._hist_charge)} lectures, bras immobiles en haut du "
+                            f"levage, avant de serrer plus)")
+            serre = self._serrer_selon_poids(tau)
+            if isinstance(serre, str):
+                self._reposer(serre)
+                return
+            if serre is True:
                 if self.serrage_requis is not None:
                     self._noter(
                         f"serrage d'après le poids : G {self.force_serrage['left']:.1f} N, D "
                         f"{self.force_serrage['right']:.1f} N par main pour "
-                        f"{self._poids_ref or 0.0:.1f} N de poids (requis "
+                        f"{self.poids_carton:.1f} N de poids (requis "
                         f"{self.serrage_requis:.1f}, visé {self.serrage_vise:.1f})")
                 self.stats["prises"] += 1
                 self._lever_exemption()
@@ -1905,18 +2044,18 @@ class ManipulationService(IService):
         self._aller(Etat.REPOSE)
 
     def _serrer_selon_poids(self, tau: Dict[str, float]):
-        """Pendant le levage : le serrage requis d'après le poids mesuré,
-        securite_serrage × poids / (2 frottement_serrage), visé avec
+        """En haut du levage : le serrage requis d'après le poids pesé
+        (poids_carton), securite_serrage × poids / (2 frottement_serrage), visé avec
         marge_serrage_n de plus (ReglagesPrise), monté peu à peu, la face
         commandée jusqu'à `penetration_poids_max_m` dans la face touchée,
         seulement si aucune articulation des deux bras n'est à moins de 0,3
         N·m de son plafond (plafonds inchangés). True : visé atteint, ou
         requis atteint et plus moyen d'avancer ; None : en cours ; une raison
         (str) : le carton cède sous le serrage. Depuis quand plus
-        aucune main ne peut avancer : _t_serrage_bloque. Sans poids mesuré
+        aucune main ne peut avancer : _t_serrage_bloque. Sans poids pesé
         (couples non fiables) : le serrage d'avant, True."""
         r = self.r
-        if self.couples_fiables is False or self.charge is None:
+        if self.couples_fiables is False or self.poids_carton is None:
             return True
         mod = self._mains_modele()
         if mod is not None and self._ecart_faces0 is not None \
@@ -1924,8 +2063,7 @@ class ManipulationService(IService):
             return (f"le carton cède sous le serrage (mains rapprochées de "
                     f"{100 * (self._ecart_faces0 - self._interieur(mod)):.1f} cm, au plus "
                     f"{100 * r.cede_max_m:.0f})")
-        # Le plus grand poids porté depuis le levage (comme au port) : prudent.
-        poids = max(0.0, self._poids_ref or self.charge[0])
+        poids = max(0.0, self.poids_carton)
         self.serrage_requis = r.securite_serrage * poids / (2.0 * r.frottement_serrage)
         self.serrage_vise = self.serrage_requis + r.marge_serrage_n
         forces = self._mesurer_forces(tau)
@@ -1963,7 +2101,7 @@ class ManipulationService(IService):
     def _trop_lourd(self) -> str:
         """Pourquoi le serrage visé d'après le poids n'est pas atteint."""
         r = self.r
-        poids = self._poids_ref or (self.charge[0] if self.charge else 0.0)
+        poids = self.poids_carton or 0.0
         obtenus = ", ".join(f"main {'G' if c == 'left' else 'D'} "
                             f"{self.force_serrage.get(c, 0.0):.1f} N" for c in self._ROULIS)
         return (f"trop lourd pour ces mains (serrage insuffisant dans leurs plafonds) : il "
@@ -2021,24 +2159,41 @@ class ManipulationService(IService):
         plateau = None
         if self._plan is not None and self.objet is not None:
             plateau = float(self._plan["centre"][2]) - self.objet.hauteur / 2.0
-        for k in range(12):
+        # Les deux mains, comme un seul corps rigide avec l'objet : leurs
+        # poses commandées au départ, la direction du serrage, l'écart.
+        depart = np.array(depart, dtype=float)
+        poses = self._poses(self._q)
+        u = poses["right"][0] - poses["left"][0]
+        u = u / max(1e-9, float(np.linalg.norm(u)))
+        # La pose entière d'une main (position et orientation) demande six
+        # articulations commandées au moins (le tangage du poignet).
+        tenable = all(len(self._commandables(c)) >= 6 for c in self._ROULIS)
+        self._rigide = (depart, {"left": (*poses["left"], u), "right": (*poses["right"], -u)},
+                        dict(self._delta), self._ecart_mains) if tenable else None
+        for k in range(12 if tenable else 0):
             x = max(r.distance_torse_m - r.appui_torse_m - plus_pres + prof / 2.0
                     + 0.02 * k, 0.05)
             if x >= float(depart[0]):
                 break
             c = np.array([x, float(depart[1]), float(depart[2]) + r.hausse_transport_m])
-            q = self._chemin_continu(np.asarray(depart, dtype=float), c)
-            if q is not None and plateau is not None and garde_plateau(
-                    self._modele, self._graine(q), plateau, r.bord_min_m,
-                    r.rayon_avant_bras_m) < r.marge_plateau_m:
-                q = None                  # avant-bras sur le plateau : plus loin
+            q = self._chemin_rigide(depart, c, plateau)
             if q is not None:
                 cible = (c, q)
                 break
         if cible is None:
+            # Pas plus près sans tordre l'objet : au moins plus haut ; sinon,
+            # porté là où le levage l'a laissé.
             c = depart + np.array([0.0, 0.0, r.hausse_transport_m])
-            q = self._q_mains(c, self._ecart_mains)
-            cible = (c, q if q is not None else dict(self._q))
+            q = self._chemin_rigide(depart, c, plateau) if tenable else None
+            cible = (c, q) if q is not None else (depart, dict(self._q))
+            pourquoi = ("aucun chemin plus près du buste où les mains restent un seul corps "
+                        f"rigide avec le carton (orientation à {r.tol_rigide_deg:g}° près, sans "
+                        "saut, avant-bras au-dessus du plateau)" if tenable else
+                        f"{min(len(self._commandables(c_)) for c_ in self._ROULIS)} articulations "
+                        "commandées par bras : la pose d'une main ne se tient pas (6 au moins, "
+                        "tangage du poignet compris)")
+            self._noter(f"retour : {pourquoi} : " + ("seulement plus haut" if q is not None else
+                                                     "porté là où le levage l'a laissé"))
         self._c_de, self._c_vers = np.array(depart, dtype=float), cible[0]
         self._centre_porte = cible[0]
         self._q_de, self._q_vers = dict(self._q), cible[1]
@@ -2051,22 +2206,6 @@ class ManipulationService(IService):
         self._serrage_port_ref, self._delta_port, self._t_resserrage = None, None, None
         self._aller(Etat.RAMENER)
 
-    def _chemin_continu(self, de: np.ndarray, vers: np.ndarray, etapes: int = 6,
-                        saut_max_rad: float = 0.3) -> Optional[Dict[str, float]]:
-        """Angles des bras au bout du chemin des mains de `de` à `vers` (objet
-        tenu, serrage gardé), si tout le chemin est atteignable sans saut
-        d'une articulation de plus de `saut_max_rad` d'une étape à l'autre ;
-        None sinon. Un bras replié contre le corps change de solution en
-        chemin : la consigne saute, le garde-fou la refuse (constaté sur le
-        robot simulé, mains du G1, carton ramené trop près)."""
-        prec = self._q
-        for k in range(1, etapes + 1):
-            q = self._q_mains(de + (k / etapes) * (vers - de), self._ecart_mains)
-            if q is None or max(abs(v - prec.get(j, v)) for j, v in q.items()) > saut_max_rad:
-                return None
-            prec = q
-        return prec
-
     def _pas_ramener(self) -> None:
         tau, _ = self._efforts()
         tourne = self._surveiller_rotation(tau)
@@ -2075,7 +2214,23 @@ class ManipulationService(IService):
             return
         q, fini = self._interp_c(self.r.duree_ramener_s)
         appui = self._appui_torse()
-        if appui and self.appui_torse is None:
+        # En corps rigide, les paumes commandées ne tournent pas : une rotation
+        # mesurée est anormale. Sans lui (bras à moins de six articulations),
+        # seule une remontée après une dépose manquée bouge ici, comme avant.
+        self.rotation_carton = self._rotation_estimee() if self._rigide is not None else None
+        tourne = self.rotation_carton is not None and \
+            max(abs(v) for v in self.rotation_carton) > self.r.rotation_ramener_max_deg
+        if tourne:
+            # L'objet tourne entre les mains : on arrête le geste là, et l'on
+            # resserre au port (_garder_serrage) avant de marcher.
+            self.stats["retours_arretes"] = self.stats.get("retours_arretes", 0) + 1
+            self._noter(f"retour arrêté : carton tourné de {self.rotation_carton[0]:+.1f}° "
+                        f"en roulis (autour de l'axe avant) et {self.rotation_carton[1]:+.1f}° "
+                        f"en tangage (autour de la ligne des mains), estimés sur les mains "
+                        f"mesurées (au plus {self.r.rotation_ramener_max_deg:g}°) : on resserre")
+            self._resserrage_force = True
+            fini = True
+        elif appui and self.appui_torse is None:
             # Contre le torse : on s'arrête là (troisième appui), sans
             # pousser plus.
             self.appui_torse = self.charge[1] if self.charge else 0.0
@@ -2084,9 +2239,12 @@ class ManipulationService(IService):
         else:
             self._ecrire_q(q)
         if fini:
-            if self.appui_torse is None:
+            # Là où les mains sont arrivées : la référence des gestes qui
+            # suivent (serrage au port, dépose), le geste fini ou arrêté.
+            c = self._c_actuel if self._c_actuel is not None else self._centre_porte
+            self._centre_porte = np.array(c, dtype=float)
+            if self.appui_torse is None and not tourne:
                 prof = self.objet.profondeur if self.objet is not None else 0.2
-                c = self._c_actuel if self._c_actuel is not None else self._centre_porte
                 self._noter(f"carton ramené sans toucher le torse : face arrière à "
                             f"{100 * (float(c[0]) - prof / 2.0):.0f} cm du bassin, buste attendu "
                             f"à {100 * self.r.distance_torse_m:.0f} ; plus près, les bras n'y "
@@ -2162,29 +2320,47 @@ class ManipulationService(IService):
         if all(f is not None for f in forces):
             self._hist_normales.append(sum(float(f @ self._vers_objet(c))
                                            for c, f in zip(self._ROULIS, forces)))
-        poids = self._poids_ref
+        poids = self.poids_carton or self._poids_ref
         self.marge_frottement = (r.frottement_serrage * float(np.mean(self._hist_normales))
                                  / poids if poids and poids > 0.5 and len(self._hist_normales)
                                  == self._hist_normales.maxlen else None)
         faible = self.marge_frottement is not None and self.marge_frottement < r.securite_serrage
         ecartees = ecart > r.ecart_face_port_m
+        # Carton qui a tourné au retour (_pas_ramener) : on resserre jusqu'au
+        # serrage visé d'après le poids, et d'au moins marge_serrage_n à
+        # chaque main, tant que les bras le permettent.
+        plein = len(self._hist_normales) == self._hist_normales.maxlen
+        if self._resserrage_force is True and plein:
+            # Demandé au retour (True) : la cible (somme des deux forces, N).
+            self._resserrage_force = False if self.serrage_vise is None else max(
+                2.0 * self.serrage_vise,
+                float(np.mean(self._hist_normales)) + 2.0 * r.marge_serrage_n)
+        cible = self._resserrage_force if isinstance(self._resserrage_force, float) else None
+        force = cible is not None and float(np.mean(self._hist_normales)) < cible
+        if cible is not None and not force:
+            self._resserrage_force = False
         # La consigne garde le serrage : ce qu'un plafond a desserré (pointe
         # de couple à la marche) est rendu dès que les deux bras ont de la
         # marge ; au-delà, seulement pour retrouver le serrage perdu.
         a_rendre = [c for c in self._ROULIS if self._delta[c] < self._delta_port[c] - 1e-6]
-        if ecartees or faible:
+        if ecartees or faible or force:
             t = self._horloge()
             pourquoi = " ; ".join(
                 ([f"mains écartées de {1000 * ecart:.0f} mm de leur serrage (au plus "
                   f"{1000 * r.ecart_face_port_m:.0f})"] if ecartees else [])
                 + ([f"marge de frottement {self.marge_frottement:.2f} (au moins "
-                    f"{r.securite_serrage:g})"] if faible else []))
+                    f"{r.securite_serrage:g})"] if faible else [])
+                + ([f"carton tourné au retour, serrage visé {cible / 2.0:.1f} N par main"]
+                   if force else []))
             if self._t_resserrage is None:
                 self._t_resserrage = t
                 self.stats["resserrages_port"] = self.stats.get("resserrages_port", 0) + 1
                 self._noter(f"port : {pourquoi} : base arrêtée, on resserre")
             self.penche = True
-            if t - self._t_resserrage >= r.duree_resserrage_s:
+            if t - self._t_resserrage >= r.duree_resserrage_s and not (ecartees or faible):
+                # Visé pas atteint dans les plafonds, mais la marge suffit.
+                self._resserrage_force = False
+            elif t - self._t_resserrage >= r.duree_resserrage_s:
                 self.stats["port_interrompu"] = self.stats.get("port_interrompu", 0) + 1
                 self._port_interrompu = True
                 self.a_reposer = True
@@ -2199,14 +2375,26 @@ class ManipulationService(IService):
             self._noter("port : serrage retrouvé, la marche peut reprendre")
         if not a_rendre or not self._marge_plafonds(tau):
             return
-        q = dict(self._q)
-        for cote in a_rendre:
-            if self._delta[cote] + r.pas_serrage_max_m \
-                    <= self._delta_max_poids.get(cote, r.penetration_poids_max_m):
+        a_rendre = [c for c in a_rendre if self._delta[c] + r.pas_serrage_max_m
+                    <= self._delta_max_poids.get(c, r.penetration_poids_max_m)]
+        q = None
+        if self._rigide is not None:
+            # Corps rigide : le serrage le long de la ligne des mains, les
+            # mains gardent leur orientation.
+            avant = dict(self._delta)
+            for cote in a_rendre:
+                self._delta[cote] += r.pas_serrage_max_m
+            q = self._q_rigide(self._centre_porte, self._ecart_mains)
+            if q is None:
+                self._delta = avant
+        if q is None:
+            q = dict(self._q)
+            for cote in a_rendre:
                 q2 = self._avancer(q, cote, r.pas_serrage_max_m, self._direction_serrage(q, cote))
                 if q2 is not None:
                     q, self._delta[cote] = q2, self._delta[cote] + r.pas_serrage_max_m
-                    self._garder_borne(cote)
+        for cote in a_rendre:
+            self._garder_borne(cote)
         self._ecrire_q(q)
         self._q_tenu = dict(q)
 
