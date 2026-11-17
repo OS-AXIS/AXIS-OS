@@ -10,6 +10,36 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Essai GPU de main (T1, 6 novembre 2026, 18 h 21) : poids gardé trop haut, carton tordu au retour
+
+Constat GPU : couples fiables, prise parfaite, « 11.4 N de poids » pour un
+carton de 9,8 N, carton tordu de 9,7° entre les mains au retour, marge de
+frottement 1,58 au port : à reposer (le carton n'est pas tombé). Rejoué dans
+`test_rejeu_port_t1821.py`.
+- Poids pesé une fois, bras immobiles, en haut du levage, avant de serrer
+  plus : médiane d'une fenêtre de lectures (`ManipulationService.poids_carton`,
+  au journal). Le serrage requis et la marge de frottement au port se
+  calculent sur lui ; le plus grand poids lu (11,44 N : la toute première
+  lecture après la remise à zéro de la moyenne, à la confirmation) ne sert
+  plus qu'au contrôle de glissement du port, inchangé. Le serrage d'après le
+  poids monte en haut du levage, plus en levant.
+- Retour en corps rigide (`ReglagesPrise.tol_rigide_m`, `tol_rigide_deg`,
+  `pas_chemin_rigide_m`, `saut_rigide_rad`) : les deux mains gardent leur
+  orientation et suivent la même translation, chemin vérifié d'avance (sans
+  saut de posture, avant-bras au-dessus du plateau) ; sinon rapproché moins,
+  ou pas du tout. Six articulations commandées par bras au moins.
+  `ChaineBras.pose`.
+- Roulis et tangage du carton estimés sur les mains mesurées pendant le
+  retour (`ManipulationService.rotation_carton`) : au-delà de
+  `rotation_ramener_max_deg`, le geste s'arrête et l'on resserre au port.
+- Robot simulé : `SimulatedRobot(poignets_29dof=True)`, tangage et lacet du
+  poignet commandés comme sur le G1 29 DOF (7 articulations par bras) ; par
+  défaut, comme avant (HAL 23 DOF).
+- `test_rejeu_port_t2157.py` : section 3 refaite sur le poids pesé (10,0 N
+  au lieu de 11,1) : le serrage requis passe à 12,5 N par main, les
+  poignets le donnent, le carton n'est plus « trop lourd », marge au port
+  entre 2,08 et 2,20.
+
 ### Essai GPU de main (T1, 5 novembre 2026, 21 h 57) : prise parfaite, glissement au port
 
 Constat GPU : prise parfaite, puis le carton glisse au port ; l'OS le voit
