@@ -92,6 +92,14 @@ def main():
     # vérité simulation : pour la vidéo de démonstration.
     ap.add_argument("--vue-sans-calques", action="store_true")
     ap.add_argument("--graine", type=int, default=3)
+    # Campagne de cartons variés (après le premier tri réussi) : N cartons tirés
+    # comme dans test/test_campagne_cartons.py (axis_os/testing/cartons.py,
+    # même graine, mêmes cartons), pris un à un comme la collecte VLA (sans
+    # personnes), la graine au journal ; bilan par plage et raisons de refus.
+    ap.add_argument("--cartons-varies", type=int, default=0, metavar="N",
+                    help="campagne de N cartons variés (0 : tri de colis habituel)")
+    ap.add_argument("--graine-cartons", type=int, default=20261118,
+                    help="graine des cartons variés (celle du test du robot simulé par défaut)")
     # Perception du carton : détecteur (OWLv2 à 0,10, verdict du banc de
     # perception ; OWL-ViT à 0,06 en repli s'il ne se charge pas, voir
     # detecteur_carton), masque SAM 2.1, images enregistrées pour la
@@ -115,6 +123,11 @@ def main():
     args = ap.parse_args()
     DUREE = args.duree
     rng = random.Random(args.graine)
+    CAMPAGNE = args.cartons_varies > 0
+    tires = []
+    if CAMPAGNE:
+        from axis_os.testing.cartons import tirer_cartons
+        tires = tirer_cartons(args.cartons_varies, args.graine_cartons)
 
     simulation_app = start_simulation_app(headless=True)
     import numpy as np
@@ -224,7 +237,28 @@ def main():
                                  static_friction=1.0, dynamic_friction=0.8)
     STOCK = {"rouge": 4, "bleu": 4, "vert": 2}
     cartons = []                               # dicts : prim, couleur, lieu
-    for couleur, n in STOCK.items():
+    # Campagne : chaque carton tiré, sa taille, sa masse et son frottement ;
+    # PhysX combine les frottements des deux corps en contact (moyenne par
+    # défaut) : en « min », c'est celui du carton (mains : 1,2).
+    for k, ct in enumerate(tires):
+        couleur = ("rouge", "bleu")[k % 2]
+        chemin_mat = f"/World/Materiaux/carton_{k}"
+        mat = PhysicsMaterial(prim_path=chemin_mat, static_friction=ct.frottement,
+                              dynamic_friction=0.8 * ct.frottement)
+        try:
+            from pxr import PhysxSchema
+            PhysxSchema.PhysxMaterialAPI.Apply(stage.GetPrimAtPath(chemin_mat)) \
+                .CreateFrictionCombineModeAttr().Set("min")
+        except Exception as exc:        # noqa: BLE001 — dit au journal, pas d'arrêt
+            print(f"  [campagne] frottement combiné en moyenne (mode min indisponible : {exc!r})")
+        parc = np.array([30.0 + 0.5 * k, 32.0, ct.hauteur / 2])
+        c = world.scene.add(DynamicCuboid(
+            prim_path=f"/World/carton_{k}", name=f"carton_{k}", position=parc, size=1.0,
+            scale=np.array([ct.largeur, ct.profondeur, ct.hauteur]), mass=ct.masse_kg,
+            color=np.array(sd.COULEURS_RGB[couleur]), physics_material=mat))
+        cartons.append({"obj": c, "couleur": couleur, "lieu": "stock", "t": 0.0, "parc": parc,
+                        "tire": ct})
+    for couleur, n in ({} if CAMPAGNE else STOCK).items():
         for i in range(n):
             k = len(cartons)
             c = world.scene.add(DynamicCuboid(
@@ -241,7 +275,7 @@ def main():
     EVAL = args.evaluer_vla is not None
     # Collecte et évaluation VLA (même scène, même geste) : on ne fait que des
     # prises répétées. Dans la suite, COLLECTE couvre les deux.
-    COLLECTE = args.collecte_vla is not None or EVAL
+    COLLECTE = args.collecte_vla is not None or EVAL or CAMPAGNE
     # Collecte VLA : pas de personnes (le geste de prise seul est enregistré ;
     # la sécurité reste active, elle n'a simplement personne à protéger).
     # Évaluation : pas de personnes non plus — le modèle a appris sans.
@@ -963,7 +997,8 @@ def main():
         from axis_os.vla.collecte import CollecteurPrises
         from axis_os.vla.enregistreur import EnregistreurEpisodes
         bras_j = list(cfg.body_joints[cfg.num_actions:])
-        enreg = EnregistreurEpisodes(args.collecte_vla or str(VIDEOS / "_eval_vide"), fps=10,
+        enreg = EnregistreurEpisodes(args.collecte_vla or str(
+            VIDEOS / ("campagne_cartons" if CAMPAGNE else "_eval_vide")), fps=10,
                                      noms_etat=bras_j,
                                      noms_action=bras_j + ["base_vx", "base_vy", "base_wz"])
 
@@ -996,7 +1031,63 @@ def main():
             im = _Img.frombytes("RGB", (f_.width, f_.height), f_.data).reduce(2)
             return np.asarray(im)
 
-        if not EVAL:
+        # Campagne de cartons variés : posés dans l'ordre du tirage, chacun à sa
+        # place sur la table de prise (retrait depuis son bord, décalage le long,
+        # lacet). L'app ne perçoit pas encore la taille d'un carton (réglage
+        # unique, celui du carton T1) : le banc lui donne la vraie, comme la
+        # campagne du robot simulé léger donne une perception exacte.
+        campagne_res, en_cours, suivant = [], {}, [0]
+
+        def placer_campagne(rng_):
+            from dataclasses import asdict, replace as remplacer
+            from axis_os.testing.cartons import place_sur_table
+            c = cartons[suivant[0]]
+            suivant[0] += 1
+            ct = c["tire"]
+            facade.cfg = remplacer(facade.cfg, largeur=ct.largeur, profondeur=ct.profondeur,
+                                   hauteur=ct.hauteur, presaisie_ajustee=True)
+            # Repère du test : bord de table en x = 0, table vers +x, y à gauche.
+            # Ici, le robot aborde la table de prise vers +y : sa gauche est -x.
+            dx, dy, _ = place_sur_table(ct)
+            x = (sd.TABLE_PRISE.xmin + sd.TABLE_PRISE.xmax) / 2.0 - dy
+            y = sd.TABLE_PRISE.ymin + dx
+            poser_carton(c, (x, y, sd.PLATEAU + ct.hauteur / 2 + 0.003), ct.lacet_deg)
+            c["lieu"], c["t"] = "prise", sim_t[0]
+            en_cours[ct.numero] = {"carton": asdict(ct), "issue": "", "raison": "", "tombe": False}
+            journaliser(f"[{sim_t[0]:7.1f}s] CAMPAGNE : carton n° {ct.numero} "
+                        f"({suivant[0]}/{len(tires)}, graine {args.graine_cartons}) : {asdict(ct)}")
+            return c["couleur"], {"numero": ct.numero}
+
+        def retirer_campagne():
+            for c in cartons:
+                if c["lieu"] != "stock" and float(c["obj"].get_world_pose()[0][2]) < 0.3:
+                    for r_ in en_cours.values():
+                        r_["tombe"] = True
+            for r_ in en_cours.values():
+                if not r_["issue"]:            # jamais repéré : aucun épisode ouvert
+                    r_["issue"], r_["raison"] = "refusée", "carton non repéré par la perception"
+            campagne_res.extend(en_cours.values())
+            en_cours.clear()
+            retirer_vla()
+            if suivant[0] >= len(tires):       # stock tiré épuisé : la campagne s'arrête
+                collecteur.n_episodes = min(collecteur.n_episodes, collecteur.stats["episodes"])
+
+        if CAMPAGNE:
+            journaliser(f"CAMPAGNE de {args.cartons_varies} cartons variés, graine "
+                        f"{args.graine_cartons} (axis_os/testing/cartons.py)")
+            collecteur = CollecteurPrises(facade, enreg, placer_campagne, retirer_campagne,
+                                          horloge, etat_action_vla, image_vla,
+                                          n_episodes=args.cartons_varies, graine=args.graine,
+                                          journal=journaliser)
+            fin_episode = collecteur._fin_episode
+
+            def noter_fin(succes, raison=""):
+                for r_ in en_cours.values():
+                    r_["issue"] = "déposée" if succes else "refusée"
+                    r_["raison"] = raison or ("" if succes else "prise non confirmée")
+                fin_episode(succes, raison)
+            collecteur._fin_episode = noter_fin
+        elif not EVAL:
             collecteur = CollecteurPrises(facade, enreg, placer_vla, retirer_vla, horloge,
                                           etat_action_vla, image_vla, n_episodes=args.episodes,
                                           graine=args.graine, journal=journaliser)
@@ -1647,6 +1738,24 @@ def main():
               f"\n  détail : {sortie}\n  temps réel : {time.monotonic() - t_mur:.0f} s")
         if chute:
             print(f"  CHUTE à t = {chute[0]:.1f} s (pendant l'essai {collecteur.mode})")
+        simulation_app.close()
+        sys.exit(0)
+    if CAMPAGNE:
+        import json
+        from axis_os.testing.cartons import rapport
+        if enreg.actif:
+            enreg.fin(False, sim_t[0], raison="campagne interrompue")
+        campagne_res.extend(en_cours.values())
+        sortie = VIDEOS / "t1_campagne_cartons.json"
+        sortie.write_text(json.dumps(campagne_res, ensure_ascii=False, indent=1))
+        print(f"\n{'=' * 66}\n  CAMPAGNE DE CARTONS VARIÉS (graine {args.graine_cartons})\n{'=' * 66}")
+        print(rapport(campagne_res, args.graine_cartons))
+        print(f"  tombés au sol : {sum(r_['tombe'] for r_ in campagne_res)}"
+              f"\n  garde-fou : {loco.stats['refused']} refus\n  gardien : {gardien.stats}"
+              f"\n  manipulation : {manip.stats}\n  détail : {sortie}"
+              f"\n  temps réel : {time.monotonic() - t_mur:.0f} s")
+        if chute:
+            print(f"  CHUTE à t = {chute[0]:.1f} s")
         simulation_app.close()
         sys.exit(0)
     if COLLECTE:

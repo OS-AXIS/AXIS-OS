@@ -87,6 +87,11 @@ class ConfigFacade:
     # points les plus proches). Pour obtenir le centre, on ajoute une
     # demi-profondeur dans la direction du regard (le cap de prise).
     position_face_avant: bool = True
+    # Pré-saisie à la largeur du carton visé (ManipulationService.presaisir(objet)) :
+    # bras ouverts juste assez pour lui, refusée s'il est trop large. Par défaut,
+    # l'ouverture fixe, réglée sur le carton de la scène T1, comme avant ; la
+    # campagne de cartons variés du banc (--cartons-varies) l'active.
+    presaisie_ajustee: bool = False
     # Boîte orientée (perception/boite.py) ajustée aux points 3D de chaque
     # détection, fusionnés image après image pendant l'approche : centre et
     # lacet. Au-delà de `residu_max_m`, ou dessus vu sur moins de
@@ -800,8 +805,13 @@ class FacadeServices:
             self.stats["stabilisations"] = self.stats.get("stabilisations", 0) + 1
             if self._apres_stab == "PRESAISIE":
                 # Immobile devant le carton : on ouvre les bras en grand
-                # (pré-saisie).
-                r = self.manip.presaisir()
+                # (pré-saisie) ; presaisie_ajustee : juste assez pour lui.
+                c = self._colis_vise
+                if self.cfg.presaisie_ajustee and c is not None:
+                    r = self.manip.presaisir(Objet(c.position, self.cfg.largeur, self.cfg.profondeur,
+                                                   self.cfg.hauteur, lacet=c.lacet))
+                else:
+                    r = self.manip.presaisir()
                 if not r.ok:
                     self._etat_accostage = "ECHEC"
                     self.stats["accostages_ratees"] += 1
