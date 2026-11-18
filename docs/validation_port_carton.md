@@ -324,3 +324,118 @@ le port rejoué.
   - `carton ramené sans toucher le torse : …`, sans `retour arrêté` ;
   - ou `retour : … porté là où le levage l'a laissé`.
 - Sur la vérité du banc, le roulis et le tangage du carton au retour, sous 2°.
+
+## 8. Campagne de cartons variés : la prise hors du seul carton T1
+
+La prise a été mise au point sur un seul carton : celui de la scène T1, 24 ×
+20 × 20 cm, ~1 kg, posé toujours sur la même table, à la même place. La
+campagne essaie l'OS sur des cartons tirés au hasard, graine fixée, donc
+rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
+
+### Ce qui est tiré, et comment c'est essayé
+
+- **Cartons** : largeur 15 à 35 cm, profondeur 15 à 30, hauteur 10 à 30,
+  masse 0,2 à 2,5 kg, frottement des mains sur leurs faces 0,5 à 1,2, lacet
+  de −45 à 45°, retrait de 0 à 25 cm depuis le bord de la table (dans et
+  hors de portée), décalage le long du bord.
+- **Hors des moyens, exprès** : un carton sur dix trop large (45 à 60 cm),
+  un sur dix trop lourd (3 à 5 kg).
+- **Rejouable ailleurs** : le tirage ne dépend que de
+  `random.Random(graine).random()` ; le banc Isaac tire les mêmes cartons
+  (`lancer_t1.sh --cartons-varies N`, graine au journal).
+- **Comme sur le banc T1** : approche face à la table à la distance de
+  prise de l'OS (erreur de navigation de ±2 cm et ±3° comprise), bras ouverts
+  pour ce carton, insertion, prise, port, dépose sur la table. Les couples
+  estimés portent le bruit, le biais et le gain du banc (`BruitCouples`).
+- **Ce qui ne doit jamais arriver** (vérité du robot simulé), sinon le test
+  échoue :
+  - carton tombé, ou lâché à plus de 3 cm de haut ;
+  - écrasé : consigne de serrage au-delà de ses bornes, ou contact vu trop
+    tard (main à plus de `tol_face_contact_m` dans la face) ;
+  - couple vrai au-delà du plafond de l'OS (à l'erreur d'estimation du banc
+    près) ou de la limite matérielle ;
+  - prise confirmée les mains vides ;
+  - carton perdu sans que l'OS le voie.
+- **Chaque refus a une raison claire**, d'une catégorie connue.
+
+### Ce qu'elle a trouvé, et ce qui est corrigé
+
+- **Bras ouverts qui heurtent le carton à l'insertion** : la pré-saisie fixe
+  (`roulis_presaisie`, réglée sur le carton T1) ne laisse que 27 cm entre
+  les paumes. Tout carton plus large vu de face était heurté, plafonds de
+  couple dépassés de 1 à 2 N·m.
+  - `presaisir(objet)` ouvre juste assez : largeur vue de face plus
+    `jeu_ouverture_m` de chaque côté, au plus `roulis_presaisie_max` (45 cm
+    libres), les mains gardées à la même hauteur.
+  - Un carton trop large même ouvert en grand est refusé d'avance
+    (`distance_de_prise` : « trop large pour les mains »).
+  - L'app de tri ne s'en sert que si on le lui demande
+    (`ConfigFacade.presaisie_ajustee`, activé par la campagne GPU) : le tri
+    T1 ne change pas.
+- **Fond du carton porté** : les repères des mains le donnaient de 2 cm trop
+  haut (carton de 13 cm enfoncé dans la table à la dépose) à 3 cm trop bas
+  (carton de 30 cm « déjà sous le plateau », pas reposé sur sa table). Il est
+  maintenant estimé aux points de contact, moins leur hauteur au-dessus du
+  centre du carton à la prise ; les cibles de la descente et de la montée en
+  tiennent compte. La dépose est exacte à quelques millimètres.
+- **Carton resté sur la table** : un carton de 1,8 kg à peine tenu par le
+  serrage de prise y restait, les mains glissant de 3,8 cm le long de ses
+  faces ; l'OS confirmait la prise, pesait 0,2 N et partait avec. Pesé sous
+  `poids_min_n` (1 N), il est reposé : « ne pèse pas sur les mains ».
+- **Levage sans fin** : avec les couples bruités du banc, le délai qui juge
+  « trop lourd » repartait à chaque avance aussitôt défaite par le
+  garde-plafond. Il ne repart plus que sur un vrai progrès.
+- **Robot simulé**, pour que ces cas existent :
+  - masse et frottement propres à chaque carton ;
+  - glissement quand le frottement ne porte plus le poids ;
+  - carton porté à l'équilibre des forces des deux mains (au milieu des mains
+    mesurées, un carton tourné de 10° tombait au retour) ;
+  - faces bornées à leur rectangle, tables en option ;
+  - carton accroché là où les mains l'ont serré.
+
+### Ce que montre le rapport (graine 20261118)
+
+- **Tirés dans toutes leurs plages à la fois, presque aucun carton n'est
+  pris** : 0 déposé sur 120, 2 reposés, 118 refusés. Hors de portée : 90 ;
+  trop large : 23 ; trop lourd ou trop glissant pour le serrage de prise :
+  5. Aucun cas interdit.
+- **Un paramètre à la fois autour du carton T1** (balayage du test), la
+  prise réussit :
+  - largeur de 15 à 30 cm ;
+  - profondeur de 15 à 30 cm ;
+  - hauteur de 13 à 25 cm ;
+  - masse jusqu'à ~1 kg ;
+  - frottement dès 0,6 ;
+  - lacet jusqu'à 20° ;
+  - retrait du bord de 5 cm au plus.
+- **Ses limites, raisons comprises** :
+  - carton de 10 cm de haut : avant-bras trop près du plateau ;
+  - dès 1,2 kg : trop lourd pour les poignets du G1 (plafonds de 5 N·m) ;
+  - μ = 0,5 : il ne suit pas le levage ;
+  - lacet de 30° et plus : hors de portée, le robot abordant la table de face ;
+  - à 20 cm du bord de la table : hors de portée à toute distance.
+
+### Les réglages choisis sur le carton T1
+
+| Réglage | Sur la campagne | Verdict |
+|---|---|---|
+| `frottement_serrage` 0,8 | Cartons à μ 0,5 et 0,6 portés avec une marge vraie de 1,38 à 1,46, l'OS en croyant 1,74 à 2,30 ; garantie au serrage requis : 2 × μ / 0,8, soit 1,25 à μ 0,5 | **Réglé pour T1** (μ ≥ 0,8). À 0,5, la marge vraie ne descend plus sous 2,04, mais les mains ne portent plus que ~0,6 kg : le carton T1 lui-même devient trop lourd. **Proposition** : mesurer le frottement caoutchouc/carton du site ; le garder à 0,8 pour les cartons T1 (μ = 1 au banc), le descendre à la mesure pour tout autre carton. Inchangé ici. |
+| `rotation_ramener_max_deg` 4° | Rotation estimée au retour : 1,1° au plus sur la campagne, 3,3° sur une grille d'essai jusqu'à 1,2 kg. Un carton de 1,39 kg, aux plafonds de couple, l'a dépassée (4,7° estimés) sans tourner : retour arrêté à tort, mais au-delà de ce que les mains portent | **Tient**. Inchangé. |
+| `penetration_poids_max_m` 6 cm | Jamais atteinte : avance de 3,4 cm au plus sur la campagne, 5,2 sur un balayage d'essai aux couples bruités ; ce sont les plafonds de couple qui limitent d'abord | **Tient**. Inchangé. |
+| Seuils de contact (`force_contact_n`, `sigmas_contact`, `hausse_contact_nm`) | Contact vu la main 0,8 à 1,2 cm dans la face (au plus 1,5) quels que soient taille, masse et lacet, bruit du banc compris ; aucun refus de contact | **Tiennent**. Inchangés. |
+| `roulis_presaisie` 0,32 | 27 cm entre les paumes : tout carton plus large était heurté | **Réglé pour T1** : corrigé, pré-saisie à la largeur du carton (voir plus haut). |
+| `masse_max_kg` 1,0 | C'est la masse du carton T1 ; les mains portent jusqu'à ~1,2 kg | **Proposition** : 1,2 kg, la charge que les mains portent (tolérance de la ligne des mains au centre de gravité : 1,45 cm au lieu de 1,7). Inchangé ici. |
+| `force_serrage_n` 8 N | 8 ou 12 N ne changent rien : le serrage de prise est borné par `penetration_max_m` (2 cm, ~9 N avec les bras du G1) | **Proposition** : au second essai d'un carton qui n'a pas suivi, serrer jusqu'à la borne d'après le poids. Inchangé ici. |
+
+### Ce qui reste
+
+- **Aborder le carton dans l'axe de ses faces** (cap de prise tourné de son
+  lacet) : c'est ce qui ferait passer les lacets de 30° et plus.
+- **L'app de tri suppose un seul carton** : réglage de taille unique, et
+  perception qui ajuste une boîte de cette taille. La campagne GPU lui donne
+  la vraie taille de chaque carton posé ; il faudrait qu'elle la perçoive.
+- **Plateaux bas** : à atteindre en pliant le corps (taille, genoux), pas en
+  inclinant les mains.
+- **Campagne GPU, après le premier tri réussi** :
+  `bash lancer_t1.sh 3600 10 --cartons-varies 40`. Bilan par plage et
+  raisons en fin d'essai, détail dans `videos/t1_campagne_cartons.json`.

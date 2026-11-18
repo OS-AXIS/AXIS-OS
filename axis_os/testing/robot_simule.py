@@ -16,9 +16,11 @@ Les services sont cadencés ici, à 50 Hz, par la boucle du robot simulé,
 comme sur un vrai robot : une app ne les cadence jamais elle-même.
 
 Ce que ce robot ne simule PAS : l'équilibre, les chocs, la dynamique des
-bras chargés, le glissement d'un objet dans les mains. Une app qui marche
-ici doit encore être essayée en simulation complète (sim/) avant un vrai
-robot.
+bras chargés (le monde est quasi statique, sans inertie). Le glissement d'un
+objet dans les mains l'est avec les mains du G1 (contact_main_m) : quand
+leur frottement ne porte plus son poids ; les tables, si on les lui donne
+(plateaux). Une app qui marche ici doit encore être essayée en simulation
+complète (sim/) avant un vrai robot.
 
 Licence : Apache 2.0 (open-source — SDK public)
 """

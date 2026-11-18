@@ -10,6 +10,28 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Campagne de cartons variés : la prise hors du seul carton de la scène T1
+
+Cartons tirés au hasard, graine fixée, rejouables ici et sur le banc Isaac
+(`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`,
+`lancer_t1.sh --cartons-varies N`) : jamais de carton tombé, écrasé, de
+plafond de couple dépassé ni de prise confirmée les mains vides ; chaque
+refus avec une raison claire ; rapport par plage et audit des réglages
+choisis sur le seul carton T1 (docs/validation_port_carton.md, §8).
+- `ManipulationService.presaisir(objet)` : bras ouverts juste assez pour ce
+  carton (`Postures.roulis_presaisie_max`) ; sans objet, comme avant.
+  `distance_de_prise` refuse d'avance un carton trop large pour les mains.
+  `ConfigFacade.presaisie_ajustee` (désactivé par défaut).
+- Fond du carton porté estimé aux points de contact : dépose exacte quelle
+  que soit sa hauteur.
+- `ReglagesPrise.poids_min_n` : un carton pesé sous 1 N n'a pas quitté la
+  table, la prise n'est pas confirmée.
+- Serrage d'après le poids : « trop lourd » jugé même sous couples bruités.
+- Robot simulé : `SimulatedObject.masse_kg` et `frottement`,
+  `SimulatedRobot(plateaux=...)`, glissement, équilibre des forces du
+  carton porté, chutes relevées (`chutes`).
+- Cinématique : mêmes résultats au bit près, deux à trois fois plus vite.
+
 ### Essai GPU de main (T1, 6 novembre 2026, 18 h 21) : poids gardé trop haut, carton tordu au retour
 
 Constat GPU : couples fiables, prise parfaite, « 11.4 N de poids » pour un
