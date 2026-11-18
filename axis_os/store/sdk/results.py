@@ -47,6 +47,7 @@ class RefusalCode(str, Enum):
     BUSY = "BUSY"                               # le service fait déjà autre chose
     BLOCKED = "BLOCKED"                         # pas de chemin, obstacle infranchissable
     OUT_OF_REACH = "OUT_OF_REACH"               # objet hors des mains, plateau hors d'atteinte
+    TOO_HEAVY = "TOO_HEAVY"                     # objet trop lourd : reposé là où il était
     FAILED = "FAILED"                           # l'action a été tentée et a échoué
     HUMAN_DECLINED = "HUMAN_DECLINED"           # l'humain a répondu non
     HUMAN_UNAVAILABLE = "HUMAN_UNAVAILABLE"     # aucun humain pour répondre

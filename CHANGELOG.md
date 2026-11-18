@@ -10,6 +10,20 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Objet trop lourd : code de refus TOO_HEAVY (API du SDK 1.3.0)
+
+- `RefusalCode.TOO_HEAVY` : l'objet est trop lourd pour le robot. Il a été
+  pesé au-delà de sa charge maximale (`masse_max_kg`, 1,2 kg sur le G1), ou
+  le serrage qu'il demande dépasse les plafonds de couple des poignets.
+  L'OS l'a reposé doucement là où il était. `pick()` rend FAILED avec ce
+  code, au lieu de OUT_OF_REACH, qu'une app traiterait en se rapprochant.
+  « Trop lourd ou trop glissant » (l'objet n'a pas suivi le levage) reste
+  FAILED.
+- `API_VERSION` 1.3.0 (ajout compatible), paquet `axis-os-sdk` 1.3.0 ;
+  `docs/API_REFERENCE.md` le documente.
+- `examples/fetch` le traite : pas de nouvel essai, bras au repos, métrique
+  `trop_lourd` ; testé avec une boîte de 1,6 kg.
+
 ### Campagne de cartons variés : la prise hors du seul carton de la scène T1
 
 Cartons tirés au hasard, graine fixée, rejouables ici et sur le banc Isaac
