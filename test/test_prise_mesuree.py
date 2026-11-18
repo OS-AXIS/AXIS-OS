@@ -131,8 +131,10 @@ check("Plateau trop haut pour les bras : aucune distance, raison claire",
 
 
 section("2. Prise normale : placement, contact, serrage borné, levage, transport")
+# Bras à 7 articulations (G1 29 DOF) : sans tangage du poignet, aucune main ne
+# garde son orientation, et le carton n'est pas ramené contre le buste.
 with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
-                    time_scale=ECHELLE) as robot:
+                    time_scale=ECHELLE, poignets_29dof=True) as robot:
     leve = releve_au_levage(robot)
     res, j = prise(robot, carton(0.30))
     m = robot.manipulation

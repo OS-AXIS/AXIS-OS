@@ -236,9 +236,11 @@ class ReglagesPrise:
     # Serrage d'après le poids (essai GPU T1 du 5 novembre 2026, 21 h 57 :
     # carton de 10,9 N tenu à 6,5 N par main, soit un frottement d'au moins
     # 0,84 rien que pour le porter, aucune marge ; il a glissé à la marche).
-    # Dès le levage, le poids mesuré par l'OS (le plus grand depuis le début
-    # du levage) fixe le serrage requis par main : securite_serrage × poids /
-    # (2 frottement_serrage) ; l'OS vise marge_serrage_n de plus, et se
+    # En haut du levage, la prise confirmée, l'OS pèse le carton une fois,
+    # bras immobiles, avant de serrer plus : la médiane d'une fenêtre de
+    # lectures (filtre_force × 3). Ce poids fixe le serrage requis par main :
+    # securite_serrage × poids / (2 frottement_serrage) ; l'OS vise
+    # marge_serrage_n de plus, et se
     # contente du requis s'il ne peut aller au-delà (au-dessus du serrage
     # déjà atteint seulement : un objet léger garde celui d'avant).
     # frottement_serrage : hypothèse prudente
@@ -269,6 +271,27 @@ class ReglagesPrise:
     # (à reposer).
     ecart_face_port_m: float = 0.005
     duree_resserrage_s: float = 1.0
+    # Au retour (RAMENER), les deux mains bougent comme un seul corps rigide
+    # avec le carton (essai GPU T1 du 6 novembre 2026, 18 h 21 : la
+    # cinématique inverse ne tenait que la POSITION des points de contact ;
+    # les deux mains ont piqué de 18° autour de la ligne des mains, la gauche
+    # a roulé de 10° de plus que la droite, et le carton s'est tordu entre
+    # elles : 9,7° de rotation, 4,6 cm de glissement à la main gauche, 2 à
+    # 3 N de serrage perdus). Chaque main garde son orientation, à
+    # tol_rigide_deg près, et suit la même translation, à tol_rigide_m près,
+    # sur tout le chemin vérifié d'avance (étapes de pas_chemin_rigide_m,
+    # aucune articulation qui saute de plus de saut_rigide_rad d'une étape à
+    # l'autre, avant-bras au-dessus du plateau) ; sinon on rapproche moins,
+    # ou pas du tout. Pendant le retour rigide, le roulis (autour de l'axe avant) et
+    # le tangage (autour de la ligne des mains) du carton, estimés sur les
+    # mains mesurées (ligne des mains, orientation des paumes), ne passent
+    # pas rotation_ramener_max_deg : au-delà, le geste s'arrête et l'on
+    # resserre.
+    tol_rigide_m: float = 0.001
+    tol_rigide_deg: float = 1.0
+    pas_chemin_rigide_m: float = 0.01
+    saut_rigide_rad: float = 0.15
+    rotation_ramener_max_deg: float = 4.0
     # Écart admis entre une main mesurée par le robot (le lien de la main,
     # rubber_hand) et la même main calculée par la cinématique sur les
     # angles mesurés. Au-delà, le modèle des bras ne décrit pas le robot :

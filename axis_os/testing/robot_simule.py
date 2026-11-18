@@ -387,6 +387,11 @@ class SimulatedRobot:
                        aucune lecture ne tombe au milieu d'un pas (un bras
                        simulé reçoit sa consigne, puis sa position physique,
                        affaissement compris, dans le même pas).
+    contact_main_m   : où les mains touchent, le long de la main (voir
+                       CONTACT_MAIN_M) ; 0.11 pour celles du G1.
+    poignets_29dof   : tangage et lacet du poignet commandés, comme sur le G1
+                       29 DOF du banc Isaac (7 articulations par bras) ; par
+                       défaut, comme le HAL 23 DOF : le lacet seul, fixe.
     """
 
     PEOPLE_EVERY = 5
@@ -439,7 +444,8 @@ class SimulatedRobot:
                  site_map: Optional[SiteMap] = None, battery_drain_per_s: float = 0.0,
                  battery_drain_per_m: float = 0.0, charge_per_s: float = 1.0,
                  horloge: Optional[Callable[[], float]] = None,
-                 contact_main_m: Optional[float] = None):
+                 contact_main_m: Optional[float] = None, poignets_29dof: bool = False):
+        self.poignets_29dof = bool(poignets_29dof)
         if contact_main_m is not None:
             self.CONTACT_MAIN_M = float(contact_main_m)
         if horloge is not None:
@@ -504,16 +510,23 @@ class SimulatedRobot:
         # touchent à leur repère ; avec celles du G1, contact_main_m=0.11, 0,75
         # donne ~460 N/m au point de contact, gains raidis, comme mesuré sur
         # GPU le 5 novembre 2026 : 6,6 N pour 1,3 cm de consigne au-delà de
-        # la face ; le quart y donnerait 160). Le lacet du
-        # poignet n'est pas une articulation du HAL simulé (23 DOF) : il est
-        # rendu dans les angles et les couples mesurés, comme l'encodeur et le
-        # couple estimé du vrai G1 29 DOF (consigne 0, non commandable ici).
+        # la face ; le quart y donnerait 160). Le lacet du poignet n'est pas
+        # une articulation du HAL simulé (23 DOF) : il est rendu dans les
+        # angles et les couples mesurés, comme l'encodeur et le couple estimé
+        # du vrai G1 29 DOF (consigne 0, non commandable). poignets_29dof :
+        # le tangage et le lacet du poignet, rendus de même, et COMMANDÉS
+        # comme les siens (_envoyer, _consignes_poignets) : chaque bras a les
+        # 7 articulations du G1 29 DOF, que commande le banc Isaac T1, de quoi
+        # tenir la pose entière d'une main (position et orientation : le
+        # retour en corps rigide de la prise).
         self.poignets_cedent = False
         self.souplesse_poignets = 0.25
         self.raideur_active = False
         self.changements_raideur: List[bool] = []
-        self._poignets = {"left_wrist_yaw_joint": 0.0, "right_wrist_yaw_joint": 0.0}
-        self._couples_poignets = {"left_wrist_yaw_joint": 0.0, "right_wrist_yaw_joint": 0.0}
+        self._poignets = {f"{c}_wrist_{a}_joint": 0.0 for c in ("left", "right")
+                          for a in (("pitch", "yaw") if self.poignets_29dof else ("yaw",))}
+        self._couples_poignets = dict(self._poignets)
+        self._consignes_poignets = dict(self._poignets)
         # Force de contact de chaque main sur l'objet (N), vérité du monde
         # simulé (jamais lue par l'OS) ; couples estimés : bruit (par exemple
         # BruitCouples du banc Isaac) appliqué aux couples des bras, ou None.
@@ -540,7 +553,8 @@ class SimulatedRobot:
                               rotation=self._rotation_vue,
                               contact_main_m=self.CONTACT_MAIN_M,
                               arret_urgence=lambda: self.hal.estop_active,
-                              commandables=self._BRAS)
+                              commandables=self._BRAS + (tuple(self._poignets)
+                                                         if self.poignets_29dof else ()))
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
                                                  self._vers_robot, self._prise_tient,
                                                  gardien=self.guard, horloge=self.clock,
@@ -761,8 +775,17 @@ class SimulatedRobot:
         manipulation) -> articulations, à travers leurs garde-fous ; puis le
         contact : une main ne traverse pas l'objet qu'elle touche, et le
         roulis d'épaule mesure alors l'effort du serrage."""
+        # Tangage et lacet du poignet (hors du HAL 23 DOF) : consignes gardées
+        # ici, dans les bornes de l'URDF, pour le contact.
+        poignets = {j: v for j, v in cibles.items() if j in self._poignets
+                    and self.poignets_29dof}
+        for j, v in poignets.items():
+            lo, hi = self.modele_bras.gauche.bornes.get(j) or self.modele_bras.droite.bornes[j]
+            self._consignes_poignets[j] = min(hi, max(lo, float(v)))
         statuts = self.raw_hal.send_joint_commands(
-            {j: ActuatorCommand(mode=ControlMode.POSITION, position=v) for j, v in cibles.items()})
+            {j: ActuatorCommand(mode=ControlMode.POSITION, position=v) for j, v in cibles.items()
+             if j not in poignets})
+        statuts.update({j: HALStatus.OK for j in poignets})
         self._contact()
         return statuts
 
@@ -848,7 +871,7 @@ class SimulatedRobot:
         q = {}
         for j in self._BRAS:
             q[j] = self._consignes_roulis.get(j, self.raw_hal.get_actuator(j)._position)
-        q.update({j: 0.0 for j in self._poignets})
+        q.update(self._consignes_poignets)
         for j in ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
             q[j] += self.affaissement_rad
         cmd = dict(q)

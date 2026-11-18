@@ -23,7 +23,9 @@ Désormais (prise.py, service.py) :
 
 Robot simulé léger, horloge simulée ; ses mains : celles du G1
 (contact_main_m=0.11), carton 11 cm plus loin que pour des mains idéales
-(même posture des bras).
+(même posture des bras) ; ses bras : les 7 articulations du G1 29 DOF
+(poignets_29dof), sans lesquelles aucune main ne garde son orientation au
+retour (corps rigide, essai GPU du 6 novembre 2026, 18 h 21).
 """
 import contextlib
 import io
@@ -60,7 +62,7 @@ class Banc:
         self.x = x
         self.r = SimulatedRobot(objects=[SimulatedObject("carton", (x, 0.0, 0.90))]
                                 if objets else [], horloge=lambda: self.t[0],
-                                contact_main_m=contact)
+                                contact_main_m=contact, poignets_29dof=True)
         self.r.start(fil=False)
         self.m = self.r.manipulation
         if os_contact is not None:

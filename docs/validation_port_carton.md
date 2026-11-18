@@ -205,3 +205,122 @@ mains »**, de peu. Les leviers sont des réglages, pas du code :
 `frottement_serrage` (le banc : caoutchouc 1,0, carton 0,8 en frottement
 dynamique), `securite_serrage`, le poids mesuré par l'OS (13 % au-dessus du
 vrai sur cet essai), ou la part du plafond des poignets.
+
+---
+
+## 7. Essai T1 du 6 novembre 2026, 18 h 21 : poids gardé trop haut, carton tordu au retour
+
+Couples fiables, perception, contact et ligne des mains bons (juge : 2 vrais
+contacts, 0 manqué, 0 faux). « serrage d'après le poids : G 14.6 N, D 14.4 N
+par main pour 11.4 N de poids (requis 14.3, visé 15.3) » ; au port, marge de
+frottement 1,58 puis 1,93 malgré le resserrage : à reposer. Le carton n'est
+pas tombé. Rejoué dans `test/test_rejeu_port_t1821.py`
+(`test/donnees/t1_prise_20261106_1821.csv`).
+
+### Le poids : 11,4 N pour 9,8
+
+- **L'estimation est juste bras immobiles :** les 15 lectures qui suivent la
+  confirmation de la prise, en haut du levage, ont une médiane de 9,85 N
+  (essai de 21 h 57 : 10,0 N en fin de levage).
+- **La référence ne l'était pas :** c'était le plus grand poids lu depuis le
+  levage. Elle a gardé 11,44 N, la toute première lecture après la remise à
+  zéro de la moyenne glissante à la confirmation, une seule lecture, bruitée.
+  Au retour, bras en mouvement et carton tordu, l'estimation a monté
+  jusqu'à 11,8 N.
+- **Ce qui n'est pas en cause :**
+  - le modèle de pesanteur et le poids des avant-bras : résidu de la
+    calibration 0,10 N·m au plus, pente 1,00 ; rejoué sur les couples de
+    l'essai, le modèle des bras de l'URDF donne 9 à 10 N, torse supposé droit ;
+  - le point de contact : le vrai est à 12,4 cm le long de la main (11 dans
+    le modèle), 2,5 cm au-dessus de son axe, à la surface de la paume ; le
+    prendre change l'estimation de 5 % au plus, et la fait passer sous le
+    vrai poids : il reste à 11 cm, réglé sur la force normale (essai de
+    16 h 06) ;
+  - le frottement vertical, porté à la surface de la paume : sans effet,
+    bras immobiles.
+
+**Ce qui change :** le poids est pesé une fois, bras immobiles, en haut du
+levage, avant de serrer plus : la médiane d'une fenêtre de
+`filtre_force × 3` lectures (`ManipulationService.poids_carton`, au
+journal). C'est sur lui que se calculent le serrage requis et la marge de
+frottement au port. Le plus grand poids lu ne sert plus qu'au contrôle de
+glissement du port (inchangé). Le serrage ne monte plus en levant : il monte
+en haut, une fois le carton pesé.
+
+### Le retour : les deux mains ne bougeaient pas comme un seul corps
+
+La cinématique inverse du retour ne tenait que la **position** des points de
+contact (tangage et roulis d'épaule, coude). Reconstruites sur les angles
+mesurés :
+- les paumes ont piqué de ~15° autour de la ligne des mains ;
+- la gauche a roulé de ~10° de plus que la droite (l'épaule gauche a roulé de
+  −10,5°, la droite de +0,5°) ;
+- le carton s'est tordu entre elles : 9,7° de rotation, 4,6 cm de glissement
+  à la main gauche, 6 N de serrage perdus du début du retour au port.
+
+**Ce qui change :**
+- **Corps rigide :** au retour, chaque main garde son orientation et suit la
+  même translation, à `tol_rigide_deg` (1°) et `tol_rigide_m` (1 mm) près,
+  par une cinématique inverse de la pose entière sur les articulations que
+  la prise commande. Le mode reste en place, objet tenu, pour les gestes
+  qui suivent (dépose). Là où il n'arrive pas, le geste est refusé (hors
+  d'atteinte), comme avant : l'ancienne cinématique, partie des angles du
+  serrage, ferait tourner les mains d'un coup (60° constatés sur le robot
+  simulé, dans une descente vers un plateau trop bas).
+- **Chemin vérifié d'avance :** étapes de 1 cm, aucune articulation qui
+  saute de plus de 0,15 rad d'une étape à l'autre, avant-bras jamais plus
+  près du plateau que 3 cm (ni qu'au départ, en haut du levage).
+- **Sinon :** on rapproche moins, ou seulement plus haut, ou pas du tout :
+  le carton est porté là où le levage l'a laissé (au journal).
+- **Dépose et montée au-dessus d'un plateau, objet tenu :** tout le chemin
+  est vérifié avant de bouger. La dépose le vérifie par étapes de 2 mm, le
+  pas qu'elle commande à chaque tour ; la montée par étapes de 1 cm. Plateau
+  hors d'atteinte : l'objet reste tenu là où il est, sans bouger (« dépose
+  impossible » ; FAILED/OUT_OF_REACH pour une app).
+  - Avant : une descente arrêtée en chemin ne remontait pas forcément. Sur
+    le robot simulé, coude en butée, la pose rigide ne se tenait plus là où
+    le retour passait.
+  - L'interpolation des angles prenait alors le relais : mains tournées de
+    30°, carton tombé de 7 cm, retour arrêté par la surveillance (test SDK,
+    5 fois sur 6).
+  - En corps rigide, les angles ne sont plus jamais interpolés : un geste
+    dont la pose ne se tient plus s'arrête au dernier point tenu, et l'OS
+    sait où sont les mains.
+- **Prix :** les plateaux bas sortent d'atteinte en corps rigide. Sur le
+  robot simulé, la limite est vers 70 cm pour un carton tenu à 30 cm du
+  bassin, et 75 cm à 41 cm. Les plateaux de la scène T1 sont à 80 cm.
+- **Six articulations au moins :** la pose entière d'une main demande six
+  articulations commandées, tangage du poignet compris. Un bras à cinq
+  (HAL 23 DOF) ne ramène pas le carton.
+- **Rejoué :** sur la posture réelle de la fin du levage de l'essai, le
+  chemin rigide passe (10,5 cm vers le buste, 5 cm plus haut), mains à
+  0,00° de leur orientation de départ. C'est le tangage du poignet qui
+  compense : de +0,03 à +0,5 rad.
+- **Surveillance :** pendant le retour en corps rigide, le roulis (autour de l'axe avant) et
+  le tangage (autour de la ligne des mains) du carton sont estimés sur les
+  mains mesurées : rotation moyenne des paumes, et pente de la ligne des
+  mains. Au-delà de `rotation_ramener_max_deg` (4°), le geste s'arrête et
+  l'on resserre avant de marcher : la base reste arrêtée jusqu'au serrage
+  visé, et d'au moins `marge_serrage_n` de plus à chaque main. Les couples
+  ne servent pas ici : le couple de basculement passe sous leur bruit.
+  Rejouée sur l'essai, cette surveillance aurait arrêté le retour à
+  43,66 s, carton tourné de moins de 3°.
+
+### Le port rejoué
+
+Sur le poids pesé (9,85 N), avec le serrage visé gardé par le retour rigide
+(13,3 N par main, que les mains ont dépassé pendant l'essai), les baisses de
+force du port reprises : marge de frottement 2,13 à 2,16. Essai de 21 h 57,
+sur son poids pesé (10,0 N) : les poignets laissent monter le serrage au
+requis (12,5 N par main), et la marge reste entre 2,08 et 2,20 pendant tout
+le port rejoué.
+
+### À vérifier au prochain essai GPU
+
+- Les lignes du journal :
+  - `poids du carton : … N (médiane de 15 lectures …)`, près de 9,8 ;
+  - `serrage d'après le poids : …`.
+- Au retour, l'une de ces lignes :
+  - `carton ramené sans toucher le torse : …`, sans `retour arrêté` ;
+  - ou `retour : … porté là où le levage l'a laissé`.
+- Sur la vérité du banc, le roulis et le tangage du carton au retour, sous 2°.
