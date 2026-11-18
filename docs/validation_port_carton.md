@@ -272,6 +272,23 @@ mesurés :
   près du plateau que 3 cm (ni qu'au départ, en haut du levage).
 - **Sinon :** on rapproche moins, ou seulement plus haut, ou pas du tout :
   le carton est porté là où le levage l'a laissé (au journal).
+- **Dépose et montée au-dessus d'un plateau, objet tenu :** tout le chemin
+  est vérifié avant de bouger. La dépose le vérifie par étapes de 2 mm, le
+  pas qu'elle commande à chaque tour ; la montée par étapes de 1 cm. Plateau
+  hors d'atteinte : l'objet reste tenu là où il est, sans bouger (« dépose
+  impossible » ; FAILED/OUT_OF_REACH pour une app).
+  - Avant : une descente arrêtée en chemin ne remontait pas forcément. Sur
+    le robot simulé, coude en butée, la pose rigide ne se tenait plus là où
+    le retour passait.
+  - L'interpolation des angles prenait alors le relais : mains tournées de
+    30°, carton tombé de 7 cm, retour arrêté par la surveillance (test SDK,
+    5 fois sur 6).
+  - En corps rigide, les angles ne sont plus jamais interpolés : un geste
+    dont la pose ne se tient plus s'arrête au dernier point tenu, et l'OS
+    sait où sont les mains.
+- **Prix :** les plateaux bas sortent d'atteinte en corps rigide. Sur le
+  robot simulé, la limite est vers 70 cm pour un carton tenu à 30 cm du
+  bassin, et 75 cm à 41 cm. Les plateaux de la scène T1 sont à 80 cm.
 - **Six articulations au moins :** la pose entière d'une main demande six
   articulations commandées, tangage du poignet compris. Un bras à cinq
   (HAL 23 DOF) ne ramène pas le carton.

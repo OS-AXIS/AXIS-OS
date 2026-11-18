@@ -32,6 +32,12 @@ frottement 1,58 au port : à reposer (le carton n'est pas tombé). Rejoué dans
 - Roulis et tangage du carton estimés sur les mains mesurées pendant le
   retour (`ManipulationService.rotation_carton`) : au-delà de
   `rotation_ramener_max_deg`, le geste s'arrête et l'on resserre au port.
+- Objet tenu en corps rigide : la dépose sur un plateau et la montée
+  au-dessus (`franchir`) vérifient tout le chemin avant de bouger. Plateau
+  hors d'atteinte : l'objet reste tenu là où il est, sans geste
+  (`place()` : FAILED/OUT_OF_REACH, comme avant). Les angles ne sont plus
+  jamais interpolés : un geste arrêté en chemin s'arrête au dernier point
+  tenu. Les plateaux bas sortent d'atteinte (robot simulé : vers 70 à 75 cm).
 - Robot simulé : `SimulatedRobot(poignets_29dof=True)`, tangage et lacet du
   poignet commandés comme sur le G1 29 DOF (7 articulations par bras) ; par
   défaut, comme avant (HAL 23 DOF).

@@ -1157,8 +1157,9 @@ class RobotContext:
 
         `status` : PLACED, REFUSED (OUT_OF_REACH : plateau trop haut ;
         FAILED : rien en main ; CAPABILITY_MISSING, ESTOP_ACTIVE,
-        CANCELLED), FAILED (code OUT_OF_REACH : bras au plus bas sans que
-        l'objet touche le plateau ; il reste tenu) ou TIMEOUT.
+        CANCELLED), FAILED (code OUT_OF_REACH : plateau hors d'atteinte des
+        bras, vu avant de descendre, ou bras au plus bas sans que l'objet
+        touche le plateau ; il reste tenu) ou TIMEOUT.
 
         Lève InvalidArgumentError et EstopActiveError comme pick().
         Permission : MANIPULATION."""

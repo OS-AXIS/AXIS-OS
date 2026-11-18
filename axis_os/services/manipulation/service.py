@@ -406,6 +406,13 @@ class ManipulationService(IService):
         lisse = f * f * (3.0 - 2.0 * f)
         c = self._c_de + lisse * (self._c_vers - self._c_de)
         q = self._q_mains(c, self._ecart_mains)
+        if q is None and self._rigide is not None:
+            # Corps rigide : jamais d'interpolation des angles, qui fait tourner
+            # les mains d'un coup (30° et 7 cm de chute sur le robot simulé). Le
+            # geste s'arrête au dernier point tenu et finit à l'heure, sans bouger.
+            tenu = self._c_actuel if self._c_actuel is not None else self._c_de
+            self._c_de = self._c_vers = self._c_actuel = np.array(tenu, dtype=float)
+            return dict(self._q), f >= 1.0
         if q is None:
             return self._interp_q(duree)
         self._c_actuel = c
@@ -1888,8 +1895,9 @@ class ManipulationService(IService):
                 return None
         return q
 
-    def _chemin_rigide(self, de: np.ndarray, vers: np.ndarray,
-                       plateau: Optional[float]) -> Optional[Dict[str, float]]:
+    def _chemin_rigide(self, de: np.ndarray, vers: np.ndarray, plateau: Optional[float],
+                       graine: Optional[Dict[str, float]] = None, pas_m: Optional[float] = None
+                       ) -> Optional[Dict[str, float]]:
         """Angles des bras au bout du chemin rigide de l'objet tenu, de `de`
         à `vers` (son centre), si TOUT le chemin passe : chaque étape
         (pas_chemin_rigide_m) atteinte aux tolérances du corps rigide, aucune
@@ -1897,10 +1905,12 @@ class ManipulationService(IService):
         l'autre (un bras replié contre le corps change de solution en chemin :
         la consigne saute, le garde-fou la refuse), avant-bras jamais plus près
         du plateau qu'ils survolent encore que marge_plateau_m, ni qu'au départ
-        s'ils en partent plus près (en haut du levage) ; None sinon."""
+        s'ils en partent plus près (en haut du levage) ; None sinon. Le chemin
+        part des angles actuels, ou de `graine` (la fin d'un chemin précédent),
+        par étapes de `pas_m` (pas_chemin_rigide_m par défaut)."""
         r = self.r
-        n = max(1, math.ceil(float(np.linalg.norm(vers - de)) / r.pas_chemin_rigide_m))
-        prec = self._q
+        n = max(1, math.ceil(float(np.linalg.norm(vers - de)) / (pas_m or r.pas_chemin_rigide_m)))
+        prec = self._q if graine is None else graine
 
         def garde(q):
             return math.inf if plateau is None else garde_plateau(
@@ -2575,10 +2585,19 @@ class ManipulationService(IService):
                     + (self.objet.hauteur / 2.0 if self.objet else 0.1))
             visee = np.array([x_prise, float(self._centre_porte[1]),
                               haut + p.marge_franchissement])
-            q = self._q_mains(visee, self._ecart_mains)
+
+            def atteinte(v):
+                # Corps rigide : tout le chemin, vérifié au premier pas ; ensuite
+                # _interp_c s'arrête là où la pose ne se tiendrait plus.
+                if self._rigide is None:
+                    return self._q_mains(v, self._ecart_mains)
+                if self._t_phase is None:
+                    return self._chemin_rigide(np.array(self._centre_porte, dtype=float), v, None)
+                return self._q
+            q = atteinte(visee)
             if q is None:
                 visee[2] = haut + p.marge_franchissement_min
-                q = self._q_mains(visee, self._ecart_mains)
+                q = atteinte(visee)
             if q is None:
                 self.stats["franchissements_impossibles"] = \
                     self.stats.get("franchissements_impossibles", 0) + 1
@@ -2589,13 +2608,13 @@ class ManipulationService(IService):
             if self._t_phase is None:
                 self._q_de, self._q_vers, self._t_phase = dict(self._q), q, self._horloge()
                 self._c_de = np.array(self._centre_porte, dtype=float)
-                self._c_vers = visee
+                self._c_vers, self._c_actuel = visee, None
                 self._t0 = self._horloge()
             qi, fini = self._interp_c(self.r.duree_ramener_s)
             self._ecrire_q(qi)
             if fini and self._horloge() - self._t0 >= self.r.duree_ramener_s \
                     + p.stabilisation_montee_s or (fini and self.degage_au_dessus(self._surface)):
-                self._centre_porte = visee
+                self._centre_porte = np.array(self._c_vers, dtype=float)   # là où le geste est allé
                 self._t_phase = None
                 fond = self._fond_objet()
                 if fond >= self._surface + p.marge_franchissement_min:
@@ -2606,6 +2625,28 @@ class ManipulationService(IService):
                                    f"l'objet : fond du carton à {fond:.2f} m")
                 self.etat = Etat.TENU
         elif self.etat is Etat.DESCENTE:
+            if self._rigide is not None and self._t_phase is None:
+                # Corps rigide : tout le chemin, devant puis jusqu'au plateau,
+                # vérifié avant de bouger ; sinon l'objet reste tenu là où il
+                # est. Arrêtée en chemin, une descente ne remonte pas forcément
+                # (pose qui ne se tient plus là où le retour passe, coude en butée).
+                self._t_phase = self._horloge()
+                de = np.array(self._centre_porte, dtype=float)
+                devant = np.array([x_prise, de[1], de[2]])
+                bas = np.array([x_prise, de[1], self._surface + p.jeu_depose - float(
+                    self.mesures.bassin_z()) + (self.objet.hauteur / 2.0 if self.objet else 0.1)])
+                # Au pas de la descente (1 à 2,5 mm par tour) : un coude qui tourne
+                # vite sans à-coup (0,16 rad au dernier cm vers 70 cm) n'y passe pas
+                # pour un saut ; un changement de solution, si (0,32 rad en 2 mm).
+                q = self._chemin_rigide(de, devant, None, pas_m=0.002)
+                if q is None or self._chemin_rigide(devant, bas, None, graine=q,
+                                                    pas_m=0.002) is None:
+                    self.stats["deposes_impossibles"] += 1
+                    self.raison = (f"dépose impossible : plateau à {self._surface:.2f} m hors "
+                                   f"d'atteinte des bras (chemin vérifié avant de descendre, "
+                                   f"l'objet reste tenu là où il est)")
+                    self.etat = Etat.TENU
+                    return
             # D'abord devant (sans saut : 0,15 m/s), puis vers le bas (5 cm/s).
             c = np.array(self._centre_porte, dtype=float)
             pas = min(dt, 0.05)
@@ -2623,6 +2664,7 @@ class ManipulationService(IService):
                 self._c_de = np.array(self._centre_porte, dtype=float)
                 self._c_vers = self._centre_porte = self._centre_transport
                 self._q_de, self._q_vers = dict(self._q), dict(self._q_tenu)
+                self._c_actuel = None             # pas encore bougé dans ce geste
                 self._aller(Etat.RAMENER)
                 return
             self._centre_porte = c
@@ -2845,6 +2887,7 @@ class ManipulationService(IService):
                 f"l'objet est déjà à {fond:.2f} m"))
         self._surface = hauteur_surface
         self._tangage_depart = self._tangage_courant    # depuis la posture actuelle
+        self._t_phase = None
         self._aller(Etat.DESCENTE)
         return ServiceResult(ok=True)
 

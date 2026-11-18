@@ -18,7 +18,12 @@ Désormais (service.py, ReglagesPrise) :
     (le tangage du poignet) : un bras à cinq ne ramène pas le carton ;
   - pendant le retour, le roulis et le tangage du carton estimés sur les
     mains mesurées ne passent pas rotation_ramener_max_deg : au-delà, le
-    geste s'arrête et l'on resserre avant de marcher.
+    geste s'arrête et l'on resserre avant de marcher ;
+  - la dépose sur un plateau vérifie tout le chemin avant de descendre :
+    hors d'atteinte, l'objet reste tenu là où il est, sans bouger ;
+  - là où la pose ne se tient plus en plein geste, il s'arrête au dernier
+    point tenu, sans jamais interpoler les angles (les mains tournaient
+    d'un coup : 30°, et le carton tombait de 7 cm sur le robot simulé).
 
 Robot simulé léger, horloge simulée, mains du G1 (contact 11 cm le long de la
 main) ; bras à 7 articulations (poignets_29dof), sauf mention.
@@ -175,6 +180,55 @@ check("Au port : base arrêtée, resserrage au moins jusqu'au serrage visé (au 
       "marche reprend, plafonds tenus", penche and e.ligne("port : carton tourné au retour")
       and not e.m.penche and not e.m.a_reposer and e.m.etat is Etat.TENU and e.depasse <= 0.1,
       f"{e.journal[-4:]} {e.depasse}")
+
+section("4. Dépose : tout le chemin vérifié avant de descendre")
+f = Banc().prendre()
+centre0, fond0 = np.array(f.m._centre_porte), f.m._fond_objet()
+f.m.poser(0.40)
+f.pas(5)
+check("Plateau à 40 cm, hors d'atteinte en corps rigide : « dépose impossible », l'objet tenu là où "
+      "il est, sans avoir bougé", f.m.etat is Etat.TENU
+      and f.m.raison.startswith("dépose impossible") and f.r.held is not None
+      and float(np.linalg.norm(f.m._centre_porte - centre0)) < 1e-9
+      and abs(f.m._fond_objet() - fond0) < 0.002, f"{f.m.raison} {f.m._fond_objet()} {fond0}")
+f.m.poser(0.75)             # à 70 cm, la pose rigide change de solution 6 mm au-dessus
+t0 = f.t[0]
+while f.m.etat is not Etat.LIBRE and f.t[0] - t0 < 15.0:
+    f.pas()
+check("… puis plateau à 75 cm : posé, sans consigne refusée, plafonds tenus", f.m.etat is Etat.LIBRE
+      and f.r.held is None and f.sortie.getvalue().count("SAFETY VIOLATION") == 0
+      and f.depasse <= 0.1, f"{f.m.etat} {f.m.raison} {f.depasse}")
+
+section("5. La pose ne se tient plus en plein retour : arrêt au dernier point tenu")
+g = Banc()
+q_rigide = g.m._q_rigide
+
+
+def coupe_a_4_cm(centre, ecart=None, graine=None):
+    """Au retour, la pose ne se tient plus à plus de 4 cm du départ du geste."""
+    if g.m.etat is Etat.RAMENER and float(np.linalg.norm(np.asarray(centre) - g.m._c_de)) > 0.04:
+        return None
+    return q_rigide(centre, ecart, graine)
+
+
+g.m._q_rigide = coupe_a_4_cm
+g.prendre()
+rot, trans = ecarts(g)
+c0, p0 = g.depart
+fait = float(np.linalg.norm(g.m._centre_porte - c0))
+p1 = g.m._poses(g.m._q)
+# Les mains commandées (leur translation moyenne : la variation du serrage s'y annule).
+ailleurs = float(np.linalg.norm(np.mean([p1[c][0] - p0[c][0] for c in ("left", "right")], axis=0)
+                                - (g.m._centre_porte - c0)))
+check(f"Geste arrêté à {100 * fait:.1f} cm du départ, mains commandées là où l'OS les croit "
+      f"({1000 * ailleurs:.1f} mm près), sans saut : à {rot:.2f}° de leur orientation, rien de "
+      f"tourné ni signalé", g.m.etat is Etat.TENU and 0.03 <= fait <= 0.045 and ailleurs <= 0.002
+      and rot <= R.tol_rigide_deg and trans <= 2 * R.tol_rigide_m and not g.ligne("retour arrêté")
+      and g.sortie.getvalue().count("SAFETY VIOLATION") == 0,
+      f"{ailleurs} {g.m.raison} {g.journal[-3:]}")
+g.pas(100)
+check("… tenu au port, rien de signalé", g.m.etat is Etat.TENU and not g.m.a_reposer
+      and g.r.held is not None, g.m.raison)
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
