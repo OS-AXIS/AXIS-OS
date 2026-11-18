@@ -10,6 +10,48 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Campagne de cartons variés : la prise hors du seul carton de la scène T1
+
+Cartons tirés au hasard, graine fixée, rejouables ici et sur le banc Isaac
+(`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`,
+`lancer_t1.sh --cartons-varies N`) : jamais de carton tombé, écrasé, de
+plafond de couple dépassé ni de prise confirmée les mains vides ; chaque
+refus avec une raison claire ; rapport par plage et audit des réglages
+choisis sur le seul carton T1 (docs/validation_port_carton.md, §8).
+- `ManipulationService.presaisir(objet)` : bras ouverts juste assez pour ce
+  carton (`Postures.roulis_presaisie_max`) ; sans objet, comme avant.
+  `distance_de_prise` refuse d'avance un carton trop large pour les mains.
+  `ConfigFacade.presaisie_ajustee` (désactivé par défaut).
+- Fond du carton porté estimé aux points de contact : dépose exacte quelle
+  que soit sa hauteur.
+- `ReglagesPrise.poids_min_n` : un carton pesé sous 1 N n'a pas quitté la
+  table, la prise n'est pas confirmée.
+- Serrage d'après le poids : « trop lourd » jugé même sous couples bruités.
+- Robot simulé : `SimulatedObject.masse_kg` et `frottement`,
+  `SimulatedRobot(plateaux=...)`, glissement, équilibre des forces du
+  carton porté, chutes relevées (`chutes`).
+- Cinématique : mêmes résultats au bit près, deux à trois fois plus vite.
+- Dépose : avant de descendre, l'OS vérifie aussi que les mains pourront
+  s'ouvrir sur place en bas (à quelques mm près). Si non, il refuse, et le
+  carton reste tenu sans que rien ne bouge. En bas, si elles ne peuvent pas
+  s'ouvrir là où elles sont, il ne lâche jamais le carton : il le remonte,
+  tenu. Avant, il rouvrait les roulis, et les mains remontaient en s'ouvrant
+  (carton lâché 3,4 cm au-dessus d'un plateau de 71 cm).
+  `test/test_depose_limite_portee.py`.
+- `ReglagesPrise.masse_max_kg` : 1,2 kg (c'était 1 kg, la masse du seul
+  carton T1). Un carton pesé au-delà est reposé dès la pesée, ni serré plus
+  ni porté. Le plafond est jugé sur une pesée tarée, la hausse des couples
+  depuis la fermeture (`poids_tare`), où leur biais s'annule : sans
+  calibration, un carton de 1 kg pesait de 0,77 à 1,23 kg ; taré, de 0,92
+  à 1,05.
+- Tests : la dépose de `test_prise_mesuree` §2 et de
+  `test_sdk_services_haut_niveau` §3 se fait sur un plateau à 75 cm au lieu
+  de 70. Porté là où les mains l'ont serré, ce carton est posé jusqu'à
+  72 cm ; à 70, il est refusé proprement. `test_serrage_poids` §2 vérifie
+  désormais deux refus pour « trop lourd » : 1,6 kg reposé dès la pesée, et
+  1 kg avec des poignets plus faibles, pour qui le serrage ne suffit pas
+  dans les plafonds.
+
 ### Essai GPU de main (T1, 6 novembre 2026, 18 h 21) : poids gardé trop haut, carton tordu au retour
 
 Constat GPU : couples fiables, prise parfaite, « 11.4 N de poids » pour un

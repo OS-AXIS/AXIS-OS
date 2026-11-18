@@ -8,6 +8,12 @@
 #   bash lancer_t1.sh [durée_simulée_s] [accélération_vidéo] [options du test]
 #   Premier essai :  bash lancer_t1.sh 240 1       (~4 min simulées, vidéo temps réel)
 #   Démo complète :  bash lancer_t1.sh 1800 10     (30 min -> vidéo de 3 min)
+#   Cartons variés : bash lancer_t1.sh 3600 10 --cartons-varies 40 [--graine-cartons 20261118]
+#     (après un premier tri réussi) N cartons tirés comme ceux du test du robot
+#     simulé léger, test/test_campagne_cartons.py : même graine, mêmes cartons
+#     (axis_os/testing/cartons.py), la graine au journal ; pris un à un, sans
+#     personnes ; bilan par plage et raisons de refus en fin d'essai, détail
+#     dans videos/t1_campagne_cartons.json.
 #
 # Suivi en direct : depuis TON ordinateur, ouvre un tunnel SSH (une connexion
 # chiffrée qui amène la page du test sur ton poste sans l'exposer sur

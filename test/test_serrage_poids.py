@@ -11,7 +11,8 @@ Désormais (prise.py, service.py) :
     securite_serrage × poids / (2 frottement_serrage), est atteint avant de
     ramener (visé avec marge_serrage_n de plus), plafonds de couple
     inchangés ; impossible dans les plafonds : le carton est reposé, « trop
-    lourd pour ces mains » ;
+    lourd pour ces mains » ; pesé au-delà de masse_max_kg (1,2 kg), il est
+    reposé aussitôt, ni serré plus ni porté ;
   - torse hors d'atteinte : rapproché en position, sans effort vers le robot ;
   - au port, la consigne garde le serrage ; mains qui s'écartent, ou marge de
     frottement sous le coefficient de sécurité : base arrêtée, on resserre,
@@ -128,19 +129,36 @@ check("Carton penché : la correction d'inclinaison (inchangée) ne desserre pas
       "d'après le poids (sa borne le suit)", m.stats.get("corrections_inclinaison", 0) >= 1
       and all(m._delta[c] >= avant[c] - 1e-9 for c in avant), f"{avant} {m._delta}")
 
-section("2. Trop lourd pour ces mains : reposé doucement, signalé")
-h = Banc(masse=1.6).prendre(jusqua=(Etat.TENU, Etat.ECHEC))
-o = h.r.objects[0]
-check("Carton de 1,6 kg : le serrage requis dépasse ce que les poignets donnent dans leurs "
-      "plafonds : « trop lourd pour ces mains », jamais tenu pour marcher",
-      h.m.etat is Etat.ECHEC and "trop lourd pour ces mains" in h.m.raison
-      and Etat.TENU not in h.etats and Etat.RAMENER not in h.etats, f"{h.m.raison} {h.etats}")
-check("… reposé doucement : sur la table, à sa place, mains ouvertes, gains rendus",
-      Etat.REPOSE in h.etats and h.r.held is None and abs(o.position[2] - 0.90) < 0.03
-      and abs(o.position[0] - h.x) < 0.03 and not h.r.raideur_active,
-      f"{o.position} {h.r.raideur_active}")
-check(f"… plafonds tenus pendant l'essai (au plus {max(0.0, h.depasse):.2f} N·m au-delà)",
-      h.depasse <= 0.1 and h.refus_garde_fou() == 0)
+section("2. Trop lourd : reposé doucement, signalé")
+
+
+def repose_doucement(h, label, motif):
+    o = h.r.objects[0]
+    check(f"{label} : « {motif} », jamais tenu pour marcher",
+          h.m.etat is Etat.ECHEC and motif in h.m.raison
+          and Etat.TENU not in h.etats and Etat.RAMENER not in h.etats, f"{h.m.raison} {h.etats}")
+    check("… reposé doucement : sur la table, à sa place, mains ouvertes, gains rendus",
+          Etat.REPOSE in h.etats and h.r.held is None and abs(o.position[2] - 0.90) < 0.03
+          and abs(o.position[0] - h.x) < 0.03 and not h.r.raideur_active,
+          f"{o.position} {h.r.raideur_active}")
+    check(f"… plafonds tenus pendant l'essai (au plus {max(0.0, h.depasse):.2f} N·m au-delà)",
+          h.depasse <= 0.1 and h.refus_garde_fou() == 0)
+
+
+# Au-delà de masse_max_kg (la charge pour laquelle la prise est vérifiée) :
+# reposé dès la pesée, avant de serrer plus.
+repose_doucement(Banc(masse=1.6).prendre(jusqua=(Etat.TENU, Etat.ECHEC)),
+                 f"Carton de 1,6 kg, au-delà de masse_max_kg ({R.masse_max_kg:g} kg) : reposé dès "
+                 f"la pesée", f"kg pesés, au plus {R.masse_max_kg:g} kg")
+# Sous masse_max_kg, des poignets plus faibles (couple max de 4 N·m au lieu de
+# 5) ne donnent pas, dans leurs plafonds, le serrage requis pour 1 kg.
+h = Banc()
+for j in h.m.mesures.couple_max:
+    if "wrist" in j:
+        h.m.mesures.couple_max[j] = 4.0
+repose_doucement(h.prendre(jusqua=(Etat.TENU, Etat.ECHEC)),
+                 "Carton de 1 kg, poignets plus faibles (4 N·m au lieu de 5) : le serrage requis "
+                 "dépasse ce qu'ils donnent dans leurs plafonds", "trop lourd pour ces mains")
 
 section("3. Torse hors d'atteinte : pas d'arrêt sur une traction vers le robot")
 t = Banc()
