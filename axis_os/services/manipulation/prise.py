@@ -256,6 +256,12 @@ class ReglagesPrise:
     # plus de cede_max_m, le carton cède sous le serrage : reposé aussi.
     frottement_serrage: float = 0.8
     securite_serrage: float = 2.0
+    # Pesé sous poids_min_n (~100 g), le carton n'est pas porté : resté sur la
+    # table, les mains ont glissé le long de ses faces. Campagne de cartons
+    # variés (axis_os/testing/cartons.py) : un carton de 1,8 kg à peine tenu
+    # par le serrage de prise y était resté, mains 3,8 cm plus haut ; l'OS
+    # confirmait la prise, pesait 0,2 N et partait avec. Prise non confirmée.
+    poids_min_n: float = 1.0
     marge_serrage_n: float = 1.0
     penetration_poids_max_m: float = 0.06
     duree_serrage_poids_max_s: float = 3.0
