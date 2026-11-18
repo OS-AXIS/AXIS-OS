@@ -389,6 +389,12 @@ rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
   reposé dès la pesée, en haut du levage d'essai (4 cm), avant d'être serré
   plus ou porté : « trop lourd : X kg pesés, au plus 1.2 kg ». La masse ne
   se connaît qu'en pesant, donc qu'une fois le carton soulevé de ces 4 cm.
+  - **Pesée tarée** : le plafond est jugé sur la hausse des couples depuis
+    le zéro d'avant la fermeture, où leur biais s'annule, calibré ou non.
+  - **Pourquoi** : sans calibration des couples, leur biais (0,5 N·m au
+    plus par articulation) faisait peser un carton de 1 kg de 0,77 à
+    1,23 kg ; taré, de 0,92 à 1,05 kg (16 tirages du bruit du banc). Pesé à
+    1,23 kg, le carton T1 lui-même était refusé (`test_force_main` §6).
 - **Dépose : mains ouvertes sur place, jamais en remontant** (voir plus bas,
   « Dépose à la limite de portée »).
 - **Robot simulé**, pour que ces cas existent :
@@ -452,6 +458,9 @@ rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
 - **Ouvrir sur place autour d'un carton tourné** : 5 cm de jeu de chaque côté
   ne passent plus dès ~13°, bras tendus. Un jeu plus petit passe (1 cm à 20°)
   et suffirait à le lâcher, si le retrait des mains qui suit est vérifié.
+- **La campagne ne calibre pas les biais des couples**, le banc si : la
+  pesée qui règle le serrage garde ce biais. Un carton T1 de 16 cm, pesé
+  1,25 kg, y est refusé « trop lourd pour ces mains ».
 - **Campagne GPU, après le premier tri réussi** :
   `bash lancer_t1.sh 3600 10 --cartons-varies 40`. Bilan par plage et
   raisons en fin d'essai, détail dans `videos/t1_campagne_cartons.json`.

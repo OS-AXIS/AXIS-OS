@@ -40,7 +40,10 @@ choisis sur le seul carton T1 (docs/validation_port_carton.md, §8).
   `test/test_depose_limite_portee.py`.
 - `ReglagesPrise.masse_max_kg` : 1,2 kg (c'était 1 kg, la masse du seul
   carton T1). Un carton pesé au-delà est reposé dès la pesée, ni serré plus
-  ni porté.
+  ni porté. Le plafond est jugé sur une pesée tarée, la hausse des couples
+  depuis la fermeture (`poids_tare`), où leur biais s'annule : sans
+  calibration, un carton de 1 kg pesait de 0,77 à 1,23 kg ; taré, de 0,92
+  à 1,05.
 - Tests : la dépose de `test_prise_mesuree` §2 et de
   `test_sdk_services_haut_niveau` §3 se fait sur un plateau à 75 cm au lieu
   de 70. Porté là où les mains l'ont serré, ce carton est posé jusqu'à
