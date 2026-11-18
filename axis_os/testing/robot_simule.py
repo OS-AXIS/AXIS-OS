@@ -316,7 +316,8 @@ class _BaseGlissante(ILocomotionAdapter):
 
     def posture(self, hauteur=None, rpy=(0.0, 0.0, 0.0)) -> None:
         self._robot.tangage_taille = float(rpy[1])
-        self._robot.hauteur_bassin = self.hauteur_debout if hauteur is None else float(hauteur)
+        self._robot.abaissement_bassin = 0.0 if hauteur is None else \
+            self.hauteur_debout - float(hauteur)
 
 
 class SimulatedPerception:
@@ -483,9 +484,9 @@ class SimulatedRobot:
                  plateaux=()):
         self.poignets_29dof = bool(poignets_29dof)
         # Posture (consigne de la marche, _BaseGlissante.posture) : tangage de
-        # la taille (rad) et hauteur du bassin (m).
+        # la taille (rad) et abaissement du bassin (m, voir hauteur_bassin).
         self.tangage_taille = 0.0
-        self.hauteur_bassin = self.PELVIS_HEIGHT_M
+        self.abaissement_bassin = 0.0
         self.plateaux = [tuple(float(v) for v in p) for p in plateaux]
         self._sur_plateau = False
         # Mains idéales : milieu des contacts au début du levage (_porter).
@@ -822,6 +823,12 @@ class SimulatedRobot:
         self.x += (twist.vx * c - twist.vy * s) * dt
         self.y += (twist.vx * s + twist.vy * c) * dt
         self.heading += twist.wz * dt
+
+    @property
+    def hauteur_bassin(self) -> float:
+        """Hauteur du bassin (m) : debout (PELVIS_HEIGHT_M, qu'un test peut
+        changer), moins l'abaissement de la consigne de posture."""
+        return self.PELVIS_HEIGHT_M - self.abaissement_bassin
 
     def _etat_base(self) -> BaseState:
         return BaseState(quat_wxyz=(1.0, 0.0, 0.0, 0.0), ang_vel_body=(0.0, 0.0, 0.0),
