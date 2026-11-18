@@ -1,6 +1,6 @@
 # AXIS-OS App SDK — API reference
 
-SDK API version **1.2.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
+SDK API version **1.3.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
 Guides: [CREATE_AN_APP.md](CREATE_AN_APP.md) (English) ·
 [CREER_UNE_APP.md](CREER_UNE_APP.md) (français). Examples:
 [examples/](../examples/).
@@ -108,6 +108,7 @@ app sees the same exception in its process as in a direct test.
 | `BUSY` | the resource is in use (arms holding an object, a stream already open…) |
 | `BLOCKED` | no path |
 | `OUT_OF_REACH` | out of the arms' reach |
+| `TOO_HEAVY` | the object is too heavy for the robot: weighed above its maximum load, or the squeeze its weight needs is beyond the wrists' torque ceilings. It was put back down gently where it was; moving closer will not help (since 1.3.0) |
 | `FAILED` | the action was tried and failed |
 | `HUMAN_DECLINED` | the human said no |
 | `HUMAN_UNAVAILABLE` | no human to answer |
@@ -223,7 +224,11 @@ placed at the middle of two opposite faces, arms closed until contact
 (torque rise or hand stopped), a bounded extra squeeze (never above
 10 N·m, nor half the joint safety guard's torque limit), a short lift
 that must be followed by the object (one retry), then the object brought
-against the torso. Missing, non-finite or stale torque data: no squeeze
+against the torso. The object is weighed at the top of that short lift:
+weighed above the robot's maximum load (1.2 kg on the G1), or needing a
+squeeze beyond the wrists' torque ceilings, it is put back down gently
+where it was and the grasp fails with `TOO_HEAVY` (since 1.3.0; before,
+`OUT_OF_REACH`). Missing, non-finite or stale torque data: no squeeze
 (`SAFETY_LIMIT`). Nothing in between the hands at the expected width:
 no squeeze (`OUT_OF_REACH`). If the grasp is cancelled (stop requested, end
 of the hook, the app's process gone), the arms reopen gradually and the
@@ -233,7 +238,7 @@ exemption is lifted: the gesture never goes on without the app.
 |---|---|
 | `HELD` | — |
 | `REFUSED` | `OUT_OF_REACH` (move closer with `go_to`), `BUSY` (the arms are busy: grasp, animation, arm stream), `SAFETY_LIMIT` (object not seen; arm torque data missing or invalid), `CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED` |
-| `FAILED` | `FAILED` — grasp not confirmed: the arms reopen gradually |
+| `FAILED` | `FAILED` — grasp not confirmed: the arms reopen gradually; `TOO_HEAVY` — the object is too heavy (see above): put back down gently where it was |
 | `TIMEOUT` | `TIMEOUT` |
 
 Raises `InvalidArgumentError` (detection in the robot frame, missing size,

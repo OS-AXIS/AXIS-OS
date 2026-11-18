@@ -38,6 +38,8 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 # Plages des tirages (m, kg, degrés).
 LARGEUR_M = (0.15, 0.35)
 PROFONDEUR_M = (0.15, 0.30)
@@ -126,11 +128,16 @@ def place_sur_table(c: CartonTire) -> Tuple[float, float, float]:
 _TENU = ("RAMENER", "TENU", "MONTEE", "DESCENTE", "POSE")
 
 
-def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: bool = True) -> Dict:
+def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: bool = True,
+                   pencher: bool = True) -> Dict:
     """Le banc T1 sur le robot simulé léger, pour un carton (voir l'en-tête
     du module) ; rend ce qui s'est passé (dictionnaire, voir rapport()).
     `bruit` : couples estimés avec le bruit, le biais et le gain du banc
-    (BruitCouples), graine tirée du numéro du carton."""
+    (BruitCouples), graine tirée du numéro du carton. `pencher` : trop loin
+    pour les bras debout, le robot se penche (plan_penche, consigne de
+    posture de la marche), se redresse le carton tenu pour le porter, et se
+    penche de nouveau pour le déposer à sa place ; False : jamais (le
+    rapport « avant »)."""
     from axis_os.hal.drivers.isaac_sim.bruit_couples import BruitCouples
     from axis_os.services.manipulation.service import Etat, Objet
     from axis_os.testing.robot_simule import SimulatedObject, SimulatedRobot
@@ -144,6 +151,8 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
     with contextlib.redirect_stdout(sortie):
         r = SimulatedRobot(objects=[carton], horloge=lambda: t[0], contact_main_m=0.11,
                            poignets_29dof=True, plateaux=[TABLE])
+    with contextlib.redirect_stdout(sortie):
+        r.start(fil=False)                      # la marche répond aux essais de posture
     m = r.manipulation
     if reglages is not None:
         m.r = reglages
@@ -164,17 +173,20 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
            # pour l'audit des réglages (audit())
            "rotation_os_ramener_deg": 0.0, "retour_arrete": False, "avance_max_m": 0.0,
            "borne_poids": False, "enfoncement_contact_m": None, "recalage_cm": None}
-    d, pourquoi = m.distance_de_prise(objet)
+    if pencher:
+        d, tangage, pourquoi = m.plan_penche(objet)
+    else:
+        (d, pourquoi), tangage = m.distance_de_prise(objet), 0.0
+    res["tangage_deg"] = round(math.degrees(tangage), 1)
     if d is None:
-        res.update(issue="refusée", raison=f"approche impossible — {pourquoi}")
+        res.update(issue="refusée", raison=f"approche impossible — {pourquoi}",
+                   portee=pourquoi_hors_de_portee(m, objet, pourquoi))
         return res
     res["distance_m"] = round(d, 3)
     # Pose d'attente, mains encore devant le carton (cap de prise : face à la table).
     x_prise = cx - d - c.erreur_x_m
     r.x, r.y, r.heading = x_prise - RECUL_INSERTION_M, cy + c.erreur_y_m, \
         math.radians(c.erreur_cap_deg)
-    with contextlib.redirect_stdout(sortie):
-        r.start(fil=False)
     limites = {j: m._limite_effort(j) for j in r._BRAS + tuple(r._poignets)}
     materiel = {j: m.mesures.couple_max[j] for j in limites}
     poids = 9.81 * c.masse_kg
@@ -242,9 +254,19 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
             pas()
 
     pas(20)
+    if tangage:                                 # penché avant d'ouvrir les bras
+        penche = r.locomotion.posture(tangage)
+        if not penche.ok:
+            res.update(issue="refusée", raison=str(penche.reason))
+            return res
+        jusqua(lambda: r.locomotion.posture_atteinte, 10.0)
     pre = m.presaisir(objet)                    # ouverts juste assez pour ce carton
     if not pre.ok:
         res.update(issue="refusée", raison=str(pre.reason))
+        if r.locomotion.penche:                 # redressé, mains vides
+            r.locomotion.posture(0.0)
+            jusqua(lambda: r.locomotion.posture_atteinte, 10.0)
+        res["droit_a_la_fin"] = not r.locomotion.penche
         return res
     jusqua(lambda: m.etat is Etat.PRET, 5.0)
     while r.x < x_prise - 1e-9:                 # insertion, bras ouverts
@@ -253,12 +275,24 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
     pas(10)
     lance = m.prendre(objet)
     if not lance.ok:
-        res.update(issue="refusée", raison=str(lance.reason))
+        res.update(issue="refusée", raison=str(lance.reason),
+                   portee=pourquoi_hors_de_portee(m, objet, str(lance.reason)))
     else:
         jusqua(lambda: m.etat in (Etat.TENU, Etat.ECHEC), 40.0)
+        redresse = False
+        if m.etat is Etat.TENU and tangage:     # redressé, le carton tenu, pour le porter
+            red = m.changer_tangage(0.0)
+            res["redressement"] = red.reason
+            if red.ok:
+                jusqua(lambda: not m.tangage_en_cours, 10.0)
+                redresse = abs(r.tangage_taille) < 1e-3
         if m.etat is Etat.TENU:
             pas(int(port_s / r._dt))
             signale = m.raison if (m.a_reposer or m.penche) else ""
+            if redresse:                        # penché de nouveau, pour le poser à sa place
+                rep = m.changer_tangage(tangage)
+                if rep.ok:
+                    jusqua(lambda: not m.tangage_en_cours, 10.0)
             pose = m.poser(PLATEAU_M)
             if pose.ok:
                 jusqua(lambda: m.etat is Etat.LIBRE or (m.etat is Etat.TENU and m.raison != ""),
@@ -278,8 +312,12 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
             m.reinitialiser()
             jusqua(lambda: m.etat is Etat.LIBRE, 5.0)
             res.update(issue="reposée" if res["tenu"] else "refusée", raison=raison)
+    if r.locomotion.penche:                     # mains vides : redressé
+        r.locomotion.posture(0.0)
+        jusqua(lambda: r.locomotion.posture_atteinte, 10.0)
     pas(10)                                   # le carton retombe, s'il doit tomber
     res["chutes"] = [(round(a, 2), b, e) for a, b, e in r.chutes]
+    res["droit_a_la_fin"] = not r.locomotion.penche
     z = carton.position[2]
     res["tombe"] = z < 0.5 * PLATEAU_M
     res["sur_table"] = carton.position[0] > 0.0 and abs(z - (PLATEAU_M + c.hauteur / 2)) < 0.03
@@ -302,12 +340,12 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
 
 
 def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[int] = None,
-             port_s: float = 2.0, bruit: bool = True) -> List[Dict]:
+             port_s: float = 2.0, bruit: bool = True, pencher: bool = True) -> List[Dict]:
     """essayer_carton() sur chaque carton, en parallèle (un robot simulé par
     carton, rien de partagé) ; résultats dans l'ordre des cartons."""
     n = processus or max(1, min(len(cartons), os.cpu_count() or 1))
     if n == 1:
-        return [essayer_carton(c, reglages, port_s, bruit) for c in cartons]
+        return [essayer_carton(c, reglages, port_s, bruit, pencher) for c in cartons]
     import multiprocessing
     # fork (Linux) : les processus partent du nôtre, modules déjà chargés ;
     # ailleurs, spawn (le script appelant doit alors garder `if __name__ == "__main__"`).
@@ -315,7 +353,8 @@ def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[i
         "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn")
     with ProcessPoolExecutor(max_workers=n, mp_context=contexte) as ex:
         return list(ex.map(essayer_carton, cartons, [reglages] * len(cartons),
-                           [port_s] * len(cartons), [bruit] * len(cartons)))
+                           [port_s] * len(cartons), [bruit] * len(cartons),
+                           [pencher] * len(cartons)))
 
 
 # ---- rapport ---------------------------------------------------------------
@@ -327,8 +366,10 @@ CATEGORIES = (
                                                                "n'a pas quitté la table")),
     ("trop lourd", ("trop lourd",)),
     ("dépose refusée ou impossible", ("dépose impossible", "plateau trop haut")),
-    ("hors de portée", ("hors de portée", "hors d'atteinte", "à toute distance")),
+    # Avant « hors de portée » : « avant-bras trop près du plateau à toute
+    # distance » est un carton trop bas, pas trop loin.
     ("avant-bras trop près du plateau", ("avant-bras",)),
+    ("hors de portée", ("hors de portée", "hors d'atteinte", "à toute distance")),
     ("serrage insuffisant", ("serrage insuffisant", "cède")),
     ("glisse au port", ("glisse", "ne pèse plus", "serrage perdu")),
     ("tourne ou penche", ("tourn", "bascul", "penché")),
@@ -336,6 +377,44 @@ CATEGORIES = (
     ("contact ou placement des mains", ("contact", "appui", "mains mal placées", "loin de leur cible",
                                         "recalage", "mains mesurées", "rien entre les mains")),
 )
+
+
+def pourquoi_hors_de_portee(m, objet, raison: str) -> Optional[Dict]:
+    """Un refus « hors de portée » : le robot aurait-il pu se rapprocher, ou
+    est-ce la longueur des bras, ou le lacet ? None pour un autre refus.
+
+    - « à toute distance » : le bassin ne s'approche jamais du bord de la
+      table à moins de ReglagesPrise.bord_min_m, compté depuis les repères
+      des mains (distance_ideale) : bord_min_m plus le contact le long de la
+      main du vrai bord (21 cm avec les mains du G1).
+      Sans cette règle, à quelle distance les mains atteindraient-elles le
+      milieu des faces (cinématique de l'URDF, avant-bras au-dessus du
+      plateau), le carton jamais à moins de 25 cm du bassin (le d_min de
+      distance_de_prise) ? L'écart est ce qui manque aux bras, pieds contre
+      la table (manque_m) ; None si elles n'y arrivent à aucune distance.
+    - « prise refusée » après l'approche : la distance de prise est calculée
+      de face ; tourné, le carton présente une face plus loin, qu'une main
+      n'atteint pas (lacet)."""
+    if categorie(raison) != "hors de portée":
+        return None
+    if raison.startswith("prise refusée"):
+        return {"cause": "lacet", "lacet_deg": round(math.degrees(objet.lacet), 1)}
+    from dataclasses import replace
+    from axis_os.services.manipulation.prise import distance_ideale
+    from axis_os.services.manipulation.service import posture_bras
+    r, p = m.r, m.p
+    z = float(objet.centre[2]) - float(m.mesures.bassin_z())
+    port = {**m._articulations_fixes(), **posture_bras(p.roulis_ouvert, p.tangage_port, p.coude)}
+    d, _ = distance_ideale(m.mesures.modele, objet.largeur, objet.profondeur, objet.hauteur, z,
+                           port, bord_m=objet.bord_m,
+                           reglages=replace(r, contact_main_m=m._bout, bord_min_m=-1.0),
+                           distances=np.arange(0.25, 0.45, 0.005))
+    # La règle du bord porte sur les repères des mains (distance_ideale), le
+    # contact m._bout plus loin : le bassin est à bord_min_m + m._bout du vrai
+    # bord, au plus près.
+    table = r.bord_min_m + objet.profondeur / 2.0 + objet.bord_m
+    return {"cause": "bras", "manque_m": None if d is None else round(table - (d - m._bout), 3),
+            "bassin_bord_m": round(r.bord_min_m + m._bout, 3)}
 
 
 def categorie(raison: str) -> str:
@@ -445,6 +524,26 @@ def rapport(resultats: Sequence[Dict], graine: Optional[int] = None) -> str:
     for cat, ex in sorted(raisons.items(), key=lambda kv: -len(kv[1])):
         lignes.append(f"    {cat} : {len(ex)}")
         lignes += [f"      {e[:200]}" for e in ex[:3]]
+    portee = [x["portee"] for x in resultats if x.get("portee")]
+    if portee:
+        bras = [p_ for p_ in portee if p_["cause"] == "bras"]
+        manques = sorted(p_["manque_m"] for p_ in bras if p_["manque_m"] is not None)
+        lignes.append("  hors de portée, pourquoi :")
+        if bras:
+            lignes.append(
+                f"    longueur des bras, robot au plus près permis (bord de la table à "
+                f"{100 * bras[0]['bassin_bord_m']:.0f} cm du bassin) : {len(bras)}"
+                + (f" ; il manque de {100 * manques[0]:.0f} à {100 * manques[-1]:.0f} cm "
+                   f"(médiane {100 * manques[len(manques) // 2]:.0f})" if manques else "")
+                + (f" ; {len(bras) - len(manques)} hors d'atteinte à toute distance"
+                   if len(manques) < len(bras) else ""))
+        lacets = [p_ for p_ in portee if p_["cause"] == "lacet"]
+        if lacets:
+            lignes.append(
+                f"    lacet, carton abordé de face : {len(lacets)} (tournés de "
+                f"{min(abs(p_['lacet_deg']) for p_ in lacets):.0f} à "
+                f"{max(abs(p_['lacet_deg']) for p_ in lacets):.0f}°) ; une face plus loin "
+                f"qu'une main n'atteint pas")
     return "\n".join(lignes)
 
 

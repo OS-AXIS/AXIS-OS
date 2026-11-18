@@ -10,6 +10,52 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Objet trop lourd : code de refus TOO_HEAVY (API du SDK 1.3.0)
+
+- `RefusalCode.TOO_HEAVY` : l'objet est trop lourd pour le robot. Il a été
+  pesé au-delà de sa charge maximale (`masse_max_kg`, 1,2 kg sur le G1), ou
+  le serrage qu'il demande dépasse les plafonds de couple des poignets.
+  L'OS l'a reposé doucement là où il était. `pick()` rend FAILED avec ce
+  code, au lieu de OUT_OF_REACH, qu'une app traiterait en se rapprochant.
+  « Trop lourd ou trop glissant » (l'objet n'a pas suivi le levage) reste
+  FAILED.
+- `API_VERSION` 1.3.0 (ajout compatible), paquet `axis-os-sdk` 1.3.0 ;
+  `docs/API_REFERENCE.md` le documente.
+- `examples/fetch` le traite : pas de nouvel essai, bras au repos, métrique
+  `trop_lourd` ; testé avec une boîte de 1,6 kg.
+
+### Portée : se rapprocher, se pencher, refus expliqués
+
+Détail dans docs/validation_port_carton.md, §9.
+- `ReglagesPrise.bord_min_m` : 15 → 10 cm, pieds contre la table au plus.
+  La règle porte sur les repères des mains : le bassin reste à 21 cm du
+  vrai bord (26 avant). La garde des avant-bras au retour prend le vrai bord
+  s'il est plus près que 15 cm, sinon 15 : jamais moins prudente.
+- « Ne pèse pas sur les mains » se juge sur la plus petite des deux pesées.
+  Un carton resté sur la table, que le biais des couples faisait peser
+  1,7 N, était sinon porté puis lâché.
+- `LocomotionService.posture(tangage, abaissement, ...)` : torse penché,
+  bassin abaissé, par la consigne de posture de GR00T WBC, pour l'OS
+  seulement (aucune API du SDK). Bornée (`BornesPosture`), robot immobile,
+  refusée si le gardien de proximité arrête le robot (sauf pour revenir
+  droit), ou si le centre de masse n'est pas à 2 cm au moins dans l'appui
+  des pieds ; la marge est écrite dans la réponse. Penché, le robot ne
+  marche pas. Redémarré (`start()`, après une chute ou un arrêt), il
+  repart droit : `GR00TWBCAdapter.reset()` remet aussi la consigne de
+  torse et de hauteur à zéro. `GR00TWBCAdapter.hauteur_debout` et
+  `urdf_equilibre`.
+- `axis_os/services/locomotion/equilibre.py` : centre de masse du robot
+  entier (URDF) au-dessus de l'appui des pieds, marge signée.
+- `ManipulationService(posture=...)`, `plan_penche(objet)` (le plus petit
+  tangage qui suffit, équilibre jugé avec `masse_max_kg` aux mains),
+  `changer_tangage(t)` (pencher ou se redresser carton tenu, sans qu'il
+  bouge), `distance_de_prise(objet, tangage=...)`.
+- Robot simulé : la taille du G1 29 DOF tangue, le bassin s'abaisse
+  (consigne de posture de sa base).
+- Campagne : chaque refus « hors de portée » dit sa cause (longueur des
+  bras et ce qui manque, ou lacet) ; « avant-bras trop près du plateau »
+  dans sa catégorie ; option `pencher`.
+
 ### Campagne de cartons variés : la prise hors du seul carton de la scène T1
 
 Cartons tirés au hasard, graine fixée, rejouables ici et sur le banc Isaac

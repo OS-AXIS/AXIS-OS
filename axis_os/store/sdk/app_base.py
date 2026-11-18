@@ -1055,7 +1055,13 @@ class RobotContext:
 
     @staticmethod
     def _code_refus_manipulation(raison: str) -> RefusalCode:
-        """Code d'un refus du service de manipulation, d'après sa raison."""
+        """Code d'un refus du service de manipulation, d'après sa raison.
+        « Trop lourd » (pesé au-delà de masse_max_kg, ou serrage requis hors
+        des plafonds des poignets) : TOO_HEAVY, pas OUT_OF_REACH, que l'app
+        traiterait en se rapprochant. « Trop lourd ou trop glissant » (l'objet
+        n'a pas suivi le levage) reste FAILED : rien ne dit lequel."""
+        if "trop lourd" in raison and "trop glissant" not in raison:
+            return RefusalCode.TOO_HEAVY
         if raison.startswith(("prise refusée", "plateau trop haut", "dépose impossible")):
             return RefusalCode.OUT_OF_REACH
         if raison.startswith(("exemption refusée", "serrage refusé", "levage interrompu")):
@@ -1087,7 +1093,8 @@ class RobotContext:
 
         `status` : HELD (tenu), REFUSED (OUT_OF_REACH, BUSY, SAFETY_LIMIT,
         CAPABILITY_MISSING, ESTOP_ACTIVE, CANCELLED), FAILED (prise non
-        confirmée : les bras se rouvrent progressivement) ou TIMEOUT.
+        confirmée : les bras se rouvrent progressivement ; code TOO_HEAVY si
+        l'objet est trop lourd, reposé doucement là où il était) ou TIMEOUT.
 
         Lève InvalidArgumentError (cible ou taille invalide, délai hors de
         ]0, MAX_ACTION_S]) et EstopActiveError si un arrêt d'urgence est

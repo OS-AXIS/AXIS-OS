@@ -287,7 +287,7 @@ class _BaseGlissante(ILocomotionAdapter):
         return 0.0
 
     def reset(self) -> None:
-        pass
+        self.posture()                      # droit, comme GR00T WBC réinitialisé
 
     def step(self, state: BaseState, twist: Twist) -> Dict[str, float]:
         self._robot._avancer(twist)
@@ -297,6 +297,27 @@ class _BaseGlissante(ILocomotionAdapter):
 
     def is_fallen(self, state: BaseState) -> bool:
         return self._robot.fallen
+
+    # Consigne de posture, comme GR00T WBC (G1 29 DOF seulement) : le torse
+    # penché par la taille, le bassin abaissé ; appliquée telle quelle (le
+    # service de marche la borne et y va peu à peu).
+    @property
+    def posture_disponible(self) -> bool:
+        return self._robot.poignets_29dof
+
+    @property
+    def hauteur_debout(self) -> float:
+        return self._robot.PELVIS_HEIGHT_M
+
+    @property
+    def urdf_equilibre(self):
+        from axis_os.services.manipulation.cinematique import URDF_G1_29DOF
+        return URDF_G1_29DOF
+
+    def posture(self, hauteur=None, rpy=(0.0, 0.0, 0.0)) -> None:
+        self._robot.tangage_taille = float(rpy[1])
+        self._robot.abaissement_bassin = 0.0 if hauteur is None else \
+            self.hauteur_debout - float(hauteur)
 
 
 class SimulatedPerception:
@@ -462,6 +483,10 @@ class SimulatedRobot:
                  contact_main_m: Optional[float] = None, poignets_29dof: bool = False,
                  plateaux=()):
         self.poignets_29dof = bool(poignets_29dof)
+        # Posture (consigne de la marche, _BaseGlissante.posture) : tangage de
+        # la taille (rad) et abaissement du bassin (m, voir hauteur_bassin).
+        self.tangage_taille = 0.0
+        self.abaissement_bassin = 0.0
         self.plateaux = [tuple(float(v) for v in p) for p in plateaux]
         self._sur_plateau = False
         # Mains idéales : milieu des contacts au début du levage (_porter).
@@ -577,7 +602,7 @@ class SimulatedRobot:
         # (instant, cause, geste de l'OS), vérité du monde simulé.
         self.chutes: List[Tuple[float, str, str]] = []
         mesures = MesuresBras(self.modele_bras, self._angles_bras, self._efforts_bras,
-                              lambda: self.PELVIS_HEIGHT_M,
+                              lambda: self.hauteur_bassin,
                               couple_max={**{j: self._limites_couple[j] for j in self._BRAS},
                                           **{j: 5.0 for j in self._poignets}},
                               inclinaison=self._inclinaison, raideur=self._regler_raideur,
@@ -589,7 +614,9 @@ class SimulatedRobot:
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
                                                  self._vers_robot, self._prise_tient,
                                                  gardien=self.guard, horloge=self.clock,
-                                                 mesures=mesures)
+                                                 mesures=mesures,
+                                                 posture=(self.locomotion.posture
+                                                          if self.poignets_29dof else None))
                              if manipulation else None)
         self.perception = SimulatedPerception(self)
         # Personnes : les VRAIS services de détection-suivi et de suivi, sur
@@ -797,9 +824,15 @@ class SimulatedRobot:
         self.y += (twist.vx * s + twist.vy * c) * dt
         self.heading += twist.wz * dt
 
+    @property
+    def hauteur_bassin(self) -> float:
+        """Hauteur du bassin (m) : debout (PELVIS_HEIGHT_M, qu'un test peut
+        changer), moins l'abaissement de la consigne de posture."""
+        return self.PELVIS_HEIGHT_M - self.abaissement_bassin
+
     def _etat_base(self) -> BaseState:
         return BaseState(quat_wxyz=(1.0, 0.0, 0.0, 0.0), ang_vel_body=(0.0, 0.0, 0.0),
-                         joint_pos={}, joint_vel={})
+                         joint_pos=self._angles_bras(), joint_vel={})
 
     def _envoyer(self, cibles: Dict[str, float]) -> Dict[str, HALStatus]:
         """Cibles des bras (convention brute du G1, celle des postures de la
@@ -842,6 +875,9 @@ class SimulatedRobot:
         etat = self.raw_hal.get_full_state()
         angles = {j: etat[j].position for j in self._BRAS if j in etat}
         angles.update(self._poignets)
+        if self.poignets_29dof:
+            # La taille du G1 29 DOF : penchée par la consigne de posture.
+            angles["waist_pitch_joint"] = self.tangage_taille
         return angles
 
     def _regler_raideur(self, active: bool) -> None:
@@ -880,7 +916,7 @@ class SimulatedRobot:
 
     def _vers_monde_bassin(self, p) -> np.ndarray:
         """Point du repère du bassin -> repère monde."""
-        return self._vers_monde(float(p[0]), float(p[1]), float(p[2]) + self.PELVIS_HEIGHT_M)
+        return self._vers_monde(float(p[0]), float(p[1]), float(p[2]) + self.hauteur_bassin)
 
     def _kp(self, j: str) -> float:
         """Raideur (N·m/rad) de l'articulation `j` en ce moment."""
@@ -1254,7 +1290,7 @@ class SimulatedRobot:
         # retient, l'objet tourne autour de la ligne des mains ; trop penché,
         # il glisse et tombe.
         if self.CONTACT_MAIN_M and self._centre_tenu is not None \
-                and self.held.position[2] > self.PELVIS_HEIGHT_M - 0.3:
+                and self.held.position[2] > self.hauteur_bassin - 0.3:
             poids = self._masse(self.held) * 9.81
             retenu = 2.0 * (2.0 / 3.0) * self._frottement(self.held) \
                 * min(self.forces_contact.values()) * self.RAYON_CONTACT_M

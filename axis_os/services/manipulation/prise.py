@@ -81,7 +81,12 @@ class ReglagesPrise:
     corrections_max: int = 2
     rayon_avant_bras_m: float = 0.035
     marge_plateau_m: float = 0.03      # sous l'avant-bras, au-dessus du plateau
-    bord_min_m: float = 0.15           # le bord d'une table n'est jamais plus près du bassin
+    # Le bord d'une table n'est jamais plus près du bassin : pieds contre la
+    # table, pas plus. La pointe des pieds du G1 debout est à 9,9 cm devant
+    # le bassin (URDF : sphère de contact de la pointe, posture debout de la
+    # marche ; test_portee_table.py le vérifie). C'était 15 cm, 5 de marge ;
+    # décision de revue : prendre ces 5 cm, sans plus.
+    bord_min_m: float = 0.10
     duree_placement_s: float = 0.8
     vitesse_fermeture: float = 0.5     # rad/s, roulis d'épaule
     vitesse_contact: float = 0.2       # rad/s, face commandée à moins de `zone_contact_m`

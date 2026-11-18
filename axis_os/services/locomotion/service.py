@@ -54,6 +54,14 @@ Puis le gardien de zones (axis_os/services/navigation/zones.py) refuse
 d'entrer dans une zone interdite et plafonne la vitesse en zone lente, et la
 protection thermique (axis_os/services/health/thermal.py) réduit la vitesse
 d'un robot qui chauffe. Chacun ne peut que réduire la consigne.
+
+Posture (LocomotionService.posture) : torse penché en avant, bassin abaissé,
+par la consigne de posture de la marche GR00T WBC, pour que les bras
+atteignent plus loin. Pour l'OS seulement (le service de manipulation) :
+aucune API du SDK n'y donne accès. Bornée (BornesPosture), robot immobile,
+zone dégagée selon le gardien de proximité (seul le retour vers la posture
+droite est permis sinon), centre de masse au-dessus des pieds avec une marge
+écrite (equilibre.py) ; refusée sinon. Penché, le robot ne marche pas.
 """
 from __future__ import annotations
 
@@ -62,7 +70,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from axis_os.hal.core.types import HALStatus
 from axis_os.services.base import IService, ServiceHealth, ServiceResult
@@ -174,6 +182,20 @@ class ILocomotionAdapter(ABC):
         return None
 
 
+@dataclass(frozen=True)
+class BornesPosture:
+    """Bornes de la consigne de posture (LocomotionService.posture).
+    Domaine d'entraînement de la politique GR00T WBC non documenté : valeurs
+    prudentes, à confirmer sur GPU. La taille du G1 tangue de 0,52 rad au
+    plus ; la marge d'équilibre est celle du modèle statique (equilibre.py,
+    sans recul des hanches, donc prudent)."""
+    tangage_max_rad: float = 0.35          # torse penché en avant, au plus
+    abaissement_max_m: float = 0.10        # bassin abaissé, au plus
+    vitesse_tangage_rad_s: float = 0.2     # la consigne y va peu à peu
+    vitesse_abaissement_m_s: float = 0.05
+    marge_min_m: float = 0.02              # centre de masse à 2 cm au moins du bord de l'appui
+
+
 class LocomotionState(Enum):
     """État du service.
 
@@ -209,6 +231,7 @@ class LocomotionService(IService):
         gardien=None,
         zones=None,
         thermique=None,
+        bornes_posture: BornesPosture = BornesPosture(),
     ):
         """
         adapter           : traduction vitesse -> articulations, fournie par
@@ -254,6 +277,14 @@ class LocomotionService(IService):
         self._gardien = gardien
         self._zones = zones
         self._thermique = thermique
+        self.bornes_posture = bornes_posture
+        # Posture : consigne retenue et consigne en cours, (tangage du torse
+        # en rad, abaissement du bassin en m) ; la seconde va vers la
+        # première peu à peu (tick). Dernier bilan d'équilibre accepté.
+        self._posture_cible: Tuple[float, float] = (0.0, 0.0)
+        self._posture: Tuple[float, float] = (0.0, 0.0)
+        self.equilibre_posture = None
+        self._modele_corps = None
         # Motif d'interdiction de toute marche (verrouiller()), ou None.
         self.verrou: Optional[str] = None
         self.dernier_verdict = None
@@ -288,10 +319,14 @@ class LocomotionService(IService):
 
     def start(self) -> HALStatus:
         """Démarre le service : réinitialise l'adaptateur et part d'une
-        consigne nulle. C'est aussi la seule façon de reprendre la marche
-        après une chute (état FALLEN)."""
+        consigne nulle, robot droit. C'est aussi la seule façon de reprendre
+        la marche après une chute (état FALLEN)."""
         self._adapter.reset()
         self._twist, self._twist_t = Twist(), None
+        # Droit, comme l'adaptateur réinitialisé : jamais de retour à une
+        # posture d'avant l'arrêt, que rien n'a vérifiée de nouveau.
+        self._posture_cible = self._posture = (0.0, 0.0)
+        self.equilibre_posture = None
         self._pas_depart, self._physique_avancee = None, False
         self.state = LocomotionState.RUNNING
         return HALStatus.OK
@@ -362,6 +397,9 @@ class LocomotionService(IService):
                                  reason=f"service {self.state.name}")
         if self.verrou and not (vx == 0.0 and vy == 0.0 and wz == 0.0):
             return ServiceResult(ok=False, reason=f"marche interdite : {self.verrou}")
+        if self.penche and not (vx == 0.0 and vy == 0.0 and wz == 0.0):
+            return ServiceResult(ok=False, reason=f"marche refusée : robot penché "
+                                                  f"({self._texte_posture()}), à redresser d'abord")
         # Une consigne non finie est refusée, et le robot s'arrête en
         # équilibre. Pourquoi : un audit de sécurité (octobre 2026) a montré
         # que le bornage ci-dessous, max(-m, min(m, v)), transforme NaN
@@ -413,6 +451,111 @@ class LocomotionService(IService):
         tourner et tient le robot debout. Ce n'est pas un arrêt d'urgence
         (e-stop), qui relève du système de sécurité."""
         return self.set_velocity(0.0, 0.0, 0.0)
+
+    # ---- Posture : torse penché, bassin abaissé (pour l'OS seulement) ----
+
+    @property
+    def posture_disponible(self) -> bool:
+        """L'adaptateur prend-il une consigne de posture (GR00T WBC), avec
+        l'URDF de son robot pour le modèle d'équilibre ?"""
+        a = self._adapter
+        return (bool(getattr(a, "posture_disponible", False))
+                and callable(getattr(a, "posture", None))
+                and getattr(a, "urdf_equilibre", None) is not None)
+
+    @property
+    def penche(self) -> bool:
+        """Hors de la posture droite (consigne retenue ou en cours)."""
+        return max(abs(self._posture_cible[0]), abs(self._posture[0]),
+                   self._posture_cible[1], self._posture[1]) > 1e-4
+
+    @property
+    def posture_actuelle(self) -> Tuple[float, float]:
+        """(tangage du torse en rad, abaissement du bassin en m) en cours."""
+        return self._posture
+
+    @property
+    def posture_atteinte(self) -> bool:
+        return all(abs(a - b) < 1e-6 for a, b in zip(self._posture, self._posture_cible))
+
+    def _texte_posture(self, posture: Optional[Tuple[float, float]] = None) -> str:
+        t, a = posture or self._posture_cible
+        return f"torse penché de {math.degrees(t):.0f}°, bassin abaissé de {100 * a:.0f} cm"
+
+    def posture(self, tangage: float = 0.0, abaissement: float = 0.0,
+                angles: Optional[Dict[str, float]] = None,
+                charges: Sequence[Tuple[float, Sequence[float]]] = (),
+                essai: bool = False) -> ServiceResult:
+        """Consigne de posture : torse penché en avant de `tangage` (rad),
+        bassin abaissé de `abaissement` (m) ; (0, 0) : droit. Pour l'OS (le
+        service de manipulation) : aucune API du SDK n'y mène.
+
+        `angles` : angles prévus des bras (sinon les mesurés) ; `charges` :
+        (masse en kg, position dans le repère du bassin), le carton porté.
+        `essai` : vérifie sans rien changer.
+
+        Refusée : service arrêté, adaptateur sans posture, valeur non finie
+        ou hors des bornes (BornesPosture), robot qui marche, gardien de
+        proximité qui arrête le robot (personne ou obstacle inexpliqué trop
+        près, ou pas de balayage : seul le retour vers la posture droite
+        reste permis, il éloigne le torse de ce qui est devant), centre de
+        masse à moins de marge_min_m du bord de l'appui des pieds. La
+        consigne est appliquée peu à peu par tick() ; ok=True rend le bilan
+        d'équilibre (value), la marge écrite dans reason."""
+        b = self.bornes_posture
+        if self.state is not LocomotionState.RUNNING:
+            return ServiceResult(ok=False, reason=f"posture refusée : service {self.state.name}")
+        if not self.posture_disponible:
+            return ServiceResult(ok=False, reason="posture refusée : cette marche ne prend pas "
+                                                  "de consigne de posture")
+        if not all(math.isfinite(v) for v in (tangage, abaissement)):
+            return ServiceResult(ok=False, reason=f"posture refusée : valeur non finie "
+                                                  f"({tangage}, {abaissement})")
+        if not (0.0 <= tangage <= b.tangage_max_rad and 0.0 <= abaissement <= b.abaissement_max_m):
+            return ServiceResult(ok=False, reason=(
+                f"posture refusée : torse penché de 0 à {b.tangage_max_rad:.2f} rad, bassin "
+                f"abaissé de 0 à {100 * b.abaissement_max_m:.0f} cm (demandé {tangage:.2f} rad, "
+                f"{100 * abaissement:.0f} cm)"))
+        if self.is_moving:
+            return ServiceResult(ok=False, reason="posture refusée : le robot marche")
+        vers_droit = tangage <= self._posture[0] + 1e-9 and abaissement <= self._posture[1] + 1e-9
+        if self._gardien is not None and not vers_droit:
+            v = self._gardien.evaluer(self._clock())
+            if v.facteur <= 0.0:
+                return ServiceResult(ok=False, reason=f"posture refusée : gardien de proximité "
+                                                      f"({v.raison})")
+        from axis_os.services.locomotion.equilibre import TAILLE, ModeleCorps, jambes
+        if self._modele_corps is None:
+            self._modele_corps = ModeleCorps(self._adapter.urdf_equilibre)
+        try:
+            mesures = dict(self._read_state().joint_pos)
+        except Exception as exc:               # noqa: BLE001 — sans état, pas de posture
+            return ServiceResult(ok=False, reason=f"posture refusée : état du robot illisible "
+                                                  f"({type(exc).__name__})")
+        valeurs = {**mesures, **(angles or {}), **jambes(-abaissement), TAILLE: tangage}
+        e = self._modele_corps.equilibre(valeurs, charges)
+        texte = f"{self._texte_posture((tangage, abaissement))} : {e.texte()}"
+        if e.marge < b.marge_min_m:
+            return ServiceResult(ok=False, value=e, reason=(
+                f"posture refusée, équilibre : {texte} (au moins {100 * b.marge_min_m:.0f} cm)"))
+        if not essai:
+            self._posture_cible = (float(tangage), float(abaissement))
+            self.equilibre_posture = e
+        return ServiceResult(ok=True, value=e, reason=f"posture : {texte}")
+
+    def _pas_posture(self, gardien_arrete: bool) -> None:
+        """Un pas de la posture en cours vers la consigne (tick) ; le gardien
+        qui arrête le robot fige ce qui s'éloigne de la posture droite."""
+        b, dt = self.bornes_posture, self._adapter.control_dt
+        (t, a), (tc, ac) = self._posture, self._posture_cible
+        if gardien_arrete:
+            tc, ac = min(tc, t), min(ac, a)
+        t += max(-b.vitesse_tangage_rad_s * dt, min(b.vitesse_tangage_rad_s * dt, tc - t))
+        a += max(-b.vitesse_abaissement_m_s * dt, min(b.vitesse_abaissement_m_s * dt, ac - a))
+        change = (t, a) != self._posture
+        self._posture = (t, a)
+        if change or self.penche:
+            self._adapter.posture(hauteur=self._adapter.hauteur_debout - a, rpy=(0.0, t, 0.0))
 
     # ---- Boucle de commande ----------------------------------------------
 
@@ -468,11 +611,15 @@ class LocomotionService(IService):
                                  "sécurité")
 
         twist = self._effective_twist()
-        if self.verrou:
+        if self.verrou or self.penche:
             twist = Twist()
+        v = None
         if self._gardien is not None:
             v = self._gardien.evaluer(self._clock())
             self.dernier_verdict = v
+        if self.posture_disponible and (self.penche or self._posture != self._posture_cible):
+            self._pas_posture(gardien_arrete=v is not None and v.facteur <= 0.0)
+        if v is not None:
             if v.facteur <= 0.0:
                 # Arrêt en équilibre : consigne nulle, la politique de marche
                 # continue de tenir le robot debout. Jamais une coupure des

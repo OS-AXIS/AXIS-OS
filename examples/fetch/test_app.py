@@ -24,6 +24,21 @@ def test_fetch():
         assert h.runtime.get_progress(h.app_id).fraction == 1.0
 
 
+def test_fetch_too_heavy():
+    # 1,6 kg : au-delà de la charge du G1 (1,2 kg). Pesé au levage d'essai,
+    # reposé là où il était ; TOO_HEAVY, et l'app s'arrête là, bras au repos.
+    box = SimulatedObject("red box", (1.2, 0.4, 0.90), masse_kg=1.6)
+    with AppTestHarness(FetchApp(), objects=[box]) as h:
+        result = h.run({"object": "red", "drop": [0.0, -0.5]})
+        assert result is not None and not result.success
+        assert result.metrics.get("trop_lourd") is True, result.metrics
+        assert result.metrics["steps"] == ["go_to:ARRIVED", "pick:FAILED"], result.metrics
+        assert "trop lourd" in result.error_message, result.error_message
+        # Reposé sur la table, à sa place.
+        assert abs(box.position[2] - 0.90) < 0.03 and math.dist(box.position[:2], (1.2, 0.4)) < 0.05, \
+            box.position
+
+
 def test_fetch_object_not_found():
     with AppTestHarness(FetchApp()) as h:
         result = h.run({"object": "unicorn"})
@@ -33,5 +48,6 @@ def test_fetch_object_not_found():
 
 if __name__ == "__main__":
     test_fetch()
+    test_fetch_too_heavy()
     test_fetch_object_not_found()
     print("✓ fetch")

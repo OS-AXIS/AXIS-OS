@@ -10,7 +10,10 @@ ne donne pas la taille d'un objet), "drop" ([x, y] du point de dépose).
 
 À chaque étape, l'app vérifie should_stop() et rapporte sa progression ;
 chaque échec est rendu tel quel, avec son code (OUT_OF_REACH,
-PROXIMITY_GUARD, TIMEOUT...).
+PROXIMITY_GUARD, TIMEOUT...). Un objet trop lourd (TOO_HEAVY, SDK 1.3.0) :
+l'OS l'a reposé là où il était ; l'app ne réessaie pas, ramène les bras au
+repos et le dit (métrique « trop_lourd ») : c'est à une personne de le
+porter.
 """
 from axis_os.store.sdk.app_base import MissionResult, RobotApp
 from axis_os.store.sdk.manifest import AppCategory, AppManifest, Permission
@@ -84,6 +87,15 @@ class FetchApp(RobotApp):
                                      error_message=f"arrêt demandé avant {step}",
                                      metrics={"steps": steps})
             result = action()
+            if not result and result.code == "TOO_HEAVY":
+                # Reposé par l'OS là où il était : se rapprocher ou réessayer
+                # n'y changerait rien. Bras au repos, et on le dit.
+                ctx.rest_pose(duration_s=1.5)
+                steps.append(f"{step}:{result.status}")
+                return MissionResult(success=False, mission_id="", app_id="", duration_s=0.0,
+                                     error_message=f"objet trop lourd pour ce robot, reposé là "
+                                                   f"où il était : {result.message}",
+                                     metrics={"steps": steps, "trop_lourd": True})
             if not result:
                 return self._fail(step, result, steps)
             steps.append(f"{step}:{result.status}")
