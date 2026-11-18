@@ -2051,15 +2051,19 @@ class ManipulationService(IService):
                             f"levage, avant de serrer plus)" + (
                                 "" if self.poids_tare is None else
                                 f" ; taré depuis la fermeture : {self.poids_tare:.1f} N"))
-                if self.poids_carton < r.poids_min_n:
-                    # Il ne pèse pas sur les mains : resté sur la table, elles ont
-                    # glissé le long de ses faces (ReglagesPrise.poids_min_n).
-                    self._reposer(f"le carton ne pèse pas sur les mains "
-                                  f"({self.poids_carton:.1f} N, au moins {r.poids_min_n:g}) : "
-                                  f"il n'a pas quitté la table, les mains ont glissé le long de "
-                                  f"ses faces (trop lourd ou trop glissant pour le serrage de prise)")
-                    return
                 pese = self.poids_carton if self.poids_tare is None else self.poids_tare
+                if min(self.poids_carton, pese) < r.poids_min_n:
+                    # Il ne pèse pas sur les mains : resté sur la table, elles ont
+                    # glissé le long de ses faces (ReglagesPrise.poids_min_n). La
+                    # plus petite des deux pesées : le biais des couples faisait
+                    # lire 1,7 N à un carton de 1,4 kg resté sur la table, bras
+                    # tendus (0,0 N taré) ; serré pour 1,7 N, il glissait au retour.
+                    self._reposer(f"le carton ne pèse pas sur les mains "
+                                  f"({min(self.poids_carton, pese):.1f} N, au moins "
+                                  f"{r.poids_min_n:g}) : il n'a pas quitté la table, les mains "
+                                  f"ont glissé le long de ses faces (trop lourd ou trop glissant "
+                                  f"pour le serrage de prise)")
+                    return
                 if pese > 9.81 * r.masse_max_kg:
                     # Au-delà de la charge pour laquelle la prise est vérifiée
                     # (ReglagesPrise.masse_max_kg) : reposé aussitôt pesé. Taré :
