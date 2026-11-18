@@ -436,6 +436,17 @@ rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
   la vraie taille de chaque carton posé ; il faudrait qu'elle la perçoive.
 - **Plateaux bas** : à atteindre en pliant le corps (taille, genoux), pas en
   inclinant les mains.
+- **Dépose à la limite de portée** : un carton de 20 cm (mains idéales)
+  est bien posé jusqu'à un plateau de 72 cm ; à 70 cm, la dépose est refusée,
+  le carton reste tenu.
+  - **Entre les deux** : vers 71 cm, le chemin de descente passe, mais les
+    mains ne peuvent pas s'y ouvrir sur place.
+  - **Ce qui se passe alors** : `_ouvrir` rouvre les roulis de 0,3 rad, et
+    les mains remontent de 2,4 cm en s'ouvrant. Le carton serait lâché
+    ~3 cm au-dessus du plateau. Ce comportement est antérieur à la
+    campagne, qui ne pose que sur la table de prise.
+  - **Proposition** : vérifier aussi l'ouverture avant de descendre, sinon
+    refuser.
 - **Campagne GPU, après le premier tri réussi** :
   `bash lancer_t1.sh 3600 10 --cartons-varies 40`. Bilan par plage et
   raisons en fin d'essai, détail dans `videos/t1_campagne_cartons.json`.
