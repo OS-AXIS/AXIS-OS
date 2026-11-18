@@ -385,6 +385,12 @@ rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
 - **Levage sans fin** : avec les couples bruités du banc, le délai qui juge
   « trop lourd » repartait à chaque avance aussitôt défaite par le
   garde-plafond. Il ne repart plus que sur un vrai progrès.
+- **Charge plafonnée** (`masse_max_kg`, 1,2 kg) : un carton pesé au-delà est
+  reposé dès la pesée, en haut du levage d'essai (4 cm), avant d'être serré
+  plus ou porté : « trop lourd : X kg pesés, au plus 1.2 kg ». La masse ne
+  se connaît qu'en pesant, donc qu'une fois le carton soulevé de ces 4 cm.
+- **Dépose : mains ouvertes sur place, jamais en remontant** (voir plus bas,
+  « Dépose à la limite de portée »).
 - **Robot simulé**, pour que ces cas existent :
   - masse et frottement propres à chaque carton ;
   - glissement quand le frottement ne porte plus le poids ;
@@ -406,12 +412,15 @@ rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
   - hauteur de 13 à 25 cm ;
   - masse jusqu'à ~1 kg ;
   - frottement dès 0,6 ;
-  - lacet jusqu'à 20° ;
+  - lacet jusqu'à 12° (la scène T1 tire ±12°) ;
   - retrait du bord de 5 cm au plus.
 - **Ses limites, raisons comprises** :
   - carton de 10 cm de haut : avant-bras trop près du plateau ;
   - dès 1,2 kg : trop lourd pour les poignets du G1 (plafonds de 5 N·m) ;
   - μ = 0,5 : il ne suit pas le levage ;
+  - lacet de 13 à 20° : pris et porté, mais posé sur la table, les mains ne
+    s'ouvrent plus sur place autour de lui (5 cm de jeu de chaque côté, bras
+    tendus) : dépose refusée, carton reposé à sa place ;
   - lacet de 30° et plus : hors de portée, le robot abordant la table de face ;
   - à 20 cm du bord de la table : hors de portée à toute distance.
 
@@ -424,7 +433,7 @@ rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
 | `penetration_poids_max_m` 6 cm | Jamais atteinte : avance de 3,4 cm au plus sur la campagne, 5,2 sur un balayage d'essai aux couples bruités ; ce sont les plafonds de couple qui limitent d'abord | **Tient**. Inchangé. |
 | Seuils de contact (`force_contact_n`, `sigmas_contact`, `hausse_contact_nm`) | Contact vu la main 0,8 à 1,2 cm dans la face (au plus 1,5) quels que soient taille, masse et lacet, bruit du banc compris ; aucun refus de contact | **Tiennent**. Inchangés. |
 | `roulis_presaisie` 0,32 | 27 cm entre les paumes : tout carton plus large était heurté | **Réglé pour T1** : corrigé, pré-saisie à la largeur du carton (voir plus haut). |
-| `masse_max_kg` 1,0 | C'est la masse du carton T1 ; les mains portent jusqu'à ~1,2 kg | **Proposition** : 1,2 kg, la charge que les mains portent (tolérance de la ligne des mains au centre de gravité : 1,45 cm au lieu de 1,7). Inchangé ici. |
+| `masse_max_kg` 1,0 | C'est la masse du carton T1 ; les mains portent jusqu'à ~1,2 kg | **Réglé pour T1** : passé à 1,2 kg, la charge que les mains portent (tolérance de la ligne des mains au centre de gravité : 1,45 cm au lieu de 1,7). Au-delà, reposé dès la pesée. |
 | `force_serrage_n` 8 N | 8 ou 12 N ne changent rien : le serrage de prise est borné par `penetration_max_m` (2 cm, ~9 N avec les bras du G1) | **Proposition** : au second essai d'un carton qui n'a pas suivi, serrer jusqu'à la borne d'après le poids. Inchangé ici. |
 
 ### Ce qui reste
@@ -436,17 +445,42 @@ rejouables (`axis_os/testing/cartons.py`, `test/test_campagne_cartons.py`).
   la vraie taille de chaque carton posé ; il faudrait qu'elle la perçoive.
 - **Plateaux bas** : à atteindre en pliant le corps (taille, genoux), pas en
   inclinant les mains.
-- **Dépose à la limite de portée** : un carton de 20 cm (mains idéales)
-  est bien posé jusqu'à un plateau de 72 cm ; à 70 cm, la dépose est refusée,
-  le carton reste tenu.
-  - **Entre les deux** : vers 71 cm, le chemin de descente passe, mais les
-    mains ne peuvent pas s'y ouvrir sur place.
-  - **Ce qui se passe alors** : `_ouvrir` rouvre les roulis de 0,3 rad, et
-    les mains remontent de 2,4 cm en s'ouvrant. Le carton serait lâché
-    ~3 cm au-dessus du plateau. Ce comportement est antérieur à la
-    campagne, qui ne pose que sur la table de prise.
-  - **Proposition** : vérifier aussi l'ouverture avant de descendre, sinon
-    refuser.
+- **La repose à sa place** (`poser()` sans plateau, après une dépose
+  refusée) peut encore rouvrir les roulis si les mains ne s'ouvrent pas sur
+  place (carton tourné de 13° et plus) : il est alors sur sa table, et les
+  mains remontent de 0,4 cm en s'ouvrant.
+- **Ouvrir sur place autour d'un carton tourné** : 5 cm de jeu de chaque côté
+  ne passent plus dès ~13°, bras tendus. Un jeu plus petit passe (1 cm à 20°)
+  et suffirait à le lâcher, si le retrait des mains qui suit est vérifié.
 - **Campagne GPU, après le premier tri réussi** :
   `bash lancer_t1.sh 3600 10 --cartons-varies 40`. Bilan par plage et
   raisons en fin d'essai, détail dans `videos/t1_campagne_cartons.json`.
+
+### Dépose à la limite de portée : jamais lâchée en remontant
+
+Avant, un carton de 20 cm (mains idéales) était posé jusqu'à un plateau de
+71 cm, mais à 71 cm les mains ne pouvaient pas s'ouvrir sur place.
+- **Le repli d'`_ouvrir`** : il rouvre les roulis de 0,3 rad, et les mains
+  remontent de 2,4 cm en s'ouvrant. Le carton était lâché 3,4 cm au-dessus
+  du plateau.
+- **Antérieur à la campagne** : elle ne pose que sur la table de prise, et ne
+  l'a pas vu.
+
+Désormais (`test_depose_limite_portee.py`) :
+- **Avant de descendre**, le chemin est vérifié, et aussi l'ouverture sur
+  place des mains en bas.
+  - **À quelques mm près** : `_ouvrir` part des mains mesurées, qui cèdent
+    sous la charge de 3 à 5 mm, et l'ouverture d'un carton tourné en
+    dépend : à 12°, elle passe 4 mm plus près du robot, pas à la consigne.
+  - **Refus seulement si aucune de ces places ne la permet**, sinon le tri T1
+    (±12°) perdrait des déposes.
+  - **Après un refus**, l'objet reste tenu, rien ne bouge (place() :
+    FAILED/OUT_OF_REACH).
+- **En bas, là où sont les mains**, l'ouverture est vérifiée de nouveau.
+  Impossible, l'objet n'est pas lâché : il est remonté, tenu (« vu en
+  bas »).
+- **Plateau par plateau**, pour ce carton :
+  - jusqu'à 70,75 cm, refusé, chemin hors d'atteinte ;
+  - de 71 à 71,25 cm, refusé avant de descendre ;
+  - de 71,5 à 71,75 cm, descendu puis remonté, tenu ;
+  - dès 72 cm, posé à 3 mm du plateau.

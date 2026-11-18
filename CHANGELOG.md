@@ -31,6 +31,23 @@ choisis sur le seul carton T1 (docs/validation_port_carton.md, §8).
   `SimulatedRobot(plateaux=...)`, glissement, équilibre des forces du
   carton porté, chutes relevées (`chutes`).
 - Cinématique : mêmes résultats au bit près, deux à trois fois plus vite.
+- Dépose : avant de descendre, l'OS vérifie aussi que les mains pourront
+  s'ouvrir sur place en bas (à quelques mm près). Si non, il refuse, et le
+  carton reste tenu sans que rien ne bouge. En bas, si elles ne peuvent pas
+  s'ouvrir là où elles sont, il ne lâche jamais le carton : il le remonte,
+  tenu. Avant, il rouvrait les roulis, et les mains remontaient en s'ouvrant
+  (carton lâché 3,4 cm au-dessus d'un plateau de 71 cm).
+  `test/test_depose_limite_portee.py`.
+- `ReglagesPrise.masse_max_kg` : 1,2 kg (c'était 1 kg, la masse du seul
+  carton T1). Un carton pesé au-delà est reposé dès la pesée, ni serré plus
+  ni porté.
+- Tests : la dépose de `test_prise_mesuree` §2 et de
+  `test_sdk_services_haut_niveau` §3 se fait sur un plateau à 75 cm au lieu
+  de 70. Porté là où les mains l'ont serré, ce carton est posé jusqu'à
+  72 cm ; à 70, il est refusé proprement. `test_serrage_poids` §2 vérifie
+  désormais deux refus pour « trop lourd » : 1,6 kg reposé dès la pesée, et
+  1 kg avec des poignets plus faibles, pour qui le serrage ne suffit pas
+  dans les plafonds.
 
 ### Essai GPU de main (T1, 6 novembre 2026, 18 h 21) : poids gardé trop haut, carton tordu au retour
 
