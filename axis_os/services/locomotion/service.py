@@ -319,10 +319,14 @@ class LocomotionService(IService):
 
     def start(self) -> HALStatus:
         """Démarre le service : réinitialise l'adaptateur et part d'une
-        consigne nulle. C'est aussi la seule façon de reprendre la marche
-        après une chute (état FALLEN)."""
+        consigne nulle, robot droit. C'est aussi la seule façon de reprendre
+        la marche après une chute (état FALLEN)."""
         self._adapter.reset()
         self._twist, self._twist_t = Twist(), None
+        # Droit, comme l'adaptateur réinitialisé : jamais de retour à une
+        # posture d'avant l'arrêt, que rien n'a vérifiée de nouveau.
+        self._posture_cible = self._posture = (0.0, 0.0)
+        self.equilibre_posture = None
         self._pas_depart, self._physique_avancee = None, False
         self.state = LocomotionState.RUNNING
         return HALStatus.OK

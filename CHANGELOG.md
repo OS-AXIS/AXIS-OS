@@ -40,7 +40,10 @@ Détail dans docs/validation_port_carton.md, §9.
   refusée si le gardien de proximité arrête le robot (sauf pour revenir
   droit), ou si le centre de masse n'est pas à 2 cm au moins dans l'appui
   des pieds ; la marge est écrite dans la réponse. Penché, le robot ne
-  marche pas. `GR00TWBCAdapter.hauteur_debout` et `urdf_equilibre`.
+  marche pas. Redémarré (`start()`, après une chute ou un arrêt), il
+  repart droit : `GR00TWBCAdapter.reset()` remet aussi la consigne de
+  torse et de hauteur à zéro. `GR00TWBCAdapter.hauteur_debout` et
+  `urdf_equilibre`.
 - `axis_os/services/locomotion/equilibre.py` : centre de masse du robot
   entier (URDF) au-dessus de l'appui des pieds, marge signée.
 - `ManipulationService(posture=...)`, `plan_penche(objet)` (le plus petit

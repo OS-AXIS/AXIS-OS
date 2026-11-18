@@ -417,8 +417,10 @@ class GR00TWBCAdapter:
         return self._policy.cfg.seuil_equilibre
 
     def reset(self) -> None:
-        """Réinitialise la politique, donc son historique (piège 2)."""
+        """Réinitialise la politique, donc son historique (piège 2), et la
+        consigne de posture : torse droit, hauteur par défaut."""
         self._policy.reset()
+        self.hauteur, self.rpy = None, (0.0, 0.0, 0.0)
 
     # Consigne de posture (LocomotionService.posture, qui la borne et vérifie
     # l'équilibre sur l'URDF de ce robot avant de l'appliquer peu à peu).

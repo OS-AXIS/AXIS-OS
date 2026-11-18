@@ -287,7 +287,7 @@ class _BaseGlissante(ILocomotionAdapter):
         return 0.0
 
     def reset(self) -> None:
-        pass
+        self.posture()                      # droit, comme GR00T WBC réinitialisé
 
     def step(self, state: BaseState, twist: Twist) -> Dict[str, float]:
         self._robot._avancer(twist)

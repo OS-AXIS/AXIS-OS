@@ -12,6 +12,8 @@ Posture : torse penché, bassin abaissé, par la consigne de la marche
   6. Équilibre : une charge lourde loin devant, centre de masse hors de
      l'appui des pieds : refus, la marge écrite.
   7. Aucune app n'y accède : ni le SDK ni le pont des apps n'ont de posture.
+  8. Redémarré (après une chute ou un arrêt), le robot repart droit : jamais
+     de retour à la posture d'avant, que rien n'a vérifiée de nouveau.
 """
 import contextlib
 import inspect
@@ -22,6 +24,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from axis_os.hal.drivers.unitree_g1.gr00t_wbc_policy import (  # noqa: E402
+    GR00TWBCAdapter, GR00TWBCPolicy)
 from axis_os.store.runtime import hal_bridge  # noqa: E402
 from axis_os.store.sdk import app_base  # noqa: E402
 from axis_os.testing import SimulatedRobot  # noqa: E402
@@ -149,6 +153,26 @@ publiques = [n for n, _ in inspect.getmembers(app_base.RobotContext) if "posture
 check("RobotContext (le SDK des apps) : aucune méthode de posture", not publiques, str(publiques))
 check("Pont des apps (hal_bridge) : aucune action de posture",
       "posture" not in inspect.getsource(hal_bridge).lower())
+
+section("8. Redémarré, le robot repart droit")
+d = Banc()
+d.loco.posture(0.2)
+d.jusqua_atteinte()
+d.loco.stop()
+d.loco.start()
+vus = []
+for _ in range(20):
+    d.pas()
+    vus.append(d.r.tangage_taille)
+check("Penché de 0,2 rad, arrêté puis redémarré : droit dès le départ, sans retour à la "
+      "consigne d'avant", not d.loco.penche and d.loco.equilibre_posture is None
+      and max(abs(t) for t in vus) < 1e-9, f"{d.loco.posture_actuelle} {max(vus)}")
+check("… et il remarche", d.loco.set_velocity(0.2, 0.0, 0.0).ok)
+wbc = GR00TWBCAdapter(GR00TWBCPolicy())
+wbc.posture(hauteur=0.64, rpy=(0.0, 0.2, 0.0))
+wbc.reset()
+check("GR00T WBC réinitialisé (start) : consigne de torse droite, hauteur par défaut",
+      wbc.hauteur is None and wbc.rpy == (0.0, 0.0, 0.0), f"{wbc.hauteur} {wbc.rpy}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
