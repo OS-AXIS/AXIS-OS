@@ -621,6 +621,10 @@ class ManipulationService(IService):
         # marge de frottement au port (le plus grand porté, _poids_ref, ne
         # sert plus qu'au contrôle de glissement du port).
         self.poids_carton: Optional[float] = None
+        # Le même, taré : d'après la hausse des couples depuis le zéro d'avant
+        # la fermeture, où leur biais s'annule (calibré ou non) ; décide du
+        # plafond de masse (masse_max_kg).
+        self.poids_tare: Optional[float] = None
         # Retour en corps rigide : (centre de départ, pose de chaque main
         # commandée, serrage) au début du geste ; poses des mains MESURÉES
         # au début du geste ; roulis et tangage estimés du carton (degrés) ;
@@ -1988,7 +1992,7 @@ class ManipulationService(IService):
         self._poids_ref, self._t_sans_poids, self.appui_torse = None, None, None
         r = self.r
         self.serrage_vise, self.serrage_requis, self.charge = None, None, None
-        self.poids_carton, self._t_attente_serrage = None, None
+        self.poids_carton, self.poids_tare, self._t_attente_serrage = None, None, None
         self._rigide, self._resserrage_force = None, False
         self._t_serrage_bloque, self._record_serrage = None, {}
         self._delta_max_poids = {c: self._delta_max.get(c, 0.0) + r.penetration_poids_max_m
@@ -2033,9 +2037,13 @@ class ManipulationService(IService):
                 if len(self._hist_charge) < self._hist_charge.maxlen:
                     return
                 self.poids_carton = float(np.median([v[0] for v in self._hist_charge]))
+                tares = [v[2] for v in self._hist_charge if v[2] is not None]
+                self.poids_tare = float(np.median(tares)) if tares else None
                 self._noter(f"poids du carton : {self.poids_carton:.1f} N (médiane de "
                             f"{len(self._hist_charge)} lectures, bras immobiles en haut du "
-                            f"levage, avant de serrer plus)")
+                            f"levage, avant de serrer plus)" + (
+                                "" if self.poids_tare is None else
+                                f" ; taré depuis la fermeture : {self.poids_tare:.1f} N"))
                 if self.poids_carton < r.poids_min_n:
                     # Il ne pèse pas sur les mains : resté sur la table, elles ont
                     # glissé le long de ses faces (ReglagesPrise.poids_min_n).
@@ -2044,10 +2052,13 @@ class ManipulationService(IService):
                                   f"il n'a pas quitté la table, les mains ont glissé le long de "
                                   f"ses faces (trop lourd ou trop glissant pour le serrage de prise)")
                     return
-                if self.poids_carton > 9.81 * r.masse_max_kg:
+                pese = self.poids_carton if self.poids_tare is None else self.poids_tare
+                if pese > 9.81 * r.masse_max_kg:
                     # Au-delà de la charge pour laquelle la prise est vérifiée
-                    # (ReglagesPrise.masse_max_kg) : reposé aussitôt pesé.
-                    self._reposer(f"trop lourd : {self.poids_carton / 9.81:.2f} kg pesés, au plus "
+                    # (ReglagesPrise.masse_max_kg) : reposé aussitôt pesé. Taré :
+                    # sans calibration des couples, leur biais faisait peser un
+                    # carton de 1 kg de 0,77 à 1,23 kg (0,92 à 1,05 taré).
+                    self._reposer(f"trop lourd : {pese / 9.81:.2f} kg pesés, au plus "
                                   f"{r.masse_max_kg:g} kg (masse_max_kg, la charge pour laquelle la "
                                   f"prise est vérifiée) ; ni serré plus, ni porté")
                     return
@@ -2487,8 +2498,14 @@ class ManipulationService(IService):
             return None
         haut = -g / max(1e-9, float(np.linalg.norm(g)))
         vers_robot = np.array([-1.0, 0.0, 0.0])
+        # Et tarée : la hausse des couples depuis le zéro d'avant la fermeture
+        # (_tau0), où leur biais s'annule (poids_tare).
+        tare = [self._force_main(c, tau, angles, g) for c in ("left", "right")] \
+            if self._tau0 else []
         self._hist_charge.append((sum(float(f @ haut) for f in forces),
-                                  sum(float(f @ vers_robot) for f in forces)))
+                                  sum(float(f @ vers_robot) for f in forces),
+                                  sum(float(f @ haut) for f in tare)
+                                  if tare and all(f is not None for f in tare) else None))
         self.charge = (float(np.mean([v[0] for v in self._hist_charge])),
                        float(np.mean([v[1] for v in self._hist_charge])))
         return self.charge
