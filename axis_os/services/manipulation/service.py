@@ -1898,20 +1898,23 @@ class ManipulationService(IService):
         return sortie
 
     def _q_rigide(self, centre: np.ndarray, ecart: Optional[float] = None,
-                  graine: Optional[Dict[str, float]] = None) -> Optional[Dict[str, float]]:
+                  graine: Optional[Dict[str, float]] = None,
+                  delta: Optional[Dict[str, float]] = None) -> Optional[Dict[str, float]]:
         """Bras qui portent les deux mains COMMANDÉES comme un seul corps
         rigide avec l'objet : chaque main à sa pose du début du retour
         (_rigide), translatée de `centre` moins le centre de départ, la même
         translation pour les deux, orientation inchangée (l'objet ne roule ni
-        ne tangue), plus la variation du serrage (et de l'écart des mains)
-        le long de la ligne des mains de départ. None si un bras n'y arrive pas."""
+        ne tangue), plus la variation du serrage (`delta`, l'actuel par
+        défaut ; et de l'écart des mains) le long de la ligne des mains de
+        départ. None si un bras n'y arrive pas."""
         c0, poses, delta0, ecart0 = self._rigide
+        delta = self._delta if delta is None else delta
         t = np.asarray(centre, dtype=float) - c0
         de = 0.0 if ecart is None else (ecart - ecart0) / 2.0
         q = dict(self._q if graine is None else graine)
         for cote in self._ROULIS:
             p, rot, u = poses[cote]
-            q = self._vers_pose(q, cote, p + t + (self._delta[cote] - delta0[cote] - de) * u, rot)
+            q = self._vers_pose(q, cote, p + t + (delta[cote] - delta0[cote] - de) * u, rot)
             if q is None:
                 return None
         return q
@@ -2683,12 +2686,31 @@ class ManipulationService(IService):
                 # vite sans à-coup (0,16 rad au dernier cm vers 70 cm) n'y passe pas
                 # pour un saut ; un changement de solution, si (0,32 rad en 2 mm).
                 q = self._chemin_rigide(de, devant, None, pas_m=0.002)
-                if q is None or self._chemin_rigide(devant, bas, None, graine=q,
-                                                    pas_m=0.002) is None:
+                q = None if q is None else self._chemin_rigide(devant, bas, None, graine=q,
+                                                               pas_m=0.002)
+                # En bas, les mains doivent aussi pouvoir s'ouvrir sur place, comme
+                # _ouvrir le fera (serrage relâché, jeu_ouverture_m de chaque côté) :
+                # sinon il rouvre les roulis et elles remontent en s'ouvrant (2,4 cm
+                # vers un plateau de 71 cm, carton lâché ~3 cm au-dessus de lui).
+                # _ouvrir part des mains mesurées, à quelques mm de leur consigne
+                # (bras qui cèdent sous la charge : 3 à 5 mm en avant et de côté,
+                # campagne de cartons variés), et l'ouverture d'un carton tourné en
+                # dépend (12° : possible 4 mm plus près du robot, pas à la consigne) :
+                # refus seulement si aucune de ces places ne le permet.
+                ecart = (self._ecart_mains or 0.33) + 2 * self.r.jeu_ouverture_m
+                relache = {c: 0.0 for c in self._ROULIS}
+                ouvre = q is not None and any(
+                    self._q_rigide(bas + np.array([dx, dy, 0.0]), ecart, graine=q,
+                                   delta=relache) is not None
+                    for dx in (0.0, -0.005, 0.005) for dy in (0.0, -0.005, 0.005))
+                if not ouvre:
                     self.stats["deposes_impossibles"] += 1
-                    self.raison = (f"dépose impossible : plateau à {self._surface:.2f} m hors "
-                                   f"d'atteinte des bras (chemin vérifié avant de descendre, "
-                                   f"l'objet reste tenu là où il est)")
+                    pourquoi = ("hors d'atteinte des bras" if q is None else
+                                "les mains ne pourraient pas s'y ouvrir sur place, elles "
+                                "remonteraient en s'ouvrant")
+                    self.raison = (f"dépose impossible : plateau à {self._surface:.2f} m, "
+                                   f"{pourquoi} (chemin et ouverture vérifiés avant de "
+                                   f"descendre, l'objet reste tenu là où il est)")
                     self.etat = Etat.TENU
                     return
             # D'abord devant (sans saut : 0,15 m/s), puis vers le bas (5 cm/s).
@@ -2703,19 +2725,26 @@ class ManipulationService(IService):
                 self.stats["deposes_impossibles"] += 1
                 self.raison = (f"dépose impossible : plateau à {self._surface:.2f} m hors "
                                f"d'atteinte des bras")
-                # On ne lâche pas l'objet de haut : on le remonte contre le
-                # buste, en le tenant (RAMENER, puis TENU).
-                self._c_de = np.array(self._centre_porte, dtype=float)
-                self._c_vers = self._centre_porte = self._centre_transport
-                self._q_de, self._q_vers = dict(self._q), dict(self._q_tenu)
-                self._c_actuel = None             # pas encore bougé dans ce geste
-                self._aller(Etat.RAMENER)
+                self._remonter_tenu()
                 return
             self._centre_porte = c
             self._ecrire_q(q)
             if self._fond_objet() <= self._surface + p.jeu_depose:
+                ouvertes = self._q_ouverture()
+                if ouvertes is None:
+                    # Vérifiée avant de descendre à quelques mm près, l'ouverture
+                    # sur place ne se fait pas là où sont les mains : _ouvrir
+                    # rouvrirait les roulis, elles remonteraient en s'ouvrant et
+                    # lâcheraient l'objet de haut (3,2 cm au-dessus d'un plateau
+                    # de 71,5 cm). Il est remonté, tenu.
+                    self.stats["deposes_impossibles"] += 1
+                    self.raison = (f"dépose impossible : plateau à {self._surface:.2f} m, les "
+                                   f"mains ne s'y ouvriraient pas sur place (vu en bas) : "
+                                   f"l'objet remonté, tenu")
+                    self._remonter_tenu()
+                    return
                 self.stats["deposes_plateau"] += 1
-                self._ouvrir()
+                self._ouvrir(ouvertes)
         elif self.etat is Etat.POSE:
             qi, fini = self._interp_q(p.duree_pose_s)
             self._ecrire_q(qi)
@@ -2734,11 +2763,32 @@ class ManipulationService(IService):
                                 **posture_bras(p.roulis_ouvert, p.tangage_port, p.coude)}
                 self._aller(Etat.LACHER)
 
-    def _ouvrir(self) -> None:
-        """Les mains s'écartent de `jeu_ouverture_m` de plus que le contact."""
-        c = self._centre_tenu()
+    def _remonter_tenu(self) -> None:
+        """On ne lâche pas l'objet de haut : on le remonte contre le buste,
+        en le tenant (RAMENER, puis TENU)."""
+        self._c_de = np.array(self._centre_porte, dtype=float)
+        self._c_vers = self._centre_porte = self._centre_transport
+        self._q_de, self._q_vers = dict(self._q), dict(self._q_tenu)
+        self._c_actuel = None             # pas encore bougé dans ce geste
+        self._aller(Etat.RAMENER)
+
+    def _q_ouverture(self) -> Optional[Dict[str, float]]:
+        """Bras qui écartent les mains de `jeu_ouverture_m` de plus que le
+        contact, sur place (autour des mains mesurées), serrage relâché ;
+        None si les bras n'y arrivent pas. Ne change rien."""
+        delta, self._delta = self._delta, {"left": 0.0, "right": 0.0}
+        try:
+            return self._q_mains(self._centre_tenu(),
+                                 (self._ecart_mains or 0.33) + 2 * self.r.jeu_ouverture_m)
+        finally:
+            self._delta = delta
+
+    def _ouvrir(self, q: Optional[Dict[str, float]] = None) -> None:
+        """Les mains s'écartent de `jeu_ouverture_m` de plus que le contact
+        (`q` : les bras ouverts, déjà calculés par _q_ouverture) ; sinon, les
+        roulis rouverts de 0,3 rad."""
+        q = self._q_ouverture() if q is None else q
         self._delta = {"left": 0.0, "right": 0.0}
-        q = self._q_mains(c, (self._ecart_mains or 0.33) + 2 * self.r.jeu_ouverture_m)
         q_vers = dict(self._q)
         if q is not None:
             q_vers = q

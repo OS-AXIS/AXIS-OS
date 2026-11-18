@@ -170,11 +170,14 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
     check("Exemption du gardien levée une fois le carton soulevé",
           robot.guard._exemption is None)
     check("Aucune consigne refusée par le garde-fou", robot.locomotion.stats["refused"] == 0)
-    r = robot.manipulation.poser(0.70)
+    # 75 cm, plus bas que la table de prise : porté là où les mains l'ont serré,
+    # ce carton est posé jusqu'à 72 cm ; plus bas, refus propre, carton tenu
+    # (test_depose_limite_portee.py).
+    r = robot.manipulation.poser(0.75)
     j2 = Journal(robot)
     j2.suivre(10.0)
-    check("Dépose sur un plateau à 70 cm : bras vides, carton posé dessus",
-          m.etat is Etat.LIBRE and abs(robot.objects[0].position[2] - 0.80) < 0.03,
+    check("Dépose sur un plateau à 75 cm : bras vides, carton posé dessus",
+          m.etat is Etat.LIBRE and abs(robot.objects[0].position[2] - 0.85) < 0.03,
           str(robot.objects[0].position))
 
 section("3. Mains 6 cm devant le centre du carton (constat GPU) : corrigées avant de serrer")

@@ -291,8 +291,10 @@ with SimulatedRobot(start=(1.0, 0.0, 0.0), poignets_29dof=True) as robot:
           r.status == "FAILED" and r.code == RefusalCode.OUT_OF_REACH.value
           and robot.manipulation.etat is Etat.TENU, str(r))
     time.sleep(1.0)          # après l'échec, les bras remontent l'objet
-    r = silencieux(ctx.place, 0.70, timeout_s=20.0)
-    check("Plateau à 70 cm : PLACED, l'objet est descendu jusqu'à l'effleurer",
+    # 75 cm : porté là où les mains l'ont serré, ce carton est posé jusqu'à
+    # 72 cm ; à 70, refus propre (test_depose_limite_portee.py).
+    r = silencieux(ctx.place, 0.75, timeout_s=20.0)
+    check("Plateau à 75 cm : PLACED, l'objet est descendu jusqu'à l'effleurer",
           r.ok and boite.position[2] < 0.90 and robot.manipulation.etat is Etat.LIBRE,
           f"{r} {boite.position}")
     check("Détection dans le repère du robot : INVALID_ARGUMENT",
