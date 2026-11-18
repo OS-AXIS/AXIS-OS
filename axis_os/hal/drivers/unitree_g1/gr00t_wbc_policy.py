@@ -420,6 +420,20 @@ class GR00TWBCAdapter:
         """Réinitialise la politique, donc son historique (piège 2)."""
         self._policy.reset()
 
+    # Consigne de posture (LocomotionService.posture, qui la borne et vérifie
+    # l'équilibre sur l'URDF de ce robot avant de l'appliquer peu à peu).
+    posture_disponible = True
+
+    @property
+    def hauteur_debout(self) -> float:
+        """Hauteur du bassin debout, celle de l'entraînement (m)."""
+        return float(self._policy.cfg.height_default)
+
+    @property
+    def urdf_equilibre(self) -> Path:
+        """L'URDF du G1 29 DOF, pour le modèle d'équilibre."""
+        return Path(__file__).resolve().parent / "urdf" / "g1_29dof_rev_1_0.urdf"
+
     def posture(self, hauteur: Optional[float] = None,
                 rpy: Sequence[float] = (0.0, 0.0, 0.0)) -> None:
         """Hauteur du bassin et orientation du torse (roulis, tangage,
