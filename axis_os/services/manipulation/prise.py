@@ -218,12 +218,18 @@ class ReglagesPrise:
     # centre de gravité (tolerances_cg) : e, h ≤ couple retenu / (sécurité ×
     # m g [× sin θ]), soit, aux valeurs ci-dessous (frottement statique du
     # carton du banc ; caoutchouc écrasé sur ~2 cm de rayon sous 8 N ; 25 %
-    # de marge), 1,7 cm en profondeur et 10 cm en hauteur. Essai GPU du
-    # 5 novembre 2026 : 11 cm en profondeur, 6 fois la tolérance. Valeurs
-    # à confirmer sur GPU (frottement du caoutchouc, rayon du contact).
+    # de marge), 1,45 cm en profondeur et 8,3 cm en hauteur (1,7 et 10 pour
+    # 1 kg). Essai GPU du 5 novembre 2026 : 11 cm en profondeur, 6 fois la
+    # tolérance. Valeurs à confirmer sur GPU (frottement du caoutchouc,
+    # rayon du contact).
     frottement_main: float = 1.0
     rayon_contact_main_m: float = 0.02
-    masse_max_kg: float = 1.0          # la charge prévue (carton de la scène T1 : 1 kg)
+    # La charge la plus lourde que l'OS porte : les tolérances ci-dessus sont
+    # calculées pour elle, et un carton pesé au-delà est reposé aussitôt, avant
+    # de serrer plus et de le porter. 1 kg, la masse du carton T1, était réglé
+    # sur lui seul ; la campagne de cartons variés (axis_os/testing/cartons.py)
+    # montre que les mains du G1 portent jusqu'à ~1,2 kg sous leurs plafonds.
+    masse_max_kg: float = 1.2
     securite_basculement: float = 1.25
     # Le carton tenu qui tourne de plus de `rotation_max_deg` autour de la
     # ligne des mains (caméra de tête quand elle le voit), ou qui ne pèse

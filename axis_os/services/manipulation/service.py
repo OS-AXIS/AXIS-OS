@@ -2044,6 +2044,13 @@ class ManipulationService(IService):
                                   f"il n'a pas quitté la table, les mains ont glissé le long de "
                                   f"ses faces (trop lourd ou trop glissant pour le serrage de prise)")
                     return
+                if self.poids_carton > 9.81 * r.masse_max_kg:
+                    # Au-delà de la charge pour laquelle la prise est vérifiée
+                    # (ReglagesPrise.masse_max_kg) : reposé aussitôt pesé.
+                    self._reposer(f"trop lourd : {self.poids_carton / 9.81:.2f} kg pesés, au plus "
+                                  f"{r.masse_max_kg:g} kg (masse_max_kg, la charge pour laquelle la "
+                                  f"prise est vérifiée) ; ni serré plus, ni porté")
+                    return
             serre = self._serrer_selon_poids(tau)
             if isinstance(serre, str):
                 self._reposer(serre)

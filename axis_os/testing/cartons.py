@@ -521,10 +521,13 @@ def audit(resultats: Sequence[Dict], reglages=None) -> List[str]:
             f"{sum(categorie(x['raison']) == 'contact ou placement des mains' for x in resultats)}")
     if portes:
         lourd = max(portes, key=lambda x: x["carton"]["masse_kg"])
+        pesees = [x["carton"]["masse_kg"] for x in resultats if "kg pesés" in x["raison"]]
         lignes.append(
-            f"masse_max_kg {r.masse_max_kg:g} (tolérance de la ligne des mains au centre de "
-            f"gravité) : porté jusqu'à {lourd['carton']['masse_kg']:.2f} kg, rotation vraie au "
-            f"plus {max(x['rotation_max_deg'] for x in portes):.1f}°")
+            f"masse_max_kg {r.masse_max_kg:g} (charge la plus lourde portée, reposée au-delà dès "
+            f"la pesée ; tolérance de la ligne des mains au centre de gravité) : porté jusqu'à "
+            f"{lourd['carton']['masse_kg']:.2f} kg, rotation vraie au plus "
+            f"{max(x['rotation_max_deg'] for x in portes):.1f}° ; reposés à la pesée : "
+            f"{len(pesees)}" + (f" (de {min(pesees):.2f} à {max(pesees):.2f} kg)" if pesees else ""))
     glisse = [x for x in resultats if categorie(x["raison"]).startswith("trop lourd ou trop glissant")]
     if glisse:
         lignes.append(
