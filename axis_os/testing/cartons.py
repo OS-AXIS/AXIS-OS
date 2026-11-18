@@ -38,6 +38,8 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 # Plages des tirages (m, kg, degrés).
 LARGEUR_M = (0.15, 0.35)
 PROFONDEUR_M = (0.15, 0.30)
@@ -166,7 +168,8 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
            "borne_poids": False, "enfoncement_contact_m": None, "recalage_cm": None}
     d, pourquoi = m.distance_de_prise(objet)
     if d is None:
-        res.update(issue="refusée", raison=f"approche impossible — {pourquoi}")
+        res.update(issue="refusée", raison=f"approche impossible — {pourquoi}",
+                   portee=pourquoi_hors_de_portee(m, objet, pourquoi))
         return res
     res["distance_m"] = round(d, 3)
     # Pose d'attente, mains encore devant le carton (cap de prise : face à la table).
@@ -253,7 +256,8 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
     pas(10)
     lance = m.prendre(objet)
     if not lance.ok:
-        res.update(issue="refusée", raison=str(lance.reason))
+        res.update(issue="refusée", raison=str(lance.reason),
+                   portee=pourquoi_hors_de_portee(m, objet, str(lance.reason)))
     else:
         jusqua(lambda: m.etat in (Etat.TENU, Etat.ECHEC), 40.0)
         if m.etat is Etat.TENU:
@@ -327,8 +331,10 @@ CATEGORIES = (
                                                                "n'a pas quitté la table")),
     ("trop lourd", ("trop lourd",)),
     ("dépose refusée ou impossible", ("dépose impossible", "plateau trop haut")),
-    ("hors de portée", ("hors de portée", "hors d'atteinte", "à toute distance")),
+    # Avant « hors de portée » : « avant-bras trop près du plateau à toute
+    # distance » est un carton trop bas, pas trop loin.
     ("avant-bras trop près du plateau", ("avant-bras",)),
+    ("hors de portée", ("hors de portée", "hors d'atteinte", "à toute distance")),
     ("serrage insuffisant", ("serrage insuffisant", "cède")),
     ("glisse au port", ("glisse", "ne pèse plus", "serrage perdu")),
     ("tourne ou penche", ("tourn", "bascul", "penché")),
@@ -336,6 +342,44 @@ CATEGORIES = (
     ("contact ou placement des mains", ("contact", "appui", "mains mal placées", "loin de leur cible",
                                         "recalage", "mains mesurées", "rien entre les mains")),
 )
+
+
+def pourquoi_hors_de_portee(m, objet, raison: str) -> Optional[Dict]:
+    """Un refus « hors de portée » : le robot aurait-il pu se rapprocher, ou
+    est-ce la longueur des bras, ou le lacet ? None pour un autre refus.
+
+    - « à toute distance » : le bassin ne s'approche jamais du bord de la
+      table à moins de ReglagesPrise.bord_min_m, compté depuis les repères
+      des mains (distance_ideale) : bord_min_m plus le contact le long de la
+      main du vrai bord (21 cm avec les mains du G1).
+      Sans cette règle, à quelle distance les mains atteindraient-elles le
+      milieu des faces (cinématique de l'URDF, avant-bras au-dessus du
+      plateau), le carton jamais à moins de 25 cm du bassin (le d_min de
+      distance_de_prise) ? L'écart est ce qui manque aux bras, pieds contre
+      la table (manque_m) ; None si elles n'y arrivent à aucune distance.
+    - « prise refusée » après l'approche : la distance de prise est calculée
+      de face ; tourné, le carton présente une face plus loin, qu'une main
+      n'atteint pas (lacet)."""
+    if categorie(raison) != "hors de portée":
+        return None
+    if raison.startswith("prise refusée"):
+        return {"cause": "lacet", "lacet_deg": round(math.degrees(objet.lacet), 1)}
+    from dataclasses import replace
+    from axis_os.services.manipulation.prise import distance_ideale
+    from axis_os.services.manipulation.service import posture_bras
+    r, p = m.r, m.p
+    z = float(objet.centre[2]) - float(m.mesures.bassin_z())
+    port = {**m._articulations_fixes(), **posture_bras(p.roulis_ouvert, p.tangage_port, p.coude)}
+    d, _ = distance_ideale(m.mesures.modele, objet.largeur, objet.profondeur, objet.hauteur, z,
+                           port, bord_m=objet.bord_m,
+                           reglages=replace(r, contact_main_m=m._bout, bord_min_m=-1.0),
+                           distances=np.arange(0.25, 0.45, 0.005))
+    # La règle du bord porte sur les repères des mains (distance_ideale), le
+    # contact m._bout plus loin : le bassin est à bord_min_m + m._bout du vrai
+    # bord, au plus près.
+    table = r.bord_min_m + objet.profondeur / 2.0 + objet.bord_m
+    return {"cause": "bras", "manque_m": None if d is None else round(table - (d - m._bout), 3),
+            "bassin_bord_m": round(r.bord_min_m + m._bout, 3)}
 
 
 def categorie(raison: str) -> str:
@@ -445,6 +489,26 @@ def rapport(resultats: Sequence[Dict], graine: Optional[int] = None) -> str:
     for cat, ex in sorted(raisons.items(), key=lambda kv: -len(kv[1])):
         lignes.append(f"    {cat} : {len(ex)}")
         lignes += [f"      {e[:200]}" for e in ex[:3]]
+    portee = [x["portee"] for x in resultats if x.get("portee")]
+    if portee:
+        bras = [p_ for p_ in portee if p_["cause"] == "bras"]
+        manques = sorted(p_["manque_m"] for p_ in bras if p_["manque_m"] is not None)
+        lignes.append("  hors de portée, pourquoi :")
+        if bras:
+            lignes.append(
+                f"    longueur des bras, robot au plus près permis (bord de la table à "
+                f"{100 * bras[0]['bassin_bord_m']:.0f} cm du bassin) : {len(bras)}"
+                + (f" ; il manque de {100 * manques[0]:.0f} à {100 * manques[-1]:.0f} cm "
+                   f"(médiane {100 * manques[len(manques) // 2]:.0f})" if manques else "")
+                + (f" ; {len(bras) - len(manques)} hors d'atteinte à toute distance"
+                   if len(manques) < len(bras) else ""))
+        lacets = [p_ for p_ in portee if p_["cause"] == "lacet"]
+        if lacets:
+            lignes.append(
+                f"    lacet, carton abordé de face : {len(lacets)} (tournés de "
+                f"{min(abs(p_['lacet_deg']) for p_ in lacets):.0f} à "
+                f"{max(abs(p_['lacet_deg']) for p_ in lacets):.0f}°) ; une face plus loin "
+                f"qu'une main n'atteint pas")
     return "\n".join(lignes)
 
 
