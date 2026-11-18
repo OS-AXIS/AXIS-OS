@@ -613,7 +613,9 @@ class SimulatedRobot:
         self.manipulation = (ManipulationService(self.adapter.pose_bras, self._mains,
                                                  self._vers_robot, self._prise_tient,
                                                  gardien=self.guard, horloge=self.clock,
-                                                 mesures=mesures)
+                                                 mesures=mesures,
+                                                 posture=(self.locomotion.posture
+                                                          if self.poignets_29dof else None))
                              if manipulation else None)
         self.perception = SimulatedPerception(self)
         # Personnes : les VRAIS services de détection-suivi et de suivi, sur

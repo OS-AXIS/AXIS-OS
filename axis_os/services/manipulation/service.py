@@ -260,7 +260,8 @@ class ManipulationService(IService):
                  arret_securite: Optional[Callable[[], bool]] = None,
                  mesures: Optional[MesuresBras] = None,
                  reglages: ReglagesPrise = ReglagesPrise(),
-                 journal: Optional[Callable[[str], None]] = None):
+                 journal: Optional[Callable[[str], None]] = None,
+                 posture: Optional[Callable[..., ServiceResult]] = None):
         """
         bras            : le dictionnaire des cibles de bras de l'adaptateur
                           de locomotion, qui les transmet au robot. Ce
@@ -289,9 +290,18 @@ class ManipulationService(IService):
         journal         : (message) -> None ; reçoit, à chaque échec ou
                           refus de prise mesurée, la position des mains
                           (mesurées et calculées) et celle de l'objet visé.
+        posture         : la consigne de posture du service de marche
+                          (LocomotionService.posture : bornée, équilibre
+                          vérifié, gardée par le gardien de proximité), pour
+                          se pencher vers un objet trop loin (plan_penche,
+                          changer_tangage). None : jamais penché.
         """
         self._bras = bras
         self._mains = mains
+        self._posture = posture
+        # Tangage du torse visé pendant que l'objet est tenu (changer_tangage) ;
+        # None : aucun changement en cours.
+        self._tangage_vise: Optional[float] = None
         self._vers_robot = vers_robot
         self._verifier = verifier_prise
         self._gardien = gardien
@@ -2636,6 +2646,8 @@ class ManipulationService(IService):
             self._garder_sous_la_limite(dt)
             self._pas_ramener()
         elif e is Etat.TENU:
+            if self._tangage_vise is not None:
+                self._pas_tangage()
             self._garder_sous_la_limite(dt)
             self._surveiller_inclinaison()
             self._surveiller_port()
@@ -2833,24 +2845,141 @@ class ManipulationService(IService):
         self._q_de, self._q_vers = dict(self._q), q_vers
         self._aller(Etat.OUVERTURE)
 
-    def distance_de_prise(self, objet: Objet, d_min: float = 0.25
+    def distance_de_prise(self, objet: Objet, d_min: float = 0.25, tangage: float = 0.0
                           ) -> Tuple[Optional[float], str]:
         """Prise mesurée : à quelle distance (m) du centre de l'objet, le long
         du cap de prise, arrêter le bassin pour que les mains atteignent le
         milieu de ses faces et que les avant-bras passent au-dessus du
         plateau ; la plus courte à partir de `d_min`. (None, raison) s'il
         n'y en a aucune, ou si l'objet est trop large pour glisser les mains
-        ouvertes autour de lui, de face comme ici (ouverture_presaisie)."""
+        ouvertes autour de lui, de face comme ici (ouverture_presaisie).
+        `tangage` : torse penché d'autant (rad, taille), voir plan_penche."""
         pose, raison = self.ouverture_presaisie(objet, de_face=True)
         if pose is None:
             return None, raison
         z = float(objet.centre[2]) - float(self.mesures.bassin_z())
-        port = {**self._articulations_fixes(),
-                **posture_bras(self.p.roulis_ouvert, self.p.tangage_port, self.p.coude)}
+        port = self._port_penche(tangage)
+        # Penchées, les épaules avancent d'environ 0,45 m × sin(tangage) : la
+        # recherche va d'autant plus loin (droit : jusqu'à 0,45 m, comme avant).
+        loin = 0.45 + 0.45 * math.sin(max(0.0, tangage))
         return distance_ideale(self.mesures.modele, objet.largeur, objet.profondeur,
                                objet.hauteur, z, port, bord_m=objet.bord_m,
                                reglages=replace(self.r, contact_main_m=self._bout),
-                               distances=np.arange(d_min, 0.45, 0.005))
+                               distances=np.arange(d_min, loin, 0.005))
+
+    TAILLE = "waist_pitch_joint"
+    # Tangages du torse essayés pour atteindre plus loin (rad), du plus petit
+    # au plus grand ; le service de marche borne et vérifie l'équilibre.
+    TANGAGES_ESSAYES = (0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35)
+
+    def _port_penche(self, tangage: float) -> Dict[str, float]:
+        """Bras en posture de port, articulations fixes mesurées, la taille
+        penchée de `tangage` s'il n'est pas nul (repère du bassin)."""
+        port = {**self._articulations_fixes(),
+                **posture_bras(self.p.roulis_ouvert, self.p.tangage_port, self.p.coude)}
+        if tangage:
+            port[self.TAILLE] = float(tangage)
+        return port
+
+    def plan_penche(self, objet: Objet) -> Tuple[Optional[float], float, str]:
+        """(distance de prise, tangage du torse qu'il y faut, raison) : droit
+        si les bras l'atteignent ainsi (tangage 0) ; sinon le plus petit
+        tangage (TANGAGES_ESSAYES) qui le leur permet et que le service de
+        marche accepte (consigne de posture, en essai : bornes, gardien de
+        proximité, équilibre). L'équilibre se juge bras à la prise, objet de
+        masse_max_kg en son centre : on ne le pèse qu'une fois soulevé. La
+        raison d'un succès penché porte la marge d'équilibre ; d'un échec,
+        le dernier refus de la marche s'il y en a un."""
+        d, raison = self.distance_de_prise(objet)
+        if d is not None or self._posture is None:
+            return d, 0.0, raison
+        dernier = ""
+        z = float(objet.centre[2]) - float(self.mesures.bassin_z())
+        # La portée croît avec le tangage : hors de portée au plus penché (pas
+        # seulement avant-bras trop près du plateau), rien de moins n'y suffit.
+        t_max = self.TANGAGES_ESSAYES[-1]
+        d_max, r_max = self.distance_de_prise(objet, tangage=t_max)
+        if d_max is None and "avant-bras" not in r_max:
+            return None, 0.0, (f"{raison} ; même penché de {math.degrees(t_max):.0f}° : {r_max}")
+        for t in self.TANGAGES_ESSAYES:
+            d_t, _ = self.distance_de_prise(objet, tangage=t)
+            if d_t is None:
+                continue
+            port = self._port_penche(t)
+            q, _ = resoudre(self.mesures.modele, *cibles_mains(
+                np.array([d_t - self._bout, 0.0, z]), objet.largeur, 0.0, self.r.demi_main_m),
+                port)
+            r = self._posture(t, 0.0, angles={**port, **(q or {})},
+                              charges=[(self.r.masse_max_kg, (d_t, 0.0, z))], essai=True)
+            if r.ok:
+                return d_t, t, f"penché de {math.degrees(t):.0f}° : {r.reason}"
+            dernier = r.reason
+            if "équilibre" in r.reason:
+                break               # plus penché, le centre de masse n'avance que plus
+        return None, 0.0, raison + (f" ; penché : {dernier}" if dernier else "")
+
+    def changer_tangage(self, tangage: float) -> ServiceResult:
+        """Objet tenu (TENU, prise mesurée en corps rigide) : pencher ou
+        redresser le torse sans que l'objet bouge, ni en position ni en
+        orientation (repère du bassin). Tout le chemin de la taille est
+        vérifié d'avance (les bras le tiennent à chaque centième de radian) ;
+        puis la consigne de posture de la marche (bornes, gardien, équilibre
+        avec l'objet pesé) ; à chaque pas ensuite, les bras suivent la taille
+        mesurée. Les bras n'y arrivant plus en chemin : la taille s'arrête où
+        elle est, l'objet tenu."""
+        if self.etat is not Etat.TENU or self._rigide is None:
+            return ServiceResult(ok=False, reason=f"tangage refusé : objet tenu en corps rigide "
+                                                  f"exigé (état {self.etat.name})")
+        if self._posture is None:
+            return ServiceResult(ok=False, reason="tangage refusé : pas de consigne de posture")
+        t0 = float(self._articulations_fixes().get(self.TAILLE, 0.0))
+        fixes, q = dict(self._fixes), dict(self._q)
+        n = max(1, math.ceil(abs(tangage - t0) / 0.01))
+        try:
+            for k in range(1, n + 1):
+                self._fixes = {**fixes, self.TAILLE: t0 + (k / n) * (tangage - t0)}
+                q = self._q_rigide(self._centre_porte, graine=q)
+                if q is None:
+                    return ServiceResult(ok=False, reason=(
+                        f"tangage refusé : les bras ne tiennent plus l'objet en place, torse à "
+                        f"{math.degrees(t0 + (k / n) * (tangage - t0)):.0f}° (chemin vérifié "
+                        f"avant de bouger, l'objet reste tenu là où il est)"))
+        finally:
+            self._fixes = fixes
+        masse = (self.poids_tare if self.poids_tare is not None else
+                 self.poids_carton if self.poids_carton is not None else
+                 9.81 * self.r.masse_max_kg) / 9.81
+        r = self._posture(tangage, 0.0, angles={**fixes, **q},
+                          charges=[(max(0.0, masse), tuple(self._centre_porte))])
+        if not r.ok:
+            return ServiceResult(ok=False, reason=f"tangage refusé — {r.reason}")
+        self._tangage_vise = float(tangage)
+        self._noter(f"tangage du torse, objet tenu : {r.reason}")
+        return ServiceResult(ok=True, reason=r.reason)
+
+    @property
+    def tangage_en_cours(self) -> bool:
+        """Un changement de tangage, objet tenu, n'est pas fini."""
+        return self._tangage_vise is not None
+
+    def _pas_tangage(self) -> None:
+        """TENU, tangage en cours : les bras suivent la taille mesurée, l'objet
+        gardé là où il est (repère du bassin)."""
+        mesure = self._articulations_fixes()
+        self._fixes = mesure
+        q = self._q_rigide(self._centre_porte, graine=self._q)
+        t = float(mesure.get(self.TAILLE, 0.0))
+        if q is None:
+            self._posture(max(0.0, t), 0.0)     # la taille s'arrête où elle est
+            self.raison = (f"tangage arrêté à {math.degrees(t):.0f}° : les bras ne tiennent plus "
+                           f"l'objet en place, il reste tenu")
+            self._noter(self.raison)
+            self._tangage_vise = None
+            return
+        self._ecrire_q(q)
+        self._q_tenu = dict(q)
+        if abs(t - self._tangage_vise) < 1e-3:
+            self._tangage_vise = None
 
     def mains_a_hauteur(self, objet: Objet) -> Tuple[bool, str]:
         """Les mains sont-elles à la hauteur de l'objet (entre son dessous et
