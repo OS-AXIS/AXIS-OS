@@ -720,7 +720,7 @@ class ManipulationService(IService):
         self._visee = None
         self._plan = {"centre": centre, "lacet": lacet, "q_ouvert": q_ouvert,
                       "q_contact": q_contact, "q_vide": q_vide, "largeur": objet.largeur,
-                      "garde": garde,
+                      "garde": garde, "bord": bord,
                       "cibles": cibles_mains(centre, objet.largeur, lacet,
                                              r.demi_main_m + r.jeu_ouverture_m)}
         return True, ""
@@ -1940,9 +1940,16 @@ class ManipulationService(IService):
         n = max(1, math.ceil(float(np.linalg.norm(vers - de)) / (pas_m or r.pas_chemin_rigide_m)))
         prec = self._q if graine is None else graine
 
+        # Bord de la table supposé en chemin : à 15 cm du bassin au plus loin
+        # (l'ancien bord_min_m : jamais moins prudent qu'avant), au vrai bord
+        # s'il est plus près (robot pieds contre la table, bord_min_m).
+        plan = getattr(self, "_plan", None)
+        vrai = float(plan["bord"]) if plan and "bord" in plan else r.bord_min_m
+        bord = max(r.bord_min_m, min(0.15, vrai))
+
         def garde(q):
             return math.inf if plateau is None else garde_plateau(
-                self._modele, self._graine(q), plateau, r.bord_min_m, r.rayon_avant_bras_m)
+                self._modele, self._graine(q), plateau, bord, r.rayon_avant_bras_m)
         plancher = min(r.marge_plateau_m, garde(prec)) - 1e-4
         for k in range(1, n + 1):
             q = self._q_rigide(de + (k / n) * (vers - de), graine=prec)
