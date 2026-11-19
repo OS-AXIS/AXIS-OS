@@ -135,7 +135,6 @@ def main():
     from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
     from isaacsim.core.api.materials import PhysicsMaterial
     from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid
-    from isaacsim.core.utils.types import ArticulationAction
 
     from axis_os.apps.tri_colis import scene_demo as sd
     from axis_os.apps.tri_colis.couleur import PerceptionCouleur
@@ -155,7 +154,7 @@ def main():
         GR00TWBCAdapter, GR00TWBCConfig, GR00TWBCPolicy,
     )
     from axis_os.hal.drivers.unitree_g1.locomotion_policy import (
-        body_angular_velocity, projected_gravity, quat_wxyz_to_matrix,
+        body_angular_velocity, quat_wxyz_to_matrix,
     )
     from axis_os.services.locomotion.proximite import GardienProximite
     from axis_os.services.locomotion.service import (
@@ -390,16 +389,10 @@ def main():
     q0v = np.array([q0[j] for j in names])
 
     def mettre_debout():
-        """Robot debout, immobile, à sa pose de départ."""
-        robot.set_world_pose(position=np.array([sd.DEPART.x, sd.DEPART.y, float(pos0[2])]),
-                             orientation=np.array([math.cos(yaw0 / 2), 0.0, 0.0,
-                                                   math.sin(yaw0 / 2)]))
-        robot.set_joint_positions(q0v)
-        robot.set_joint_velocities(np.zeros_like(q0v))
-        for vitesse in ("set_linear_velocity", "set_angular_velocity"):
-            if hasattr(robot, vitesse):
-                getattr(robot, vitesse)(np.zeros(3))
-        robot.apply_action(ArticulationAction(joint_positions=q0v))
+        """Robot debout, immobile, à sa pose de départ (code commun des bancs :
+        IsaacSimBridge.remettre_debout) ; rend dans quel état il a été trouvé."""
+        return bridge.remettre_debout(q0v, np.array([sd.DEPART.x, sd.DEPART.y, float(pos0[2])]),
+                                      yaw0)
 
     mettre_debout()
 
@@ -1184,12 +1177,7 @@ def main():
     # que dans la boucle ; plus elles durent, plus le robot penche. On le
     # remet donc debout ici, en dernier, après tout ce qui fait avancer la
     # physique, et on dit dans quel état on l'a trouvé.
-    _p0, q_avant = robot.get_world_pose()
-    gz = float(projected_gravity(q_avant)[2])
-    print(f"  robot avant la boucle : {math.degrees(math.acos(max(-1.0, min(1.0, -gz)))):.0f}° "
-          f"d'inclinaison, après {getattr(world, 'current_time_step_index', '?')} pas de "
-          f"physique sans équilibre — remis debout", flush=True)
-    mettre_debout()
+    print(f"  robot avant la boucle : {mettre_debout()}", flush=True)
     # Juge (vérité simulation, banc_prise) : contacts PhysX des mains avec
     # les cartons, pour noter le contact estimé par l'OS ; l'OS n'en lit rien.
     juge = JugeContacts(capteurs.lire) if capteurs.methode else None
@@ -1219,7 +1207,14 @@ def main():
                        + ["ligne_cg_prof_m", "ligne_cg_haut_m", "poids_os_n", "poussee_os_n",
                           "rotation_vue_deg", "carton_roulis_deg", "carton_tangage_deg",
                           "carton_lacet_deg", "carton_rel_x_m", "carton_rel_y_m", "carton_rel_z_m",
-                          "contact_rel_x_m", "contact_rel_y_m", "contact_rel_z_m"])
+                          "contact_rel_x_m", "contact_rel_y_m", "contact_rel_z_m",
+                          # Ce que l'OS voit du port (essai GPU du 19 novembre 2026,
+                          # 17 h 16 : la taille n'était pas relevée, on ne pouvait dire
+                          # si le carton avait tourné entre les paumes ou avec le torse).
+                          "port_roulis_deg", "port_tangage_deg", "port_lacet_deg",
+                          "derive_port_m", "derive_port_deg", "marge_frottement",
+                          "resserrages_port", "taille_lacet_rad", "taille_roulis_rad",
+                          "taille_tangage_rad"])
     pas_releve = [0]
     suivi_port = {"actif": False}
 
@@ -1248,6 +1243,11 @@ def main():
             rel_c = tuple(centre_ - vers_robot((mr_[0] + mr_[1]) / 2.0))
         lig_ = rel_["ligne_cg"] or (None, None)
         ch_ = rel_["charge"] or (None, None)
+        rp_ = rel_.get("rotation_port") or (None, None, None)
+        dp_ = rel_.get("derive_port") or (None, None)
+        ta_ = rel_.get("taille") or {}
+        port_ = (*rp_, *dp_, rel_.get("marge_frottement"), rel_.get("resserrages"),
+                 *(ta_.get(f"waist_{a}_joint") for a in ("yaw", "roll", "pitch")))
 
         def f3(v):
             return "" if v is None else f"{v:.3f}"
@@ -1264,7 +1264,7 @@ def main():
                                    m_["face_commandee"], m_["face_mesuree"])]
                 + [f3(m_["couples"].get(f"{cote_}_{a}_joint")) for a in ARTIC_CSV]
                 + [f3(m_["angles"].get(f"{cote_}_{a}_joint")) for a in ARTIC_CSV]
-                + [f3(v) for v in (*lig_, *ch_, rel_["rotation_vue"], *ori_, *rel_c, *rel_p)])
+                + [f3(v) for v in (*lig_, *ch_, rel_["rotation_vue"], *ori_, *rel_c, *rel_p, *port_)])
     print(f"  juge des contacts (vérité simulation) : "
           + (f"actif ({capteurs.methode}) sur {capteurs.corps}" if juge else "indisponible")
           + (f" — {' ; '.join(capteurs.raisons)}" if capteurs.raisons else ""), flush=True)

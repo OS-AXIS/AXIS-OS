@@ -139,6 +139,16 @@ check("Relevé écrit (posture.csv, COLONNES), verdict et garde-fou au bilan",
 importe = [str(f.relative_to(RACINE)) for f in (RACINE / "axis_os").rglob("*.py")
            if "banc_posture" in f.read_text(encoding="utf-8")]
 check("axis_os/ n'importe pas le banc", not importe, str(importe))
+# Essai GPU du 19 novembre 2026 : « chute à 0.00 s (Debout) », 0 tick, aucun
+# palier essayé (la vidéo et l'initialisation avaient fait pencher le robot).
+T1 = (RACINE / "sim/validation/test_isaac_t1_tri_usine.py").read_text(encoding="utf-8")
+debout = SCRIPT.find("bridge.remettre_debout(")
+check("Remis debout en dernier avant la boucle, après la vidéo, par le code commun des bancs "
+      "(IsaacSimBridge.remettre_debout, celui du banc T1)",
+      0 < SCRIPT.find("rec.start()") < debout < SCRIPT.find('etat["texte"] = "Debout"')
+      and "bridge.remettre_debout(" in T1)
+check("Aucune décision de chute avant le premier pas de physique de la boucle",
+      re.search(r'FALLEN and etat\["chute"\] is None and etat\["k"\] > 0', SCRIPT) is not None)
 
 section("5. Le lanceur")
 LANCEUR = (RACINE / "deploy/machine_gpu/lancer_posture.sh").read_text(encoding="utf-8")

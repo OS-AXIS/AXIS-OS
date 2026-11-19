@@ -735,6 +735,38 @@ class IsaacSimBridge:
         self._robot.set_joint_velocities(velocities)
         self._robot.apply_action(ArticulationAction(joint_positions=positions))
 
+    def remettre_debout(self, angles, position, lacet: float) -> str:
+        """Le robot debout et immobile à `position` (x, y, z, repère monde),
+        cap `lacet` (rad), ses articulations à `angles` (ordre de
+        l'articulation), vitesses nulles, consignes à ces angles ; rend dans
+        quel état il a été trouvé, pour le journal. Code commun des bancs (T1,
+        posture), à appeler en dernier avant la boucle de commande, après tout
+        ce qui fait avancer la physique sans la politique d'équilibre
+        (attentes de rendu des caméras et de la vidéo) : constaté sur GPU (T1,
+        2026-10-28 ; banc de posture, 2026-11-19 : « chute à 0.00 s », aucun
+        palier essayé), le robot y penche et la marche le déclare tombé avant
+        le premier pas. Outil de simulation pur, comme reset_all_joints()."""
+        import math
+        import numpy as np
+        from isaacsim.core.utils.types import ArticulationAction
+        from axis_os.hal.drivers.unitree_g1.locomotion_policy import projected_gravity
+        robot = self._robot
+        gz = float(projected_gravity(robot.get_world_pose()[1])[2])
+        trouve = (f"{math.degrees(math.acos(max(-1.0, min(1.0, -gz)))):.0f}° d'inclinaison, "
+                  f"après {getattr(self._world, 'current_time_step_index', '?')} pas de "
+                  f"physique sans équilibre")
+        angles = np.asarray(angles, dtype=float)
+        robot.set_world_pose(position=np.asarray(position, dtype=float),
+                             orientation=np.array([math.cos(lacet / 2), 0.0, 0.0,
+                                                   math.sin(lacet / 2)]))
+        robot.set_joint_positions(angles)
+        robot.set_joint_velocities(np.zeros_like(angles))
+        for vitesse in ("set_linear_velocity", "set_angular_velocity"):
+            if hasattr(robot, vitesse):
+                getattr(robot, vitesse)(np.zeros(3))
+        robot.apply_action(ArticulationAction(joint_positions=angles))
+        return f"{trouve} — remis debout"
+
     def reset_joint(self, joint_id: str, position: float = 0.0) -> None:
         """Téléporte un joint à une position donnée en CONTOURNANT
         délibérément AXIS-OS : ni garde-fou de sécurité
