@@ -193,7 +193,9 @@ class BornesPosture:
     abaissement_max_m: float = 0.10        # bassin abaissé, au plus
     vitesse_tangage_rad_s: float = 0.2     # la consigne y va peu à peu
     vitesse_abaissement_m_s: float = 0.05
-    marge_min_m: float = 0.02              # centre de masse à 2 cm au moins du bord de l'appui
+    # Centre de masse à 2 cm au moins du bord de l'appui : décision de revue,
+    # gardée jusqu'à la validation sur GPU (banc lancer_posture.sh).
+    marge_min_m: float = 0.02
 
 
 class LocomotionState(Enum):
