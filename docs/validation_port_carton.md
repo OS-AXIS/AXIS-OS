@@ -502,29 +502,48 @@ cherche ce qui les en empêche, et ce qu'on peut gagner sans rien affaiblir.
 ### Pourquoi « hors de portée » (rapport de campagne)
 
 Chaque refus dit maintenant sa cause.
-- **Longueur des bras** : sans la règle du bord de la table, à quelle
-  distance les mains atteindraient-elles le milieu des faces ? L'écart est
-  ce qui manque, robot au plus près permis.
+- **Longueur des bras** : sans la règle du bord de la table, jusqu'à quelle
+  distance les mains atteignent-elles le milieu des faces ? De la plus
+  longue au robot au plus près permis, l'écart est ce qui manque.
 - **Lacet** : la distance de prise se calcule de face ; une face du carton
   tourné est plus loin qu'une main n'atteint.
 
-Sur la graine 20261118, après cette étape :
-- 28 refus par la longueur des bras, il manque de 5 à 18 cm (médiane 13),
-  et 6 cartons hors d'atteinte à toute distance ;
+Sur la graine 20261118, avec le robot à 21 cm du bord au plus près :
+- 28 refus par la longueur des bras, il manque de 2 à 11 cm (médiane 5),
+  et 6 cartons hors d'atteinte à toute distance (des cartons bas, que la
+  garde des avant-bras refuse) ;
 - 36 refus par le lacet (cartons tournés de 5 à 44°).
 
-### Se rapprocher : 5 cm, pieds contre la table au plus
+**Correction** : le premier rapport disait « il manque de 5 à 18 cm,
+médiane 13 ». C'était faux : l'écart partait de la distance de prise la plus
+COURTE qui convenait, pas de la plus longue. Il surestimait le manque de
+7 cm en médiane.
+
+### Se rapprocher : pieds contre la table, tant que la garde des avant-bras tient
 
 - **`bord_min_m` : 15 → 10 cm.** La pointe des pieds du G1 debout est à
   9,9 cm devant le bassin (URDF), et `test_equilibre.py` vérifie que le bord
   n'est jamais plus près.
-- **Découvert en chemin** : la règle du bord porte sur les repères des
+- **Découvert en chemin** : la règle du bord portait sur les repères des
   mains, 11 cm en deçà du point de contact des mains du G1
-  (`distance_ideale`). Le bassin reste donc à 21 cm du vrai bord au plus
-  près (26 avant), et les pieds à 11 cm de la table. Les 11 cm restants ne
-  sont pas pris : la décision de revue était « les 5 cm possibles, sans
-  plus ». Le rapport le montre : la médiane de ce qui manque aux bras,
-  13 cm, est de cet ordre.
+  (`distance_ideale`). Le bassin restait donc à 21 cm du vrai bord au plus
+  près (26 avant), et les pieds à 11 cm de la table.
+- **Seconde décision de revue : « ce qui reste des 11 cm, tant que la garde
+  des avant-bras au-dessus du plateau est tenue (3 cm) ».** `distance_ideale`
+  procède en deux paliers :
+  1. **D'abord la distance de toujours**, règle d'avant inchangée : les
+     cartons déjà pris le sont à la même distance (vérifié sur 288 cas : les
+     130 distances d'avant sont identiques, 60 cas de plus sont atteints).
+  2. **Seulement si les bras n'y arrivent pas** : jusqu'à `bord_min_m` du
+     vrai bord (pieds contre la table). La garde des avant-bras se juge au
+     vrai bord, dans la posture de l'approche ET dans celle de la prise (les
+     points de contact au milieu des faces, la main comprise) : l'approche ne
+     choisit jamais une distance que la prise refuserait
+     (`test_rapprochement.py`).
+- **Pourquoi deux paliers** : jugée partout au vrai bord, la règle
+  rapprochait aussi les cartons déjà pris. Un carton T1 tourné de 10°, pris
+  jusque-là à 43 cm, l'était à 36 cm, et sa dépose ne trouvait plus de
+  chemin (balayage autour du carton T1).
 - **Garde des avant-bras au retour** : elle supposait la table à
   `bord_min_m`, et refusait des retours où la table était bien plus loin.
   Elle prend désormais le vrai bord s'il est plus près que 15 cm (l'ancien
@@ -535,6 +554,12 @@ Sur la graine 20261118, après cette étape :
   serré pour 1,7 N, glissé au retour, tombé.
   - **Correction** : « ne pèse pas sur les mains » se juge désormais sur la
     plus petite des deux pesées.
+- **Trouvé par la campagne pieds contre la table** : sur un carton (n° 8), la
+  consigne de serrage comptée (`_delta`) dépassait sa borne de 5 µm, alors
+  que la main restait 0,25 µm avant la sienne. La cinématique inverse
+  s'arrête à 20 µm près par pas, et la somme des pas demandés dérivait.
+  - **Correction** : chaque pas du serrage est désormais borné aussi par la
+    consigne comptée. C'est plus strict, jamais moins.
 
 ### Se pencher : la consigne de posture de la marche
 
@@ -571,18 +596,63 @@ prend une consigne d'orientation du torse et de hauteur du bassin.
   carton de 1,2 kg aux mains (on ne le pèse qu'une fois soulevé).
 - **`changer_tangage(t)`**, carton tenu, penche ou redresse le torse sans que
   le carton bouge : chemin vérifié d'avance, puis les bras suivent la taille
-  mesurée. Le carton reste en place à 2 mm près.
+  mesurée. Le carton reste en place à quelques millimètres près (au plus 5,
+  test).
 
-**Ce que ça donne** :
+**Ce que ça donne** (carton T1, robot pieds contre la table) :
+- **Debout**, le carton est atteint jusqu'à 31 cm du bord (21 cm avant le
+  rapprochement).
 - **Centre de masse** : c'est lui qui limite vite. Avec 1,2 kg aux mains
-  bras tendus, 20° de penche (carton à 25 cm du bord) laissent 0,1 cm de
-  marge ; 3° suffisent à 21,5 cm.
+  bras tendus, 3° suffisent à 32 et 33 cm ; à 34 cm il en faudrait 6°, et le
+  centre de masse passerait à moins de 2 cm du bord de l'appui.
 - **Plafonds des poignets** : bras ainsi tendus, ce sont eux qui limitent
   ensuite le serrage d'un carton de 1 kg (« trop lourd pour ces mains »).
 - **Bilan** : la penche marche et reste sûre, mais elle n'apporte qu'un ou
   deux centimètres sous la règle d'équilibre actuelle.
 - **Ce qui l'élargirait** : savoir comment la politique GR00T WBC compense
   (recul des hanches), à mesurer sur GPU avant de l'accorder au modèle.
+
+### Banc GPU de la posture (`lancer_posture.sh`)
+
+Décision de revue : l'app de tri T1 ne se penche pas tant que ce banc n'est
+pas passé ; la marge d'équilibre reste à 2 cm jusque-là.
+
+- **Ce qu'il fait** (`sim/validation/test_isaac_w5_gr00t_posture.py`, logique
+  dans `banc_posture.py`) : G1 29 DOF et GR00T WBC dans Isaac Sim, robot
+  immobile, bras en posture de port. Trois séries de paliers, par la consigne
+  de l'OS (`LocomotionService.posture`, ses bornes et son modèle
+  d'équilibre) :
+  - torse de 0,05 à 0,35 rad ;
+  - bassin de 2,5 à 10 cm ;
+  - les deux ensemble.
+  D'abord sans carton, puis avec un carton de `masse_max_kg` (1,2 kg) serré
+  entre les mains, compté dans le bilan d'équilibre. Chaque palier, une fois
+  atteint, est tenu 2 s.
+- **Relevé par palier** (`posture.csv`) :
+  - accepté ou refusé par l'OS, marge d'équilibre prévue ;
+  - tangage mesuré de la taille ;
+  - inclinaison et vitesse angulaire du bassin (centrale inertielle) ;
+  - glissement des pieds (vérité de la simulation, pour le banc seul) ;
+  - carton tenu ou non.
+- **Arrêt au premier signe de perte d'équilibre** : bassin incliné de plus
+  de 10° depuis le début de la série, vitesse angulaire au-delà de
+  0,6 rad/s, ou pied glissé de plus de 1 cm. La série s'arrête, et le
+  robot revient droit. Ces seuils sont un point de départ, à revoir sur le
+  premier relevé.
+- **Passé si** aucun signe sur un palier que l'OS accepte, sans chute, sans
+  consigne refusée par le garde-fou, le carton toujours tenu, le robot
+  droit à la fin. Un palier que l'OS refuse n'est pas un échec : le modèle
+  est prudent.
+- **Ce que le modèle prévoit déjà** (essai à vide du script) : torse jusqu'à
+  0,35 rad et bassin jusqu'à 10 cm acceptés, même avec 1,2 kg aux mains
+  (marge 2,9 cm) ; les deux ensemble, refusés au-delà de 0,25 rad et 7 cm
+  avec le carton (marge 1,5 cm), 0,30 rad et 9 cm sans.
+- **Vérifié sans GPU** (`test_banc_posture.py`) :
+  - les paliers, les signes, le relevé et le verdict ;
+  - le script ne commande la posture que par l'OS, jamais l'adaptateur
+    directement ;
+  - l'app de tri et la scène T1 n'appellent ni `plan_penche`, ni
+    `changer_tangage`, ni la consigne de posture.
 
 ### Étude : tirer le carton vers le bord (pas de code)
 
@@ -620,24 +690,30 @@ sa face du dessus, ou derrière lui.
 
 ### Avant / après (graine 20261118, banc T1 du robot simulé léger)
 
-| | Avant (main, ef95280) | Après |
-|---|---|---|
-| 120 cartons tirés : déposés / reposés / refusés | 0 / 2 / 118 | 0 / 8 / 112 |
-| Hors de portée | 90 | 65 (28 longueur des bras, 36 lacet, 1 autre) |
-| Trop large | 23 | 28 |
-| Trop lourd ou trop glissant pour le serrage de prise | 5 | 12 |
-| Avant-bras trop près du plateau | (comptés hors de portée) | 8 |
-| Balayage, carton T1 à 20 cm du bord | hors de portée à toute distance | pris, « trop lourd pour ces mains » bras tendus |
-| Penchés | — | 4 (2,9 à 5,7°), refusés ensuite (lacet, glissement) |
-| Cas interdits (tombé, écrasé, plafond, à vide) | 0 | 0 |
+| | Avant (main, ef95280) | Se rapprocher de 5 cm, se pencher (#33) | Pieds contre la table |
+|---|---|---|---|
+| 120 cartons tirés : déposés / reposés / refusés | 0 / 2 / 118 | 0 / 8 / 112 | 0 / 8 / 112 |
+| Hors de portée | 90 | 65 (28 longueur des bras, 36 lacet, 1 autre) | 45 (44 lacet, 1 autre) |
+| … dont longueur des bras | — | 28 (il manque 2 à 11 cm ; 6 à toute distance) | **0** |
+| Trop large | 23 | 28 | 38 |
+| Trop lourd ou trop glissant pour le serrage de prise | 5 | 12 | 11 |
+| Avant-bras trop près du plateau | (comptés hors de portée) | 8 | 19 (14 à l'approche, 5 à la prise) |
+| Balayage, carton T1 loin du bord | à 20 cm, hors de portée | à 20 cm, pris, « trop lourd pour ces mains » | à 25 et 30 cm, pris puis reposés (plafonds des poignets ; serrage perdu au port) |
+| Penchés | — | 4 (2,9 à 5,7°), refusés ensuite | 1 (2,9°), trop large |
+| Cas interdits (tombé, écrasé, plafond, à vide) | 0 | 0 | 0 |
 
+- **Le gain du rapprochement** : plus aucun refus pour la longueur des
+  bras (28 → 0), et le carton T1 est saisi jusqu'à 30 cm du bord (20 avant),
+  puis reposé.
 - **Aucun carton de plus n'est déposé.** Les cartons désormais atteints
-  butent sur les limites suivantes : plafonds des poignets bras tendus,
-  glissement au port, lacet, largeur.
-- **Ce qui est gagné** : les vraies limites sont dites, et rien n'est
-  tombé.
+  butent sur la suite :
+  - largeur (+10 : trop larges, ils n'étaient pas atteints) ;
+  - garde des avant-bras (+11, dont 4 refus à la prise, avec l'erreur de
+    navigation) ;
+  - lacet (+8) ;
+  - et, bras tendus, plafonds des poignets et glissement au port.
 - **Ce qui ferait gagner** :
-  - aborder le carton dans l'axe de ses faces (36 refus) ;
-  - les 11 cm de la règle du bord, à décider ;
+  - aborder le carton dans l'axe de ses faces (44 refus) : la PR suivante ;
   - le tirer vers le bord (étude ci-dessus) ;
-  - une politique qui recule les hanches en se penchant, mesurée sur GPU.
+  - une politique qui recule les hanches en se penchant, mesurée sur GPU
+    (banc ci-dessus).
