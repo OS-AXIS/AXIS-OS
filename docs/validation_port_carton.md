@@ -717,3 +717,179 @@ sa face du dessus, ou derrière lui.
   - le tirer vers le bord (étude ci-dessus) ;
   - une politique qui recule les hanches en se penchant, mesurée sur GPU
     (banc ci-dessus).
+
+## 10. Planificateur de prise : où se placer, face à quelle paire de faces
+
+Décision de revue de la PR #34 : 44 cartons de la campagne étaient refusés
+« carton tourné, abordé de face ». Au lieu d'aborder seulement dans l'axe
+des faces, le robot planifie sa prise. Il choisit la paire de faces à
+serrer et l'endroit d'où le faire, et vérifie tout sans bouger.
+
+### Ce qu'il fait
+
+`axis_os/services/manipulation/planificateur.py` et
+`ManipulationService.planifier_prise`. En entrée : la boîte estimée (ses 8
+coins, repère de la pièce) et le bord de la table qui la porte.
+
+1. **Candidates.** Chacune des deux paires de faces verticales opposées,
+   le robot face à elle, du côté de la table. Pour chaque paire, des
+   positions du bassin de 2 en 2 cm : de 30 à 62 cm du centre de la boîte
+   le long du cap, et jusqu'à 8 cm de part et d'autre en travers. Cela
+   fait 153 positions par paire, 306 en tout.
+2. **Contrôles, sans bouger** (`evaluer_prise`). Ce sont ceux de la prise,
+   à leurs seuils : aucun seuil nouveau. Ils vont du moins cher au plus
+   cher, et le premier refus arrête :
+   - **pieds** derrière le bord de la table, erreur d'approche de la marche
+     comprise, bord vu en biais (plus bas) ;
+   - **largeur** : entre les paumes ouvertes en grand, avec le jeu de
+     chaque côté ;
+   - **portée** : mains ouvertes, au contact et au-delà, comme la prise les
+     planifie ;
+   - **garde des avant-bras** à 3 cm au-dessus du plateau ;
+   - **ligne des mains** par le centre de gravité ;
+   - **couples des bras** pour le serrage que demande le poids estimé.
+     Le poids estimé est celui de `masse_max_kg`, 1,2 kg : le carton n'est
+     pesé qu'une fois soulevé. Couple prévu : gravité des bras plus Jᵀ·F,
+     contre le plafond de chaque articulation, poignets compris ;
+   - **équilibre**, le carton aux mains (marge de 2 cm) ;
+   - **chemins**, pour les 4 meilleures seulement, jusqu'à ce que l'une
+     passe : levage, retour vers le buste et dépose à sa place, en corps
+     rigide, chemins et ouverture des mains en bas vérifiés comme la prise
+     les ferait. L'état du service est posé, puis rendu. Le test vérifie
+     que rien n'a bougé : base, bras, état de la prise.
+3. **Score.** C'est la plus faible des marges, chacune rapportée à son
+   propre seuil : 0 au seuil, négative si refusée. La retenue est celle qui
+   passe tout, chemins compris, au meilleur score. Son explication donne
+   ses deux marges les plus faibles.
+4. **Refus.** Si aucune ne passe, la raison est celle de la meilleure :
+   celle qui va le plus loin dans les contrôles. Exemple tiré de la
+   campagne : « même la meilleure prise : trop lourd pour ces mains, là où
+   il est : poignet (tangage) gauche à 2.60 N·m pour 2.50 (serrage de
+   15.7 N par main pour 1.2 kg estimés) ».
+5. **Exécution.** Le robot va à la pose retenue, face à la paire, puis
+   prend comme avant. `prendre` refait tous ses contrôles sur place, à la
+   pose atteinte. Rien n'est affaibli : JointSafetyGuard, gardien de
+   proximité, VLAService, plafonds de couple, contrôles de prise. Le
+   planificateur ne fait que refuser plus tôt, ou choisir mieux.
+6. **Journal et vue plongeante.** Une ligne par plan : le nombre de
+   candidates, combien passent, les refus par contrôle, et la retenue avec
+   ses marges les plus faibles. `planificateur.dessiner` trace la vue
+   plongeante : candidates vertes si elles passent, rouges sinon, la
+   retenue cerclée avec son cap.
+
+![Le carton T1 tourné de 20° : 306 candidates, 16 passent, la retenue cerclée, face au carton](images/planificateur_carton_tourne.png)
+
+Le carton T1 tourné de 20°. Paire 0 (24 cm entre les mains), cap +20°.
+Marges les plus faibles : poignet droit à 2,19 N·m pour 2,50, avant-bras à
+3,5 cm du plateau. Les candidates de l'autre paire (à gauche) mettraient
+les pieds au-delà du bord.
+
+![Un carton de 33 cm : aucune candidate ne passe, la raison de la meilleure](images/planificateur_refus.png)
+
+Un carton de 33 cm de large : aucune candidate ne passe. La meilleure va
+jusqu'aux chemins : ses mains ne s'ouvriraient pas pour la dépose.
+
+### `pick()` du SDK (API 1.4.0)
+
+Les apps ne voient que `pick()`, qui choisit mieux. Le planificateur entre
+en jeu quand la carte de navigation du site connaît la table sous l'objet :
+un obstacle qui le contient et déclare sa hauteur (`zmax`). Il suffit du
+plateau, ou du plateau plus la hauteur de chargement, comme le gardien de
+proximité le veut. `pick()` planifie alors, sans bouger :
+- si la pose du robot passe, il prend d'ici, comme avant ;
+- sinon, rien ne bouge. Il rend `OUT_OF_REACH` avec la pose d'où la prise
+  est possible (« y aller par go_to, puis pick »), ou, si aucune ne passe,
+  la raison de la meilleure.
+
+Sans la table dans la carte, `pick()` fait comme avant. `pick()` ne fait
+pas marcher le robot jusqu'à la pose. La prise suppose le robot à 2 cm et
+3° près de sa pose, alors que `go_to` s'arrête à 8 cm et 0,1 rad. Il y
+faut un accostage, comme celui de l'app de tri (question ouverte,
+ci-dessous).
+
+### Trouvé en route, corrigé côté sûreté
+
+- **Pieds au-delà du bord.** Sur la campagne, 5 approches sur 94 posaient
+  un pied 0,7 à 1,8 cm au-delà du bord de la table. La règle du bord (#34)
+  ne gardait qu'1 mm, alors que la marche arrive à ±2 cm et ±3° de la pose
+  visée. Sur le vrai robot, la pointe du pied aurait heurté la table.
+  - La règle compte maintenant cette erreur d'approche
+    (`ReglagesPrise.erreur_approche_m` 2 cm, `erreur_cap_rad` 3°).
+  - Elle compte aussi le bord vu en biais : les pieds avancent de 9,9 cm
+    vers un bord de face, de 14,4 cm à 20° et de 16,1 cm à 30° (talons et
+    pointes de l'URDF).
+  - Au plus près, le bassin s'arrête à 12,8 cm du bord au lieu de 10.
+  - Deux tests suivent, même intention, plus stricts. `test_rapprochement`
+    compte cette erreur dans sa limite (12,8 cm). `test_pencher` fait les
+    mêmes vérifications 3 cm plus près : penché à 29 cm (32 avant),
+    refusé pour l'équilibre à 32 (35 avant).
+  - La campagne compte un nouveau cas interdit, « pied au-delà du bord de
+    la table ».
+- **Pesée faussée (n° 106).** Le carton n'avait pas vraiment quitté la
+  table : la pesée l'a trouvé bien plus léger qu'au levage. Le serrage,
+  réglé d'après elle, était trop faible, et le carton est tombé au port.
+  La pesée ne vérifiait que le poids minimal et le maximal. Elle repose
+  maintenant le carton si le poids sur les mains tombe sous 40 % de celui
+  du levage. C'est le seuil que la surveillance du port applique déjà
+  (`part_poids_min`).
+- **Repose après une dépose impossible (n° 1005, carton de 33 cm).** Le
+  planificateur avait vérifié la dépose depuis la pose prévue. Arrivé à
+  ±2 cm près, le robot l'a trouvée impossible et a reposé le carton. Cette
+  repose passe par une interpolation des angles des bras (POSE), qui a
+  relâché le serrage en chemin : le carton est tombé. Pour cette PR,
+  l'essai de dépose du planificateur compte les mains serrées au plus
+  (`penetration_max_m` plus `penetration_poids_max_m`) : il refuse les
+  prises dont la dépose serait juste. Coût : quelques cartons que la
+  dépose fidèle aurait pris (le n° 2, le carton de 13 cm de haut du
+  balayage). La vraie correction est une repose sûre, en corps rigide puis
+  en desserrant vers l'ouverture. Elle touche une faiblesse antérieure au
+  planificateur : elle est proposée à part.
+
+### Avant / après (graine 20261118, banc T1 du robot simulé léger)
+
+Les deux colonnes viennent de cette branche : règle des pieds avec l'erreur
+d'approche, et pesée corrigée. Sur main (#34) : 0 déposé, 8 reposés, 112
+refusés.
+
+| | Sans planificateur | Avec le planificateur |
+|---|---|---|
+| 120 cartons tirés : déposés / reposés / refusés | 1 / 8 / 111 | **6 / 5 / 109** |
+| Déposés (n°) | 2 | 15, 64, 70, 85, 90, 105 |
+| Limites vues (déposés) | 0,61 kg ; μ dès 1,07 ; lacet 5° | 0,97 kg ; μ dès 0,55 ; lacet 39° |
+| Hors de portée | 46 (44 lacet, abordés de face) | 39 (28 bras, 11 pieds) |
+| Trop large | 37 | 9 (même par la paire étroite) |
+| Avant-bras trop près du plateau | 18 | 15 (7 au plan, 8 à la prise) |
+| Trop lourd (plafonds des bras, pesée) | 1 | 12 (10 au plan, 2 pesés) |
+| Trop lourd ou trop glissant pour le serrage de prise | 11 | 14 |
+| Dépose refusée ou impossible | 4 | 24 (23 au plan, essai prudent) |
+| Pied le plus avancé | 0,9 cm devant le bord | 2,2 cm devant le bord |
+| Cas interdits (tombé, écrasé, plafond, à vide, pied au-delà) | 0 | 0 |
+
+- **Le gain** : 6 cartons déposés au lieu d'1, dont des cartons tournés
+  jusqu'à 39°. Le planificateur retient la seconde paire de faces 23 fois
+  sur 32, et serre le carton dans sa dimension la plus courte 25 fois sur
+  32.
+- **Les refus disent mieux leur raison.** « Lacet, abordé de face »
+  disparaît. Restent la portée réelle des bras, les pieds, les couples
+  prévus et la dépose, chacun avec sa marge.
+- **Des 32 prises planifiées**, 6 sont déposées, 5 reposées et 21 refusées
+  à la prise :
+  - 12 cartons n'ont pas suivi le levage (trop lourds ou trop glissants
+    pour le serrage, ce que le plan ne peut pas savoir avant la pesée) ;
+  - 8 avant-bras à 2,5–2,9 cm du plateau : l'erreur d'approche mange la
+    marge prévue ;
+  - 1 serrage insuffisant.
+- **Balayage autour du carton T1** : gagnés, la hauteur de 30 cm, le
+  frottement de 1,2, le lacet de 30° et le retrait de 10 cm. Perdus, la
+  hauteur de 13 cm (essai de dépose prudent) et le frottement de 0,6
+  (serrage perdu au port, marge 1,95 pour 2).
+
+### Ce qui reste
+
+- **Repose sûre** (n° 1005, ci-dessus). Avec elle, l'essai de dépose peut
+  redevenir fidèle et rendre les cartons qu'il écarte à tort.
+- **La garde des avant-bras sous l'erreur d'approche** : 8 refus à la
+  prise. Évaluer la garde aux bornes de l'erreur d'approche (±2 cm, ±3°)
+  écarterait ces candidates dès le plan, sans seuil nouveau.
+- **`pick()` qui va lui-même à la pose** : il faut un accostage à 2 cm
+  près, pas `go_to`.
