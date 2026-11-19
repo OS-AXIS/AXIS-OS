@@ -204,6 +204,25 @@ def modele_g1() -> ModeleCorps:
     return ModeleCorps()
 
 
+@lru_cache(maxsize=1)
+def _pieds_debout() -> Tuple[Tuple[float, float, float], ...]:
+    """Sphères de contact des pieds du G1 debout (pose par défaut de la
+    marche) : (x, y, rayon), repère du bassin."""
+    m = modele_g1()
+    rep = m.reperes(jambes())
+    return tuple((float(p[0]), float(p[1]), float(r)) for lien, spheres in m.contacts.items()
+                 for c, r in spheres for p in (rep[lien][:3, :3] @ c + rep[lien][:3, 3],))
+
+
+def avancee_pieds(cap: float = 0.0) -> float:
+    """Jusqu'où (m) les pieds du G1 debout avancent vers un bord dont la
+    normale fait l'angle `cap` (rad) avec l'avant du robot : le plus avancé
+    des points de contact (talons et pointes de l'URDF, rayon compris).
+    0 : la pointe des pieds, 9,9 cm devant le bassin."""
+    n = (math.cos(cap), math.sin(cap))
+    return max(x * n[0] + y * n[1] + r for x, y, r in _pieds_debout())
+
+
 def _enveloppe(points: np.ndarray) -> np.ndarray:
     """Enveloppe convexe (sens trigonométrique) de points (x, y)."""
     pts = sorted(set(map(tuple, np.round(points, 9))))

@@ -215,15 +215,20 @@ class Objet:
     celles du robot). La largeur se mesure entre les mains, la profondeur
     vers l'avant du robot. `lacet` : rotation de l'objet autour de la
     verticale (rad, repère monde), connue ou nulle. `bord_m` : distance de
-    sa face avant au bord du plateau qui le porte (0 : au bord, comme sur
-    les tables de tri) ; le bord n'est jamais pris à moins de
-    ReglagesPrise.bord_min_m du bassin."""
+    son centre au bord du plateau qui le porte, moins sa demi-profondeur (de
+    face : de sa face avant au bord ; 0 : au bord, comme sur les tables de
+    tri) ; le bord n'est jamais pris à moins de ReglagesPrise.bord_min_m du
+    bassin. `lacet_bord` : direction (rad, repère monde) de la normale de ce
+    bord, vers la table ; None : face au robot, comme avant (le robot aborde
+    la table de face). Connue, elle permet d'aborder l'objet dans l'axe de
+    ses faces, le bord vu en biais (distance_de_prise, cap)."""
     centre: Tuple[float, float, float]
     largeur: float
     profondeur: float
     hauteur: float
     lacet: float = 0.0
     bord_m: float = 0.0
+    lacet_bord: Optional[float] = None
 
 
 class Etat(Enum):
@@ -653,6 +658,17 @@ class ManipulationService(IService):
         r = self._vers_robot(p)
         return np.array([float(r[0]), float(r[1]), float(p[2]) - float(self.mesures.bassin_z())])
 
+    def _cap_bord(self, objet: Objet) -> float:
+        """Angle (rad) de la normale du bord de la table avec l'avant du
+        robot, d'après sa pose ; 0 si elle n'est pas connue (face au robot)."""
+        if objet.lacet_bord is None:
+            return 0.0
+        c = np.asarray(objet.centre, dtype=float)
+        a = self._vers_robot(c)
+        b = self._vers_robot(c + np.array([math.cos(objet.lacet_bord),
+                                           math.sin(objet.lacet_bord), 0.0]))
+        return math.atan2(float(b[1] - a[1]), float(b[0] - a[0]))
+
     def _lacet_relatif(self, objet: Objet) -> float:
         """Écart (rad) entre les faces de l'objet et les axes du robot,
         replié dans [-π/4, π/4]. Le lacet de l'objet est donné dans le repère
@@ -716,9 +732,13 @@ class ManipulationService(IService):
                            f"bassin et {centre[2]:+.2f} m en hauteur, les mains n'atteignent "
                            f"pas le milieu de ses faces")
         plateau = float(centre[2]) - objet.hauteur / 2.0
-        bord = float(centre[0]) - objet.profondeur / 2.0 - objet.bord_m
+        # Du bassin au bord, le long de sa normale (vue en biais si le robot
+        # aborde l'objet dans l'axe de ses faces).
+        cap_bord = self._cap_bord(objet)
+        bord = (float(centre[0]) * math.cos(cap_bord) + float(centre[1]) * math.sin(cap_bord)
+                - objet.profondeur / 2.0 - objet.bord_m)
         garde = garde_plateau(modele, self._graine(q_contact), plateau, max(r.bord_min_m, bord),
-                              r.rayon_avant_bras_m)
+                              r.rayon_avant_bras_m, cap_bord)
         if garde < r.marge_plateau_m:
             return False, (f"avant-bras à {100 * garde:.1f} cm du plateau (il faut "
                            f"{100 * r.marge_plateau_m:.0f}) : changer la distance à la table")
@@ -730,7 +750,7 @@ class ManipulationService(IService):
         self._visee = None
         self._plan = {"centre": centre, "lacet": lacet, "q_ouvert": q_ouvert,
                       "q_contact": q_contact, "q_vide": q_vide, "largeur": objet.largeur,
-                      "garde": garde, "bord": bord,
+                      "garde": garde, "bord": bord, "cap_bord": cap_bord,
                       "cibles": cibles_mains(centre, objet.largeur, lacet,
                                              r.demi_main_m + r.jeu_ouverture_m)}
         return True, ""
@@ -1960,10 +1980,11 @@ class ManipulationService(IService):
         plan = getattr(self, "_plan", None)
         vrai = float(plan["bord"]) if plan and "bord" in plan else r.bord_min_m
         bord = max(r.bord_min_m, min(0.15, vrai))
+        cap_bord = float(plan.get("cap_bord", 0.0)) if plan else 0.0
 
         def garde(q):
             return math.inf if plateau is None else garde_plateau(
-                self._modele, self._graine(q), plateau, bord, r.rayon_avant_bras_m)
+                self._modele, self._graine(q), plateau, bord, r.rayon_avant_bras_m, cap_bord)
         plancher = min(r.marge_plateau_m, garde(prec)) - 1e-4
         for k in range(1, n + 1):
             q = self._q_rigide(de + (k / n) * (vers - de), graine=prec)
@@ -2849,15 +2870,21 @@ class ManipulationService(IService):
         self._q_de, self._q_vers = dict(self._q), q_vers
         self._aller(Etat.OUVERTURE)
 
-    def distance_de_prise(self, objet: Objet, d_min: float = 0.25, tangage: float = 0.0
-                          ) -> Tuple[Optional[float], str]:
+    def distance_de_prise(self, objet: Objet, d_min: float = 0.25, tangage: float = 0.0,
+                          cap: Optional[float] = None) -> Tuple[Optional[float], str]:
         """Prise mesurée : à quelle distance (m) du centre de l'objet, le long
         du cap de prise, arrêter le bassin pour que les mains atteignent le
         milieu de ses faces et que les avant-bras passent au-dessus du
         plateau ; la plus courte à partir de `d_min`. (None, raison) s'il
         n'y en a aucune, ou si l'objet est trop large pour glisser les mains
         ouvertes autour de lui, de face comme ici (ouverture_presaisie).
-        `tangage` : torse penché d'autant (rad, taille), voir plan_penche."""
+        `tangage` : torse penché d'autant (rad, taille), voir plan_penche.
+        `cap` : cap du robot à la prise (rad, repère monde), face à une face de
+        l'objet (son lacet, à un quart de tour près). Si la normale du bord est
+        connue (Objet.lacet_bord), le bord est vu en biais : la garde des
+        avant-bras le suit, et les pieds, qui avancent alors plus vers lui
+        (avancee_pieds), n'en sont jamais plus près. None : face à la table,
+        comme avant."""
         pose, raison = self.ouverture_presaisie(objet, de_face=True)
         if pose is None:
             return None, raison
@@ -2866,10 +2893,25 @@ class ManipulationService(IService):
         # Penchées, les épaules avancent d'environ 0,45 m × sin(tangage) : la
         # recherche va d'autant plus loin (droit : jusqu'à 0,45 m, comme avant).
         loin = 0.45 + 0.45 * math.sin(max(0.0, tangage))
+        cap_bord = 0.0
+        if cap is not None and objet.lacet_bord is not None:
+            cap_bord = math.remainder(objet.lacet_bord - cap, 2.0 * math.pi)
+        debord, marge = self._pieds_au_bord(cap_bord)
         return distance_ideale(self.mesures.modele, objet.largeur, objet.profondeur,
                                objet.hauteur, z, port, bord_m=objet.bord_m,
                                reglages=replace(self.r, contact_main_m=self._bout),
-                               distances=np.arange(d_min, loin, 0.005))
+                               distances=np.arange(d_min, loin, 0.005),
+                               cap_bord=cap_bord, debord_pieds=debord, marge_pieds=marge)
+
+    def _pieds_au_bord(self, cap_bord: float) -> Tuple[float, float]:
+        """(debord, marge) des pieds pour un bord dont la normale fait
+        l'angle `cap_bord` avec l'avant du robot : de combien ils avancent de
+        plus vers lui qu'en face (avancee_pieds), et, au vrai bord, l'erreur
+        d'approche de la marche (position, et cap qui avance un pied)."""
+        from axis_os.services.locomotion.equilibre import avancee_pieds
+        r, a = self.r, avancee_pieds(cap_bord)
+        pire = max(avancee_pieds(cap_bord + e) for e in (-r.erreur_cap_rad, r.erreur_cap_rad))
+        return a - avancee_pieds(0.0), r.erreur_approche_m + max(0.0, pire - a)
 
     TAILLE = "waist_pitch_joint"
     # Tangages du torse essayés pour atteindre plus loin (rad), du plus petit
@@ -2885,7 +2927,8 @@ class ManipulationService(IService):
             port[self.TAILLE] = float(tangage)
         return port
 
-    def plan_penche(self, objet: Objet) -> Tuple[Optional[float], float, str]:
+    def plan_penche(self, objet: Objet, cap: Optional[float] = None
+                    ) -> Tuple[Optional[float], float, str]:
         """(distance de prise, tangage du torse qu'il y faut, raison) : droit
         si les bras l'atteignent ainsi (tangage 0) ; sinon le plus petit
         tangage (TANGAGES_ESSAYES) qui le leur permet et que le service de
@@ -2893,8 +2936,9 @@ class ManipulationService(IService):
         proximité, équilibre). L'équilibre se juge bras à la prise, objet de
         masse_max_kg en son centre : on ne le pèse qu'une fois soulevé. La
         raison d'un succès penché porte la marge d'équilibre ; d'un échec,
-        le dernier refus de la marche s'il y en a un."""
-        d, raison = self.distance_de_prise(objet)
+        le dernier refus de la marche s'il y en a un. `cap` : voir
+        distance_de_prise."""
+        d, raison = self.distance_de_prise(objet, cap=cap)
         if d is not None or self._posture is None:
             return d, 0.0, raison
         dernier = ""
@@ -2902,11 +2946,11 @@ class ManipulationService(IService):
         # La portée croît avec le tangage : hors de portée au plus penché (pas
         # seulement avant-bras trop près du plateau), rien de moins n'y suffit.
         t_max = self.TANGAGES_ESSAYES[-1]
-        d_max, r_max = self.distance_de_prise(objet, tangage=t_max)
+        d_max, r_max = self.distance_de_prise(objet, tangage=t_max, cap=cap)
         if d_max is None and "avant-bras" not in r_max:
             return None, 0.0, (f"{raison} ; même penché de {math.degrees(t_max):.0f}° : {r_max}")
         for t in self.TANGAGES_ESSAYES:
-            d_t, _ = self.distance_de_prise(objet, tangage=t)
+            d_t, _ = self.distance_de_prise(objet, tangage=t, cap=cap)
             if d_t is None:
                 continue
             port = self._port_penche(t)
