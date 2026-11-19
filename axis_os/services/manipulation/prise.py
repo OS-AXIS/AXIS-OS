@@ -317,6 +317,43 @@ class ReglagesPrise:
     pas_chemin_rigide_m: float = 0.01
     saut_rigide_rad: float = 0.15
     rotation_ramener_max_deg: float = 4.0
+    # Pendant TOUT le port (essai GPU T1 du 19 novembre 2026, 17 h 16 : le
+    # carton a tourné de 24° pendant 20 s de marche, aucune alerte de l'OS ;
+    # le resserrage poussait une main pendant que le plafond du poignet
+    # droit faisait reculer l'autre, la paire a glissé de 2,2 cm sans serrer
+    # plus, 32 arrêts de la base sur le seuil de la marge) :
+    #   - la pose des deux mains est figée en corps rigide dans le repère du
+    #     torse au début du port ; le serrage et le desserrage n'y bougent les
+    #     mains que le long de la normale du carton, symétriquement, les bras
+    #     recalculés depuis la posture figée (rien d'autre ne change) ;
+    #   - les mains MESURÉES (cinématique, repère du torse) sont comparées à
+    #     leur consigne, moyenne glissante de fenetre_derive_s (le balancement
+    #     de la marche s'y annule) : une dérive commune de plus de
+    #     derive_port_m ou derive_port_deg depuis le début du port est
+    #     corrigée vers la pose figée, en tout au plus correction_port_max_m
+    #     et correction_port_max_deg ;
+    #   - roulis et tangage de la ligne des mains, lacet de la paire
+    #     (paumes mesurées, depuis le début du port) : au-delà de
+    #     rotation_ramener_max_deg, base arrêtée et correction ; au-delà de
+    #     rotation_max_deg, à reposer (la façade s'arrête et le signale) ;
+    #   - hystérésis du resserrage : la base s'arrête sous securite_serrage,
+    #     ne repart qu'au-dessus de securite_reprise (jamais moins que
+    #     securite_serrage), et pas avant delai_reprise_s ; sans reprise en
+    #     duree_resserrage_s, à reposer.
+    derive_port_m: float = 0.01
+    derive_port_deg: float = 2.0
+    fenetre_derive_s: float = 1.0
+    correction_port_max_m: float = 0.03
+    correction_port_max_deg: float = 6.0
+    securite_reprise: float = 2.2
+    delai_reprise_s: float = 0.5
+    # Les bras à leurs plafonds (une articulation à moins de 0,3 N·m du sien,
+    # ou une main à sa borne) ne peuvent serrer plus : securite_reprise est
+    # hors de leur portée. Vrai : la base repart dès que la marge tient
+    # securite_serrage, jamais en dessous (comme avant l'hystérésis). Faux :
+    # elle ne repart jamais sous securite_reprise ; sans reprise en
+    # duree_resserrage_s, à reposer.
+    reprise_aux_plafonds: bool = True
     # Écart admis entre une main mesurée par le robot (le lien de la main,
     # rubber_hand) et la même main calculée par la cinématique sur les
     # angles mesurés. Au-delà, le modèle des bras ne décrit pas le robot :

@@ -8,7 +8,8 @@ G1 29 DOF, mains du G1, table de la scène T1 (bord en x = 0) :
   2. Carton T1 de face : retenu face à lui, toutes les marges positives,
      chemins vérifiés, les pieds derrière le bord (erreur d'approche
      comprise), et rien n'a bougé pendant la planification.
-  3. Carton tourné de 20° : retenu face à lui (cap +20°).
+  3. Carton tourné de 20° : retenu face à lui (cap +20°) ; la garde des
+     avant-bras jugée aussi aux bornes de l'erreur d'approche de la marche.
   4. Chaque contrôle refuse au-delà de son seuil : pieds (bassin trop près
      du bord), largeur (carton trop large), portée (trop loin), couples
      (carton lourd, bras tendus).
@@ -35,10 +36,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from axis_os.services.locomotion.equilibre import pieds_debout  # noqa: E402
 from axis_os.services.manipulation import planificateur as P  # noqa: E402
+from axis_os.services.manipulation.prise import ReglagesPrise  # noqa: E402
 from axis_os.testing import cartons as K  # noqa: E402
 from axis_os.testing.robot_simule import SimulatedObject, SimulatedRobot  # noqa: E402
 
 FAIL = 0
+R = ReglagesPrise()
 BORD = P.BordTable((0.0, 0.0), 0.0, K.PLATEAU_M)
 
 
@@ -128,6 +131,14 @@ section("3. Carton tourné de 20°")
 plan = Banc(lacet_deg=20.0).planifier()
 check(f"Retenu face à lui : {plan.choisie and plan.choisie.explication()}",
       plan.choisie is not None and abs(math.degrees(plan.choisie.cap) - 20.0) < 1.0, plan.raison)
+garde = next((g for g in plan.choisie.marges if g.nom == "garde"), None) if plan.choisie else None
+nominale = garde and float(garde.texte.split("avant-bras à ")[1].split(" cm")[0]) / 100.0
+check(f"Garde des avant-bras jugée aussi aux bornes de l'erreur d'approche de la marche "
+      f"(±{100 * R.erreur_approche_m:g} cm, ±{math.degrees(R.erreur_cap_rad):g}°), la pire "
+      f"compte : « {garde and garde.texte} »",
+      garde is not None and "au pire de l'erreur d'approche" in garde.texte
+      and garde.relative < (nominale - R.marge_plateau_m) / R.marge_plateau_m - 1e-6,
+      str(garde))
 
 section("4. Chaque contrôle refuse au-delà de son seuil")
 banc = Banc()

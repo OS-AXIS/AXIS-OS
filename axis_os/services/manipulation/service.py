@@ -194,6 +194,17 @@ def _rotation_vecteur(m: np.ndarray) -> np.ndarray:
     return v / 2.0 if a < 1e-6 else v * (a / (2.0 * math.sin(a)))
 
 
+def _matrice_rotation(v) -> np.ndarray:
+    """Rotation (3 × 3) du vecteur rotation `v` (axe × angle, radians)."""
+    v = np.asarray(v, dtype=float)
+    a = float(np.linalg.norm(v))
+    if a < 1e-12:
+        return np.eye(3)
+    k = v / a
+    kx = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + math.sin(a) * kx + (1.0 - math.cos(a)) * kx @ kx
+
+
 def posture_bras(roulis: float, tangage: float, coude: float) -> Dict[str, float]:
     """Cibles des six articulations des bras, pour une posture symétrique.
 
@@ -630,6 +641,8 @@ class ManipulationService(IService):
         self._delta_port: Optional[Dict[str, float]] = None
         self.marge_frottement: Optional[float] = None
         self._t_resserrage: Optional[float] = None
+        self._resserrage_marge = False     # arrêté pour la marge : reprise au-dessus de securite_reprise
+        self._t_bloque: Optional[float] = None   # dernier pas où les bras ne pouvaient serrer plus
         self._torse_possible = True
         # Poids du carton (N), pesé une fois, bras immobiles, en haut du
         # levage, avant de serrer plus : celui du serrage requis et de la
@@ -648,6 +661,24 @@ class ManipulationService(IService):
         self._poses_mesurees0: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
         self.rotation_carton: Optional[Tuple[float, float]] = None
         self._resserrage_force = False
+        # Port (ReglagesPrise, derive_port_m…) : au début du port, les paumes
+        # mesurées et la ligne des mains (références de la rotation) ; à chaque
+        # entrée en TENU, la posture commandée (graine des bras du port) et la
+        # position mesurée commune des mains (référence de leur dérive) ;
+        # moyenne glissante de la dérive, correction appliquée (translation et
+        # vecteur rotation communs) ; estimations et compteurs du port.
+        self._port0: Optional[dict] = None
+        self._port_actif = False
+        self._hist_derive: deque = deque()
+        self._correction_port = (np.zeros(3), np.zeros(3))
+        self._correction_visee = (np.zeros(3), np.zeros(3))
+        self._t_correction: Optional[float] = None
+        self._alarme_rotation = False
+        self.rotation_port: Optional[Tuple[float, float, float]] = None
+        self.rotation_port_max = 0.0
+        self.derive_port: Optional[Tuple[float, float]] = None
+        self.resserrages_ce_port = 0
+        self.corrections_ce_port = 0
 
     def _vers_bassin(self, p_monde) -> np.ndarray:
         """Point du repère monde -> repère du bassin (x, y du robot ; z
@@ -835,7 +866,15 @@ class ManipulationService(IService):
             return None
         sortie = {"phase": self.etat.name, "sous_phase": self._sous,
                   "ligne_cg": self.ligne_cg, "charge": self.charge,
-                  "rotation_vue": self.rotation_vue}
+                  "rotation_vue": self.rotation_vue,
+                  # Port : rotation du carton et dérive des mains (mains
+                  # mesurées, repère du torse), marge de frottement, resserrages
+                  # de ce port ; angles mesurés de la taille (la marche la fait
+                  # tourner : le torse sur le bassin).
+                  "rotation_port": self.rotation_port, "derive_port": self.derive_port,
+                  "marge_frottement": self.marge_frottement,
+                  "resserrages": self.resserrages_ce_port,
+                  "taille": {j: float(v) for j, v in angles.items() if j.startswith("waist_")}}
         for k, cote in enumerate(("left", "right")):
             f = self.forces.get(cote)
             sortie[cote] = {
@@ -1850,6 +1889,33 @@ class ManipulationService(IService):
         if self.raison.startswith("effort illisible"):
             self.raison = ""
         pas = 2 * self.r.pas_serrage_max_m
+        if self.etat is Etat.TENU and self._port0 is not None:
+            # Port figé : la main au-delà de sa limite recule, et l'autre du même
+            # pas, le long de la normale (à travers l'objet, le serrage est le
+            # même des deux côtés : reculer d'un seul côté fait glisser la paire,
+            # essai GPU T1 du 19 novembre 2026, 17 h 16).
+            trop = [c for c in self._ROULIS
+                    if any(abs(tau[j]) > self._limite_effort(j) for j in self._BRAS_COTE[c]
+                           if j in tau) and self._delta[c] > -self.r.penetration_max_m]
+            if not trop:
+                return
+            # Autant de serrage rendu qu'en reculant la seule main fautive de
+            # `pas` : chacune de la moitié.
+            avant = dict(self._delta)
+            for cote in self._ROULIS:
+                self._delta[cote] -= pas / 2.0
+            self.stats["serrages_limites"] = self.stats.get("serrages_limites", 0) + len(trop)
+            q = self._q_port()
+            if q is None:
+                # Sécurité d'abord : la main au-delà de sa limite recule quand même.
+                self._delta, q = avant, dict(self._q)
+                for cote in trop:
+                    self._delta[cote] -= pas
+                    q2 = self._avancer(q, cote, -pas, self._direction_serrage(q, cote))
+                    q = q2 if q2 is not None else q
+            self._ecrire_q(q)
+            self._q_tenu = dict(q)
+            return
         q = None
         for cote in self._ROULIS:
             trop = any(abs(tau[j]) > self._limite_effort(j) for j in self._BRAS_COTE[cote]
@@ -1937,22 +2003,26 @@ class ManipulationService(IService):
 
     def _q_rigide(self, centre: np.ndarray, ecart: Optional[float] = None,
                   graine: Optional[Dict[str, float]] = None,
-                  delta: Optional[Dict[str, float]] = None) -> Optional[Dict[str, float]]:
+                  delta: Optional[Dict[str, float]] = None,
+                  rotation: Optional[np.ndarray] = None) -> Optional[Dict[str, float]]:
         """Bras qui portent les deux mains COMMANDÉES comme un seul corps
         rigide avec l'objet : chaque main à sa pose du début du retour
         (_rigide), translatée de `centre` moins le centre de départ, la même
         translation pour les deux, orientation inchangée (l'objet ne roule ni
         ne tangue), plus la variation du serrage (`delta`, l'actuel par
         défaut ; et de l'écart des mains) le long de la ligne des mains de
-        départ. None si un bras n'y arrive pas."""
+        départ. `rotation` (3 × 3, la correction de dérive du port) tourne
+        l'ensemble autour du centre de départ. None si un bras n'y arrive pas."""
         c0, poses, delta0, ecart0 = self._rigide
         delta = self._delta if delta is None else delta
         t = np.asarray(centre, dtype=float) - c0
         de = 0.0 if ecart is None else (ecart - ecart0) / 2.0
+        rc = np.eye(3) if rotation is None else np.asarray(rotation, dtype=float)
         q = dict(self._q if graine is None else graine)
         for cote in self._ROULIS:
             p, rot, u = poses[cote]
-            q = self._vers_pose(q, cote, p + t + (delta[cote] - delta0[cote] - de) * u, rot)
+            q = self._vers_pose(q, cote, c0 + rc @ (p - c0) + t
+                                + (delta[cote] - delta0[cote] - de) * (rc @ u), rc @ rot)
             if q is None:
                 return None
         return q
@@ -2012,6 +2082,202 @@ class ManipulationService(IService):
         penche = math.atan2(ligne[2], ligne[1]) - math.atan2(ligne0[2], ligne0[1])
         roulis = max((float(rv[0]), penche), key=abs)
         return math.degrees(roulis), math.degrees(float(rv[1]))
+
+    # ---- port : pose figée, surveillance des mains mesurées ------------------
+
+    def _poses_torse(self, angles: Dict[str, float]) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """Poses des mains pour les angles `angles`, la taille à sa valeur
+        figée (articulations fixes) : repère du torse. La marche fait tourner
+        la taille ; les bras, eux, sont commandés dans ce repère."""
+        return self._poses({j: v for j, v in angles.items() if not j.startswith("waist_")})
+
+    def _figer_port(self) -> None:
+        """Entrée en TENU (début du port, ou fin d'un geste du port) : la
+        posture commandée devient la graine des bras du port (_q_port), la
+        position mesurée commune des mains la référence de leur dérive ; au
+        début du port seulement, les paumes mesurées et la ligne des mains,
+        références de la rotation (_surveiller_mains_port)."""
+        angles = self._angles_mesures()
+        if self._rigide is None or angles is None:
+            return
+        mes = self._poses_torse(angles)
+        if self._port0 is None:
+            self._port0 = {"ori0": {c: mes[c][1] for c in self._ROULIS},
+                           "ligne0": mes["left"][0] - mes["right"][0]}
+            self.rotation_port, self.rotation_port_max, self.derive_port = None, 0.0, None
+            self.resserrages_ce_port = self.corrections_ce_port = 0
+            self._alarme_rotation = False
+        self._port0.update(q=dict(self._q), pos0=(mes["left"][0] + mes["right"][0]) / 2.0)
+        self._correction_port = self._correction_visee = (np.zeros(3), np.zeros(3))
+        self._hist_derive.clear()
+        self._t_correction = None
+
+    def _q_port(self, delta: Optional[Dict[str, float]] = None,
+                correction: Optional[Tuple[np.ndarray, np.ndarray]] = None
+                ) -> Optional[Dict[str, float]]:
+        """Bras du port : la pose figée des deux mains (corps rigide, _rigide)
+        au centre porté, le serrage `delta` (l'actuel par défaut) le long de
+        la normale, et la correction de dérive (translation et vecteur
+        rotation communs ; l'actuelle par défaut). Calculés depuis la posture
+        figée (graine), jamais depuis la consigne du moment : le même serrage
+        donne les mêmes bras, rien ne dérive d'un resserrage à l'autre."""
+        t, rv = self._correction_port if correction is None else correction
+        centre = np.asarray(self._centre_porte, dtype=float) + t
+        rot = _matrice_rotation(rv)
+        graine = self._port0["q"] if self._port0 is not None else None
+        q = self._q_rigide(centre, self._ecart_mains, graine=graine, delta=delta, rotation=rot)
+        if q is None and graine is not None:
+            q = self._q_rigide(centre, self._ecart_mains, delta=delta, rotation=rot)
+        return q
+
+    def _surveiller_mains_port(self, corriger: bool = True) -> None:
+        """Pendant tout le port, les mains MESURÉES (repère du torse) :
+          - roulis et tangage (autour de la ligne des mains) du carton, lacet
+            de la paire, depuis le début du port : rotation moyenne des
+            paumes, et ligne des mains qui penche ou tourne (comme
+            _rotation_estimee au retour) ; au-delà de rotation_ramener_max_deg,
+            base arrêtée (penche) et mains ramenées vers la pose figée ; au-delà
+            de rotation_max_deg, à reposer (la façade s'arrête et le signale) ;
+          - leur dérive commune depuis la pose figée (moyenne glissante de
+            fenetre_derive_s : le balancement de la marche s'y annule) :
+            au-delà de derive_port_m ou derive_port_deg, ramenées vers elle
+            (`corriger` : au repos, pas pendant un geste).
+        Ce que ces mains ne voient pas : un carton qui tourne entre les
+        paumes, elles immobiles (la caméra de tête le voit quand il est en
+        entier dans l'image : _surveiller_rotation)."""
+        r = self.r
+        if self._port0 is None or self._port_interrompu:
+            return
+        angles = self._angles_mesures()
+        if angles is None:
+            return
+        mes = self._poses_torse(angles)
+        ori0, l0 = self._port0["ori0"], self._port0["ligne0"]
+        rv = sum(_rotation_vecteur(mes[c][1] @ ori0[c].T) for c in self._ROULIS) / 2.0
+        ligne = mes["left"][0] - mes["right"][0]
+
+        def ecart(a: float, b: float) -> float:
+            return math.remainder(a - b, 2.0 * math.pi)
+        roulis = max((float(rv[0]), ecart(math.atan2(ligne[2], ligne[1]),
+                                          math.atan2(l0[2], l0[1]))), key=abs)
+        lacet = max((float(rv[2]), ecart(math.atan2(-ligne[0], ligne[1]),
+                                         math.atan2(-l0[0], l0[1]))), key=abs)
+        rot = (math.degrees(roulis), math.degrees(float(rv[1])), math.degrees(lacet))
+        self.rotation_port = rot
+        pire = max(abs(v) for v in rot)
+        self.rotation_port_max = max(self.rotation_port_max, pire)
+        texte = (f"carton tourné de {rot[0]:+.1f}° en roulis, {rot[1]:+.1f}° en tangage "
+                 f"(autour de la ligne des mains) et {rot[2]:+.1f}° en lacet depuis le début "
+                 f"du port, sur les mains mesurées")
+        if pire > r.rotation_max_deg:
+            self._interrompre_port(f"{texte} (au plus {r.rotation_max_deg:g}°)")
+            return
+        t = self._horloge()
+        pos = (mes["left"][0] + mes["right"][0]) / 2.0
+        self._hist_derive.append((t, pos - self._port0["pos0"], rv))
+        while t - self._hist_derive[0][0] > r.fenetre_derive_s:
+            self._hist_derive.popleft()
+        dp = sum(h[1] for h in self._hist_derive) / len(self._hist_derive)
+        dr = sum(h[2] for h in self._hist_derive) / len(self._hist_derive)
+        self.derive_port = (float(np.linalg.norm(dp)), math.degrees(float(np.linalg.norm(dr))))
+        plein = t - self._hist_derive[0][0] >= 0.9 * r.fenetre_derive_s
+        alarme = pire > r.rotation_ramener_max_deg
+        if alarme and not self._alarme_rotation:
+            self.stats["alarmes_rotation_port"] = self.stats.get("alarmes_rotation_port", 0) + 1
+            self._noter(f"port : {texte} (au plus {r.rotation_ramener_max_deg:g}°) : base "
+                        f"arrêtée, mains ramenées vers leur pose figée")
+        elif self._alarme_rotation and not alarme:
+            self._noter(f"port : carton revenu à {pire:.1f}° : la marche peut reprendre")
+            self.penche = self._t_resserrage is not None or (
+                self.inclinaison is not None and self.inclinaison > r.inclinaison_max_deg)
+        self._alarme_rotation = alarme
+        if corriger and self._approcher_correction():
+            pass                          # correction en cours : jugée une fois finie
+        elif corriger and (self._t_correction is None
+                           or t - self._t_correction >= r.fenetre_derive_s):
+            if alarme:
+                self._corriger_derive(pos - self._port0["pos0"], rv)
+            elif plein and (self.derive_port[0] > r.derive_port_m
+                            or self.derive_port[1] > r.derive_port_deg):
+                self._corriger_derive(dp, dr)
+        if alarme:
+            self.penche = True
+
+    def _corriger_derive(self, dp: np.ndarray, dr: np.ndarray) -> None:
+        """Les mains mesurées ont dérivé de `dp` (m) et `dr` (vecteur
+        rotation) depuis leur pose figée : la consigne commune visée est
+        déplacée d'autant en sens inverse (correction totale bornée par
+        correction_port_max_m et correction_port_max_deg), le serrage gardé ;
+        la consigne la rejoint pas à pas (_approcher_correction)."""
+        r = self.r
+        t0, r0 = self._correction_visee
+        t1, r1 = t0 - dp, r0 - dr
+        if float(np.linalg.norm(t1)) > r.correction_port_max_m \
+                or math.degrees(float(np.linalg.norm(r1))) > r.correction_port_max_deg:
+            if not self._port0.get("borne"):
+                self._port0["borne"] = True
+                self._noter(f"port : mains dérivées de {100 * float(np.linalg.norm(dp)):.1f} cm et "
+                            f"{math.degrees(float(np.linalg.norm(dr))):.1f}°, au-delà de la "
+                            f"correction permise ({100 * r.correction_port_max_m:g} cm, "
+                            f"{r.correction_port_max_deg:g}°) : non corrigées")
+            return
+        if self._q_port(correction=(t1, r1)) is None:
+            return
+        self._correction_visee = (t1, r1)
+        self._hist_derive.clear()
+        self.corrections_ce_port += 1
+        self.stats["corrections_derive_port"] = self.stats.get("corrections_derive_port", 0) + 1
+        self._noter(f"port : mains dérivées de {100 * float(np.linalg.norm(dp)):.1f} cm et "
+                    f"{math.degrees(float(np.linalg.norm(dr))):.1f}° de leur pose figée : "
+                    f"ramenées vers elle")
+
+    def _approcher_correction(self) -> bool:
+        """La consigne commune rejoint la correction visée, au pas du serrage
+        (pas_serrage_max_m par pas en translation, et la rotation qui déplace
+        une main d'autant) : jamais un saut de consigne, qui ferait une
+        pointe de couple. Vrai tant qu'elle n'y est pas."""
+        (t0, r0), (t1, r1) = self._correction_port, self._correction_visee
+        dt_, dr_ = t1 - t0, r1 - r0
+        nt, nr = float(np.linalg.norm(dt_)), float(np.linalg.norm(dr_))
+        if nt < 1e-9 and nr < 1e-9:
+            return False
+        pas = self.r.pas_serrage_max_m
+        pas_r = pas / max(0.05, (self._ecart_mains or 0.24) / 2.0)
+        t2 = t1 if nt <= pas else t0 + dt_ * (pas / nt)
+        r2 = r1 if nr <= pas_r else r0 + dr_ * (pas_r / nr)
+        q = self._q_port(correction=(t2, r2))
+        if q is None:
+            self._correction_visee = self._correction_port     # n'y arrive pas : on s'arrête là
+            return False
+        self._correction_port = (t2, r2)
+        self._ecrire_q(q)
+        self._q_tenu = dict(q)
+        fini = float(np.linalg.norm(t1 - t2)) < 1e-9 and float(np.linalg.norm(r1 - r2)) < 1e-9
+        if fini:
+            self._t_correction = self._horloge()
+            self._hist_derive.clear()
+        return not fini
+
+    def _interrompre_port(self, raison: str) -> None:
+        """Le port s'arrête pour de bon, le carton tenu : la façade arrête la
+        base et le signale (penche, a_reposer)."""
+        self.stats["port_interrompu"] = self.stats.get("port_interrompu", 0) + 1
+        self._port_interrompu = True
+        self.penche = self.a_reposer = True
+        self.raison = f"{raison} : à reposer"
+        self._noter(f"transport interrompu : {raison}")
+        self._fin_port("interrompu")
+
+    def _fin_port(self, issue: str) -> None:
+        """Fin du port (déposé, reposé ou interrompu) : au journal, une fois,
+        ce qu'il a coûté."""
+        if self._port0 is None:
+            return
+        self._noter(f"fin du port ({issue}) : {self.resserrages_ce_port} resserrage(s), base "
+                    f"arrêtée ; {self.corrections_ce_port} correction(s) de la dérive des mains ; "
+                    f"carton tourné de {self.rotation_port_max:.1f}° au plus (mains mesurées)")
+        self.stats["resserrages_dernier_port"] = self.resserrages_ce_port
+        self._port0 = None
 
     def _lever_de_quelques_cm(self) -> None:
         # Avant de lever : la ligne des points de contact MESURÉS (angles
@@ -2249,6 +2515,7 @@ class ManipulationService(IService):
         self.stats["reposes_rotation"] = self.stats.get("reposes_rotation", 0) + 1
         self._raison_repose = raison
         self._noter(f"objet reposé : {raison}")
+        self._fin_port("reposé")
         depart = self._c_actuel if self._c_actuel is not None else self._c_serre
         self._c_de, self._c_vers = np.array(depart, dtype=float), np.array(self._c_serre)
         self._q_de, self._q_vers, self._sous = dict(self._q), dict(self._q_serre), "redescendre"
@@ -2335,6 +2602,7 @@ class ManipulationService(IService):
         self._torse_possible = float(cible[0][0]) - prof / 2.0 <= r.distance_torse_m
         # Au port qui suit : serrage de référence repris à l'arrivée.
         self._serrage_port_ref, self._delta_port, self._t_resserrage = None, None, None
+        self._resserrage_marge = False
         self._aller(Etat.RAMENER)
 
     def _pas_ramener(self) -> None:
@@ -2455,7 +2723,11 @@ class ManipulationService(IService):
         self.marge_frottement = (r.frottement_serrage * float(np.mean(self._hist_normales))
                                  / poids if poids and poids > 0.5 and len(self._hist_normales)
                                  == self._hist_normales.maxlen else None)
-        faible = self.marge_frottement is not None and self.marge_frottement < r.securite_serrage
+        # Hystérésis : la base s'arrête sous securite_serrage ; arrêtée pour la
+        # marge, elle ne repart qu'au-dessus de securite_reprise (jamais moins).
+        seuil = max(r.securite_reprise, r.securite_serrage) if self._resserrage_marge \
+            else r.securite_serrage
+        faible = self.marge_frottement is not None and self.marge_frottement < seuil
         ecartees = ecart > r.ecart_face_port_m
         # Carton qui a tourné au retour (_pas_ramener) : on resserre jusqu'au
         # serrage visé d'après le poids, et d'au moins marge_serrage_n à
@@ -2480,14 +2752,43 @@ class ManipulationService(IService):
                 ([f"mains écartées de {1000 * ecart:.0f} mm de leur serrage (au plus "
                   f"{1000 * r.ecart_face_port_m:.0f})"] if ecartees else [])
                 + ([f"marge de frottement {self.marge_frottement:.2f} (au moins "
-                    f"{r.securite_serrage:g})"] if faible else [])
+                    f"{r.securite_serrage:g}" + (f", {seuil:g} pour repartir"
+                                                  if seuil > r.securite_serrage else "") + ")"]
+                   if faible else [])
                 + ([f"carton tourné au retour, serrage visé {cible / 2.0:.1f} N par main"]
                    if force else []))
             if self._t_resserrage is None:
-                self._t_resserrage = t
+                self._t_resserrage, self._t_bloque = t, None
                 self.stats["resserrages_port"] = self.stats.get("resserrages_port", 0) + 1
+                self.resserrages_ce_port += 1
                 self._noter(f"port : {pourquoi} : base arrêtée, on resserre")
+            self._resserrage_marge = self._resserrage_marge or faible
             self.penche = True
+            # Les bras ne peuvent serrer plus (une articulation à moins de 0,3 N·m
+            # de son plafond, ou une main à sa borne) : securite_reprise est hors
+            # de leur portée. La base repart dès que la marge tient
+            # securite_serrage, jamais en dessous (comme avant l'hystérésis : à
+            # leurs plafonds, la marge oscille autour de ce qu'ils tiennent).
+            bloques = not self._marge_plafonds(tau) or any(
+                self._delta[c] + r.pas_serrage_max_m
+                > self._delta_max_poids.get(c, r.penetration_poids_max_m)
+                for c in self._ROULIS)
+            if bloques:
+                self._t_bloque = t
+            if r.reprise_aux_plafonds and self._resserrage_marge and bloques and not ecartees \
+                    and not force \
+                    and self.marge_frottement is not None \
+                    and self.marge_frottement >= r.securite_serrage:
+                self._t_resserrage, self._resserrage_marge = None, False
+                self.penche = self.inclinaison is not None \
+                    and self.inclinaison > r.inclinaison_max_deg
+                self.stats["reprises_aux_plafonds"] = \
+                    self.stats.get("reprises_aux_plafonds", 0) + 1
+                self._noter(f"port : serrage retrouvé (marge de frottement "
+                            f"{self.marge_frottement:.2f}, au moins {r.securite_serrage:g} ; "
+                            f"{seuil:g} hors de portée des bras, à leurs plafonds), la marche "
+                            f"peut reprendre")
+                return
             if t - self._t_resserrage >= r.duree_resserrage_s and not (ecartees or faible):
                 # Visé pas atteint dans les plafonds, mais la marge suffit.
                 self._resserrage_force = False
@@ -2495,16 +2796,51 @@ class ManipulationService(IService):
                 self.stats["port_interrompu"] = self.stats.get("port_interrompu", 0) + 1
                 self._port_interrompu = True
                 self.a_reposer = True
-                self.raison = (f"serrage perdu au port malgré le resserrage ({pourquoi}) : "
-                               f"à reposer")
+                if not ecartees and not force and self.marge_frottement is not None \
+                        and self.marge_frottement >= r.securite_serrage:
+                    # Au-dessus du seuil pour tenir, sous celui pour repartir :
+                    # les bras n'y arrivent pas (plafonds, bornes du serrage).
+                    self.raison = (f"marge de frottement {self.marge_frottement:.2f} après "
+                                   f"{r.duree_resserrage_s:g} s de resserrage : au moins "
+                                   f"{r.securite_serrage:g} pour tenir, mais {seuil:g} pour "
+                                   f"repartir, que les bras n'atteignent pas : à reposer")
+                else:
+                    self.raison = (f"serrage perdu au port malgré le resserrage ({pourquoi}) : "
+                                   f"à reposer")
                 self._noter(f"transport interrompu : {self.raison}")
+                self._fin_port("interrompu")
                 return
             a_rendre = list(self._ROULIS)
+        elif self._t_resserrage is not None and \
+                self._horloge() - self._t_resserrage < r.delai_reprise_s:
+            self.penche = True                    # pas avant le délai minimal
         elif self._t_resserrage is not None:
-            self._t_resserrage = None
+            self._t_resserrage, self._resserrage_marge = None, False
             self.penche = self.inclinaison is not None and self.inclinaison > r.inclinaison_max_deg
-            self._noter("port : serrage retrouvé, la marche peut reprendre")
+            self._noter("port : serrage retrouvé" + (
+                f" (marge de frottement {self.marge_frottement:.2f}, au-dessus de {seuil:g})"
+                if self.marge_frottement is not None else "") + ", la marche peut reprendre")
         if not a_rendre or not self._marge_plafonds(tau):
+            return
+        if self._port0 is not None:
+            # Port figé : les deux mains ensemble, du même pas, le long de la
+            # normale ; les bras recalculés depuis la posture figée (_q_port),
+            # rien d'autre ne bouge. Une main à sa borne : aucune n'avance.
+            if any(self._delta[c] + r.pas_serrage_max_m
+                   > self._delta_max_poids.get(c, r.penetration_poids_max_m)
+                   for c in self._ROULIS):
+                return
+            avant = dict(self._delta)
+            for cote in self._ROULIS:
+                self._delta[cote] += r.pas_serrage_max_m
+            q = self._q_port()
+            if q is None:
+                self._delta = avant
+                return
+            for cote in self._ROULIS:
+                self._garder_borne(cote)
+            self._ecrire_q(q)
+            self._q_tenu = dict(q)
             return
         a_rendre = [c for c in a_rendre if self._delta[c] + r.pas_serrage_max_m
                     <= self._delta_max_poids.get(c, r.penetration_poids_max_m)]
@@ -2625,11 +2961,7 @@ class ManipulationService(IService):
             else:
                 self._t_sans_poids = None
         if tourne:
-            self.stats["port_interrompu"] = self.stats.get("port_interrompu", 0) + 1
-            self._port_interrompu = True
-            self.penche = self.a_reposer = True
-            self.raison = f"{tourne} : à reposer"
-            self._noter(f"transport interrompu : {tourne}")
+            self._interrompre_port(tourne)
 
     def _surveiller_inclinaison(self) -> None:
         """Pendant le transport : au-delà de `inclinaison_max_deg`, `penche`
@@ -2670,6 +3002,8 @@ class ManipulationService(IService):
     def _pas_mesure(self, dt: float) -> bool:
         """Un pas de la prise mesurée ; faux si l'état relève du code commun."""
         e = self.etat
+        if e is not Etat.TENU:
+            self._port_actif = False      # la prochaine entrée en TENU refige la pose
         if e is Etat.PLACEMENT:
             self._pas_placement()
         elif e is Etat.FERMETURE:
@@ -2685,15 +3019,27 @@ class ManipulationService(IService):
             self._garder_sous_la_limite(dt)
             self._pas_ramener()
         elif e is Etat.TENU:
+            if not self._port_actif:
+                self._figer_port()
+                self._port_actif = True
             if self._tangage_vise is not None:
                 self._pas_tangage()
             self._garder_sous_la_limite(dt)
             self._surveiller_inclinaison()
             self._surveiller_port()
             self._garder_serrage()
+            self._surveiller_mains_port()
         elif e in (Etat.MONTEE, Etat.DESCENTE, Etat.POSE, Etat.OUVERTURE):
             if e is not Etat.OUVERTURE:
                 self._garder_sous_la_limite(dt)
+            if e is Etat.MONTEE:
+                # Carton monté au-dessus du plateau : toujours porté, surveillé ;
+                # tourné de plus de rotation_max_deg, le geste s'arrête là, tenu.
+                self._surveiller_mains_port(corriger=False)
+                if self._port_interrompu:
+                    self._t_phase = None
+                    self.etat = Etat.TENU
+                    return True
             self._pas_apres_prise(dt)
         else:
             return False
@@ -2874,6 +3220,7 @@ class ManipulationService(IService):
         (`q` : les bras ouverts, déjà calculés par _q_ouverture) ; sinon, les
         roulis rouverts de 0,3 rad."""
         q = self._q_ouverture() if q is None else q
+        self._fin_port("déposé")
         self._delta = {"left": 0.0, "right": 0.0}
         q_vers = dict(self._q)
         if q is not None:
@@ -2968,16 +3315,21 @@ class ManipulationService(IService):
         from axis_os.services.manipulation.planificateur import Marge
         r = self.r
         masse = r.masse_max_kg if masse_kg is None else float(masse_kg)
+        def repere(x, y, cap):
+            """L'objet vu du bassin posé en (x, y, cap) : son centre, le lacet
+            de ses faces serrées, le cap du bord, le bassin au bord."""
+            c, s_ = math.cos(cap), math.sin(cap)
+            dx, dy = float(objet.centre[0]) - x, float(objet.centre[1]) - y
+            centre = np.array([c * dx + s_ * dy, -s_ * dx + c * dy,
+                               float(objet.centre[2]) - float(self.mesures.bassin_z())])
+            lacet = (objet.lacet - cap + math.pi / 4) % (math.pi / 2) - math.pi / 4
+            cap_bord = (math.remainder(objet.lacet_bord - cap, 2.0 * math.pi)
+                        if objet.lacet_bord is not None else 0.0)
+            bord = (float(centre[0]) * math.cos(cap_bord) + float(centre[1]) * math.sin(cap_bord)
+                    - objet.profondeur / 2.0 - objet.bord_m)
+            return centre, lacet, cap_bord, bord
         x, y, cap = (float(v) for v in pose)
-        c, s_ = math.cos(cap), math.sin(cap)
-        dx, dy = float(objet.centre[0]) - x, float(objet.centre[1]) - y
-        centre = np.array([c * dx + s_ * dy, -s_ * dx + c * dy,
-                           float(objet.centre[2]) - float(self.mesures.bassin_z())])
-        lacet = (objet.lacet - cap + math.pi / 4) % (math.pi / 2) - math.pi / 4
-        cap_bord = (math.remainder(objet.lacet_bord - cap, 2.0 * math.pi)
-                    if objet.lacet_bord is not None else 0.0)
-        bord = (float(centre[0]) * math.cos(cap_bord) + float(centre[1]) * math.sin(cap_bord)
-                - objet.profondeur / 2.0 - objet.bord_m)
+        centre, lacet, cap_bord, bord = repere(x, y, cap)
         marges = []
 
         def note(nom, relative, texte):
@@ -3034,9 +3386,29 @@ class ManipulationService(IService):
         plateau = float(centre[2]) - objet.hauteur / 2.0
         garde = garde_plateau(self._modele, qq, plateau, max(r.bord_min_m, bord),
                               r.rayon_avant_bras_m, cap_bord)
-        if not note("garde", (garde - r.marge_plateau_m) / r.marge_plateau_m,
-                    f"avant-bras à {100 * garde:.1f} cm du plateau (au moins "
-                    f"{100 * r.marge_plateau_m:.0f})"):
+        # Aux bornes de l'erreur d'approche de la marche (erreur_approche_m,
+        # erreur_cap_rad) : le robot arrive à quelques cm et degrés de cette
+        # pose, et la prise refait sa cinématique là où il est. Campagne de
+        # cartons : 8 prises refusées à la prise, avant-bras à 2,5–2,9 cm.
+        pire = garde
+        if garde >= r.marge_plateau_m:
+            c, s_ = math.cos(cap), math.sin(cap)
+            ea, ecap = r.erreur_approche_m, r.erreur_cap_rad
+            for ex, ey, ec in ((ea, 0.0, 0.0), (-ea, 0.0, 0.0), (0.0, ea, 0.0), (0.0, -ea, 0.0),
+                               (0.0, 0.0, ecap), (0.0, 0.0, -ecap)):
+                ce, la, cb, bo = repere(x + c * ex - s_ * ey, y + s_ * ex + c * ey, cap + ec)
+                qe, _ = resoudre(self._modele, *cibles_mains(ce, objet.largeur, la, r.demi_main_m),
+                                 qq)
+                if qe is not None:
+                    pire = min(pire, garde_plateau(self._modele, {**fixes, **qe}, plateau,
+                                                   max(r.bord_min_m, bo), r.rayon_avant_bras_m,
+                                                   cb))
+        if not note("garde", (pire - r.marge_plateau_m) / r.marge_plateau_m,
+                    f"avant-bras à {100 * garde:.1f} cm du plateau"
+                    + (f", {100 * pire:.1f} au pire de l'erreur d'approche "
+                       f"(±{100 * r.erreur_approche_m:g} cm, "
+                       f"±{math.degrees(r.erreur_cap_rad):g}°)" if pire < garde - 1e-4 else "")
+                    + f" (au moins {100 * r.marge_plateau_m:.0f})"):
             return marges
         mg, md = self._modele.mains(qq)
         prof, haut = ecart_ligne_cg(mg, md, centre)

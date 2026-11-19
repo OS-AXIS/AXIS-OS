@@ -124,6 +124,9 @@ def main():
     robot.set_joint_positions(q0v)
     robot.set_joint_velocities(np.zeros_like(q0v))
     robot.apply_action(ArticulationAction(joint_positions=q0v))
+    # Pose d'apparition : celle où le robot est remis debout avant la boucle.
+    pos0, quat0 = robot.get_world_pose()
+    lacet0 = 2.0 * math.atan2(float(quat0[3]), float(quat0[0]))
 
     hal = bridge.build_hal()
     hal.initialize_all()
@@ -188,7 +191,8 @@ def main():
                 carton.set_linear_velocity(np.zeros(3))
                 carton.set_angular_velocity(np.zeros(3))
         loco.tick()
-        if loco.state is LocomotionState.FALLEN and etat["chute"] is None:
+        # Aucune décision de chute avant le premier pas de physique de la boucle.
+        if loco.state is LocomotionState.FALLEN and etat["chute"] is None and etat["k"] > 0:
             etat["chute"] = f"à {sim_t[0]:.2f} s ({etat['texte']})"
         capture = video_ok and etat["k"] % 2 == 0
         if capture:
@@ -290,6 +294,12 @@ def main():
         return releve
 
     releve = []
+    # Constaté sur GPU (2026-11-19) : « chute à 0.00 s (Debout) », 0 tick, aucun
+    # palier essayé. Avant la boucle, l'enregistreur vidéo et l'initialisation
+    # font avancer la physique sans la politique d'équilibre : le robot y
+    # penche. On le remet debout ici, en dernier, comme le banc T1 (code commun :
+    # IsaacSimBridge.remettre_debout), et on dit dans quel état on l'a trouvé.
+    print(f"  robot avant la boucle : {bridge.remettre_debout(q0v, pos0, lacet0)}", flush=True)
     try:
         etat["texte"] = "Debout"
         pendant(3.0)
