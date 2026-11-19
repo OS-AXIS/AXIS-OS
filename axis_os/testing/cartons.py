@@ -384,14 +384,14 @@ def pourquoi_hors_de_portee(m, objet, raison: str) -> Optional[Dict]:
     est-ce la longueur des bras, ou le lacet ? None pour un autre refus.
 
     - « à toute distance » : le bassin ne s'approche jamais du bord de la
-      table à moins de ReglagesPrise.bord_min_m, compté depuis les repères
-      des mains (distance_ideale) : bord_min_m plus le contact le long de la
-      main du vrai bord (21 cm avec les mains du G1).
-      Sans cette règle, à quelle distance les mains atteindraient-elles le
-      milieu des faces (cinématique de l'URDF, avant-bras au-dessus du
-      plateau), le carton jamais à moins de 25 cm du bassin (le d_min de
-      distance_de_prise) ? L'écart est ce qui manque aux bras, pieds contre
-      la table (manque_m) ; None si elles n'y arrivent à aucune distance.
+      table à moins de ReglagesPrise.bord_min_m (pieds contre la table).
+      Sans cette règle, jusqu'à quelle distance les mains atteignent-elles
+      le milieu des faces (cinématique de l'URDF, avant-bras au-dessus du
+      plateau ; repères des mains entre 25 et 45 cm du carton, comme pour
+      distance_de_prise) ? De la plus longue au bassin pieds contre la
+      table, l'écart est ce qui manque aux bras (manque_m) ; None si elles
+      n'y arrivent à aucune distance. (Mesuré d'abord depuis la plus courte,
+      ce manque était surestimé, de 7 cm en médiane.)
     - « prise refusée » après l'approche : la distance de prise est calculée
       de face ; tourné, le carton présente une face plus loin, qu'une main
       n'atteint pas (lacet)."""
@@ -408,13 +408,11 @@ def pourquoi_hors_de_portee(m, objet, raison: str) -> Optional[Dict]:
     d, _ = distance_ideale(m.mesures.modele, objet.largeur, objet.profondeur, objet.hauteur, z,
                            port, bord_m=objet.bord_m,
                            reglages=replace(r, contact_main_m=m._bout, bord_min_m=-1.0),
-                           distances=np.arange(0.25, 0.45, 0.005))
-    # La règle du bord porte sur les repères des mains (distance_ideale), le
-    # contact m._bout plus loin : le bassin est à bord_min_m + m._bout du vrai
-    # bord, au plus près.
-    table = r.bord_min_m + objet.profondeur / 2.0 + objet.bord_m
-    return {"cause": "bras", "manque_m": None if d is None else round(table - (d - m._bout), 3),
-            "bassin_bord_m": round(r.bord_min_m + m._bout, 3)}
+                           distances=np.arange(0.25, 0.45, 0.005)[::-1],   # la plus longue
+                           seulement_au_vrai_bord=True)
+    table = r.bord_min_m + objet.profondeur / 2.0 + objet.bord_m   # bassin au plus près
+    return {"cause": "bras", "manque_m": None if d is None else round(table - d, 3),
+            "bassin_bord_m": round(r.bord_min_m, 3)}
 
 
 def categorie(raison: str) -> str:
@@ -560,7 +558,8 @@ BALAYAGE = (("largeur", (0.15, 0.20, 0.25, 0.30, 0.33)),
             ("masse_kg", (0.2, 0.6, 1.2, 1.4, 1.8, 2.5)),
             ("frottement", (0.5, 0.6, 0.7, 0.9, 1.2)),
             ("lacet_deg", (10.0, 20.0, 30.0, 45.0)),
-            ("retrait_m", (0.05, 0.10, 0.15, 0.20)))
+            # 25 et 30 cm : atteints pieds contre la table (distance_ideale, second palier).
+            ("retrait_m", (0.05, 0.10, 0.15, 0.20, 0.25, 0.30)))
 
 
 def balayage() -> List[Tuple[str, float, CartonTire]]:

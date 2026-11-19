@@ -99,18 +99,18 @@ section("1. Plan : debout, penché juste assez, ou refus pour l'équilibre")
 d, t, raison = Banc(0.15).m.plan_penche(Banc(0.15).objet)
 check(f"Carton à 15 cm du bord : à portée debout (d = {d}), pas de penche", d is not None and t == 0.0,
       raison)
-b = Banc(0.215)
+b = Banc(0.32)
 d, t, raison = b.m.plan_penche(b.objet)
-check(f"À 21,5 cm : penché de {math.degrees(t):.1f}°, la marge d'équilibre écrite (« {raison} »)",
+check(f"À 32 cm : penché de {math.degrees(t):.1f}°, la marge d'équilibre écrite (« {raison} »)",
       d is not None and 0.0 < t <= 0.10 and "cm dans l'appui" in raison, raison)
-d, t, raison = Banc(0.30).m.plan_penche(Banc(0.30).objet)
-check(f"À 30 cm : refusé pour l'équilibre, la marge écrite (« {raison[-110:]} »)",
+d, t, raison = Banc(0.35).m.plan_penche(Banc(0.35).objet)
+check(f"À 35 cm : refusé pour l'équilibre, la marge écrite (« {raison[-110:]} »)",
       d is None and "équilibre" in raison and "appui des pieds" in raison, raison)
 
 section("2. Penché, pris, redressé le carton tenu (0,5 kg)")
 # 1 kg, bras ainsi tendus : « trop lourd pour ces mains » (les plafonds des
 # poignets). Le plan, lui, juge l'équilibre avec masse_max_kg aux mains.
-b = Banc(0.215, masse=0.5)
+b = Banc(0.32, masse=0.5)
 d, t, raison = b.prendre_penche()
 check(f"Penché de {math.degrees(t):.1f}°, carton pris et tenu (TENU)",
       t > 0.0 and b.m.etat is Etat.TENU and b.r.held is b.carton, f"{b.m.etat} {b.m.raison}")
