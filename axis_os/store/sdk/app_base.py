@@ -1072,6 +1072,57 @@ class RobotContext:
             return RefusalCode.CAPABILITY_MISSING
         return RefusalCode.FAILED
 
+    def _planifier_pick(self, spec):
+        """Le planificateur de prise de l'OS (ManipulationService.planifier_prise)
+        pour l'objet `spec`, si la carte de navigation connaît la table sur
+        laquelle il repose (obstacle qui le contient et déclare sa hauteur,
+        zmax, pas plus bas que son dessous à 5 cm près : le plateau, ou le
+        plateau plus la hauteur de chargement comme le veut le gardien de
+        proximité ; le plateau est pris sous l'objet) et la pose du robot :
+        (plan, l'objet tel que la prise le voit si le
+        robot peut le prendre d'où il est, sinon None, et pourquoi). L'objet
+        est supposé aligné sur le robot (sa profondeur le long du cap, comme
+        `size_m` le dit). None : pas de table connue, prise d'ici comme avant."""
+        from axis_os.services.manipulation import planificateur as P
+        nav, manip = self._navigation, self._manipulation
+        carte = getattr(nav, "carte", None)
+        if carte is None or not hasattr(manip, "planifier_prise"):
+            return None
+        try:
+            pose = nav.pose()
+        except Exception:                    # noqa: BLE001 — localisation en panne
+            return None
+        if pose is None or not all(math.isfinite(v) for v in (pose.x, pose.y, pose.cap)):
+            return None
+        (cx, cy, cz), (largeur, profondeur, hauteur) = spec.center, spec.size
+        dessous = cz - hauteur / 2.0
+        table = next((o for o in carte.obstacles
+                      if getattr(o, "zmax", None) is not None
+                      and o.xmin <= cx <= o.xmax and o.ymin <= cy <= o.ymax
+                      and o.zmax >= dessous - 0.05), None)
+        if table is None:
+            return None
+        # Son bord du côté du robot : celui dont il est le plus loin, dehors.
+        cotes = ((table.xmin - pose.x, (table.xmin, pose.y), 0.0),
+                 (pose.x - table.xmax, (table.xmax, pose.y), math.pi),
+                 (table.ymin - pose.y, (pose.x, table.ymin), math.pi / 2.0),
+                 (pose.y - table.ymax, (pose.x, table.ymax), -math.pi / 2.0))
+        _, point, normale = max(cotes, key=lambda c: c[0])
+        bord = P.BordTable(point, normale, dessous)
+        plan = manip.planifier_prise(P.coins_boite(spec.center, pose.cap, profondeur, largeur,
+                                                   hauteur), bord)
+        raison = "le robot ne fait face à aucune paire de faces de l'objet"
+        for paire in P.paires(plan.boite, bord):
+            if abs(math.remainder(paire.cap - pose.cap, math.pi)) > math.pi / 4:
+                continue                         # pas face à cette paire
+            objet = manip._objet_paire(plan.boite, paire, bord)
+            marges = manip.evaluer_prise(objet, (pose.x, pose.y, pose.cap), chemins=True)
+            refus = next((m for m in marges if m.relative < 0.0), None)
+            if refus is None:
+                return plan, objet, ""
+            raison = refus.texte
+        return plan, None, raison
+
     @_conduite()
     def pick(self, target, *, size_m=None, timeout_s: float = 15.0) -> ActionResult:
         """Prend un objet à deux mains. BLOQUANT jusqu'à l'issue du geste.
@@ -1129,7 +1180,24 @@ class RobotContext:
                            "aucun objet vu à cet endroit par la perception de l'OS : "
                            "le chercher d'abord avec look_for(..., \"world\")")
         largeur, profondeur, hauteur = spec.size
-        r = manip.prendre(Objet(spec.center, largeur, profondeur, hauteur))
+        objet = Objet(spec.center, largeur, profondeur, hauteur)
+        # La carte connaît la table sous l'objet : le planificateur de prise
+        # de l'OS choisit (paire de faces, position), ses contrôles faits sans
+        # bouger ; le robot prend d'ici si sa pose passe, sinon rien ne bouge.
+        prevu = self._planifier_pick(spec)
+        if prevu is not None:
+            plan, ici, raison_ici = prevu
+            if plan.choisie is None:
+                raison = f"prise refusée — {plan.raison}"
+                return refused("REFUSED", self._code_refus_manipulation(raison), raison)
+            if ici is None:
+                ch = plan.choisie
+                return refused("REFUSED", RefusalCode.OUT_OF_REACH, (
+                    f"d'ici, {raison_ici} ; prise possible depuis ({ch.x:.2f}, {ch.y:.2f}), "
+                    f"cap {math.degrees(ch.cap):+.0f}° ({100 * ch.paire.largeur:.0f} cm entre "
+                    f"les mains) : y aller par go_to, puis pick"))
+            objet = ici
+        r = manip.prendre(objet)
         if not r.ok:
             return refused("REFUSED", self._code_refus_manipulation(str(r.reason)),
                            str(r.reason))

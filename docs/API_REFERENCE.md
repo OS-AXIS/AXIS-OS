@@ -1,6 +1,6 @@
 # AXIS-OS App SDK — API reference
 
-SDK API version **1.3.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
+SDK API version **1.4.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
 Guides: [CREATE_AN_APP.md](CREATE_AN_APP.md) (English) ·
 [CREER_UNE_APP.md](CREER_UNE_APP.md) (français). Examples:
 [examples/](../examples/).
@@ -233,6 +233,26 @@ where it was and the grasp fails with `TOO_HEAVY` (since 1.3.0; before,
 no squeeze (`OUT_OF_REACH`). If the grasp is cancelled (stop requested, end
 of the hook, the app's process gone), the arms reopen gradually and the
 exemption is lifted: the gesture never goes on without the app.
+
+Since 1.4.0, when the site's navigation map knows the table the object
+rests on (an obstacle containing it that declares its height, `zmax`, no
+lower than the object's bottom within 5 cm: the plate, or the plate plus
+the loading height as the proximity guard wants it; the plate is taken
+under the object), `pick()` first runs the OS grasp planner, without
+moving anything: both
+pairs of opposite vertical faces, base positions in front of each, every
+existing grasp check (feet behind the table edge with the walking
+approach error, width between the open palms, reach, forearms above the
+plate, hands' line through the centre of gravity, predicted arm torques
+for the squeeze the estimated weight needs, balance, then lift, carry and
+put-down paths). If the robot's current pose passes, it grasps from there,
+as before. Otherwise nothing moves and `pick()` returns `REFUSED`:
+`OUT_OF_REACH` with the pose the grasp would work from (« prise possible
+depuis (x, y), cap … : y aller par go_to, puis pick »), or, if no
+candidate passes, the reason of the best one (« même la meilleure prise :
+… », `TOO_HEAVY` for predicted torques). The object is assumed aligned
+with the robot, as `size_m` says. Without the table in the map: as
+before.
 
 | `status` | `code` |
 |---|---|
