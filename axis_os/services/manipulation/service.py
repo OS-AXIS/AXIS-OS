@@ -3315,16 +3315,21 @@ class ManipulationService(IService):
         from axis_os.services.manipulation.planificateur import Marge
         r = self.r
         masse = r.masse_max_kg if masse_kg is None else float(masse_kg)
+        def repere(x, y, cap):
+            """L'objet vu du bassin posé en (x, y, cap) : son centre, le lacet
+            de ses faces serrées, le cap du bord, le bassin au bord."""
+            c, s_ = math.cos(cap), math.sin(cap)
+            dx, dy = float(objet.centre[0]) - x, float(objet.centre[1]) - y
+            centre = np.array([c * dx + s_ * dy, -s_ * dx + c * dy,
+                               float(objet.centre[2]) - float(self.mesures.bassin_z())])
+            lacet = (objet.lacet - cap + math.pi / 4) % (math.pi / 2) - math.pi / 4
+            cap_bord = (math.remainder(objet.lacet_bord - cap, 2.0 * math.pi)
+                        if objet.lacet_bord is not None else 0.0)
+            bord = (float(centre[0]) * math.cos(cap_bord) + float(centre[1]) * math.sin(cap_bord)
+                    - objet.profondeur / 2.0 - objet.bord_m)
+            return centre, lacet, cap_bord, bord
         x, y, cap = (float(v) for v in pose)
-        c, s_ = math.cos(cap), math.sin(cap)
-        dx, dy = float(objet.centre[0]) - x, float(objet.centre[1]) - y
-        centre = np.array([c * dx + s_ * dy, -s_ * dx + c * dy,
-                           float(objet.centre[2]) - float(self.mesures.bassin_z())])
-        lacet = (objet.lacet - cap + math.pi / 4) % (math.pi / 2) - math.pi / 4
-        cap_bord = (math.remainder(objet.lacet_bord - cap, 2.0 * math.pi)
-                    if objet.lacet_bord is not None else 0.0)
-        bord = (float(centre[0]) * math.cos(cap_bord) + float(centre[1]) * math.sin(cap_bord)
-                - objet.profondeur / 2.0 - objet.bord_m)
+        centre, lacet, cap_bord, bord = repere(x, y, cap)
         marges = []
 
         def note(nom, relative, texte):
@@ -3381,9 +3386,29 @@ class ManipulationService(IService):
         plateau = float(centre[2]) - objet.hauteur / 2.0
         garde = garde_plateau(self._modele, qq, plateau, max(r.bord_min_m, bord),
                               r.rayon_avant_bras_m, cap_bord)
-        if not note("garde", (garde - r.marge_plateau_m) / r.marge_plateau_m,
-                    f"avant-bras à {100 * garde:.1f} cm du plateau (au moins "
-                    f"{100 * r.marge_plateau_m:.0f})"):
+        # Aux bornes de l'erreur d'approche de la marche (erreur_approche_m,
+        # erreur_cap_rad) : le robot arrive à quelques cm et degrés de cette
+        # pose, et la prise refait sa cinématique là où il est. Campagne de
+        # cartons : 8 prises refusées à la prise, avant-bras à 2,5–2,9 cm.
+        pire = garde
+        if garde >= r.marge_plateau_m:
+            c, s_ = math.cos(cap), math.sin(cap)
+            ea, ecap = r.erreur_approche_m, r.erreur_cap_rad
+            for ex, ey, ec in ((ea, 0.0, 0.0), (-ea, 0.0, 0.0), (0.0, ea, 0.0), (0.0, -ea, 0.0),
+                               (0.0, 0.0, ecap), (0.0, 0.0, -ecap)):
+                ce, la, cb, bo = repere(x + c * ex - s_ * ey, y + s_ * ex + c * ey, cap + ec)
+                qe, _ = resoudre(self._modele, *cibles_mains(ce, objet.largeur, la, r.demi_main_m),
+                                 qq)
+                if qe is not None:
+                    pire = min(pire, garde_plateau(self._modele, {**fixes, **qe}, plateau,
+                                                   max(r.bord_min_m, bo), r.rayon_avant_bras_m,
+                                                   cb))
+        if not note("garde", (pire - r.marge_plateau_m) / r.marge_plateau_m,
+                    f"avant-bras à {100 * garde:.1f} cm du plateau"
+                    + (f", {100 * pire:.1f} au pire de l'erreur d'approche "
+                       f"(±{100 * r.erreur_approche_m:g} cm, "
+                       f"±{math.degrees(r.erreur_cap_rad):g}°)" if pire < garde - 1e-4 else "")
+                    + f" (au moins {100 * r.marge_plateau_m:.0f})"):
             return marges
         mg, md = self._modele.mains(qq)
         prof, haut = ecart_ligne_cg(mg, md, centre)
