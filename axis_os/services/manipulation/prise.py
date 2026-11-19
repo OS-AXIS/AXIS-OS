@@ -89,6 +89,12 @@ class ReglagesPrise:
     # décision : compté du bassin au vrai bord (distance_ideale), tant que
     # les avant-bras passent à marge_plateau_m au-dessus du plateau.
     bord_min_m: float = 0.10
+    # Erreur d'arrivée de la marche à la pose de prise (celle que tire la
+    # campagne de cartons variés) : les pieds n'en restent pas moins derrière
+    # le bord. Constaté sur cette campagne, pieds contre la table : 5
+    # approches sur 94 mettaient un pied 0,7 à 1,8 cm au-delà du bord.
+    erreur_approche_m: float = 0.02
+    erreur_cap_rad: float = math.radians(3.0)
     duree_placement_s: float = 0.8
     vitesse_fermeture: float = 0.5     # rad/s, roulis d'épaule
     vitesse_contact: float = 0.2       # rad/s, face commandée à moins de `zone_contact_m`
@@ -499,13 +505,16 @@ def resoudre(modele: ModeleBras, cg: np.ndarray, cd: np.ndarray, depart: Dict[st
 
 
 def garde_plateau(modele: ModeleBras, q: Dict[str, float], plateau_z: float, bord_x: float,
-                  rayon: float) -> float:
+                  rayon: float, cap: float = 0.0) -> float:
     """Distance (m) du dessous de l'avant-bras au plateau, sur la partie
-    des avant-bras au-dessus de la table (x ≥ bord_x) ; +inf si aucune."""
+    des avant-bras au-dessus de la table : au-delà de `bord_x` le long de la
+    normale du bord, qui fait l'angle `cap` (rad) avec l'avant du robot (0 :
+    face à la table, x ≥ bord_x) ; +inf si aucune."""
+    n = (math.cos(cap), math.sin(cap))
     garde = math.inf
     for chaine in (modele.gauche, modele.droite):
         for p in chaine.avant_bras(q):
-            if p[0] >= bord_x:
+            if p[0] * n[0] + p[1] * n[1] >= bord_x:
                 garde = min(garde, float(p[2]) - rayon - plateau_z)
     return garde
 
@@ -514,14 +523,24 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
                     centre_z: float, depart: Dict[str, float], *, bord_m: float = 0.0,
                     reglages: ReglagesPrise = ReglagesPrise(),
                     distances=np.arange(0.20, 0.45, 0.005),
-                    seulement_au_vrai_bord: bool = False) -> Tuple[Optional[float], str]:
+                    seulement_au_vrai_bord: bool = False, cap_bord: float = 0.0,
+                    debord_pieds: float = 0.0, marge_pieds: float = 0.0
+                    ) -> Tuple[Optional[float], str]:
     """Distance (m) entre le bassin et le centre de l'objet, le long de
     l'axe du robot, pour que les mains atteignent le milieu de ses faces et
     que les avant-bras ne touchent pas le plateau. `centre_z` : hauteur du
-    centre, repère du bassin ; `bord_m` : distance de la face avant de
-    l'objet au bord de la table ; `distances` : des REPÈRES des mains au
-    centre de l'objet, essayées dans cet ordre. (None, raison) s'il n'y en
-    a aucune.
+    centre, repère du bassin ; `bord_m` : distance du centre de l'objet au
+    bord de la table, moins sa demi-profondeur (de face : de sa face avant au
+    bord) ; `distances` : des REPÈRES des mains au centre de l'objet,
+    essayées dans cet ordre. (None, raison) s'il n'y en a aucune.
+
+    Robot face à une face de l'objet, le bord de la table vu en biais :
+    `cap_bord`, angle (rad) de la normale du bord avec l'avant du robot ;
+    `debord_pieds`, de combien ses pieds avancent alors de plus vers le bord
+    (avancee_pieds), ajouté à bord_min_m. 0 et 0 : face à la table.
+    `marge_pieds` : de plus, au VRAI bord, pour les pieds seuls (erreur
+    d'approche de la marche, en position et en cap) ; au premier palier, le
+    bord des repères, 11 cm plus près, la couvre déjà.
 
     Les points de contact au milieu des faces, avec les bras dans la posture
     où leurs REPÈRES y seraient : celle de la distance trouvée pour les
@@ -544,18 +563,24 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
     bout = r.contact_main_m
     au_contact = modele.au_contact(bout) if bout else None
     plateau = centre_z - hauteur / 2.0
+    ca = math.cos(cap_bord)
     meilleure_garde = -math.inf
     paliers = (True,) if seulement_au_vrai_bord and bout else (False, True) if bout else (False,)
     for vrai_bord in paliers:
         for d in distances:
-            bord = d - profondeur / 2.0 - bord_m + (bout if vrai_bord else 0.0)
-            if bord < r.bord_min_m:
+            # Du bassin au bord, le long de sa normale : celui de la règle
+            # (repères ou vrai bord), et le vrai, pour les pieds.
+            bord = (d + (bout if vrai_bord else 0.0)) * ca - profondeur / 2.0 - bord_m
+            pieds = (d + bout) * ca - profondeur / 2.0 - bord_m
+            if bord < r.bord_min_m + debord_pieds \
+                    or pieds < r.bord_min_m + debord_pieds + marge_pieds:
                 continue
             c = np.array([float(d), 0.0, centre_z])
             q, _ = resoudre(modele, *cibles_mains(c, largeur, 0.0, r.demi_main_m), depart)
             if q is None:
                 continue
-            g = garde_plateau(modele, {**depart, **q}, plateau, bord, r.rayon_avant_bras_m)
+            g = garde_plateau(modele, {**depart, **q}, plateau, bord, r.rayon_avant_bras_m,
+                              cap_bord)
             if vrai_bord:
                 qc, _ = resoudre(au_contact, *cibles_mains(c + np.array([bout, 0.0, 0.0]),
                                                            largeur, 0.0, r.demi_main_m),
@@ -563,7 +588,7 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
                 if qc is None:
                     continue
                 g = min(g, garde_plateau(au_contact, {**depart, **qc}, plateau, bord,
-                                         r.rayon_avant_bras_m))
+                                         r.rayon_avant_bras_m, cap_bord))
             meilleure_garde = max(meilleure_garde, g)
             if g >= r.marge_plateau_m:
                 return float(d + bout), ""

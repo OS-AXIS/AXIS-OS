@@ -10,6 +10,41 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Planificateur de prise ; `pick()` choisit mieux (API du SDK 1.4.0)
+
+Détail dans docs/validation_port_carton.md, §10.
+- `planificateur.py` et `ManipulationService.planifier_prise`. Entrée : la
+  boîte estimée (8 coins, repère de la pièce) et le bord de la table qui la
+  porte. Candidates : les deux paires de faces verticales opposées, avec
+  des positions de base de 2 en 2 cm devant chacune. Chaque candidate est
+  évaluée sans bouger (`evaluer_prise`), par les contrôles de la prise, à
+  leurs seuils, sans seuil nouveau. Le score est la plus faible des marges,
+  chacune rapportée à son seuil. Le robot va à la pose retenue, face à la
+  paire, puis prend comme avant. Si aucune ne passe : refus avec la raison
+  de la meilleure (« même la meilleure prise : … »).
+- Journal par plan (refus par contrôle, la retenue et ses marges les plus
+  faibles) et vue plongeante (`planificateur.dessiner`).
+- `pick()` : quand la carte de navigation connaît la table sous l'objet,
+  il planifie d'abord, sans bouger. Si la pose du robot passe, il prend
+  d'ici. Sinon il refuse : `OUT_OF_REACH` avec la pose d'où prendre, ou la
+  raison de la meilleure. Sans la table dans la carte : comme avant.
+  `API_VERSION` 1.4.0 (ajout compatible), paquet `axis-os-sdk` 1.4.0.
+- Côté sûreté, trouvé par la campagne :
+  - la règle du bord compte l'erreur d'approche de la marche (2 cm, 3°) ;
+    5 approches sur 94 posaient un pied jusqu'à 1,8 cm au-delà du bord ;
+  - la pesée repose un carton qui retombe entre les mains (moins de 40 %
+    du poids porté au levage) ;
+  - l'essai de dépose compte les mains serrées au plus ;
+  - la campagne compte un nouveau cas interdit, « pied au-delà du bord ».
+- Rapport de campagne : les cartons impossibles par construction sont mis à
+  part (`impossible_par_construction`). Ce sont les trop lourds (au-delà de
+  `masse_max_kg`), les trop larges pour les mains, et ceux hors de toute
+  portée, même pieds contre la table. Le rapport donne la réussite sur les
+  faisables. Avant et après le planificateur, sur les mêmes cartons :
+  `python -m axis_os.testing.cartons [graine] [nombre]`.
+- Campagne (graine 20261118) : 33 cartons faisables sur 120. 1 déposé
+  avant (3 %), 6 avec le planificateur (18 %). 0 cas interdit.
+
 ### Portée : pieds contre la table ; banc GPU de la posture
 
 Décisions de revue de la PR #33 ; détail dans docs/validation_port_carton.md,

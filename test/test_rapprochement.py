@@ -7,8 +7,9 @@ du G1, carton de la scène T1 posé de plus en plus loin du bord de la table :
   1. À sa place, au bord de la table : la distance d'avant (premier
      palier, inchangé : 0,36 m, le bassin à 26 cm du bord).
   2. À 25 cm, hors de portée ainsi : le robot se rapproche, pieds contre la
-     table au plus (bord_min_m du vrai bord).
-  3. De 0 à 30 cm du bord : jamais plus près du bord que bord_min_m ; et la
+     table au plus, l'erreur d'approche de la marche comprise (bord_min_m
+     plus la marge des pieds, du vrai bord).
+  3. De 0 à 30 cm du bord : jamais plus près du bord que cette limite ; et la
      prise, planifiée le robot placé à cette distance, la confirme (avant-
      bras à marge_plateau_m au moins du plateau) : l'approche ne contredit
      pas la prise.
@@ -83,10 +84,14 @@ check(f"Distance {d} m, bassin à {bord and round(100 * bord)} cm du bord (0,36 
       f"avant)", d is not None and abs(d - 0.36) < 1e-6 and abs(bord - 0.26) < 0.005, raison)
 
 section("2. À 25 cm, hors de portée ainsi : pieds contre la table au plus")
-d, bord, raison = Banc(0.25).distance()
+b = Banc(0.25)
+# Pieds contre la table, erreur d'approche de la marche comprise (position et cap).
+LIMITE = R.bord_min_m + b.m._pieds_au_bord(0.0)[1]
+d, bord, raison = b.distance()
 check(f"Atteint : distance {d} m, bassin à {bord and round(100 * bord)} cm du bord "
-      f"(bord_min_m {100 * R.bord_min_m:.0f} cm, pas plus près)",
-      d is not None and abs(bord - R.bord_min_m) < 0.005, raison)
+      f"(bord_min_m {100 * R.bord_min_m:.0f} cm plus l'erreur d'approche : "
+      f"{100 * LIMITE:.1f} cm, pas plus près)",
+      d is not None and LIMITE - 1e-9 <= bord < LIMITE + 0.005, raison)
 
 section("3. De 0 à 30 cm du bord : jamais plus près, et la prise le confirme")
 trop_pres, contredits, vus = [], [], 0
@@ -96,12 +101,12 @@ for cm in range(0, 31, 2):
     if d is None:
         continue
     vus += 1
-    if bord < R.bord_min_m - 1e-9:
+    if bord < LIMITE - 1e-9:
         trop_pres.append(f"{cm} cm : bassin à {100 * bord:.1f} cm")
     ok, raison, garde = b.planifier(d)
     if not ok or garde < R.marge_plateau_m:
         contredits.append(f"{cm} cm : {raison or garde}")
-check(f"{vus} places atteintes sur 16 : bassin jamais à moins de {100 * R.bord_min_m:.0f} cm du "
+check(f"{vus} places atteintes sur 16 : bassin jamais à moins de {100 * LIMITE:.1f} cm du "
       f"bord", vus >= 14 and not trop_pres, "; ".join(trop_pres))
 check("La prise planifiée à cette distance la confirme : avant-bras à 3 cm au moins du plateau",
       not contredits, "; ".join(contredits[:3]))
