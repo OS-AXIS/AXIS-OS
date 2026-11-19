@@ -24,8 +24,13 @@ carton tombé, écrasé (main commandée enfoncée dans sa face au-delà des
 bornes de l'OS), plafond de couple dépassé, consigne refusée par le
 garde-fou, prise crue tenue alors que les mains sont vides.
 
-rapport() montre les vraies limites du robot : réussite par plage (taille,
-masse, frottement, lacet, place), et toutes les raisons de refus.
+rapport() montre les vraies limites du robot. D'abord, les cartons
+impossibles par construction (trop lourds, trop larges, hors de toute
+portée même pieds contre la table : impossible_par_construction) à part
+des faisables, et la réussite sur les faisables ; puis la réussite par
+plage (taille, masse, frottement, lacet, place), et toutes les raisons de
+refus. Avant et après le planificateur de prise :
+python -m axis_os.testing.cartons [graine] [nombre].
 """
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ import io
 import math
 import os
 import random
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -137,6 +143,44 @@ def pied_au_dela(x: float, y: float, cap: float) -> float:
     return max(x + px * c - py * s + rayon for px, py, rayon in pieds_debout())
 
 
+def impossible_par_construction(c: CartonTire, m) -> str:
+    """Pourquoi le carton est impossible par construction, quelle que soit
+    la façon de le prendre (avec ou sans planificateur) ; "" s'il est
+    faisable. `m` : le ManipulationService du robot, debout, qui ne bouge
+    pas (ses contrôles de prise, evaluer_prise, sur toutes les positions du
+    planificateur, les deux paires de faces) :
+      - « trop lourd » : plus lourd que masse_max_kg, la charge pour laquelle
+        la prise est vérifiée (l'OS le repose après la pesée) ;
+      - « trop large » : aucune paire de faces ne tient entre les mains
+        ouvertes en grand, mais l'une serait atteinte (comme ci-dessous) si le
+        carton n'était pas plus large qu'elles ne le prennent ;
+      - « hors de toute portée » : même ainsi, d'aucune position, pieds contre
+        la table au plus (erreur d'approche comprise), les mains n'atteignent
+        le milieu des faces d'une paire.
+    Chaque carton reçoit la première de ces raisons, dans cet ordre."""
+    from dataclasses import replace
+    from axis_os.services.manipulation import planificateur as P
+    if c.masse_kg > m.r.masse_max_kg:
+        return "trop lourd"
+    bord = P.BordTable((0.0, 0.0), 0.0, PLATEAU_M)
+    boite = P.boite_depuis_coins(P.coins_boite(place_sur_table(c), math.radians(c.lacet_deg),
+                                               c.profondeur, c.largeur, c.hauteur))
+    # Le plus large que prennent les mains ouvertes en grand, jeu compris
+    # (le contrôle « largeur » d'evaluer_prise).
+    plus_large = m._ouverture(math.inf)[1] - 2.0 * m.r.jeu_ouverture_m
+    large, contexte = False, {}
+    for paire in P.paires(boite, bord):
+        contexte.pop("graine", None)
+        objet = m._objet_paire(boite, paire, bord)
+        essai = replace(objet, largeur=min(objet.largeur, plus_large - 1e-9))   # passe, à l'arrondi près
+        if any("portée" in {g.nom for g in m.evaluer_prise(essai, p_[:3], contexte=contexte)
+                            if g.relative >= 0.0} for p_ in P.positions(boite, paire)):
+            if objet.largeur <= plus_large:
+                return ""                  # tient entre les mains et à portée
+            large = True
+    return "trop large" if large else "hors de toute portée"
+
+
 def plan_en_bref(plan) -> Dict:
     """Ce que le planificateur de prise a vu et choisi, pour le rapport."""
     ch = plan.choisie
@@ -197,7 +241,9 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
            "perte_ignoree_s": 0.0, "distance_m": None, "temps_s": 0.0, "journal": [],
            # pour l'audit des réglages (audit())
            "rotation_os_ramener_deg": 0.0, "retour_arrete": False, "avance_max_m": 0.0,
-           "borne_poids": False, "enfoncement_contact_m": None, "recalage_cm": None}
+           "borne_poids": False, "enfoncement_contact_m": None, "recalage_cm": None,
+           # le même avec ou sans planificateur : les faisables, au rapport
+           "impossible": impossible_par_construction(c, m)}
     plan = None
     if planificateur:
         from axis_os.services.manipulation.planificateur import BordTable, coins_boite
@@ -543,13 +589,30 @@ def _plages(resultats, cle, bornes, nom, unite="", facteur=1.0, absolu=False):
 
 
 def rapport(resultats: Sequence[Dict], graine: Optional[int] = None) -> str:
-    """Réussite par plage et raisons de refus (voir l'en-tête du module)."""
+    """Réussite par plage et raisons de refus (voir l'en-tête du module) ;
+    d'abord, les impossibles par construction (impossible_par_construction)
+    à part, et la réussite sur les faisables."""
     n = len(resultats)
     dep = [x for x in resultats if x["issue"] == "déposée"]
     lignes = [f"Campagne de {n} cartons" + (f" (graine {graine})" if graine is not None else "")
               + f" : {len(dep)} tenus et déposés ({100 * len(dep) / max(1, n):.0f} %), "
               f"{sum(x['issue'] == 'reposée' for x in resultats)} reposés, "
               f"{sum(x['issue'] == 'refusée' for x in resultats)} refusés."]
+    impossibles = [x for x in resultats if x["impossible"]]
+    pourquoi = Counter(x["impossible"] for x in impossibles)
+    lignes.append(f"  impossibles par construction : {len(impossibles)}"
+                  + (" (" + ", ".join(f"{k} {v}" for k, v in pourquoi.most_common()) + ")"
+                     if pourquoi else "")
+                  + f", {sum(x['issue'] == 'déposée' for x in impossibles)} déposés")
+    faisables = [x for x in resultats if not x["impossible"]]
+    dep_f = sum(x["issue"] == "déposée" for x in faisables)
+    raisons_f = Counter(categorie(x["raison"]) for x in faisables if x["issue"] != "déposée")
+    lignes.append(f"  faisables : {len(faisables)} cartons, {dep_f} tenus et déposés "
+                  f"({100 * dep_f / max(1, len(faisables)):.0f} %), "
+                  f"{sum(x['issue'] == 'reposée' for x in faisables)} reposés, "
+                  f"{sum(x['issue'] == 'refusée' for x in faisables)} refusés"
+                  + (" ; raisons : " + ", ".join(f"{k} {v}" for k, v in raisons_f.most_common())
+                     if raisons_f else ""))
     lignes += _plages(resultats, "largeur", [0.15, 0.20, 0.25, 0.30, 0.35, 0.45, 0.61],
                       "largeur (entre les mains)", " cm", 100)
     lignes += _plages(resultats, "profondeur", [0.15, 0.20, 0.25, 0.301], "profondeur", " cm", 100)
@@ -697,3 +760,13 @@ def audit(resultats: Sequence[Dict], reglages=None) -> List[str]:
             f"{min(x['carton']['masse_kg'] for x in glisse):.2f} kg, μ dès "
             f"{min(x['carton']['frottement'] for x in glisse):.2f})")
     return lignes
+
+
+if __name__ == "__main__":
+    # Avant et après le planificateur de prise, mêmes cartons.
+    import sys
+    graine = int(sys.argv[1]) if len(sys.argv) > 1 else 20261118
+    cartons = tirer_cartons(int(sys.argv[2]) if len(sys.argv) > 2 else 120, graine)
+    for planifie in (False, True):
+        print(f"\n=== {'Avec' if planifie else 'Sans'} le planificateur de prise ===")
+        print(rapport(campagne(cartons, planificateur=planifie), graine))

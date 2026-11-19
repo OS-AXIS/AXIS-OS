@@ -847,13 +847,34 @@ ci-dessous).
 
 ### Avant / après (graine 20261118, banc T1 du robot simulé léger)
 
-Les deux colonnes viennent de cette branche : règle des pieds avec l'erreur
-d'approche, et pesée corrigée. Sur main (#34) : 0 déposé, 8 reposés, 112
-refusés.
+`python -m axis_os.testing.cartons 20261118 120` : les mêmes cartons, sans
+puis avec le planificateur. Les deux colonnes viennent de cette branche :
+règle des pieds avec l'erreur d'approche, et pesée corrigée. Sur main
+(#34) : 0 déposé, 8 reposés, 112 refusés.
+
+**Les impossibles par construction, à part.** Chaque carton est classé une
+fois, quelle que soit la façon de le prendre, par les contrôles de la
+prise faits sans bouger (`impossible_par_construction`). Il reçoit la
+première de ces raisons :
+- **trop lourd** : au-delà de `masse_max_kg` (1,2 kg), la charge pour
+  laquelle la prise est vérifiée ;
+- **trop large** : aucune paire de faces ne tient entre les mains ouvertes
+  en grand (35 cm au plus, jeu compris), alors que l'une serait à portée
+  si le carton n'était pas plus large ;
+- **hors de toute portée** : même ramené à cette largeur, robot debout,
+  pieds contre la table (erreur d'approche comprise), d'aucune position
+  les mains n'atteignent le milieu des faces d'une paire.
+
+Sur 120 cartons, 87 sont impossibles par construction : 79 trop lourds,
+1 trop large, 7 hors de toute portée. Aucun n'est déposé, ni avant ni
+après. Les trop lourds sont si nombreux parce que le tirage des masses
+(jusqu'à 2,5 kg, et 3 à 5 kg exprès) date d'avant `masse_max_kg` à 1,2 kg.
 
 | | Sans planificateur | Avec le planificateur |
 |---|---|---|
-| 120 cartons tirés : déposés / reposés / refusés | 1 / 8 / 111 | **6 / 5 / 109** |
+| **33 cartons faisables : déposés / reposés / refusés** | 1 / 6 / 26 : **3 %** | 6 / 3 / 24 : **18 %** |
+| … leurs refus et reposes | hors de portée 15 (tournés, abordés de face), trop large 5 (de face), avant-bras 5, dépose 4, trop lourd ou trop glissant 2, trop lourd 1 | dépose impossible 14 (13 au plan), avant-bras 5, trop lourd pour 1,2 kg là où il est 4, trop lourd ou trop glissant 3, serrage insuffisant 1 |
+| **Sur les 120 cartons tirés**, déposés / reposés / refusés (et, ci-dessous, leurs raisons) | 1 / 8 / 111 | 6 / 5 / 109 |
 | Déposés (n°) | 2 | 15, 64, 70, 85, 90, 105 |
 | Limites vues (déposés) | 0,61 kg ; μ dès 1,07 ; lacet 5° | 0,97 kg ; μ dès 0,55 ; lacet 39° |
 | Hors de portée | 46 (44 lacet, abordés de face) | 39 (28 bras, 11 pieds) |
@@ -865,20 +886,21 @@ refusés.
 | Pied le plus avancé | 0,9 cm devant le bord | 2,2 cm devant le bord |
 | Cas interdits (tombé, écrasé, plafond, à vide, pied au-delà) | 0 | 0 |
 
-- **Le gain** : 6 cartons déposés au lieu d'1, dont des cartons tournés
-  jusqu'à 39°. Le planificateur retient la seconde paire de faces 23 fois
-  sur 32, et serre le carton dans sa dimension la plus courte 25 fois sur
-  32.
+- **Le gain** : sur les 33 cartons faisables, 18 % déposés au lieu de 3 %
+  (6 au lieu d'1), dont des cartons tournés jusqu'à 39°. Le planificateur
+  retient la seconde paire de faces 23 fois sur 32, et serre le carton
+  dans sa dimension la plus courte 25 fois sur 32.
 - **Les refus disent mieux leur raison.** « Lacet, abordé de face »
   disparaît. Restent la portée réelle des bras, les pieds, les couples
   prévus et la dépose, chacun avec sa marge.
-- **Des 32 prises planifiées**, 6 sont déposées, 5 reposées et 21 refusées
-  à la prise :
-  - 12 cartons n'ont pas suivi le levage (trop lourds ou trop glissants
-    pour le serrage, ce que le plan ne peut pas savoir avant la pesée) ;
-  - 8 avant-bras à 2,5–2,9 cm du plateau : l'erreur d'approche mange la
-    marge prévue ;
-  - 1 serrage insuffisant.
+- **Des 32 prises planifiées**, 13 portent sur des cartons faisables : 6
+  déposés, 3 reposés et 4 refusés à la prise (2 avant-bras, 1 serrage
+  insuffisant, 1 qui n'a pas suivi le levage).
+- **Les 19 autres portent sur des cartons trop lourds.** Le plan ne peut
+  pas les reconnaître avant la pesée : il prévoit 1,2 kg. 11 n'ont pas
+  suivi le levage, 2 ont été reposés après la pesée, et 6 ont été refusés
+  à la prise, l'avant-bras à 2,5–2,9 cm du plateau (l'erreur d'approche
+  mange la marge prévue).
 - **Balayage autour du carton T1** : gagnés, la hauteur de 30 cm, le
   frottement de 1,2, le lacet de 30° et le retrait de 10 cm. Perdus, la
   hauteur de 13 cm (essai de dépose prudent) et le frottement de 0,6
@@ -886,10 +908,13 @@ refusés.
 
 ### Ce qui reste
 
-- **Repose sûre** (n° 1005, ci-dessus). Avec elle, l'essai de dépose peut
-  redevenir fidèle et rendre les cartons qu'il écarte à tort.
+- **Repose sûre** (n° 1005, ci-dessus). C'est la première perte sur les
+  faisables : 13 sont refusés au plan, « dépose impossible ensuite ». Avec
+  une repose sûre, l'essai de dépose peut redevenir fidèle et rendre ceux
+  qu'il écarte à tort (combien : à mesurer).
 - **La garde des avant-bras sous l'erreur d'approche** : 8 refus à la
-  prise. Évaluer la garde aux bornes de l'erreur d'approche (±2 cm, ±3°)
-  écarterait ces candidates dès le plan, sans seuil nouveau.
+  prise, dont 2 sur des faisables. Évaluer la garde aux bornes de l'erreur
+  d'approche (±2 cm, ±3°) écarterait ces candidates dès le plan, sans
+  seuil nouveau.
 - **`pick()` qui va lui-même à la pose** : il faut un accostage à 2 cm
   près, pas `go_to`.

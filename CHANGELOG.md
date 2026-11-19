@@ -36,8 +36,14 @@ Détail dans docs/validation_port_carton.md, §10.
     du poids porté au levage) ;
   - l'essai de dépose compte les mains serrées au plus ;
   - la campagne compte un nouveau cas interdit, « pied au-delà du bord ».
-- Campagne (graine 20261118) : 1 carton déposé sur 120 avant, 6 avec le
-  planificateur. 0 cas interdit.
+- Rapport de campagne : les cartons impossibles par construction sont mis à
+  part (`impossible_par_construction`). Ce sont les trop lourds (au-delà de
+  `masse_max_kg`), les trop larges pour les mains, et ceux hors de toute
+  portée, même pieds contre la table. Le rapport donne la réussite sur les
+  faisables. Avant et après le planificateur, sur les mêmes cartons :
+  `python -m axis_os.testing.cartons [graine] [nombre]`.
+- Campagne (graine 20261118) : 33 cartons faisables sur 120. 1 déposé
+  avant (3 %), 6 avec le planificateur (18 %). 0 cas interdit.
 
 ### Portée : pieds contre la table ; banc GPU de la posture
 

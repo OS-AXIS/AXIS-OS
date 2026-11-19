@@ -17,6 +17,9 @@ G1 29 DOF, mains du G1, table de la scène T1 (bord en x = 0) :
   6. Journal (refus par contrôle) et vue plongeante (PNG).
   7. Campagne : le carton T1 tourné de 30°, pris face à lui et déposé ;
      pieds jamais au-delà du bord.
+  8. Rapport : les cartons impossibles par construction (trop lourd, trop
+     large, hors de toute portée même pieds contre la table) à part des
+     faisables, et la réussite sur les faisables.
 """
 import contextlib
 import io
@@ -170,6 +173,20 @@ check(f"Pris face à lui (cap {x['plan']['cap_deg']}°) et déposé ; pieds "
       f"{100 * x['pied_au_dela_m']:.1f} cm devant le bord",
       x["issue"] == "déposée" and abs(x["plan"]["cap_deg"] - 30.0) < 1.0
       and x["pied_au_dela_m"] < 0 and not K.violations(x), f"{x['issue']} {x['raison']}")
+
+section("8. Rapport : impossibles par construction, à part des faisables")
+for quoi, modifs, attendu in (("carton T1", {}, ""), ("1,5 kg", {"masse_kg": 1.5}, "trop lourd"),
+                              ("46 cm de large, au bord", {"largeur": 0.46}, "trop large"),
+                              ("à 40 cm du bord", {"retrait_m": 0.40}, "hors de toute portée")):
+    b_ = Banc(**modifs)
+    v = K.impossible_par_construction(b_.c, b_.m)
+    check(f"{quoi} : {v or 'faisable'}", v == attendu, v)
+lourd = {**x, "impossible": "trop lourd", "issue": "refusée", "raison": "trop lourd : 1.5 kg pesés"}
+texte = K.rapport([x, lourd])
+check("Le carton de la campagne (§7) est faisable ; le rapport met l'impossible à part et donne "
+      "la réussite sur les faisables",
+      x["impossible"] == "" and "impossibles par construction : 1 (trop lourd 1), 0 déposés" in texte
+      and "faisables : 1 cartons, 1 tenus et déposés (100 %)" in texte, texte[:400])
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
