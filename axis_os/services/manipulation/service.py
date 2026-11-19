@@ -1698,7 +1698,11 @@ class ManipulationService(IService):
                 self._plafond[cote] = trop[0]
                 prets = False
             elif (geo or f < r.force_serrage_n) and not self._plafond.get(cote):
-                reste = self._reste_avant_borne(q, k, cote)
+                # Jusqu'à la borne de la face commandée, et de la consigne
+                # comptée (_delta_max) : la cinématique inverse s'arrête à
+                # 20 µm près par pas, la somme des pas pourrait la dépasser.
+                reste = min(self._reste_avant_borne(q, k, cote),
+                            self._delta_max.get(cote, 0.0) - self._delta[cote])
                 if reste <= r.pas_serrage_min_m:
                     continue                      # au bout : on juge ce qu'on a
                 if geo:
