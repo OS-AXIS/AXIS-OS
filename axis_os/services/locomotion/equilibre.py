@@ -205,7 +205,7 @@ def modele_g1() -> ModeleCorps:
 
 
 @lru_cache(maxsize=1)
-def _pieds_debout() -> Tuple[Tuple[float, float, float], ...]:
+def pieds_debout() -> Tuple[Tuple[float, float, float], ...]:
     """Sphères de contact des pieds du G1 debout (pose par défaut de la
     marche) : (x, y, rayon), repère du bassin."""
     m = modele_g1()
@@ -220,7 +220,7 @@ def avancee_pieds(cap: float = 0.0) -> float:
     des points de contact (talons et pointes de l'URDF, rayon compris).
     0 : la pointe des pieds, 9,9 cm devant le bassin."""
     n = (math.cos(cap), math.sin(cap))
-    return max(x * n[0] + y * n[1] + r for x, y, r in _pieds_debout())
+    return max(x * n[0] + y * n[1] + r for x, y, r in pieds_debout())
 
 
 def _enveloppe(points: np.ndarray) -> np.ndarray:
