@@ -27,7 +27,7 @@ Repère : celui du bassin du robot (x devant, y à gauche, z en haut).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import numpy as np
@@ -84,8 +84,10 @@ class ReglagesPrise:
     # Le bord d'une table n'est jamais plus près du bassin : pieds contre la
     # table, pas plus. La pointe des pieds du G1 debout est à 9,9 cm devant
     # le bassin (URDF : sphère de contact de la pointe, posture debout de la
-    # marche ; test_portee_table.py le vérifie). C'était 15 cm, 5 de marge ;
-    # décision de revue : prendre ces 5 cm, sans plus.
+    # marche ; test_equilibre.py le vérifie). C'était 15 cm, 5 de marge ;
+    # décision de revue : prendre ces 5 cm, sans plus. Puis, seconde
+    # décision : compté du bassin au vrai bord (distance_ideale), tant que
+    # les avant-bras passent à marge_plateau_m au-dessus du plateau.
     bord_min_m: float = 0.10
     duree_placement_s: float = 0.8
     vitesse_fermeture: float = 0.5     # rad/s, roulis d'épaule
@@ -511,43 +513,60 @@ def garde_plateau(modele: ModeleBras, q: Dict[str, float], plateau_z: float, bor
 def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, hauteur: float,
                     centre_z: float, depart: Dict[str, float], *, bord_m: float = 0.0,
                     reglages: ReglagesPrise = ReglagesPrise(),
-                    distances=np.arange(0.20, 0.45, 0.005)) -> Tuple[Optional[float], str]:
+                    distances=np.arange(0.20, 0.45, 0.005),
+                    seulement_au_vrai_bord: bool = False) -> Tuple[Optional[float], str]:
     """Distance (m) entre le bassin et le centre de l'objet, le long de
     l'axe du robot, pour que les mains atteignent le milieu de ses faces et
     que les avant-bras ne touchent pas le plateau. `centre_z` : hauteur du
     centre, repère du bassin ; `bord_m` : distance de la face avant de
-    l'objet au bord de la table. La plus courte qui convient (le carton
-    reste près du corps) ; (None, raison) s'il n'y en a aucune."""
+    l'objet au bord de la table ; `distances` : des REPÈRES des mains au
+    centre de l'objet, essayées dans cet ordre. (None, raison) s'il n'y en
+    a aucune.
+
+    Les points de contact au milieu des faces, avec les bras dans la posture
+    où leurs REPÈRES y seraient : celle de la distance trouvée pour les
+    repères, l'objet `contact_main_m` plus loin. Plus près, la main ne pointe
+    plus vers l'objet (coude replié en arrière) et le roulis ne ferme
+    presque plus (constaté sur le robot simulé).
+
+    1. Comme toujours : la plus courte qui convient (le carton reste près du
+       corps), le bord de la table jugé depuis les repères, `contact_main_m`
+       plus près d'eux qu'en vrai (plus sévère : le bassin reste à
+       bord_min_m + contact_main_m du vrai bord au moins).
+    2. Sinon, se rapprocher (décision de revue : « ce qui reste des 11 cm,
+       tant que la garde des avant-bras est tenue ») : règle du bord et garde
+       jugées au vrai bord, dans cette posture ET dans celle de la prise
+       (ManipulationService._planifier : les points de contact au milieu des
+       faces, la main comprise jusqu'à eux), pour que l'une ne contredise
+       pas l'autre ; la plus courte qui convient, là encore.
+    `seulement_au_vrai_bord` : le second palier seul."""
     r = reglages
-    if r.contact_main_m:
-        # Les points de contact au milieu des faces, avec les bras dans la
-        # posture où leurs REPÈRES y seraient : celle de la distance trouvée
-        # pour les repères, l'objet `contact_main_m` plus loin. Plus près, la
-        # main ne pointe plus vers l'objet (coude replié en arrière) et le
-        # roulis ne ferme presque plus (constaté sur le robot simulé). La
-        # garde des avant-bras est jugée comme si le bord de la table était
-        # resté où il était pour les repères : `contact_main_m` plus près
-        # d'eux qu'en vrai, donc plus sévère ; les doigts, au-delà, sont à mi-
-        # hauteur de l'objet, loin du plateau.
-        rep = replace(r, contact_main_m=0.0)
-        d, raison = distance_ideale(modele, largeur, profondeur, hauteur, centre_z, depart,
-                                    bord_m=bord_m, reglages=rep,
-                                    distances=distances)
-        return (None, raison) if d is None else (d + r.contact_main_m, "")
+    bout = r.contact_main_m
+    au_contact = modele.au_contact(bout) if bout else None
     plateau = centre_z - hauteur / 2.0
     meilleure_garde = -math.inf
-    for d in distances:
-        bord = d - profondeur / 2.0 - bord_m
-        if bord < r.bord_min_m:
-            continue
-        c = np.array([float(d), 0.0, centre_z])
-        q, _ = resoudre(modele, *cibles_mains(c, largeur, 0.0, r.demi_main_m), depart)
-        if q is None:
-            continue
-        g = garde_plateau(modele, {**depart, **q}, plateau, bord, r.rayon_avant_bras_m)
-        meilleure_garde = max(meilleure_garde, g)
-        if g >= r.marge_plateau_m:
-            return float(d), ""
+    paliers = (True,) if seulement_au_vrai_bord and bout else (False, True) if bout else (False,)
+    for vrai_bord in paliers:
+        for d in distances:
+            bord = d - profondeur / 2.0 - bord_m + (bout if vrai_bord else 0.0)
+            if bord < r.bord_min_m:
+                continue
+            c = np.array([float(d), 0.0, centre_z])
+            q, _ = resoudre(modele, *cibles_mains(c, largeur, 0.0, r.demi_main_m), depart)
+            if q is None:
+                continue
+            g = garde_plateau(modele, {**depart, **q}, plateau, bord, r.rayon_avant_bras_m)
+            if vrai_bord:
+                qc, _ = resoudre(au_contact, *cibles_mains(c + np.array([bout, 0.0, 0.0]),
+                                                           largeur, 0.0, r.demi_main_m),
+                                 {**depart, **q})
+                if qc is None:
+                    continue
+                g = min(g, garde_plateau(au_contact, {**depart, **qc}, plateau, bord,
+                                         r.rayon_avant_bras_m))
+            meilleure_garde = max(meilleure_garde, g)
+            if g >= r.marge_plateau_m:
+                return float(d + bout), ""
     if meilleure_garde == -math.inf:
         return None, "objet hors de portée des bras à toute distance"
     return None, (f"avant-bras trop près du plateau à toute distance (au mieux "

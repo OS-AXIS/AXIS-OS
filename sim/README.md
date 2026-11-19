@@ -33,7 +33,7 @@ La lettre donne le thème :
 | P1 à P3 | perception |
 | A1 à A3 | premières apps de bout en bout : inspection, commande vocale, inventaire |
 | D1 | démonstration multi-apps |
-| W1 à W4 | GR00T Whole-Body Control (WBC) : marche sous charge, prise et port d'un carton |
+| W1 à W5 | GR00T Whole-Body Control (WBC) : marche sous charge, prise et port d'un carton, posture (torse penché, bassin abaissé) |
 | T1 | démonstration de tri de colis |
 | S2, S5 | suites de la campagne de validation initiale ([`docs/campagne_validation_isaac.md`](../docs/campagne_validation_isaac.md)) : S2 normalisation, S5 pile complète et endurance ; les sous-numéros des scripts (S5.1, S5.2…) ne suivent pas toujours ceux de ce document |
 
@@ -49,6 +49,7 @@ Ce que vérifie chaque script, et où en lire le résultat :
 | `test_isaac_d1_multiapp.py` | plusieurs apps sur un même robot | `docs/validation_multiapp.md` |
 | `test_isaac_s2_normalization.py` | cohérence des signes, en position et en couple, contre la physique ; malgré son nom, le script travaille en angles bruts, sans la table de conventions | `docs/groot_architecture.md` |
 | `test_isaac_w1_gr00t_port.py` à `w4_gr00t_autonome` | marche sous charge (GR00T Whole-Body Control), prise et port d'un carton | `docs/integration_gr00t_wbc.md`, `docs/validation_port_carton.md` |
+| `test_isaac_w5_gr00t_posture.py` | consigne de posture de l'OS (torse penché, bassin abaissé), robot immobile, sans puis avec un carton : équilibre prévu et mesuré, arrêt au premier signe de perte | `docs/validation_port_carton.md`, §9 |
 | `test_isaac_t1_tri_usine.py` | démonstration de tri de colis en entrepôt, avec des humains | `docs/demo_tri_usine.md` |
 | `test_isaac_follower_latency.py`, `test_s5_latency_probe.py` | coût d'une commande, sans puis avec le sandbox | `docs/latence_chemin_commande.md` |
 
@@ -67,7 +68,8 @@ sudo docker exec isim-isaac-sim-1 /isaac-sim/python.sh \
     /isaac-sim/axis_os/test_isaac_l1_locomotion.py
 ```
 
-La démonstration T1 a son propre lanceur, `deploy/machine_gpu/lancer_t1.sh`.
+La démonstration T1 a son propre lanceur, `deploy/machine_gpu/lancer_t1.sh`, et le
+banc de posture W5 le sien, `deploy/machine_gpu/lancer_posture.sh`.
 Les scripts de `diagnostic/` et `video/`, ainsi que
 `validation/test_s5_latency_probe.py`, se copient à la main de la même
 façon (`docker cp` vers `/isaac-sim/axis_os/`).

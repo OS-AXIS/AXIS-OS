@@ -10,6 +10,35 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Portée : pieds contre la table ; banc GPU de la posture
+
+Décisions de revue de la PR #33 ; détail dans docs/validation_port_carton.md,
+§9.
+- `distance_ideale`, en deux paliers. D'abord la distance de toujours :
+  aucun carton déjà pris ne change de distance. Sinon, le robot se rapproche
+  jusqu'à `bord_min_m` du vrai bord (pieds contre la table), tant que les
+  avant-bras passent à 3 cm au-dessus du plateau, dans la posture de
+  l'approche et dans celle de la prise (points de contact). Résultat :
+  plus aucun refus pour la longueur des bras (28 → 0), et le carton T1 est
+  saisi jusqu'à 30 cm du bord (20 avant), puis reposé : bras tendus, les
+  plafonds des poignets limitent le serrage.
+- Campagne : « longueur des bras » mesure le manque depuis la distance de
+  prise la plus longue qui convient. Mesuré depuis la plus courte, il était
+  surestimé de 7 cm en médiane : il manquait de 2 à 11 cm, pas de 5 à 18.
+  Le balayage autour du carton T1 va jusqu'à 30 cm du bord.
+- Serrage : chaque pas est borné aussi par la consigne comptée
+  (`_delta_max`). La cinématique inverse s'arrête à 20 µm près par pas, et
+  la somme des pas pouvait dépasser la borne de quelques µm, la main
+  restant dans la sienne. C'est plus strict, jamais moins.
+- Banc Isaac Sim de la posture GR00T WBC
+  (`deploy/machine_gpu/lancer_posture.sh`, `test_isaac_w5_gr00t_posture.py`,
+  `banc_posture.py`). Robot immobile, torse de 0 à 0,35 rad et bassin de 0
+  à 10 cm par paliers, sans puis avec un carton de 1,2 kg. Relevé par
+  palier : marge prévue, inclinaison et vitesse de la centrale inertielle,
+  glissement des pieds. Au premier signe de perte d'équilibre, arrêt et
+  retour droit. L'app de tri T1 ne se penche pas tant que ce banc n'est pas
+  passé (testé), et la marge d'équilibre reste à 2 cm jusque-là.
+
 ### Objet trop lourd : code de refus TOO_HEAVY (API du SDK 1.3.0)
 
 - `RefusalCode.TOO_HEAVY` : l'objet est trop lourd pour le robot. Il a été
