@@ -10,6 +10,29 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Port sans dérive, carton surveillé pendant tout le port
+
+Essai GPU T1 du 19 novembre 2026, 17 h 16 ; détail dans
+docs/validation_port_carton.md, §11.
+- Pose des deux mains figée au début du port, repère du torse. Serrage et
+  desserrage le long de la normale du carton, les deux mains du même pas,
+  bras recalculés depuis la posture figée. Dérive des mains mesurées
+  ramenée vers la pose figée, pas à pas, au-delà de 1 cm ou 2 degrés.
+- Carton surveillé pendant tout le port, sur les mains mesurées : au-delà
+  de 4°, base arrêtée et correction ; au-delà de 10°, à reposer, avec la
+  raison.
+- Hystérésis du resserrage : arrêt sous `securite_serrage` (2,0), reprise
+  au-dessus de `securite_reprise` (2,2) après `delai_reprise_s` (0,5 s).
+  Bras à leurs plafonds : reprise dès 2,0 (`reprise_aux_plafonds`, par
+  défaut) ou jamais sous 2,2 (stricte). Bilan de chaque port au journal.
+- Planificateur : la garde des avant-bras jugée aussi aux bornes de
+  l'erreur d'approche de la marche ; refus au moment de prendre pour les
+  avant-bras, 8 → 0 dans la campagne.
+- Bancs Isaac : remise debout commune avant la boucle
+  (`IsaacSimBridge.remettre_debout`) ; le banc de posture ne décide plus de
+  chute avant le premier pas. Relevé du banc T1 : taille, rotation et
+  dérive vues par l'OS, marge, resserrages.
+
 ### Planificateur de prise ; `pick()` choisit mieux (API du SDK 1.4.0)
 
 Détail dans docs/validation_port_carton.md, §10.

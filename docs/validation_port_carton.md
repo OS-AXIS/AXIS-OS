@@ -918,3 +918,141 @@ après. Les trop lourds sont si nombreux parce que le tirage des masses
   seuil nouveau.
 - **`pick()` qui va lui-même à la pose** : il faut un accostage à 2 cm
   près, pas `go_to`.
+
+## 11. Essai T1 du 19 novembre 2026, 17 h 16 : porté 20 s, tourné de 25°, pas de dépose
+
+Le meilleur essai jusqu'ici :
+- prise parfaite ;
+- poids pesé 9,8 N (9,8 en vrai), serrage 12,5 N par main ;
+- carton porté 20 s sur ~3 m jusqu'au plateau B, jamais tombé.
+
+Mais pas de dépose : « ALERTE colis mal tenu » à 66,2 s, arrêt propre,
+carton en main. Le juge a vu le carton tourner, l'OS rien du tout. Le rejeu
+du port est dans `test/test_rejeu_port_t1716.py`.
+
+### Ce que disent les données
+
+- **Le carton a tourné autour de la ligne des mains.** Le « roulis » du
+  juge (angles ZYX, repère du bassin) est, pour ce carton tourné de -88° en
+  lacet, une rotation autour de son axe propre, couché le long de la ligne
+  des mains. Il passe de +1° à -24° à 67,5 s, puis -38°. La force du juge
+  reste à ~12,5 N par main.
+- **Les paumes mesurées, elles, n'ont pas tourné.** Calculées sur les
+  angles mesurés des bras, dans le repère du torse, elles bougent de 3° au
+  plus. Les angles d'épaule et de poignet dérivent (lacet d'épaule G -0,05
+  → -0,20 rad), mais surtout dans la redondance du bras à 7 articulations,
+  sans changer la pose de la main. Le carton a donc tourné entre les
+  paumes, ou avec le torse. La taille n'était pas relevée : elle l'est
+  maintenant.
+- **Le resserrage n'a pas serré, il a fait glisser la paire.** Les faces
+  commandées des deux mains glissent ensemble de 2,2 cm vers la droite,
+  leur écart constant. Le tangage du poignet droit dépassait sa limite
+  d'effort (2,5 N·m) sur 51 lignes du port sur 226 : son plafond faisait
+  reculer la main droite pendant que le resserrage poussait la gauche.
+- **La marge de frottement est restée collée au seuil.** Reconstruite
+  d'après les couples de l'essai, elle vaut 2,03 en moyenne (de 1,80 à
+  2,24). Chaque creux sous 2,0 arrêtait la base ; le moindre retour à 2,0
+  la relançait. D'où 32 arrêts de la base.
+
+### Pourquoi rien ne s'est déclenché
+
+- **La rotation estimée sur les mains** (4°, `_rotation_estimee`) ne
+  surveillait que le retour vers le buste, pas le port.
+- **L'inclinaison** est celle de la droite qui joint les mains, dans le
+  repère du monde (centrale inertielle). Elle ne voit pas, par
+  construction, un carton qui tourne autour de cette droite.
+- **La caméra de tête** (`rotation_tete`) ne mesure le carton qu'en entier
+  dans l'image. Tenu contre le buste, il est coupé par le bas de l'image :
+  `rotation_vue` est restée vide pendant tout le port.
+- **Les couples** ne voient pas le couple de basculement, qui passe sous
+  leur bruit.
+
+### Ce qui change
+
+- **Pose figée au début du port**, repère du torse. Le serrage et le
+  desserrage ne bougent les mains que le long de la normale du carton,
+  les deux du même pas. Les bras sont recalculés depuis la posture figée :
+  le même serrage donne les mêmes bras. Au plafond d'un poignet, les deux
+  mains reculent ensemble, en rendant autant de serrage qu'avant.
+- **Dérive des mains mesurées** : comparées à la pose figée, en moyenne
+  glissante d'une seconde. Au-delà de 1 cm ou 2°, elles sont ramenées vers
+  elle, pas à pas (jamais un saut de consigne), au plus 3 cm et 6° en tout.
+- **Carton surveillé pendant tout le port**, du début du port jusqu'à la
+  montée au plateau : roulis et tangage de la ligne des mains, lacet de la
+  paire, sur les paumes mesurées. Au-delà de 4°, base arrêtée et mains
+  ramenées ; au-delà de 10°, transport interrompu, à reposer, avec la
+  raison.
+- **Hystérésis du resserrage** : arrêt sous 2,0, reprise au-dessus de 2,2,
+  pas avant 0,5 s. Les bras à leurs plafonds, la reprise est un choix,
+  plus bas.
+- **Au journal**, le bilan de chaque port : resserrages, corrections,
+  rotation la plus forte.
+- **Bancs Isaac** : `IsaacSimBridge.remettre_debout`, code commun des deux
+  bancs, remet le robot debout en dernier avant la boucle. Le banc de
+  posture était déclaré tombé à 0,00 s, avant tout palier. Il ne décide
+  plus de chute avant le premier pas de physique. Le relevé du banc T1
+  ajoute la taille, ce que l'OS voit du port et la marge.
+
+### Ce que montre le rejeu
+
+- **Dérive vue avant 4°** : sur les angles mesurés, la dérive des mains
+  dépasse 1 cm à t = 52,7 s, quand le carton n'avait tourné que de 2,4°.
+  La rotation des paumes, elle, ne passe jamais 3° : un carton qui tourne
+  entre elles reste invisible aux bras.
+- **Resserrage sans glissement** : sur la posture réelle du début du port,
+  5 mm de serrage de chaque côté rapprochent les mains de 10 mm, sans que
+  la paire glisse (0,0 mm, contre 2,2 cm à l'essai).
+- **Arrêts de la base**, sur la marge reconstruite : 20 en repartant au
+  seuil, 4 en hystérésis stricte, 18 avec le repli aux plafonds (les bras
+  y sont sur 124 lignes sur 226).
+
+### La reprise aux plafonds : un choix
+
+Avec un serrage symétrique, quand un poignet est à son plafond, les bras ne
+peuvent plus pousser la marge au-dessus de ce qu'il tient : ~2,0 ici. Deux
+règles sont possibles, réglage `reprise_aux_plafonds` :
+- **repli (par défaut)** : aux plafonds, la base repart dès que la marge
+  tient 2,0, jamais en dessous, comme avant. Ailleurs, l'hystérésis
+  complète ;
+- **stricte** : la base ne repart jamais sous 2,2. Sans reprise en une
+  seconde, à reposer.
+
+| Campagne (graine 20261118) | main | Repli (par défaut) | Stricte |
+|---|---|---|---|
+| 120 cartons : déposés / reposés / refusés | 6 / 5 / 109 | 6 / 5 / 109 | 5 / 6 / 109 |
+| Faisables déposés | 6 / 33 | 6 / 33 | 5 / 33 |
+| Balayage autour du carton T1, déposés | 19 / 35 | 19 / 35 | 14 / 35 (T1 lui-même reposé) |
+| Arrêts de la base pendant les ports | 29 | 25 | 17 |
+| Cas interdits | 0 | 0 | 0 |
+
+La stricte tient la consigne demandée et n'est jamais plus faible, mais le
+carton T1 du balayage n'est plus déposé : il faudrait changer le test de
+campagne, qui l'exige. Le repli garde les mêmes livraisons que main, sans
+dérive des bras, mais réduit peu les arrêts quand les bras sont à leurs
+plafonds. Sur l'essai GPU, la stricte aurait arrêté le port proprement au
+premier creux, au lieu de marcher 20 s au ras du coefficient de sécurité.
+
+### Garde des avant-bras sous l'erreur d'approche
+
+Décision de revue de #35. Le planificateur juge maintenant la garde aussi
+à chaque borne de l'erreur d'approche de la marche, une erreur à la fois :
+±2 cm en avant, puis de côté, puis ±3° en cap. La pire compte. Les huit
+coins, les trois erreurs ensemble, écartaient presque tout : 2 candidates
+sur 306 pour le carton T1 tourné de 30°.
+
+Campagne : prises refusées au moment de prendre pour les avant-bras, de 8
+à 0, écartées dès le plan (7). Les livraisons restent les mêmes : 6
+faisables sur 33 (le n° 75 au lieu du n° 90), 19 sur 35 au balayage.
+
+### Ce qui reste
+
+- **Un carton qui tourne entre les paumes ne se voit pas sur les bras.**
+  Seule la caméra de tête le peut. Elle exige aujourd'hui le carton en
+  entier dans l'image ; son dessus suffirait à mesurer sa pente.
+- **La marge plafonne à ~2,0 quand un poignet est à son plafond.** Pour
+  repartir avec de la réserve, il faut une prise qui charge moins les
+  poignets (le planificateur en tient compte via les couples prévus), ou
+  un poids et un frottement mieux connus.
+- **Repose sûre** : la PR suivante (même chemin rigide vérifié que la
+  dépose, serrage gardé jusqu'au contact, ouverture vérifiée ; un carton
+  qui tombe en repose devient un cas interdit de la campagne).
