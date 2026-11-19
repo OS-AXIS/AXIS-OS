@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -197,12 +197,23 @@ class PlanPrise:
             return self.choisie
         return max(self.candidates, key=lambda c: (len(c.marges), c.score), default=None)
 
+    def refus_par_controle(self) -> Dict[str, int]:
+        """Combien de candidates chaque contrôle a refusées (le premier refus)."""
+        compte: Dict[str, int] = {}
+        for c in self.candidates:
+            if c.refus is not None:
+                compte[c.refus.nom] = compte.get(c.refus.nom, 0) + 1
+        return compte
+
     def resume(self) -> str:
         n_ok = sum(c.ok for c in self.candidates)
+        refus = ", ".join(f"{nom} {n}" for nom, n in sorted(self.refus_par_controle().items(),
+                                                           key=lambda kv: -kv[1]))
+        tete = (f"{len(self.candidates)} candidates, {n_ok} passent"
+                + (f" (refusées : {refus})" if refus else ""))
         if self.choisie is not None:
-            return (f"prise planifiée : {n_ok} candidates sur {len(self.candidates)} passent ; "
-                    f"retenue : {self.choisie.explication()}")
-        return f"prise refusée — {self.raison}"
+            return f"prise planifiée : {tete} ; retenue : {self.choisie.explication()}"
+        return f"prise refusée — {self.raison} ({tete})"
 
 
 def choisir(candidates: List[Candidate]) -> Optional[Candidate]:
@@ -210,3 +221,60 @@ def choisir(candidates: List[Candidate]) -> Optional[Candidate]:
     meilleur score ; None s'il n'y en a pas."""
     return max((c for c in candidates if c.ok and c.complete), key=lambda c: c.score,
                default=None)
+
+
+def dessiner(plan: PlanPrise, chemin, largeur_px: int = 900, hauteur_px: int = 700,
+             echelle: Optional[float] = None) -> None:
+    """Vue plongeante du plan, en PNG : la table (au-delà du bord), la boîte,
+    chaque candidate (bassin) en vert si elle passe, en rouge sinon ; la
+    retenue cerclée, avec son cap ; en bas, la retenue expliquée, ou la
+    raison du refus."""
+    from PIL import Image, ImageDraw
+    from axis_os.hal.drivers.isaac_sim.video import _police   # une police avec accents
+    b, bord = plan.boite, plan.bord
+    xs = [c.x for c in plan.candidates] + [b.centre[0]]
+    ys = [c.y for c in plan.candidates] + [b.centre[1]]
+    cx0, cy0 = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+    ech = echelle or 0.8 * min(largeur_px, hauteur_px - 80) / max(
+        0.5, max(xs) - min(xs) + 0.4, max(ys) - min(ys) + 0.4)
+
+    def px(x, y):          # x de la pièce vers le haut de l'image, y vers la gauche
+        return (largeur_px / 2.0 - (y - cy0) * ech, (hauteur_px - 80) / 2.0 - (x - cx0) * ech)
+
+    img = Image.new("RGB", (largeur_px, hauteur_px), (250, 250, 248))
+    d = ImageDraw.Draw(img)
+    n = (math.cos(bord.normale), math.sin(bord.normale))
+    t = (-n[1], n[0])
+    loin = 10.0
+    p0 = (bord.point[0] + t[0] * loin, bord.point[1] + t[1] * loin)
+    p1 = (bord.point[0] - t[0] * loin, bord.point[1] - t[1] * loin)
+    table = [p0, p1, (p1[0] + n[0] * loin, p1[1] + n[1] * loin),
+             (p0[0] + n[0] * loin, p0[1] + n[1] * loin)]
+    d.polygon([px(*p) for p in table], fill=(226, 222, 212))
+    d.line([px(*p0), px(*p1)], fill=(120, 110, 95), width=3)
+    coins = coins_boite(b.centre, b.lacet, b.a, b.b, b.hauteur)
+    bas = sorted({(round(float(c[0]), 6), round(float(c[1]), 6)) for c in coins},
+                 key=lambda q: math.atan2(q[1] - b.centre[1], q[0] - b.centre[0]))
+    d.polygon([px(*q) for q in bas], fill=(196, 150, 96), outline=(120, 85, 45))
+    for c in sorted(plan.candidates, key=lambda c: c.ok):
+        x, y = px(c.x, c.y)
+        couleur = (40, 150, 70) if c.ok else (205, 60, 50)
+        d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=couleur)
+    if plan.choisie is not None:
+        c = plan.choisie
+        x, y = px(c.x, c.y)
+        d.ellipse([x - 11, y - 11, x + 11, y + 11], outline=(20, 70, 160), width=4)
+        x2, y2 = px(c.x + 0.12 * math.cos(c.cap), c.y + 0.12 * math.sin(c.cap))
+        d.line([(x, y), (x2, y2)], fill=(20, 70, 160), width=4)
+    texte = plan.resume()
+    lignes, ligne = [], ""
+    for mot in texte.split():
+        if len(ligne) + len(mot) > largeur_px // 7:
+            lignes.append(ligne)
+            ligne = ""
+        ligne = (ligne + " " + mot).strip()
+    lignes.append(ligne)
+    police = _police(13)
+    for i, l_ in enumerate(lignes[:5]):
+        d.text((10, hauteur_px - 78 + 15 * i), l_, fill=(30, 30, 30), font=police)
+    img.save(str(chemin))
