@@ -386,6 +386,25 @@ check("Masse des cartons réglable pour la vidéo (--masse-carton, 1 kg par déf
       and "mass=1.0" not in T1 and "ap.error(" in T1
       and "cartons de la scène : {args.masse_carton:g} kg" in T1
       and "--masse-carton 0.5" in LANCEUR_T1)
+i_reset = T1.find("    world.reset()\n")
+check("Calibration de charge au démarrage, après celle des bras, avant le tri : profil du robot du "
+      "banc (une graine, un robot) relu ; sans calibration (ou --calibration-charge), masse de "
+      "référence posée sur un plateau devant le robot (créés avant le départ de la physique), "
+      "prise par ManipulationService.calibrer_charge, enregistrée au profil, puis retirée",
+      0 < T1.find('"/World/masse_reference"') < i_reset
+      and 0 < T1.find('"/World/plateau_reference"') < i_reset
+      and "mass=args.masse_reference" in T1 and "profil_robot_banc(args.graine)" in T1
+      and "manip.appliquer_calibration_charge(cal_)" in T1
+      and "manip.calibrer_charge(" in T1
+      and 'enregistrer(chemin_profil, robot_id,\n                                                   "calibration_charge", f_)' in T1
+      and T1.find("etat_calib[\"fini\"] = pas_calibration()") < T1.find("etat_charge[\"fini\"] = pas_charge()")
+      < T1.find("            pilote.pas()")
+      and "retirer_reference()" in T1 and "--calibration-charge" in LANCEUR_T1)
+POSTURE = (RACINE / "sim/validation/test_isaac_w5_gr00t_posture.py").read_text(encoding="utf-8")
+check("Banc de posture : la même calibration de charge, relue au profil du robot du banc (sa "
+      "pesée s'en sert ; sans elle, l'OS le dit)",
+      "profil_robot_banc(GRAINE_COUPLES)" in POSTURE
+      and "manip.appliquer_calibration_charge(cal_)" in POSTURE)
 check("t1_prise.csv : le poids pesé (celui de la marge) à côté du poids lu à chaque instant",
       '"poids_pese_n", "resserrages_port"' in T1 and 'rel_.get("poids_pese")' in T1)
 REC = (RACINE / "deploy/machine_gpu/recuperer_t1.sh").read_text(encoding="utf-8")

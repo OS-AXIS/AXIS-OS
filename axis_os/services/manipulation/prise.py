@@ -251,7 +251,10 @@ class ReglagesPrise:
     # marcher avec (ou, en marche, on s'arrête et on le signale).
     rotation_max_deg: float = 10.0
     part_poids_min: float = 0.4
-    duree_perte_s: float = 0.3
+    # Poids qui chute : jugé sur les filtre_force dernières lectures (0,1 s),
+    # pendant duree_perte_s, pour qu'un carton qui glisse ou s'échappe soit vu
+    # en 0,3 s au plus (avant : moyenne de 0,3 s, puis 0,3 s, ~0,5 s en tout).
+    duree_perte_s: float = 0.15
     # Serrage d'après le poids (essai GPU T1 du 5 novembre 2026, 21 h 57 :
     # carton de 10,9 N tenu à 6,5 N par main, soit un frottement d'au moins
     # 0,84 rien que pour le porter, aucune marge ; il a glissé à la marche).
@@ -302,6 +305,25 @@ class ReglagesPrise:
     vitesse_pesee_max_rad_s: float = 0.05
     part_ecartee_pesee: float = 0.1
     duree_pesee_max_s: float = 2.0
+    # Calibration de charge (une fois par robot, à la première mise en route :
+    # ManipulationService.calibrer_charge, docs/PREMIERE_MISE_EN_ROUTE.md) :
+    # une masse de référence connue (au moins masse_reference_min_kg, au plus
+    # masse_max_kg), prise comme un carton (la prise de T1), levée et pesée
+    # comme lui, bras immobiles, mais plus longtemps
+    # (lectures_calibration_charge lectures, au plus
+    # duree_calibration_charge_max_s, au moins lectures_pesee) ; son poids,
+    # partagé moitié-moitié entre les deux mains (charge centrée, prise par
+    # ses deux faces), donne le gain du couple estimé de chaque coude
+    # (gain_coude). Essais GPU T1 du 19 novembre 2026 : les coudes font
+    # presque tout le biais de la pesée (+2 à +5 %) ; sur un palier de
+    # 35 lectures, ce calcul retrouve leurs gains au banc (1,048 pour 1,047 ;
+    # 0,981 pour 0,980). Hors de [gain_coude_min, gain_coude_max] :
+    # calibration refusée (masse décentrée ou mal déclarée), rien n'est changé.
+    lectures_calibration_charge: int = 250
+    duree_calibration_charge_max_s: float = 8.0
+    masse_reference_min_kg: float = 0.5
+    gain_coude_min: float = 0.85
+    gain_coude_max: float = 1.15
     marge_serrage_n: float = 1.0
     penetration_poids_max_m: float = 0.06
     duree_serrage_poids_max_s: float = 3.0
@@ -368,6 +390,23 @@ class ReglagesPrise:
     correction_port_max_deg: float = 6.0
     securite_reprise: float = 2.2
     delai_reprise_s: float = 0.5
+    # La marge de frottement jugée sur une foulée (fenetre_marge_s, dès
+    # filtre_force × 3 lectures au début du port) : le serrage réel varie au
+    # pas de la marche (essai GPU T1 du 19 novembre 2026, 22 h 04 : juge de
+    # 10,5 à 14,3 N par main), la marge sur 0,3 s le suivait et arrêtait la
+    # base au ras de securite_serrage, le carton tenu (marge réelle sur 1 s de
+    # 2,03 à 2,12). Le glissement, lui, reste surveillé directement, à 0,3 s au
+    # plus : mains écartées et rotation à chaque pas, poids qui chute
+    # (duree_perte_s), et la marge sur les filtre_force × 3 dernières lectures
+    # (0,3 s), qui ne doit jamais passer sous securite_glissement (1 : le
+    # serrage ne porte plus le carton au frottement prudent ; la marche, elle,
+    # ne la fait varier que de quelques centièmes) : un vrai desserrage arrête
+    # la base aussitôt, sans attendre la foulée. Base arrêtée pour resserrer, la
+    # reprise se juge sur 0,3 s (la marche ne fait plus varier le serrage, et la
+    # foulée ne verrait l'effet du resserrage qu'au bout de 1 s, l'échéance de
+    # duree_resserrage_s) ; à la reprise, la foulée repart de ces 0,3 s.
+    fenetre_marge_s: float = 1.0
+    securite_glissement: float = 1.0
     # Les bras à leurs plafonds (une articulation à moins de 0,3 N·m du sien,
     # ou une main à sa borne) ne peuvent serrer plus : securite_reprise est
     # hors de leur portée. Vrai : la base repart dès que la marge tient
@@ -528,6 +567,20 @@ def poids_pese(lectures: Iterable[float], part_ecartee: float) -> Tuple[float, f
     k = int(part_ecartee * len(x))
     garde = x[k:len(x) - k] if len(x) > 2 * k else x
     return float(np.mean(garde)), float(np.std(x) / math.sqrt(len(x)))
+
+
+def gain_coude(poids_main_n: float, part_coude_n: float, poids_n: float) -> float:
+    """Gain du couple estimé du coude d'un bras (estimé = gain × vrai),
+    d'après la pesée d'une masse connue de `poids_n` (N) partagée
+    moitié-moitié entre les deux mains : la force vers le haut estimée à
+    cette main vaut `poids_main_n`, dont `part_coude_n` vient du couple du
+    coude (ce qu'elle perd sans lui). Corrigé du gain k, ce couple donne
+    poids_main_n + (1/k - 1) part_coude_n, qui doit valoir poids_n / 2.
+    NaN si le coude ne porte rien (pas de calibration possible)."""
+    if not part_coude_n > 1e-6:
+        return math.nan
+    u = 1.0 + (poids_n / 2.0 - poids_main_n) / part_coude_n
+    return 1.0 / u if u > 1e-6 else math.nan
 
 
 def tolerances_cg(r: "ReglagesPrise", force_n: Optional[float] = None,

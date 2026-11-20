@@ -84,6 +84,7 @@ import math
 import threading
 import time
 from collections import deque
+from datetime import datetime, timezone
 from dataclasses import replace
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -97,8 +98,8 @@ from axis_os.store.sdk.manifest import Capability
 
 from .prise import (
     CalibrationCouples, MesuresBras, ReglagesPrise, cibles_mains, distance_ideale,
-    ecart_ligne_cg, efforts_valides, garde_plateau, main_retenue, poids_pese, positions_valides,
-    resoudre, signal_contact, tolerances_cg,
+    ecart_ligne_cg, efforts_valides, gain_coude, garde_plateau, main_retenue, poids_pese,
+    positions_valides, resoudre, signal_contact, tolerances_cg,
 )
 
 
@@ -374,6 +375,15 @@ class ManipulationService(IService):
         # couple mesuré dans le calcul de la force à la main seulement.
         self.calibration_couples = CalibrationCouples()
         self.biais_couples: Dict[str, float] = {}
+        # Gains des couples estimés des coudes (estimé = gain × vrai), de la
+        # calibration de charge du profil du robot (appliquer_calibration_charge,
+        # calibrer_charge) ; vides sans elle : la force à la main se calcule
+        # comme avant. Comme les biais, ils ne corrigent que la force à la main ;
+        # les plafonds de couple restent jugés sur le couple mesuré.
+        self.gains_couples: Dict[str, float] = {}
+        self.calibration_charge: Optional[dict] = None
+        self._calibration_en_cours: Optional[dict] = None
+        self._calibration_finie = False
         # Les couples estimés suivent-ils la pesanteur ? (calibration des
         # couples ; None : pas jugé). Faux : la force à la main ne décide plus
         # ni du contact, ni du serrage, ni de la confirmation ; elle reste au
@@ -616,7 +626,10 @@ class ManipulationService(IService):
         self.ligne_cg: Optional[Tuple[float, float]] = None
         self.charge: Optional[Tuple[float, float]] = None
         self._hist_charge: deque = deque(maxlen=max(1, self.r.filtre_force * 3))
-        self._hist_normales: deque = deque(maxlen=max(1, self.r.filtre_force * 3))
+        # Somme des forces normales des deux mains au port, et ses instants :
+        # la dernière foulée (fenetre_marge_s).
+        self._hist_normales: deque = deque()
+        self._t_normales: deque = deque()
         self.rotation_vue: Optional[float] = None
         self.appui_torse: Optional[float] = None
         self._poids_ref: Optional[float] = None
@@ -640,6 +653,7 @@ class ManipulationService(IService):
         self._serrage_port_ref: Optional[float] = None
         self._delta_port: Optional[Dict[str, float]] = None
         self.marge_frottement: Optional[float] = None
+        self.marge_courte: Optional[float] = None      # sur 0,3 s : le plancher
         self._t_resserrage: Optional[float] = None
         self._resserrage_marge = False     # arrêté pour la marge : reprise au-dessus de securite_reprise
         self._t_bloque: Optional[float] = None   # dernier pas où les bras ne pouvaient serrer plus
@@ -659,6 +673,9 @@ class ManipulationService(IService):
         # d'avant (horodatés), vitesse la plus forte des bras gardée, lectures
         # écartées (bras qui bougeaient).
         self._lectures_pesee: list = []
+        # Et, pour la calibration de charge, les couples, les angles et la
+        # pesanteur de chacune de ces lectures (calibrer_charge).
+        self._releves_pesee: list = []
         self._lecture_charge: Optional[tuple] = None
         self._angles_pesee: Optional[Tuple[float, Dict[str, float]]] = None
         self._vitesse_pesee = 0.0
@@ -803,6 +820,7 @@ class ManipulationService(IService):
         self.raison = raison
         self._lever_exemption()
         self._regler_raideur(False)
+        self._abandonner_calibration(raison)
         self._journaliser_echec(raison)
         self.etat = Etat.ECHEC             # en dernier : qui voit ÉCHEC voit tout le reste
 
@@ -1097,10 +1115,13 @@ class ManipulationService(IService):
         # de la main : 35 % de trop sinon (essai GPU du 5 novembre 2026).
         jac = chaine.jacobienne(angles, joints)
         grav = chaine.couples_gravite(angles, joints, g)
-        b = self.biais_couples
-        d = np.array([tau[j] - b.get(j, 0.0) for j in joints]) - grav
+        # Couples corrigés de leur biais, puis de leur gain (calibration de
+        # charge ; 1 sans elle).
+        b, k = self.biais_couples, self.gains_couples
+        d = np.array([(tau[j] - b.get(j, 0.0)) / k.get(j, 1.0) for j in joints]) - grav
         if depuis_fermeture:
-            d -= np.array([self._tau0[j] - b.get(j, 0.0) - self._g0.get(j, 0.0) for j in joints])
+            d -= np.array([(self._tau0[j] - b.get(j, 0.0)) / k.get(j, 1.0) - self._g0.get(j, 0.0)
+                           for j in joints])
         lam = self.r.amorti_force_m
         return np.linalg.solve(jac @ jac.T + lam * lam * np.eye(3), jac @ d)
 
@@ -2315,6 +2336,7 @@ class ManipulationService(IService):
         self.serrage_vise, self.serrage_requis, self.charge = None, None, None
         self.poids_carton, self.poids_tare, self._t_attente_serrage = None, None, None
         self._lectures_pesee, self._lecture_charge, self._angles_pesee = [], None, None
+        self._releves_pesee = []
         self._vitesse_pesee, self._ecartees_pesee = 0.0, 0
         self._rigide, self._resserrage_force = None, False
         self._t_serrage_bloque, self._record_serrage = None, {}
@@ -2322,7 +2344,7 @@ class ManipulationService(IService):
                                  - r.penetration_max_m for c in self._ROULIS}
         mod0 = self._mains_modele()
         self._ecart_faces0 = None if mod0 is None else self._interieur(mod0)
-        self.marge_frottement = None
+        self.marge_frottement = self.marge_courte = None
         mg, md = self._contacts_bassin()
         # Milieu des mains mesurées au serrage : la référence des gestes avec l'objet.
         centre = self._c_serre = (mg + md) / 2.0
@@ -2363,18 +2385,25 @@ class ManipulationService(IService):
                 if v <= r.vitesse_pesee_max_rad_s:
                     self._lectures_pesee.append(lecture)
                     self._vitesse_pesee = max(self._vitesse_pesee, v)
+                    if self._calibration_en_cours is not None:
+                        self._releves_pesee.append((dict(tau), dict(angles),
+                                                    self._gravite_bassin()))
                 else:
                     self._ecartees_pesee += 1
         n, n_min = len(self._lectures_pesee), max(1, r.filtre_force * 3)
         duree = t - self._t_attente_serrage
+        # Calibration de charge : la masse de référence pesée plus longtemps.
+        n_vise, duree_max = ((r.lectures_calibration_charge, r.duree_calibration_charge_max_s)
+                             if self._calibration_en_cours is not None
+                             else (r.lectures_pesee, r.duree_pesee_max_s))
         # Bras commandés immobiles qui bougent quand même : le carton bouge
         # entre les mains (campagne de cartons variés : un carton de 1,27 kg
         # glissait de 12 mm/s au serrage de prise, l'épaule broutait). Décidé
         # dès que les lectures écartées passent les immobiles, sans le laisser
         # glisser jusqu'à duree_pesee_max_s.
         bouge = self._ecartees_pesee >= n_min and self._ecartees_pesee > n
-        ecourtee = relache and n >= n_min and n < r.lectures_pesee
-        if n < r.lectures_pesee and duree < r.duree_pesee_max_s and not ecourtee and not bouge:
+        ecourtee = relache and n >= n_min and n < n_vise
+        if n < n_vise and duree < duree_max and not ecourtee and not bouge:
             return False
         if n < n_min:
             return (f"pesée impossible : les bras ne se posent pas en haut du levage ({n} "
@@ -2395,8 +2424,110 @@ class ManipulationService(IService):
                     + f" ; à ±{2 * incertitude:.2f} N près, deux écarts types ; en haut du "
                     f"levage, avant de serrer plus)"
                     + ("" if self.poids_tare is None else
-                       f" ; taré depuis la fermeture : {self.poids_tare:.1f} N"))
+                       f" ; taré depuis la fermeture : {self.poids_tare:.1f} N")
+                    + f" ; {self._etat_calibration_charge()}")
         return True
+
+    def _etat_calibration_charge(self) -> str:
+        """Pour le journal de la pesée : ce qui corrige (ou non) les gains des coudes."""
+        if self._calibration_en_cours is not None:
+            return "masse de référence de la calibration de charge, couples sans correction de gain"
+        if self.calibration_charge is None:
+            return "sans calibration de charge (gains des coudes non corrigés)"
+        return (f"gains des coudes de la calibration de charge du "
+                f"{str(self.calibration_charge.get('date', '?'))[:10]}")
+
+    def _abandonner_calibration(self, raison: str) -> None:
+        """Calibration de charge en cours qui n'aboutit pas : gains d'avant rendus."""
+        if self._calibration_en_cours is None:
+            return
+        self.gains_couples, self.calibration_charge = self._calibration_en_cours["avant"]
+        self._calibration_en_cours = None
+        self._noter(f"calibration de charge non faite ({raison}) : gains d'avant gardés")
+
+    def _gains_coudes(self, releves: list,
+                      poids_n: float) -> Union[Dict[str, Tuple[float, float, float]], str]:
+        """Gains des couples estimés des coudes d'après les relevés
+        (couples, angles, pesanteur) de la pesée d'une masse connue de
+        `poids_n` (N), son poids partagé moitié-moitié entre les mains
+        (prise.gain_coude) : {coude : (gain, poids à cette main en N,
+        incertitude du gain, deux écarts types)}, ou pourquoi c'est
+        impossible. Les couples pris tels quels (gains_couples vides, comme
+        pendant la calibration)."""
+        par_main = {c: [] for c in self._ROULIS}
+        parts = {c: [] for c in self._ROULIS}
+        for tau, angles, g in releves:
+            haut = -g / max(1e-9, float(np.linalg.norm(g)))
+            for c in self._ROULIS:
+                j = f"{c}_elbow_joint"
+                f1 = self._force_main(c, tau, angles, g, depuis_fermeture=False)
+                # Sans le couple du coude (ramené à son biais) : ce qu'il porte.
+                f0 = self._force_main(c, {**tau, j: self.biais_couples.get(j, 0.0)}, angles, g,
+                                      depuis_fermeture=False) if j in tau else None
+                if f1 is None or f0 is None:
+                    return f"couple du coude {'gauche' if c == 'left' else 'droit'} illisible"
+                par_main[c].append(float(f1 @ haut))
+                parts[c].append(float((f1 - f0) @ haut))
+        sortie = {}
+        for c in self._ROULIS:
+            w, part = float(np.mean(par_main[c])), float(np.mean(parts[c]))
+            k = gain_coude(w, part, poids_n)
+            # Incertitude : celle du poids à cette main (écart type sur la
+            # racine du nombre de lectures), ramenée au gain (dk = k² dw / part).
+            dw = float(np.std(par_main[c])) / math.sqrt(len(par_main[c]))
+            sortie[f"{c}_elbow_joint"] = (k, w, 2.0 * k * k * dw / part if part > 1e-6
+                                          else math.nan)
+        return sortie
+
+    def _finir_calibration_charge(self) -> None:
+        """La masse de référence pesée (calibrer_charge) : le gain du couple
+        estimé de chaque coude (prise.gain_coude, son poids partagé
+        moitié-moitié entre les mains), vérifié, appliqué, passé à
+        `enregistrer` ; puis la masse est reposée là où elle a été prise."""
+        r, cal = self.r, self._calibration_en_cours
+        poids, releves = 9.81 * cal["masse_kg"], self._releves_pesee
+        if len(releves) < r.lectures_pesee:
+            self._reposer(f"calibration de charge impossible : {len(releves)} lectures bras "
+                          f"immobiles, au moins {r.lectures_pesee}")
+            return
+        mesure = self._gains_coudes(releves, poids)
+        if isinstance(mesure, str):
+            self._reposer(f"calibration de charge impossible : {mesure}")
+            return
+        gains = {j: v[0] for j, v in mesure.items()}
+        details = [f"coude {'gauche' if j.startswith('left') else 'droit'} {k:.3f} à ±{dk:.3f} près "
+                   f"({w:.2f} N à cette main pour {poids / 2:.2f})"
+                   for j, (k, w, dk) in sorted(mesure.items())]
+        hors = [f"{j.split('_')[0]} {k:.3f}" for j, k in gains.items()
+                if not r.gain_coude_min <= k <= r.gain_coude_max]
+        if hors:
+            self._reposer(f"calibration de charge refusée : gain(s) du coude {', '.join(hors)} "
+                          f"hors de [{r.gain_coude_min:g}, {r.gain_coude_max:g}] — masse de "
+                          f"référence décentrée entre les mains, ou mal déclarée "
+                          f"({cal['masse_kg']:g} kg) ? ; gains d'avant gardés")
+            return
+        fiche = {"date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 "masse_kg": cal["masse_kg"],
+                 "gains_couples": {j: round(k, 4) for j, k in gains.items()},
+                 "lectures": len(releves), "poids_pese_n": round(float(self.poids_carton), 3),
+                 "poids_par_main_n": {j.split("_")[0]: round(v[1], 3) for j, v in mesure.items()}}
+        self.gains_couples, self.calibration_charge = dict(gains), fiche
+        self._calibration_en_cours = None
+        enregistree = "enregistrée au profil du robot"
+        if cal["enregistrer"] is not None:
+            try:
+                cal["enregistrer"](fiche)
+            except Exception as e:        # noqa: BLE001 — appliquée quand même : on le dit
+                enregistree = f"NON ENREGISTRÉE au profil du robot ({e}) : à refaire au redémarrage"
+        else:
+            enregistree = "appliquée, pas enregistrée (aucun profil donné)"
+        self.stats["calibration_charge"] = fiche["date"]
+        self._noter(f"calibration de charge du {fiche['date']} : {cal['masse_kg']:g} kg de "
+                    f"référence, {len(releves)} lectures bras immobiles, {poids:.2f} N partagés "
+                    f"moitié-moitié entre les mains ; gains des couples estimés : "
+                    + " ; ".join(details) + f" ; {enregistree} ; masse reposée")
+        self._calibration_finie = True
+        self._redescendre()
 
     def _pas_levage_mesure(self) -> None:
         r, p = self.r, self.p
@@ -2460,6 +2591,11 @@ class ManipulationService(IService):
                                   f"{r.masse_max_kg:g} kg (masse_max_kg, la charge pour laquelle la "
                                   f"prise est vérifiée) ; ni serré plus, ni porté")
                     return
+                if self._calibration_en_cours is not None:
+                    # Calibration de charge : la masse de référence pesée, on la
+                    # repose, ni serrée plus, ni portée.
+                    self._finir_calibration_charge()
+                    return
             serre = self._serrer_selon_poids(tau)
             if isinstance(serre, str):
                 self._reposer(serre)
@@ -2494,6 +2630,7 @@ class ManipulationService(IService):
             self._hist_charge.clear()
             # La pesée ne compte que les lectures qui suivent la confirmation.
             self._lectures_pesee, self._lecture_charge, self._angles_pesee = [], None, None
+            self._releves_pesee = []
             self._vitesse_pesee, self._ecartees_pesee = 0.0, 0
             return
         self._essai += 1
@@ -2590,6 +2727,11 @@ class ManipulationService(IService):
         self.stats["reposes_rotation"] = self.stats.get("reposes_rotation", 0) + 1
         self._raison_repose = raison
         self._noter(f"objet reposé : {raison}")
+        self._redescendre()
+
+    def _redescendre(self) -> None:
+        """Le geste de _reposer : l'objet redescend là où il a été pris, en
+        ligne droite, serrage gardé ; puis les mains se desserrent (REPOSE)."""
         self._fin_port("reposé")
         depart = self._c_actuel if self._c_actuel is not None else self._c_serre
         self._c_de, self._c_vers = np.array(depart, dtype=float), np.array(self._c_serre)
@@ -2614,6 +2756,17 @@ class ManipulationService(IService):
         if self._raison_repose:
             raison, self._raison_repose = self._raison_repose, ""
             self._echouer(f"prise refusée — {raison} : carton reposé sur la table")
+            return
+        if self._calibration_finie:
+            # Masse de référence reposée, mains desserrées : comme après un
+            # dépôt, gains normaux, puis retour progressif à la posture de port.
+            self._calibration_finie = False
+            self.objet, self._q_tenu = None, None
+            self._lever_exemption()
+            self._regler_raideur(False)
+            self._q_de = dict(self._q)
+            self._q_vers = {**self._libres0, **posture_bras(p.roulis_ouvert, p.tangage_port, p.coude)}
+            self._aller(Etat.LACHER)
             return
         self._corrections, self._delta = 0, {"left": 0.0, "right": 0.0}
         self._vers_placement(self._plan.get("q_place", self._plan["q_ouvert"]), 0.0)
@@ -2786,28 +2939,47 @@ class ManipulationService(IService):
         if self._serrage_port_ref is None:
             self._serrage_port_ref, self._delta_port = serrage, dict(self._delta)
             self._hist_normales.clear()
+            self._t_normales.clear()
             return
         ecart = self._serrage_port_ref - serrage
         g = self._gravite_bassin()
         forces = [self._force_main(c, tau, angles, g, depuis_fermeture=False)
                   for c in self._ROULIS]
         if all(f is not None for f in forces):
+            t_ = self._horloge()
             self._hist_normales.append(sum(float(f @ self._vers_objet(c))
                                            for c, f in zip(self._ROULIS, forces)))
+            self._t_normales.append(t_)
+            while t_ - self._t_normales[0] > r.fenetre_marge_s + 1e-9:
+                self._t_normales.popleft()
+                self._hist_normales.popleft()
+        # Marge sur la dernière foulée (dès filtre_force × 3 lectures), et sur
+        # les filtre_force × 3 dernières lectures (0,3 s) : le plancher.
         poids = self.poids_carton or self._poids_ref
+        n_court = max(1, r.filtre_force * 3)
+        plein = len(self._hist_normales) >= n_court
+        juge = bool(poids and poids > 0.5 and plein)
         self.marge_frottement = (r.frottement_serrage * float(np.mean(self._hist_normales))
-                                 / poids if poids and poids > 0.5 and len(self._hist_normales)
-                                 == self._hist_normales.maxlen else None)
+                                 / poids if juge else None)
+        self.marge_courte = (r.frottement_serrage
+                             * float(np.mean(list(self._hist_normales)[-n_court:])) / poids
+                             if juge else None)
         # Hystérésis : la base s'arrête sous securite_serrage ; arrêtée pour la
         # marge, elle ne repart qu'au-dessus de securite_reprise (jamais moins).
         seuil = max(r.securite_reprise, r.securite_serrage) if self._resserrage_marge \
             else r.securite_serrage
-        faible = self.marge_frottement is not None and self.marge_frottement < seuil
+        glisse = self.marge_courte is not None and self.marge_courte < r.securite_glissement
+        # Base arrêtée (resserrage) : la marche ne fait plus varier le serrage,
+        # la reprise se juge sur 0,3 s ; sur la foulée, elle ne verrait l'effet
+        # du resserrage qu'au bout de 1 s, l'échéance de duree_resserrage_s.
+        arretee = self._t_resserrage is not None
+        marge = self.marge_courte if arretee else self.marge_frottement
+        sur = "sur 0,3 s, base arrêtée" if arretee else "sur la dernière foulée"
+        faible = glisse or (marge is not None and marge < seuil)
         ecartees = ecart > r.ecart_face_port_m
         # Carton qui a tourné au retour (_pas_ramener) : on resserre jusqu'au
         # serrage visé d'après le poids, et d'au moins marge_serrage_n à
         # chaque main, tant que les bras le permettent.
-        plein = len(self._hist_normales) == self._hist_normales.maxlen
         if self._resserrage_force is True and plein:
             # Demandé au retour (True) : la cible (somme des deux forces, N).
             self._resserrage_force = False if self.serrage_vise is None else max(
@@ -2826,15 +2998,18 @@ class ManipulationService(IService):
             pourquoi = " ; ".join(
                 ([f"mains écartées de {1000 * ecart:.0f} mm de leur serrage (au plus "
                   f"{1000 * r.ecart_face_port_m:.0f})"] if ecartees else [])
-                + ([f"marge de frottement {self.marge_frottement:.2f} (au moins "
-                    f"{r.securite_serrage:g}" + (f", {seuil:g} pour repartir"
-                                                  if seuil > r.securite_serrage else "")
+                + ([f"marge de frottement sur 0,3 s {self.marge_courte:.2f} (au moins "
+                    f"{r.securite_glissement:g} : le serrage ne porte plus le carton au "
+                    f"frottement prudent, un vrai desserrage)"] if glisse else [])
+                + ([f"marge de frottement {marge:.2f} {sur} "
+                    f"(au moins {r.securite_serrage:g}" + (f", {seuil:g} pour repartir"
+                                                           if seuil > r.securite_serrage else "")
                     # Le poids de la marge : celui pesé une fois, bras immobiles
                     # (poids_carton), jamais le poids lu en marchant ; sans
                     # pesée, le plus grand lu depuis le levage (le plus prudent).
                     + (f" ; sur les {poids:.1f} N pesés)" if self.poids_carton else
                        f" ; pas de pesée : sur le plus grand poids lu, {poids:.1f} N)")]
-                   if faible else [])
+                   if faible and not glisse else [])
                 + ([f"carton tourné au retour, serrage visé {cible / 2.0:.1f} N par main"]
                    if force else []))
             if self._t_resserrage is None:
@@ -2856,16 +3031,16 @@ class ManipulationService(IService):
             if bloques:
                 self._t_bloque = t
             if r.reprise_aux_plafonds and self._resserrage_marge and bloques and not ecartees \
-                    and not force \
-                    and self.marge_frottement is not None \
-                    and self.marge_frottement >= r.securite_serrage:
+                    and not force and not glisse \
+                    and marge is not None and marge >= r.securite_serrage:
                 self._t_resserrage, self._resserrage_marge = None, False
+                self._repartir_foulee()
                 self.penche = self.inclinaison is not None \
                     and self.inclinaison > r.inclinaison_max_deg
                 self.stats["reprises_aux_plafonds"] = \
                     self.stats.get("reprises_aux_plafonds", 0) + 1
                 self._noter(f"port : serrage retrouvé (marge de frottement "
-                            f"{self.marge_frottement:.2f}, au moins {r.securite_serrage:g} ; "
+                            f"{marge:.2f}, {sur}, au moins {r.securite_serrage:g} ; "
                             f"{seuil:g} hors de portée des bras, à leurs plafonds), la marche "
                             f"peut reprendre")
                 return
@@ -2876,11 +3051,11 @@ class ManipulationService(IService):
                 self.stats["port_interrompu"] = self.stats.get("port_interrompu", 0) + 1
                 self._port_interrompu = True
                 self.a_reposer = True
-                if not ecartees and not force and self.marge_frottement is not None \
-                        and self.marge_frottement >= r.securite_serrage:
+                if not ecartees and not force and not glisse \
+                        and marge is not None and marge >= r.securite_serrage:
                     # Au-dessus du seuil pour tenir, sous celui pour repartir :
                     # les bras n'y arrivent pas (plafonds, bornes du serrage).
-                    self.raison = (f"marge de frottement {self.marge_frottement:.2f} après "
+                    self.raison = (f"marge de frottement {marge:.2f} {sur} après "
                                    f"{r.duree_resserrage_s:g} s de resserrage : au moins "
                                    f"{r.securite_serrage:g} pour tenir, mais {seuil:g} pour "
                                    f"repartir, que les bras n'atteignent pas : à reposer")
@@ -2896,10 +3071,11 @@ class ManipulationService(IService):
             self.penche = True                    # pas avant le délai minimal
         elif self._t_resserrage is not None:
             self._t_resserrage, self._resserrage_marge = None, False
+            self._repartir_foulee()
             self.penche = self.inclinaison is not None and self.inclinaison > r.inclinaison_max_deg
             self._noter("port : serrage retrouvé" + (
-                f" (marge de frottement {self.marge_frottement:.2f}, au-dessus de {seuil:g})"
-                if self.marge_frottement is not None else "") + ", la marche peut reprendre")
+                f" (marge de frottement {marge:.2f}, {sur}, au-dessus de {seuil:g})"
+                if marge is not None else "") + ", la marche peut reprendre")
         if not a_rendre or not self._marge_plafonds(tau):
             return
         if self._port0 is not None:
@@ -2944,6 +3120,15 @@ class ManipulationService(IService):
             self._garder_borne(cote)
         self._ecrire_q(q)
         self._q_tenu = dict(q)
+
+    def _repartir_foulee(self) -> None:
+        """La base repart : la foulée repart des filtre_force × 3 dernières
+        lectures (0,3 s), celles qui ont justifié la reprise. Encore pleine des
+        lectures d'avant le resserrage, elle arrêterait la base aussitôt."""
+        n = max(1, self.r.filtre_force * 3)
+        while len(self._hist_normales) > n:
+            self._hist_normales.popleft()
+            self._t_normales.popleft()
 
     def _retard_vers_robot(self) -> Optional[float]:
         """De combien (m) le milieu des mains MESURÉES est en avant (loin du
@@ -3031,7 +3216,9 @@ class ManipulationService(IService):
         tourne = self._surveiller_rotation(tau)
         if not tourne and self.charge is not None and \
                 len(self._hist_charge) == self._hist_charge.maxlen:
-            poids = self.charge[0]
+            # Les filtre_force dernières lectures (0,1 s) : vu en 0,3 s au plus.
+            poids = float(np.mean([v[0] for v in
+                                   list(self._hist_charge)[-max(1, self.r.filtre_force):]]))
             if self._poids_ref is not None and poids < self.r.part_poids_min * self._poids_ref:
                 t = self._horloge()
                 self._t_sans_poids = t if self._t_sans_poids is None else self._t_sans_poids
@@ -3850,6 +4037,82 @@ class ManipulationService(IService):
         return ServiceResult(ok=True)
 
     @sous_verrou
+    def calibrer_charge(self, objet: Objet, masse_kg: float,
+                        enregistrer: Optional[Callable[[dict], None]] = None) -> ServiceResult:
+        """Calibration de charge, une fois par robot (première mise en route :
+        docs/PREMIERE_MISE_EN_ROUTE.md). `objet` est une masse de référence de
+        `masse_kg` connue, charge centrée (un carton lesté en son milieu),
+        posée là où l'on prend un carton. Elle est prise comme un carton
+        (prendre : la prise de T1), levée et pesée bras immobiles, plus
+        longtemps (ReglagesPrise.lectures_calibration_charge), puis reposée là
+        où elle a été prise, ni serrée plus, ni portée. Son poids, partagé
+        moitié-moitié entre les deux mains, donne le gain du couple estimé de
+        chaque coude (prise.gain_coude), appliqué aussitôt (gains_couples) et
+        passé à `enregistrer` avec sa date (le profil du robot :
+        profil_robot.enregistrer). Refus ou échec : les gains d'avant restent.
+        Non bloquant, comme prendre : fini quand l'état revient à LIBRE
+        (calibration_charge à jour), ou passe à ECHEC (raison)."""
+        r = self.r
+        if not r.masse_reference_min_kg <= masse_kg <= r.masse_max_kg:
+            return ServiceResult(ok=False, reason=(
+                f"calibration de charge refusée — masse de référence de {masse_kg:g} kg : entre "
+                f"{r.masse_reference_min_kg:g} et {r.masse_max_kg:g} kg (masse_reference_min_kg, "
+                f"masse_max_kg, la charge pour laquelle la prise est vérifiée)"))
+        if self.mesures is None or self.couples_fiables is False:
+            return ServiceResult(ok=False, reason=(
+                "calibration de charge refusée — il faut les couples estimés des bras, et "
+                "fiables (calibration des couples)"))
+        avant = (dict(self.gains_couples), self.calibration_charge)
+        self._calibration_en_cours = {"masse_kg": float(masse_kg), "enregistrer": enregistrer,
+                                      "avant": avant}
+        self.gains_couples = {}           # la masse pesée sur les couples bruts
+        res = self.prendre(objet)
+        if not res.ok:
+            self.gains_couples, self.calibration_charge = avant
+            self._calibration_en_cours = None
+            return ServiceResult(ok=False, reason=f"calibration de charge : {res.reason}")
+        self._noter(f"calibration de charge : masse de référence de {masse_kg:g} kg, prise comme "
+                    f"un carton")
+        return res
+
+    @sous_verrou
+    def appliquer_calibration_charge(self, cal: Optional[dict]) -> str:
+        """La calibration de charge du profil du robot (la valeur
+        « calibration_charge » de profil_robot.lire_profil), ou None. Sans
+        elle, la pesée se fait sans corriger les gains des coudes, comme
+        avant, et l'OS le dit ; illisible, ou des gains hors de
+        [gain_coude_min, gain_coude_max] : pas appliquée non plus (dit aussi).
+        Rend le texte, aussi écrit au journal."""
+        r = self.r
+        self.gains_couples, self.calibration_charge = {}, None
+        gains = None
+        if cal is not None:
+            try:
+                gains = {str(j): float(v) for j, v in cal["gains_couples"].items()}
+                date, masse = str(cal["date"]), float(cal["masse_kg"])
+            except (KeyError, TypeError, ValueError, AttributeError):
+                gains = None
+        if cal is None:
+            texte = ("pas de calibration de charge dans le profil du robot : pesée sans corriger "
+                     "les gains des coudes, comme avant ; à faire une fois, à la première mise en "
+                     "route (docs/PREMIERE_MISE_EN_ROUTE.md)")
+        elif not gains or any(not j.endswith("_elbow_joint") or
+                              not r.gain_coude_min <= v <= r.gain_coude_max
+                              for j, v in gains.items()):
+            texte = (f"calibration de charge du profil du robot NON APPLIQUÉE (illisible, ou gains "
+                     f"hors de [{r.gain_coude_min:g}, {r.gain_coude_max:g}]) : pesée sans corriger "
+                     f"les gains des coudes, comme avant ; à refaire")
+        else:
+            self.gains_couples, self.calibration_charge = gains, dict(cal)
+            texte = (f"calibration de charge du {date} ({masse:g} kg de référence) : gains des "
+                     f"couples estimés des coudes, "
+                     + ", ".join(f"{'gauche' if j.startswith('left') else 'droit'} {v:.3f}"
+                                 for j, v in sorted(gains.items())))
+        self.stats["calibration_charge"] = (self.calibration_charge or {}).get("date")
+        self._noter(texte)
+        return texte
+
+    @sous_verrou
     def prendre(self, objet: Objet) -> ServiceResult:
         """Lance la prise de l'objet. Non bloquant : suivre la progression
         par `etat`, ou par le résultat de tick(). Refusée si l'objet n'est
@@ -4028,6 +4291,8 @@ class ManipulationService(IService):
         le garde-fou qui contrôle chaque commande d'articulation
         (axis_os/hal/safety/limits.py). Résultat : 570 consignes refusées,
         bras restés serrés, carton tiré hors de la table et tombé."""
+        self._abandonner_calibration("prise réinitialisée")
+        self._calibration_finie = False
         self._lever_exemption()
         self.objet, self._franchi = None, None
         self._lacher_de = (self._roulis_courant, self._tangage_courant)

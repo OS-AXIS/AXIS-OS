@@ -10,6 +10,27 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Calibration de charge ; marge du port sur une foulée, glissement vu en 0,3 s
+
+Décisions sur la PR #37 ; détail dans docs/validation_port_carton.md, §13.
+- Calibration de charge, une fois par robot
+  (`ManipulationService.calibrer_charge`) : une masse de référence connue,
+  prise comme un carton, pesée bras immobiles (250 lectures), reposée ; son
+  poids partagé moitié-moitié entre les mains donne le gain du couple
+  estimé de chaque coude (`prise.gain_coude`), borné (0,85 à 1,15, sinon
+  refusée). Gardée datée au profil du robot (`services/profil_robot.py`,
+  un fichier JSON par robot, écrit d'un coup) ; relue au démarrage
+  (`appliquer_calibration_charge`) ; sans elle, l'OS le dit à chaque pesée
+  et pèse comme avant. Étape 3.6 de docs/PREMIERE_MISE_EN_ROUTE.md ; faite
+  au démarrage du banc T1 (masse de référence sur un plateau devant le
+  robot). Sur les CSV des essais GPU, calibrée sur les autres essais, la
+  pesée de l'OS rejouée tombe à +0,1 et +1,9 % (sans : +1,6 et +4,7 %).
+- Marge de frottement au port jugée sur une foulée (`fenetre_marge_s`,
+  1 s), avec un plancher sur 0,3 s (`securite_glissement`, 1). Poids qui
+  chute jugé sur 0,1 s pendant `duree_perte_s` (0,15 s ; avant ~0,5 s en
+  tout). Un vrai desserrage est vu en 0,3 s au plus (test_desserrage_port).
+  Coefficient de sécurité 2, frottement 0,8, plafonds : inchangés.
+
 ### Pesée longue ; banc de posture avec la prise de T1 ; cartons plus légers
 
 Essai GPU T1 du 19 novembre 2026, 22 h 04 ; détail dans

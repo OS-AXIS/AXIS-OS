@@ -1223,3 +1223,152 @@ alors sur un arrêt propre au lieu d'un port mené au bout.
   - `carton tenu par la seule prise` ;
   - la série « avec carton » ;
   - `[spectateur] premières données après …`.
+
+## 13. Calibration de charge, marge sur une foulée (décisions sur la PR #37)
+
+Deux décisions : calibrer la pesée une fois par robot, avec une masse
+connue ; juger la marge du port sur une foulée (1 s), à condition que la
+surveillance directe du glissement reste à 0,3 s au plus. Coefficient de
+sécurité (2), frottement (0,8) et plafonds de couple : inchangés.
+
+### La calibration de charge (`calibrer_charge`, profil du robot)
+
+- **Le geste** : la masse de référence (un carton lesté en son milieu, de
+  0,5 à 1,2 kg) est prise comme un carton (la prise de T1), levée, pesée
+  bras immobiles plus longtemps qu'un carton (250 lectures, 5 s), puis
+  reposée là où elle a été prise ; ni serrée plus, ni portée. Gains de prise
+  rendus et exemption du gardien levée à la fin, comme après un dépôt.
+- **Le calcul** (`prise.gain_coude`) : son poids, partagé moitié-moitié
+  entre les deux mains (charge centrée, prise par ses deux faces), donne
+  une équation par main ; l'inconnue de chaque bras est le gain du couple
+  estimé de son coude. Les coudes font presque tout le biais : un gain de
+  +5 % sur une articulation change la pesée de 2204 de −0,38 N (coude
+  gauche), −0,39 N (coude droit), −0,09 et −0,10 N (tangage des poignets),
+  −0,06 N (tangage de l'épaule gauche), 0,02 N au plus pour les autres.
+- **Pourquoi pas plus d'articulations** : une pesée ne donne qu'une
+  équation par main. Ajusté sur les 14 couples (moindres carrés, forces des
+  mains inconnues), le gain de chaque articulation absorbe aussi l'erreur
+  du modèle de contact : sur le palier de 1716, coudes trouvés à 1,084 et
+  1,012 (banc : 1,047 et 0,980), et la pesée des autres essais faussée de
+  3 à 5 %. Le calcul moitié-moitié retrouve les gains du banc : 1,048 et
+  0,998 (1716), 1,048 et 0,981 (2204).
+- **Où elle sert** : dans la force à la main (`_force_main`), comme les
+  biais : couple corrigé de son biais, puis de son gain. Elle change le poids
+  (la composante verticale) ; à peine les forces normales (port de 2204 :
+  somme des normales 25,53 → 25,61 N, juge 25,19). Les plafonds de couple
+  restent jugés sur le couple mesuré.
+- **Le profil du robot** (`axis_os/services/profil_robot.py`) : un fichier
+  JSON par robot, écrit d'un coup (fichier temporaire, puis remplacement),
+  la calibration avec sa date, sa masse, ses lectures. Illisible ou d'un
+  autre robot : refusé, jamais écrasé. Relu au démarrage
+  (`appliquer_calibration_charge`) ; sans calibration, l'OS le dit au
+  démarrage et à chaque pesée (« sans calibration de charge ») et pèse
+  comme avant. Gains hors de [0,85 ; 1,15] : refusée (masse décentrée ou
+  mal déclarée), la précédente reste.
+
+Sur les CSV des essais GPU (même robot simulé : même graine des erreurs
+de gain), avec le calcul de l'OS, calibrée sur les AUTRES essais :
+
+| Essai | Pesée de l'OS, sans | Avec la calibration | Calibrée sur |
+|---|---|---|---|
+| 17 h 16 (35 lectures) | 9,97 N (+1,6 %) | 9,82 N (+0,1 %) | 22 h 04 et 21 h 57 |
+| 22 h 04 (35 lectures) | 10,27 N (+4,7 %) | 10,00 N (+1,9 %) | 17 h 16 et 21 h 57 |
+| 21 h 57 (couples du relevé, 15 lectures) | +0,5 % | −1,9 % | 17 h 16 et 22 h 04 |
+
+Ce que cela dit honnêtement :
+- la calibration enlève le biais ; le bruit reste. Une pesée de 35
+  lectures n'est sûre qu'à ±3 % (deux écarts types) : 22 h 04, tiré lourd
+  (+4,7 % pour un biais de ~+2,5 %), finit à +1,9 % ;
+- une pesée de 50 lectures (1 s, la règle de l'OS) l'est à ±2,8 %. Pour
+  2 % à 95 %, il en faudrait ~100 (2 s par carton) : non changé, à décider ;
+- 21 h 57 n'a que les couples du relevé, sans la centrale inertielle (le
+  relevé lit ~1,5 à 2 % plus léger que l'OS).
+
+Robot simulé de la CI (test_calibration_charge) : coudes faussés comme au
+banc (1,047 et 0,980) ; la calibration les retrouve (1,042 et 0,975) ;
+relue au démarrage suivant, cartons de 0,5, 1,0 et 1,2 kg pesés à 0,6 % près.
+
+En simulation : au démarrage du banc T1 (après la calibration des bras),
+si le profil du robot du banc (sa graine) n'a pas de calibration de charge,
+une masse de référence de 1 kg est posée sur un plateau devant le robot,
+prise, pesée, reposée ; plateau et masse retirés, le tri commence. Le banc
+de posture relit ce profil.
+
+### La marge sur une foulée, le glissement surveillé à 0,3 s
+
+- **La marge** (μ ΣN / poids pesé) se juge sur la dernière foulée
+  (`fenetre_marge_s`, 1 s ; dès 0,3 s de lectures au début du port) : la
+  variation du serrage au pas de la marche n'arrête plus la base.
+- **Un plancher sur 0,3 s** : la marge des 15 dernières lectures ne passe
+  jamais sous `securite_glissement` (1 : le serrage ne porte plus le carton
+  au frottement prudent). La marche ne la fait varier que de quelques
+  centièmes ; un vrai desserrage la fait tomber.
+- **Poids qui chute** : jugé sur les 5 dernières lectures (0,1 s), pendant
+  `duree_perte_s` (0,15 s). Avant : une moyenne de 0,3 s, puis 0,3 s, soit
+  ~0,5 s pour un carton qui s'échappe.
+- **Mains écartées, rotation** : à chaque pas, inchangés.
+- **Base arrêtée pour resserrer**, la reprise se juge sur 0,3 s, comme
+  avant : la marche ne fait plus varier le serrage, et sur la foulée la
+  reprise ne verrait l'effet du resserrage qu'au bout de 1 s, l'échéance de
+  l'abandon (`duree_resserrage_s`). Trouvé sur la campagne de cartons : le
+  carton T1 et un autre y étaient reposés de plus (marge 1,97 et 1,82 sur la
+  foulée) ; avec la reprise sur 0,3 s, la campagne retrouve celle de main
+  (6 déposés, 3 reposés, aucun cas interdit).
+- **À la reprise**, la foulée repart des 0,3 s qui l'ont justifiée : encore
+  pleine des lectures d'avant le resserrage, elle arrêtait la base aussitôt
+  (trouvé sur le rejeu de 22 h 04, ci-dessous).
+
+Robot simulé (test_desserrage_port), carton de 1 kg porté, une panne du
+monde simulé, jamais lue par l'OS :
+
+| Desserrage | Vu (désormais) | Vu (main) | Par |
+|---|---|---|---|
+| la main droite lâche (lacet d'épaule qui glisse de 0,10 rad) | 0,04 s | — | mains écartées, rotation ; poids 0,24 s |
+| le bras droit faiblit (moteurs à 30 %) | 0,02 s | — | rotation |
+| les deux mains s'ouvrent ensemble de 2,3 cm | 0,26 s | 0,12 s | plancher (main : marge sur 0,3 s) |
+| les deux mains lâchent ensemble | 0,20 s | 0,10 s | mains écartées, rotation |
+| le carton se vide (0,1 kg) | 0,24 s | 0,52 s | poids qui chute |
+| le carton s'écrase de 1 cm | 0,02 s | 0,02 s | mains écartées |
+| une main s'ouvre de 1,7 cm, le carton ne bouge pas | 0,96 s | 0,28 s | marge sur la foulée |
+
+La dernière ligne est le compromis accepté : un desserrage qui ne fait ni
+bouger, ni tourner, ni s'alléger le carton se juge sur la foulée. Un
+serrage estimé qui varie de ±30 % au pas (0,8 s), mains immobiles :
+marge sur 0,3 s jusqu'à 1,80 (elle aurait arrêté la base), sur la foulée
+de 2,22 à 2,49, base jamais arrêtée.
+
+Rejoué sur les 2,5 s de port de 22 h 04 (marge de l'OS au relevé, ramenée à
+chaque poids), la règle d'aujourd'hui contre celle sur 0,3 s : avec le vrai
+poids, un arrêt au lieu de deux ; avec la pesée calibrée (10,0 N), deux
+arrêts, repris, comme sur 0,3 s ; avec les 10,6 N de l'essai, trois, le
+dernier encore ouvert à la fin du relevé, comme sur 0,3 s. Ce carton reste à
+la limite de ces mains (marge réelle de 2,03 à 2,12 sur 1 s) : le poids juste
+compte plus que la fenêtre.
+
+### Tests modifiés
+
+- `test_port_sans_derive`, §5 (hystérésis) : « avant » (repartir au seuil)
+  se joue désormais explicitement sur la marge de 0,3 s d'alors
+  (`fenetre_marge_s=0,3`), la règle d'avant l'hystérésis ; les scénarios
+  stricts et aux plafonds jouent la règle d'aujourd'hui (foulée, reprise
+  sur 0,3 s). Même critère qu'avant (au moins deux fois moins d'arrêts) :
+  41 arrêts avant, 6 en stricte. Sur la foulée, « avant » ne s'arrêtait plus
+  que 9 fois : le critère ne mesurait plus l'hystérésis, mais la foulée ;
+  une vérification ajoutée le dit (la foulée seule : 9 arrêts, au plus les
+  41 de la marge sur 0,3 s).
+- `test_calibrage_mains` : la boucle du banc T1 lue telle qu'elle est
+  désormais, la calibration de charge entre celle des bras et la mission
+  (même intention ; plus strict : la mission attend les deux).
+- `test_rejeu_port_t1716` et `test_rejeu_port_t2204` : l'OS réduit à ses
+  forces reçoit aussi ses gains de couples, vides (sans calibration, comme
+  aux essais) ; rien d'autre ne change. Dans t1716, le commentaire de la
+  marge reconstruite dit que 0,3 s était la fenêtre de l'OS à l'essai.
+
+### À vérifier au prochain essai GPU
+
+- Au premier lancement : `pas de calibration de charge dans le profil du
+  robot…`, puis `calibration de charge du … : 1 kg de référence, 250
+  lectures…`, gains des coudes près de 1,047 et 0,980, `masse reposée`.
+- Chaque pesée : `… ; gains des coudes de la calibration de charge du …`.
+- Au port : `marge de frottement … sur la dernière foulée` ; `marge de
+  frottement sur 0,3 s` ne doit apparaître que sur un vrai desserrage.

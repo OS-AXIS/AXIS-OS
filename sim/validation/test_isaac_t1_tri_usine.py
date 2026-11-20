@@ -97,6 +97,16 @@ def main():
     ap.add_argument("--masse-carton", type=float, default=1.0, metavar="KG",
                     help="masse des cartons de la scène (défaut 1.0 kg, le carton T1)")
     ap.add_argument("--graine", type=int, default=3)
+    # Calibration de charge (docs/PREMIERE_MISE_EN_ROUTE.md) : une fois par
+    # robot, gardée au profil du robot (celui du banc : sa graine) ; faite au
+    # démarrage s'il n'en a pas (ou --calibration-charge), avec une masse de
+    # référence (le carton T1) posée sur un plateau devant lui.
+    ap.add_argument("--profil-robot", default=None, metavar="FICHIER",
+                    help="profil du robot (défaut : ~/.axis_os/robots/isaac_g1_graine<N>.json)")
+    ap.add_argument("--calibration-charge", action="store_true",
+                    help="refaire la calibration de charge même si le profil en a une")
+    ap.add_argument("--masse-reference", type=float, default=1.0, metavar="KG",
+                    help="masse de référence de la calibration de charge (défaut 1.0 kg)")
     # Campagne de cartons variés (après le premier tri réussi) : N cartons tirés
     # comme dans test/test_campagne_cartons.py (axis_os/testing/cartons.py,
     # même graine, mêmes cartons), pris un à un comme la collecte VLA (sans
@@ -173,7 +183,7 @@ def main():
     from axis_os.services.manipulation.estimation import HauteurBassin, inclinaison_mains
     from axis_os.services.manipulation.prise import CalibrationMains, MesuresBras, ReglagesPrise
     from axis_os.services.manipulation.service import (
-        Etat, ManipulationService, Postures, posture_bras,
+        Etat, ManipulationService, Objet, Postures, posture_bras,
     )
     from axis_os.services.navigation.service import NavigationService, Pose2D
     from axis_os.services.perception.boite import points_du_masque, rotation_dessus
@@ -185,7 +195,9 @@ def main():
     from banc_perception import EnregistreurImages
     from banc_prise import (
         CapteursContactIsaac, JugeContacts, eclairer, gains_prise, mains_caoutchouc,
+        poser_devant, profil_robot_banc,
     )
+    from axis_os.services.profil_robot import ProfilRobotErreur, enregistrer, lire_profil
     from banc_vue_robot import VueRobot, coins
 
     cfg = GR00TWBCConfig()
@@ -279,6 +291,22 @@ def main():
                 physics_material=mat_carton))
             cartons.append({"obj": c, "couleur": couleur, "lieu": "stock", "t": 0.0,
                             "parc": np.array([30.0 + 0.5 * k, 30.0, sd.HAUTEUR_CARTON / 2])})
+
+    # Calibration de charge : la masse de référence (un carton T1 de
+    # --masse-reference kg) et son plateau (cinématique), créés loin du site ;
+    # posés devant le robot au démarrage s'il faut la faire (pas_charge).
+    reference = world.scene.add(DynamicCuboid(
+        prim_path="/World/masse_reference", name="masse_reference",
+        position=np.array([36.0, 30.0, sd.HAUTEUR_CARTON / 2]), size=1.0,
+        scale=np.array([sd.PROFONDEUR_CARTON, sd.LARGEUR_CARTON, sd.HAUTEUR_CARTON]),
+        mass=args.masse_reference, color=np.array([0.55, 0.55, 0.58]),
+        physics_material=mat_carton))
+    plateau_ref = world.scene.add(DynamicCuboid(
+        prim_path="/World/plateau_reference", name="plateau_reference",
+        position=np.array([36.0, 33.0, sd.PLATEAU / 2]), size=1.0,
+        scale=np.array([0.40, 0.60, sd.PLATEAU]), mass=50.0, color=GRIS))
+    UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath("/World/plateau_reference")) \
+        .CreateKinematicEnabledAttr(True)
 
     # Personnes : silhouettes cinématiques (déplacées, pas poussées).
     EVAL = args.evaluer_vla is not None
@@ -717,6 +745,69 @@ def main():
         h_vrai_ = float(robot.get_world_pose()[0][2])
         journaliser(f"hauteur du bassin, robot posé : estimée {h_est_:.3f} m (jambes et centrale "
                     f"inertielle), vraie {h_vrai_:.3f} m, écart {100 * (h_est_ - h_vrai_):+.1f} cm")
+        return True
+
+    # Calibration de charge, après celle des bras (docs/PREMIERE_MISE_EN_ROUTE.md) :
+    # le profil du robot relu ; sans calibration de charge (ou
+    # --calibration-charge), la masse de référence posée sur son plateau
+    # devant le robot, à l'endroit que la procédure marque (sa pose est celle
+    # de la procédure, comme sur le vrai robot), prise par la prise de T1
+    # (ManipulationService.calibrer_charge), pesée, reposée ; puis plateau et
+    # masse retirés de la scène, et le tri commence.
+    chemin_profil, robot_id = profil_robot_banc(args.graine)
+    chemin_profil = args.profil_robot or chemin_profil
+    etat_charge = {"pose": None, "lance": None, "fin": None}
+
+    def retirer_reference():
+        plateau_ref.set_world_pose(position=np.array([36.0, 33.0, sd.PLATEAU / 2]))
+        reference.set_world_pose(position=np.array([36.0, 30.0, sd.HAUTEUR_CARTON / 2]))
+
+    def pas_charge():
+        """Un pas de la calibration de charge ; vrai une fois finie (ou inutile)."""
+        if etat_charge["pose"] is None:
+            try:
+                cal_ = lire_profil(chemin_profil, robot_id).get("calibration_charge")
+            except ProfilRobotErreur as e_:
+                journaliser(f"profil du robot illisible ({e_}) : calibration de charge refaite")
+                cal_ = None
+            manip.appliquer_calibration_charge(cal_)
+            if cal_ is not None and not args.calibration_charge:
+                return True
+            centre_, lacet_ = poser_devant(robot, reference, plateau_ref, 0.44, sd.PLATEAU,
+                                           sd.HAUTEUR_CARTON)
+            etat_charge["objet"] = Objet(centre_, sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON,
+                                         sd.HAUTEUR_CARTON, lacet=lacet_, bord_m=0.0)
+            etat_charge["pose"] = sim_t[0]
+            return False
+        if etat_charge["lance"] is None:
+            if sim_t[0] - etat_charge["pose"] < 0.5:    # la masse se pose sur son plateau
+                return False
+            r_ = manip.calibrer_charge(
+                etat_charge["objet"], args.masse_reference,
+                enregistrer=lambda f_: enregistrer(chemin_profil, robot_id,
+                                                   "calibration_charge", f_))
+            etat_charge["lance"] = sim_t[0]
+            if not r_.ok:
+                journaliser(f"calibration de charge non faite : {r_.reason}")
+                etat_charge["fin"] = sim_t[0]
+            return False
+        if etat_charge["fin"] is None:
+            if manip.etat is Etat.ECHEC:
+                journaliser(f"calibration de charge non faite : {manip.raison}")
+                manip.reinitialiser()
+                etat_charge["fin"] = sim_t[0]
+            elif manip.etat is Etat.LIBRE and sim_t[0] - etat_charge["lance"] > 1.0:
+                etat_charge["fin"] = sim_t[0]
+            elif sim_t[0] - etat_charge["lance"] > 60.0:
+                journaliser(f"calibration de charge non finie en 60 s ({manip.etat.name})")
+                manip.reinitialiser()
+                etat_charge["fin"] = sim_t[0]
+            return False
+        if manip.etat is not Etat.LIBRE and sim_t[0] - etat_charge["fin"] < 10.0:
+            return False                             # bras revenus en posture de port
+        retirer_reference()
+        journaliser(f"calibration de charge : {manip.calibration_charge or 'aucune'} "
+                    f"(profil {chemin_profil})")
         return True
 
     tree = FrameTree()
@@ -1354,6 +1445,8 @@ def main():
         manip.tick()
         if not etat_calib["fini"]:
             etat_calib["fini"] = pas_calibration()
+        elif not etat_charge.get("fini"):
+            etat_charge["fini"] = pas_charge()
         else:
             pilote.pas()
         if loco.state is LocomotionState.FALLEN:

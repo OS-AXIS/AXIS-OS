@@ -123,6 +123,7 @@ def os_():
     m.stats, m.journal = {}, []
     m._journal = m.journal.append
     m.biais_couples = BIAIS
+    m.gains_couples = {}               # sans calibration de charge, comme à l'essai
     m._plan = {"lacet": 0.0}
     m._tau0, m._g0 = {}, {}
     return m
@@ -204,7 +205,9 @@ check(f"Resserrage du port sur la posture réelle : écart des mains -{serre and
       and tourne <= R.tol_rigide_deg, f"{serre} {glisse} {tourne}")
 # Marge de frottement de l'OS, reconstruite d'après les couples de l'essai
 # (_force_main, biais de la calibration, pesanteur verticale ; moyenne de
-# 0,3 s comme _hist_normales), et les arrêts que chaque règle en tire.
+# 0,3 s, la fenêtre de l'OS à l'essai — désormais une foulée de 1 s et un
+# plancher sur 0,3 s : test_desserrage_port), et les arrêts que chaque règle
+# en tire.
 hist, marges = deque(maxlen=3), []
 for t in TENU:
     a, tau = angles(t), couples(t)
