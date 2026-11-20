@@ -256,8 +256,8 @@ class ReglagesPrise:
     # carton de 10,9 N tenu à 6,5 N par main, soit un frottement d'au moins
     # 0,84 rien que pour le porter, aucune marge ; il a glissé à la marche).
     # En haut du levage, la prise confirmée, l'OS pèse le carton une fois,
-    # bras immobiles, avant de serrer plus : la médiane d'une fenêtre de
-    # lectures (filtre_force × 3). Ce poids fixe le serrage requis par main :
+    # bras immobiles, avant de serrer plus (lectures_pesee, plus bas). Ce
+    # poids fixe le serrage requis par main :
     # securite_serrage × poids / (2 frottement_serrage) ; l'OS vise
     # marge_serrage_n de plus, et se
     # contente du requis s'il ne peut aller au-delà (au-dessus du serrage
@@ -281,6 +281,27 @@ class ReglagesPrise:
     # par le serrage de prise y était resté, mains 3,8 cm plus haut ; l'OS
     # confirmait la prise, pesait 0,2 N et partait avec. Prise non confirmée.
     poids_min_n: float = 1.0
+    # La pesée : `lectures_pesee` lectures prises bras immobiles (aucune
+    # articulation des bras mesurée à plus de `vitesse_pesee_max_rad_s` d'une
+    # lecture à l'autre ; les autres sont écartées), leur moyenne tronquée
+    # (poids_pese : `part_ecartee_pesee` des plus basses et autant des plus
+    # hautes écartées). Essai GPU T1 du 19 novembre 2026, 22 h 04 : 10,6 N
+    # pesés pour 9,8 sur 15 lectures (0,3 s), quand une lecture a ~1 N d'écart
+    # type (bruit des couples estimés, 0,3 N·m par articulation) : 15 lectures
+    # ne sont sûres qu'à ±3 % (un écart type) ; les couples du relevé, aux
+    # mêmes instants, donnaient 9,65 N. 50 lectures : ±1,5 %. Pas assez de
+    # lectures immobiles en duree_pesee_max_s : pesé sur ce qu'on a s'il y en a
+    # au moins filtre_force × 3 (la fenêtre d'avant), sinon reposé ; plus de
+    # lectures écartées qu'immobiles (au moins filtre_force × 3) : le carton
+    # bouge entre les mains, décidé sans attendre. Une main
+    # qui passe sous force_min_n écourte la pesée (au moins filtre_force × 3
+    # lectures) : on ne reste pas au serrage de prise pendant qu'elle se
+    # relâche (carton pris 2 cm à côté de sa perception : la main la moins
+    # enfoncée passait de 6,8 à 3,6 N en 1 s).
+    lectures_pesee: int = 50
+    vitesse_pesee_max_rad_s: float = 0.05
+    part_ecartee_pesee: float = 0.1
+    duree_pesee_max_s: float = 2.0
     marge_serrage_n: float = 1.0
     penetration_poids_max_m: float = 0.06
     duree_serrage_poids_max_s: float = 3.0
@@ -495,6 +516,18 @@ def couple_retenu(r: "ReglagesPrise", force_n: float) -> float:
     les joint, serrées de `force_n` chacune : leur frottement en rotation
     (voir ReglagesPrise, basculement)."""
     return 2.0 * (2.0 / 3.0) * r.frottement_main * max(0.0, force_n) * r.rayon_contact_main_m
+
+
+def poids_pese(lectures: Iterable[float], part_ecartee: float) -> Tuple[float, float]:
+    """Poids (N) pesé sur `lectures` : leur moyenne tronquée (`part_ecartee`
+    des plus basses et autant des plus hautes écartées ; une lecture
+    aberrante, comme la première après la remise à zéro de la moyenne
+    glissante, n'y pèse pas), et son incertitude (N, un écart type :
+    écart type des lectures sur leur racine carrée)."""
+    x = np.sort(np.asarray(list(lectures), dtype=float))
+    k = int(part_ecartee * len(x))
+    garde = x[k:len(x) - k] if len(x) > 2 * k else x
+    return float(np.mean(garde)), float(np.std(x) / math.sqrt(len(x)))
 
 
 def tolerances_cg(r: "ReglagesPrise", force_n: Optional[float] = None,
