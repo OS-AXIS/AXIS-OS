@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Banc de la posture GR00T WBC : torse penché de 0 à 0,35 rad par paliers,
-# bassin abaissé de 0 à 10 cm, robot immobile, sans puis avec un carton aux
-# mains, simulé dans Isaac Sim (le simulateur de robotique de NVIDIA) sur la
-# machine GPU louée. Le test est sim/validation/test_isaac_w5_gr00t_posture.py
-# (avec banc_posture.py), copié dans le conteneur par copier_code.sh.
+# bassin abaissé de 0 à 10 cm, robot immobile, sans puis avec le carton T1
+# (1 kg) aux mains, pris par l'OS comme en T1, simulé dans Isaac Sim (le
+# simulateur de robotique de NVIDIA) sur la machine GPU louée. Le test est
+# sim/validation/test_isaac_w5_gr00t_posture.py (avec banc_posture.py et
+# banc_prise.py), copié dans le conteneur par copier_code.sh.
 # Décision de revue : l'app de tri ne se penche pas tant que ce banc n'est pas
 # passé (docs/validation_port_carton.md, §9).
 #

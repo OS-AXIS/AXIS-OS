@@ -91,6 +91,11 @@ def main():
     # Vue du robot (t1_vue_robot.mp4) sans les calques de l'OS ni de la
     # vérité simulation : pour la vidéo de démonstration.
     ap.add_argument("--vue-sans-calques", action="store_true")
+    # Masse des cartons de la scène (kg) : 1 kg par défaut, le carton T1, à la
+    # limite des mains en marchant (essai GPU du 19 novembre 2026, 22 h 04) ;
+    # plus légers (par exemple 0,5) pour la vidéo de démonstration.
+    ap.add_argument("--masse-carton", type=float, default=1.0, metavar="KG",
+                    help="masse des cartons de la scène (défaut 1.0 kg, le carton T1)")
     ap.add_argument("--graine", type=int, default=3)
     # Campagne de cartons variés (après le premier tri réussi) : N cartons tirés
     # comme dans test/test_campagne_cartons.py (axis_os/testing/cartons.py,
@@ -121,6 +126,9 @@ def main():
     ap.add_argument("--hote-direct", action="append", default=[],
                     help="nom d'hôte supplémentaire accepté par la page de suivi")
     args = ap.parse_args()
+    if not 0.05 <= args.masse_carton <= 5.0:
+        ap.error(f"--masse-carton {args.masse_carton:g} : entre 0.05 et 5 kg")
+    print(f"  cartons de la scène : {args.masse_carton:g} kg", flush=True)
     DUREE = args.duree
     rng = random.Random(args.graine)
     CAMPAGNE = args.cartons_varies > 0
@@ -132,7 +140,7 @@ def main():
     simulation_app = start_simulation_app(headless=True)
     import numpy as np
     import omni.usd
-    from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+    from pxr import Usd, UsdGeom, UsdPhysics
     from isaacsim.core.api.materials import PhysicsMaterial
     from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid
 
@@ -175,7 +183,9 @@ def main():
     # Banc seulement (copiés à côté de ce script par copier_code.sh) : le juge
     # et la vue du robot lisent la vérité de la simulation, l'OS jamais.
     from banc_perception import EnregistreurImages
-    from banc_prise import CapteursContactIsaac, JugeContacts, gains_prise
+    from banc_prise import (
+        CapteursContactIsaac, JugeContacts, eclairer, gains_prise, mains_caoutchouc,
+    )
     from banc_vue_robot import VueRobot, coins
 
     cfg = GR00TWBCConfig()
@@ -265,7 +275,7 @@ def main():
                 position=np.array([30.0 + 0.5 * k, 30.0, sd.HAUTEUR_CARTON / 2]),
                 size=1.0, scale=np.array([sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON,
                                           sd.HAUTEUR_CARTON]),
-                mass=1.0, color=np.array(sd.COULEURS_RGB[couleur]),
+                mass=args.masse_carton, color=np.array(sd.COULEURS_RGB[couleur]),
                 physics_material=mat_carton))
             cartons.append({"obj": c, "couleur": couleur, "lieu": "stock", "t": 0.0,
                             "parc": np.array([30.0 + 0.5 * k, 30.0, sd.HAUTEUR_CARTON / 2])})
@@ -290,48 +300,12 @@ def main():
         UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath(path)).CreateKinematicEnabledAttr(True)
         silhouettes.append(s)
 
-    # Mains en caoutchouc (W3) : lié avant reset, sinon ignoré.
-    PhysicsMaterial(prim_path="/World/Materiaux/caoutchouc",
-                    static_friction=1.2, dynamic_friction=1.0)
-    mat = UsdShade.Material(stage.GetPrimAtPath("/World/Materiaux/caoutchouc"))
-    for prim in stage.Traverse():
-        n = prim.GetName()
-        if "/World/g1" in str(prim.GetPath()) and ("rubber_hand" in n or "wrist_yaw_link" in n):
-            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
-                mat, UsdShade.Tokens.weakerThanDescendants, "physics")
-
-    # Éclairage. Premier essai GPU : la seule lumière venait de derrière la
-    # table, la face des cartons tournée vers le robot était noire sur la
-    # caméra de tête — couleur illisible, aucun colis trié. Un entrepôt est
-    # éclairé de partout. Solution retenue : une lumière ambiante (dôme) et
-    # quatre lumières en diagonale, décrites ci-dessous.
-    from pxr import Gf, UsdLux
-    dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
-    dome.CreateIntensityAttr(400.0)   # 900 délavait les couleurs
-    # Quatre lumières en diagonale (une par coin, plongée de 50°), comme
-    # les rampes d'un entrepôt. Historique GPU, faces des cartons tournées
-    # vers le robot restées noires (RGB 0,0,0) avec :
-    #   - une lumière de face à 60°, puis presque verticale (15°) ;
-    #   - deux lumières en diagonale du côté du robot (±40°) — les faces
-    #     latérales des cartons s'allumaient, les faces avant restaient
-    #     noires (/tete.jpg, /tete_ok.jpg). Le dôme ne suffit pas à les
-    #     éclairer, et le sens réel des lumières n'avait jamais été vérifié.
-    # Avec une lumière par coin, toute face verticale en reçoit au moins
-    # deux, quel que soit le sens de rotation retenu par USD ; l'ombre du
-    # robot n'en masque qu'une à la fois. Le sens réel est affiché au
-    # démarrage (« éclairage : … vers »).
-    for nom_l, lacet in (("eclairage_1", 45.0), ("eclairage_2", -45.0),
-                         ("eclairage_3", 135.0), ("eclairage_4", -135.0)):
-        lum = UsdLux.DistantLight.Define(stage, f"/World/{nom_l}")
-        lum.CreateIntensityAttr(700.0)
-        lum.CreateAngleAttr(1.0)
-        xf_l = UsdGeom.Xformable(lum)
-        xf_l.AddRotateZOp().Set(lacet)
-        xf_l.AddRotateXOp().Set(50.0)
-        m_l = xf_l.ComputeLocalToWorldTransform(0.0)
-        d_l = m_l.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
-        print(f"  éclairage : {nom_l} vers ({d_l[0]:+.2f}, {d_l[1]:+.2f}, {d_l[2]:+.2f})",
-              flush=True)
+    # Mains en caoutchouc (W3), liées avant reset (ignoré après), et éclairage
+    # d'entrepôt (dôme et quatre lumières en diagonale) : code commun des
+    # bancs (banc_prise), le sens réel de chaque lumière au journal.
+    mains_caoutchouc(stage)
+    for ligne_ in eclairer(stage):
+        print(f"  {ligne_}", flush=True)
 
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
@@ -1213,8 +1187,10 @@ def main():
                           # si le carton avait tourné entre les paumes ou avec le torse).
                           "port_roulis_deg", "port_tangage_deg", "port_lacet_deg",
                           "derive_port_m", "derive_port_deg", "marge_frottement",
-                          "resserrages_port", "taille_lacet_rad", "taille_roulis_rad",
-                          "taille_tangage_rad"])
+                          # Le poids de la marge, pesé une fois bras immobiles
+                          # (poids_os_n : la charge lue à chaque instant).
+                          "poids_pese_n", "resserrages_port", "taille_lacet_rad",
+                          "taille_roulis_rad", "taille_tangage_rad"])
     pas_releve = [0]
     suivi_port = {"actif": False}
 
@@ -1246,7 +1222,8 @@ def main():
         rp_ = rel_.get("rotation_port") or (None, None, None)
         dp_ = rel_.get("derive_port") or (None, None)
         ta_ = rel_.get("taille") or {}
-        port_ = (*rp_, *dp_, rel_.get("marge_frottement"), rel_.get("resserrages"),
+        port_ = (*rp_, *dp_, rel_.get("marge_frottement"), rel_.get("poids_pese"),
+                 rel_.get("resserrages"),
                  *(ta_.get(f"waist_{a}_joint") for a in ("yaw", "roll", "pitch")))
 
         def f3(v):

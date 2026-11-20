@@ -181,8 +181,10 @@ class IsaacSimCamera(ICamera):
         Le piège que cette méthode évite : capture() rendait un tableau de
         la bonne taille mais entièrement noir. Rien dans la forme des
         données ne signalait l'anomalie ; seul le contenu la trahissait.
-        On attend donc une image réellement non nulle (les 4096 premiers
-        octets ne sont pas tous à zéro), pas un nombre d'images.
+        On attend donc une image réellement non nulle (4096 octets répartis
+        sur toute l'image ne sont pas tous à zéro), pas un nombre d'images.
+        Pas seulement les premiers : le coin haut gauche d'une image bien
+        éclairée peut être un ciel noir (banc de posture, novembre 2026).
 
         Rend True dès que c'est le cas, False sinon ; le message affiché
         conseille alors de vérifier qu'une lumière existe dans la scène.
@@ -190,7 +192,7 @@ class IsaacSimCamera(ICamera):
         for i in range(max_frames):
             world.step(render=True)
             frame = self.capture()
-            if frame is not None and any(frame.data[:4096]):
+            if frame is not None and any(frame.data[::max(1, len(frame.data) // 4096)]):
                 print(f"  [{self.sensor_id}] premières données après "
                       f"{i + 1} image(s) rendue(s).")
                 return True

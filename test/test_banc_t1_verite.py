@@ -379,6 +379,15 @@ check("Vue du robot : vidéo, incrustation, page de suivi, réglage pour la dém
       and 'suivi.image_vue("robot", derniere_vue)' in T1 and "--vue-sans-calques" in T1)
 check("Vue de diagnostic au-dessus des mains (banc) : vidéo, incrustation, page de suivi",
       '"t1_vue_diagnostic.mp4"' in T1 and 'suivi.image_vue("diagnostic", derniere_diag)' in T1)
+LANCEUR_T1 = (RACINE / "deploy/machine_gpu/lancer_t1.sh").read_text(encoding="utf-8")
+check("Masse des cartons réglable pour la vidéo (--masse-carton, 1 kg par défaut, le carton T1), "
+      "bornée, au journal, documentée dans lancer_t1.sh",
+      '"--masse-carton", type=float, default=1.0' in T1 and "mass=args.masse_carton" in T1
+      and "mass=1.0" not in T1 and "ap.error(" in T1
+      and "cartons de la scène : {args.masse_carton:g} kg" in T1
+      and "--masse-carton 0.5" in LANCEUR_T1)
+check("t1_prise.csv : le poids pesé (celui de la marge) à côté du poids lu à chaque instant",
+      '"poids_pese_n", "resserrages_port"' in T1 and 'rel_.get("poids_pese")' in T1)
 REC = (RACINE / "deploy/machine_gpu/recuperer_t1.sh").read_text(encoding="utf-8")
 CP = (RACINE / "deploy/machine_gpu/copier_code.sh").read_text(encoding="utf-8")
 check("recuperer_t1.sh : vue du robot récupérée, réduite en 540p, dans le zip",

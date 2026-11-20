@@ -8,6 +8,9 @@
 #   bash lancer_t1.sh [durée_simulée_s] [accélération_vidéo] [options du test]
 #   Premier essai :  bash lancer_t1.sh 240 1       (~4 min simulées, vidéo temps réel)
 #   Démo complète :  bash lancer_t1.sh 1800 10     (30 min -> vidéo de 3 min)
+#   Vidéo de démonstration, cartons plus légers (1 kg par défaut, le carton T1,
+#   à la limite des mains en marchant) :
+#                    bash lancer_t1.sh 1800 10 --masse-carton 0.5 --vue-sans-calques
 #   Cartons variés : bash lancer_t1.sh 3600 10 --cartons-varies 40 [--graine-cartons 20261118]
 #     (après un premier tri réussi) N cartons tirés comme ceux du test du robot
 #     simulé léger, test/test_campagne_cartons.py : même graine, mêmes cartons
