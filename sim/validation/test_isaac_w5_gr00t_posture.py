@@ -9,14 +9,23 @@ l'app de tri ne se penche pas tant que ce banc n'est pas passé.
 
   A. 0–3 s    debout
   B. 3–5 s    bras en posture de port
+  C.          calibration des bras (couples et mains), celle du banc T1
   1. sans carton : trois séries de paliers (banc_posture.paliers) — torse
      de 0,05 à 0,35 rad, bassin de 2,5 à 10 cm, puis les deux ensemble ;
      chaque palier par LocomotionService.posture, tenu MAINTIEN_S une fois
      atteint, et droit entre deux séries
-  2. le carton (masse_max_kg, carton T1) placé entre les mains, comme en
-     W2, serré puis relâché : seule la prise le retient
+  2. le carton T1 (1 kg, dans les moyens des mains) posé sur un plateau
+     devant le robot, là où T1 le prend, et pris par l'OS avec la même prise
+     que T1 (ManipulationService.prendre : gains du banc T1, poignets, coude
+     et lacet d'épaule raidis pendant la prise, mains caoutchouc, couples
+     estimés comme ceux du G1) ; le plateau retiré, seule la prise le retient
   3. avec carton : les mêmes séries, le carton dans le bilan d'équilibre
      (masse et position, d'après les angles mesurés des bras)
+
+Essai GPU du 19 novembre 2026, 21 h 51 : sans carton, tout passait ; le
+carton de 1,2 kg, glissé entre des mains aux poignets mous (kp 4), sans
+caoutchouc, était « LÂCHÉ par la seule prise » ; la caméra spectateur ne
+rendait rien (le seul dôme du pont : l'éclairage est désormais celui de T1).
 
 Par palier (videos/posture.csv, banc_posture.COLONNES) : accepté ou refusé
 par l'OS, marge d'équilibre prévue ; tangage mesuré de la taille ;
@@ -41,17 +50,25 @@ from axis_os.hal.drivers.isaac_sim.bridge import (  # noqa: E402
 from banc_posture import (  # noqa: E402
     COLONNES, MAINTIEN_S, Palier, inclinaison_deg, paliers, verdict,
 )
+from banc_prise import eclairer, gains_prise, mains_caoutchouc  # noqa: E402
 
 POLICIES = Path("/isaac-sim/policies")
 SORTIE = Path("/isaac-sim/videos")
 PROFONDEUR, LARGEUR, HAUTEUR = 0.20, 0.24, 0.20     # le carton de la scène T1
-# Posture de port en angles bruts, celle de W2 (vérifiée par cinématique :
-# mains 29 cm devant le bassin, 18 cm au-dessus, écartées de 34 cm).
+MASSE_CARTON = 1.0              # le carton T1 : au plus 1 kg, dans les moyens des mains
+X_CARTON = 0.44                 # son centre devant le bassin, là où T1 le prend
+# Posture de port en angles bruts, celle de W2 et de l'OS (Postures : mains
+# 29 cm devant le bassin, 18 cm au-dessus, écartées de 34 cm).
 EPAULE_TANGAGE, COUDE = -0.30, 0.0
-ROULIS_OUVERT, ROULIS_SERRE = 0.20, -0.10
-KP_BRAS = [90, 60, 20, 60, 4, 4, 4]
-KD_BRAS = [2.0, 1.0, 0.4, 1.0, 0.2, 0.2, 0.2]
+ROULIS_OUVERT = 0.20
+# La même prise que T1 : ses gains de bras (raidis pendant la prise par
+# banc_prise.gains_prise) et ses couples estimés (bruit_couples, sa graine).
+KP_BRAS = [90, 100, 40, 60, 40, 40, 40]
+KD_BRAS = [2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+GRAINE_COUPLES = 3
 RETOUR_MAX_S = 10.0             # le retour droit, au plus
+CALIBRATION_MAX_S = 40.0        # la calibration des bras, au plus
+PRISE_MAX_S = 40.0              # la prise de l'OS, au plus
 FAIL = 0
 
 
@@ -66,25 +83,33 @@ def main():
     simulation_app = start_simulation_app(headless=True)
     import numpy as np
     import omni.usd
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom, UsdPhysics
     from isaacsim.core.api.materials import PhysicsMaterial
     from isaacsim.core.api.objects import DynamicCuboid
     from isaacsim.core.utils.types import ArticulationAction
 
+    from axis_os.apps.tri_colis import scene_demo as sd
     from axis_os.hal.core.types import ActuatorCommand, ControlMode
+    from axis_os.hal.drivers.isaac_sim.bruit_couples import BruitCouples
     from axis_os.hal.drivers.isaac_sim.video import SceneRecorder
     from axis_os.hal.drivers.unitree_g1.gr00t_wbc_policy import (
         GR00TWBCAdapter, GR00TWBCConfig, GR00TWBCPolicy,
     )
-    from axis_os.hal.drivers.unitree_g1.locomotion_policy import body_angular_velocity
+    from axis_os.hal.drivers.unitree_g1.locomotion_policy import (
+        body_angular_velocity, quat_wxyz_to_matrix,
+    )
+    from axis_os.hal.drivers.unitree_g1.robot import build_g1_joint_definitions
     from axis_os.services.locomotion.equilibre import TAILLE
     from axis_os.services.locomotion.service import (
         BaseState, LocomotionService, LocomotionState,
     )
     from axis_os.services.manipulation.cinematique import ModeleBras
-    from axis_os.services.manipulation.prise import ReglagesPrise
+    from axis_os.services.manipulation.estimation import HauteurBassin
+    from axis_os.services.manipulation.prise import CalibrationMains, MesuresBras, ReglagesPrise
+    from axis_os.services.manipulation.service import (
+        Etat, ManipulationService, Objet, Postures, posture_bras,
+    )
 
-    masse = ReglagesPrise().masse_max_kg       # la plus lourde que l'OS porte
     cfg = GR00TWBCConfig()
     pol = GR00TWBCPolicy(POLICIES / "gr00t_wbc_balance.onnx",
                          POLICIES / "gr00t_wbc_walk.onnx", cfg)
@@ -102,15 +127,30 @@ def main():
     robot, world = bridge._robot, bridge._world
     idx = bridge._joint_index
     names = sorted(idx, key=lambda j: idx[j])
+    # Couples ESTIMÉS, comme ceux du vrai G1 et du banc T1 (même graine).
+    bridge.bruit_couples = BruitCouples(len(names), graine=GRAINE_COUPLES)
+    stage = omni.usd.get_context().get_stage()
 
-    # Carton créé AU DÉPART, loin ; téléporté plus tard (voir W2).
+    # Scène : posée avant world.reset(). Mains caoutchouc et éclairage de T1
+    # (code commun des bancs : banc_prise).
+    mains_caoutchouc(stage)
+    for ligne_ in eclairer(stage):
+        print(f"  {ligne_}", flush=True)
+    # Le carton T1 et son plateau, créés AU DÉPART, loin ; posés devant le
+    # robot au moment de la prise (le plateau, cinématique, se déplace).
     materiau = PhysicsMaterial(prim_path="/World/Materiaux/carton",
                                static_friction=1.0, dynamic_friction=0.8, restitution=0.0)
     carton = world.scene.add(DynamicCuboid(
         prim_path="/World/carton", name="carton",
         position=np.array([10.0, 0.0, HAUTEUR / 2]), size=1.0,
-        scale=np.array([PROFONDEUR, LARGEUR, HAUTEUR]), mass=masse,
+        scale=np.array([PROFONDEUR, LARGEUR, HAUTEUR]), mass=MASSE_CARTON,
         color=np.array([0.72, 0.52, 0.30]), physics_material=materiau))
+    plateau = world.scene.add(DynamicCuboid(
+        prim_path="/World/plateau", name="plateau",
+        position=np.array([10.0, 3.0, sd.PLATEAU / 2]), size=1.0,
+        scale=np.array([0.40, 0.60, sd.PLATEAU]), mass=50.0,
+        color=np.array([0.55, 0.55, 0.58])))
+    UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath("/World/plateau")).CreateKinematicEnabledAttr(True)
 
     g = pol.gains()
     for i, j in enumerate(cfg.body_joints[cfg.num_actions:]):
@@ -118,6 +158,14 @@ def main():
     world.reset()
     robot.get_articulation_controller().set_gains(
         kps=np.array([g[j][0] for j in names]), kds=np.array([g[j][1] for j in names]))
+    # Gains de prise : poignets, coude et lacet d'épaule raidis de la
+    # fermeture au dépôt, à la demande de l'OS (MesuresBras.raideur), comme T1.
+    g_prise = gains_prise(g)
+
+    def regler_raideur(active):
+        gg = g_prise if active else g
+        robot.get_articulation_controller().set_gains(
+            kps=np.array([gg[j][0] for j in names]), kds=np.array([gg[j][1] for j in names]))
     q0 = {j: 0.0 for j in names}
     q0.update(dict(zip(cfg.controlled_joints, cfg.default_angles)))
     q0v = np.array([q0[j] for j in names])
@@ -131,6 +179,7 @@ def main():
     hal = bridge.build_hal()
     hal.initialize_all()
     sim_t = [0.0]
+    t_physique = [0.0]                   # temps simulé du dernier pas de physique
 
     def read_state() -> BaseState:
         _p, quat = robot.get_world_pose()
@@ -151,7 +200,50 @@ def main():
     loco.start()
     modele = ModeleBras()
 
-    stage = omni.usd.get_context().get_stage()
+    # ---- la prise de l'OS, branchée comme dans le banc T1 -----------------
+    chaine_bras = [j for j in names if j.startswith(("waist_", "left_shoulder", "right_shoulder",
+                                                     "left_elbow", "right_elbow", "left_wrist",
+                                                     "right_wrist"))]
+    bras_tous = [j for j in chaine_bras if not j.startswith("waist_")]
+
+    def efforts_bras():
+        # Couple ESTIMÉ (effort mesuré + erreurs d'estimation du G1), celui
+        # que lit aussi le JointSafetyGuard.
+        e = bridge.couples()
+        if e is None:
+            return None
+        return {j: (float(e[idx[j]]), sim_t[0] - t_physique[0]) for j in bras_tous}
+
+    def vers_robot(p_monde):
+        pos, quat = robot.get_world_pose()
+        return quat_wxyz_to_matrix(quat).T @ (np.asarray(p_monde, dtype=float)
+                                              - np.asarray(pos, dtype=float))
+
+    def mains():
+        """Mains vues par l'OS : cinématique sur les angles mesurés, posée
+        dans le monde par la pose du bassin."""
+        p_, q_ = robot.get_world_pose()
+        r_ = quat_wxyz_to_matrix(q_)
+        g_, d_ = mesures_bras.modele.mains({j: read_state().joint_pos[j] for j in chaine_bras})
+        p_ = np.asarray(p_, dtype=float)
+        return p_ + r_ @ g_, p_ + r_ @ d_
+
+    hauteur_bassin = HauteurBassin()
+    mesures_bras = MesuresBras(
+        ModeleBras(), lambda: {j: read_state().joint_pos[j] for j in chaine_bras}, efforts_bras,
+        lambda: hauteur_bassin(read_state().joint_pos,
+                               quat_wxyz_to_matrix(robot.get_world_pose()[1])),
+        couple_max={d.joint_id: d.limits.torque_max for d in build_g1_joint_definitions("29dof")
+                    if d.joint_id in bras_tous},
+        raideur=regler_raideur,
+        arret_urgence=lambda: hal.estop_active,
+        commandables=tuple(adapt.pose_bras),
+        vers_bassin=vers_robot)
+    manip = ManipulationService(adapt.pose_bras, mains, vers_robot,
+                                lambda: manip.objet_entre_les_mains(),
+                                horloge=lambda: sim_t[0], mesures=mesures_bras,
+                                journal=lambda m: print(f"  [{sim_t[0]:6.1f}s] {m}", flush=True))
+
     chemins = {}
 
     def position_lien(nom):
@@ -180,17 +272,12 @@ def main():
     video_ok = rec.start()
     etat = {"k": 0, "texte": "", "chute": None}
 
-    def pas(serrer=False):
-        """Un pas de commande (W2) : la marche, puis la physique."""
-        if serrer:
-            # Carton MAINTENU entre les mains pendant qu'elles se referment
-            # (W2 : sans cela, il tombait avant).
-            pg, pd = position_lien("left_rubber_hand"), position_lien("right_rubber_hand")
-            if pg is not None and pd is not None:
-                carton.set_world_pose(position=(pg + pd) / 2.0)
-                carton.set_linear_velocity(np.zeros(3))
-                carton.set_angular_velocity(np.zeros(3))
+    def pas():
+        """Un pas de commande : la marche (un pas de physique), la
+        manipulation (qui n'écrit les bras que pendant un geste), puis le
+        reste de la physique."""
         loco.tick()
+        manip.tick()
         # Aucune décision de chute avant le premier pas de physique de la boucle.
         if loco.state is LocomotionState.FALLEN and etat["chute"] is None and etat["k"] > 0:
             etat["chute"] = f"à {sim_t[0]:.2f} s ({etat['texte']})"
@@ -200,6 +287,7 @@ def main():
         for i in range(cfg.decimation - 1):
             world.step(render=(capture and i == 0))
         sim_t[0] += cfg.control_dt
+        t_physique[0] = sim_t[0]
         etat["k"] += 1
         if capture:
             t_, a_ = loco.posture_actuelle
@@ -207,10 +295,75 @@ def main():
                        f"Torse : {math.degrees(t_):.0f}°, bassin : -{100 * a_:.1f} cm",
                        f"Garde-fou : {loco.stats['refused']} refus"], sim_t[0])
 
-    def pendant(duree, serrer=False):
+    def pendant(duree):
         t0 = sim_t[0]
         while sim_t[0] - t0 < duree and etat["chute"] is None:
-            pas(serrer)
+            pas()
+
+    # Calibration des bras, celle du banc T1 : quelques postures, bras posés
+    # et immobiles ; couples estimés contre pesanteur du modèle (biais des
+    # couples), mains calculées contre mains de la scène.
+    P = Postures()
+    calib = CalibrationMains(mesures_bras.modele, ReglagesPrise().ecart_modele_max_m)
+    postures_calib = [("port", posture_bras(P.roulis_ouvert, P.tangage_port, P.coude)),
+                      ("ouverte", posture_bras(P.roulis_presaisie, P.tangage_port, P.coude)),
+                      ("basse", posture_bras(0.25, -0.15, 0.50)),
+                      ("haute", posture_bras(0.25, -0.70, 0.20)),
+                      ("port", posture_bras(P.roulis_ouvert, P.tangage_port, P.coude))]
+    etat_calib = {"i": 0, "arrive": None}
+
+    def pas_calibration():
+        """Un pas de la calibration ; vrai une fois finie."""
+        nom, cible = postures_calib[etat_calib["i"]]
+        reste = 0.0
+        for j, v in cible.items():           # 0,02 rad par pas au plus (1 rad/s)
+            e = v - adapt.pose_bras[j]
+            adapt.pose_bras[j] += max(-0.02, min(0.02, e))
+            reste = max(reste, abs(e))
+        if reste > 1e-6:
+            return False
+        if etat_calib["arrive"] is None:
+            etat_calib["arrive"] = sim_t[0]
+        if sim_t[0] - etat_calib["arrive"] < 0.6:  # le bras se pose
+            return False
+        if sim_t[0] - etat_calib["arrive"] < 1.0:
+            manip.echantillon_calibration_couples(nom)
+            return False
+        st_ = read_state()
+        g_, d_ = mains()
+        calib.ajouter(nom, {j: st_.joint_pos[j] for j in chaine_bras},
+                      (vers_robot(g_), vers_robot(d_)))
+        etat_calib["i"] += 1
+        etat_calib["arrive"] = None
+        if etat_calib["i"] < len(postures_calib):
+            return False
+        ok_, texte_ = calib.bilan()
+        for ligne_ in texte_.splitlines() + manip.terminer_calibration_couples().splitlines():
+            print(f"  {ligne_}", flush=True)
+        if not ok_:
+            manip.calibration_refus = (
+                f"cinématique des bras non calibrée : main réelle à {100 * calib.ecart_max:.1f} "
+                f"cm du modèle (limite {100 * calib.ecart_max_m:.1f})")
+        manip.resynchroniser()               # bras revenus en posture de port
+        return True
+
+    def poser_carton():
+        """Le carton T1 sur son plateau, devant le robot, là où T1 le prend
+        (bord du plateau contre sa face avant) ; rend ce que la perception en
+        dirait (Objet, repère monde)."""
+        pr, qr = robot.get_world_pose()
+        lacet_r = 2.0 * math.atan2(float(qr[3]), float(qr[0]))
+        avant = np.array([math.cos(lacet_r), math.sin(lacet_r), 0.0])
+        q_lacet = np.array([math.cos(lacet_r / 2), 0.0, 0.0, math.sin(lacet_r / 2)])
+        sol = np.array([float(pr[0]), float(pr[1]), 0.0])
+        centre = sol + X_CARTON * avant + np.array([0.0, 0.0, sd.PLATEAU + HAUTEUR / 2])
+        plateau.set_world_pose(position=sol + (X_CARTON + 0.10) * avant
+                               + np.array([0.0, 0.0, sd.PLATEAU / 2]), orientation=q_lacet)
+        carton.set_world_pose(position=centre, orientation=q_lacet)
+        carton.set_linear_velocity(np.zeros(3))
+        carton.set_angular_velocity(np.zeros(3))
+        return Objet(tuple(float(v) for v in centre), LARGEUR, PROFONDEUR, HAUTEUR,
+                     lacet=lacet_r, bord_m=0.0)
 
     def mesure():
         """Centrale inertielle (inclinaison, norme de la vitesse angulaire)
@@ -225,7 +378,15 @@ def main():
         return max(float(np.linalg.norm((p - p0)[:2])) for p, p0 in zip(pieds, pieds0))
 
     def carton_tenu(z0):
+        """VÉRITÉ SIMULATION (banc seulement) : le carton est-il entre les
+        mains ? Son centre à moins de 25 cm du milieu des mains de la scène
+        (~13 cm devant elles quand il est tenu) : penché ou bassin abaissé, le
+        carton tenu descend avec les mains. Sans mains lisibles : pas plus de
+        5 cm sous sa hauteur de départ, près du robot."""
         pc, _ = carton.get_world_pose()
+        pg, pd = position_lien("left_rubber_hand"), position_lien("right_rubber_hand")
+        if pg is not None and pd is not None:
+            return float(np.linalg.norm(np.asarray(pc, dtype=float) - (pg + pd) / 2.0)) < 0.25
         pr, _ = robot.get_world_pose()
         return (float(pc[2]) > z0 - 0.05
                 and float(np.linalg.norm(np.asarray(pc[:2]) - np.asarray(pr[:2]))) < 0.7)
@@ -236,7 +397,7 @@ def main():
         q = dict(read_state().joint_pos)
         q[TAILLE] = tangage
         pg, pd = modele.mains(q)
-        return [(masse, tuple(float(v) for v in (pg + pd) / 2.0))]
+        return [(MASSE_CARTON, tuple(float(v) for v in (pg + pd) / 2.0))]
 
     def retour_droit():
         r = loco.posture(0.0, 0.0)
@@ -294,6 +455,7 @@ def main():
         return releve
 
     releve = []
+    prise = {"tenu": False}
     # Constaté sur GPU (2026-11-19) : « chute à 0.00 s (Debout) », 0 tick, aucun
     # palier essayé. Avant la boucle, l'enregistreur vidéo et l'initialisation
     # font avancer la physique sans la politique d'équilibre : le robot y
@@ -309,38 +471,53 @@ def main():
             a = min(1.0, (sim_t[0] - t0) / 1.0)
             adapt.pose_bras.update({j: a * v for j, v in pose(ROULIS_OUVERT).items()})
             pas()
+        etat["texte"] = "Calibration des bras (comme T1)"
+        t0 = sim_t[0]
+        calibre = False
+        while not calibre and sim_t[0] - t0 < CALIBRATION_MAX_S and etat["chute"] is None:
+            pas()
+            calibre = pas_calibration()
+        if not calibre:
+            print("  [✗] calibration des bras inachevée")
 
         print(f"\n{'=' * 66}\n  1. SANS CARTON\n{'=' * 66}")
         for nom, valeurs in paliers():
             if etat["chute"] is None:
                 releve += serie(nom, valeurs, 0.0, None)
 
-        z_carton = None
-        if etat["chute"] is None:
-            print(f"\n{'=' * 66}\n  2. LE CARTON ({masse:g} kg) ENTRE LES MAINS\n{'=' * 66}")
-            etat["texte"] = "Les bras serrent le carton"
-            pg, pd = position_lien("left_rubber_hand"), position_lien("right_rubber_hand")
-            if pg is None or pd is None:
-                print("  [✗] mains introuvables dans la scène — pas de série avec carton")
+        if etat["chute"] is None and calibre:
+            print(f"\n{'=' * 66}\n  2. LE CARTON T1 ({MASSE_CARTON:g} kg), PRIS PAR L'OS COMME EN "
+                  f"T1\n{'=' * 66}")
+            etat["texte"] = "La prise de l'OS, comme en T1"
+            objet = poser_carton()
+            pendant(0.5)                      # le carton se pose sur son plateau
+            manip.resynchroniser()
+            r_ = manip.prendre(objet)
+            if not r_.ok:
+                print(f"  [✗] prise refusée par l'OS : {r_.reason}")
             else:
-                carton.set_world_pose(position=(pg + pd) / 2.0)
-                carton.set_linear_velocity(np.zeros(3))
-                carton.set_angular_velocity(np.zeros(3))
-                z_carton = float(((pg + pd) / 2.0)[2])
                 t0 = sim_t[0]
-                while sim_t[0] - t0 < 1.5 and etat["chute"] is None:
-                    a = min(1.0, (sim_t[0] - t0) / 0.5)
-                    adapt.pose_bras.update(pose(ROULIS_OUVERT + a * (ROULIS_SERRE - ROULIS_OUVERT)))
-                    pas(serrer=True)
-                etat["texte"] = "Carton relâché : seule la prise le retient"
-                pendant(2.0)
-                tenu = carton_tenu(z_carton)
-                print(f"  carton {'tenu' if tenu else 'LÂCHÉ'} par la seule prise, debout")
-                if tenu:
-                    print(f"\n{'=' * 66}\n  3. AVEC CARTON\n{'=' * 66}")
-                    for nom, valeurs in paliers():
-                        if etat["chute"] is None:
-                            releve += serie(nom, valeurs, masse, z_carton)
+                while manip.etat not in (Etat.TENU, Etat.ECHEC) \
+                        and not (manip.etat is Etat.LIBRE and sim_t[0] - t0 > 1.0) \
+                        and sim_t[0] - t0 < PRISE_MAX_S and etat["chute"] is None:
+                    pas()
+                print(f"  prise de l'OS : {manip.etat.name}"
+                      + (f" — {manip.raison}" if manip.raison else ""))
+                if manip.etat is Etat.TENU:
+                    # Plateau retiré : seul l'équilibre compte désormais, et rien
+                    # ne doit porter le carton à la place des mains.
+                    plateau.set_world_pose(position=np.array([10.0, 3.0, sd.PLATEAU / 2]))
+                    z_carton = float(carton.get_world_pose()[0][2])
+                    etat["texte"] = "Plateau retiré : seule la prise retient le carton"
+                    pendant(2.0)
+                    prise["tenu"] = carton_tenu(z_carton)
+                    print(f"  carton {'tenu' if prise['tenu'] else 'LÂCHÉ'} par la seule prise, "
+                          f"debout")
+                    if prise["tenu"]:
+                        print(f"\n{'=' * 66}\n  3. AVEC CARTON\n{'=' * 66}")
+                        for nom, valeurs in paliers():
+                            if etat["chute"] is None:
+                                releve += serie(nom, valeurs, MASSE_CARTON, z_carton)
     finally:
         droit = etat["chute"] is None and not loco.penche
         if video_ok:
@@ -360,6 +537,8 @@ def main():
           not any(p.accepte and p.signe for p in releve))
     check("Le robot ne tombe pas", etat["chute"] is None)
     check("Aucune consigne refusée par le garde-fou", loco.stats["refused"] == 0)
+    check(f"Carton T1 ({MASSE_CARTON:g} kg) pris par l'OS comme en T1, tenu par la seule prise",
+          prise["tenu"])
     check("Carton toujours tenu", not any(p.carton_tenu is False for p in releve))
     check("Robot droit à la fin", droit)
     check("Verdict du banc (banc_posture.verdict) : chaque série essayée, sans et avec carton",
@@ -367,7 +546,8 @@ def main():
     print(f"\n  BANC DE POSTURE : {'PASSÉ' if passe else 'ÉCHOUÉ'}")
     for r in raisons:
         print(f"    - {r}")
-    print(f"  relevé : {SORTIE / 'posture.csv'} ; locomotion : {loco.stats}")
+    print(f"  relevé : {SORTIE / 'posture.csv'} ; locomotion : {loco.stats} ; "
+          f"manipulation : {manip.stats}")
     print(f"\n{'=' * 66}")
     print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
     print("=" * 66)

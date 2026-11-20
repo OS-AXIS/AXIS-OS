@@ -87,7 +87,7 @@ from collections import deque
 from dataclasses import replace
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import numpy as np
 
@@ -97,8 +97,8 @@ from axis_os.store.sdk.manifest import Capability
 
 from .prise import (
     CalibrationCouples, MesuresBras, ReglagesPrise, cibles_mains, distance_ideale,
-    ecart_ligne_cg, efforts_valides, garde_plateau, main_retenue, positions_valides, resoudre,
-    signal_contact, tolerances_cg,
+    ecart_ligne_cg, efforts_valides, garde_plateau, main_retenue, poids_pese, positions_valides,
+    resoudre, signal_contact, tolerances_cg,
 )
 
 
@@ -653,6 +653,16 @@ class ManipulationService(IService):
         # la fermeture, où leur biais s'annule (calibré ou non) ; décide du
         # plafond de masse (masse_max_kg).
         self.poids_tare: Optional[float] = None
+        # Pesée (ReglagesPrise.lectures_pesee) : lectures (poids, poussée,
+        # taré) prises bras immobiles depuis la confirmation, dernière lecture
+        # de la charge pas encore comptée, angles des bras à la lecture
+        # d'avant (horodatés), vitesse la plus forte des bras gardée, lectures
+        # écartées (bras qui bougeaient).
+        self._lectures_pesee: list = []
+        self._lecture_charge: Optional[tuple] = None
+        self._angles_pesee: Optional[Tuple[float, Dict[str, float]]] = None
+        self._vitesse_pesee = 0.0
+        self._ecartees_pesee = 0
         # Retour en corps rigide : (centre de départ, pose de chaque main
         # commandée, serrage) au début du geste ; poses des mains MESURÉES
         # au début du geste ; roulis et tangage estimés du carton (degrés) ;
@@ -873,6 +883,9 @@ class ManipulationService(IService):
                   # tourner : le torse sur le bassin).
                   "rotation_port": self.rotation_port, "derive_port": self.derive_port,
                   "marge_frottement": self.marge_frottement,
+                  # Le poids de la marge (pesé une fois, bras immobiles), à
+                  # côté de la charge lue à chaque instant.
+                  "poids_pese": self.poids_carton,
                   "resserrages": self.resserrages_ce_port,
                   "taille": {j: float(v) for j, v in angles.items() if j.startswith("waist_")}}
         for k, cote in enumerate(("left", "right")):
@@ -2301,6 +2314,8 @@ class ManipulationService(IService):
         r = self.r
         self.serrage_vise, self.serrage_requis, self.charge = None, None, None
         self.poids_carton, self.poids_tare, self._t_attente_serrage = None, None, None
+        self._lectures_pesee, self._lecture_charge, self._angles_pesee = [], None, None
+        self._vitesse_pesee, self._ecartees_pesee = 0.0, 0
         self._rigide, self._resserrage_force = None, False
         self._t_serrage_bloque, self._record_serrage = None, {}
         self._delta_max_poids = {c: self._delta_max.get(c, 0.0) + r.penetration_poids_max_m
@@ -2322,6 +2337,67 @@ class ManipulationService(IService):
         self._c_de, self._c_vers = centre, self._centre_porte
         self._aller(Etat.LEVAGE)
 
+    def _peser(self, tau: Dict[str, float]) -> Union[bool, str]:
+        """Une lecture de la pesée (ReglagesPrise.lectures_pesee) : la
+        dernière lecture de la charge, gardée si aucune articulation des bras
+        n'a bougé de plus de vitesse_pesee_max_rad_s depuis la lecture
+        d'avant. Une main qui passe sous force_min_n (le serrage qui confirme
+        la prise) écourte la pesée, au moins filtre_force × 3 lectures : on ne
+        reste pas au serrage de prise pendant qu'une main se relâche. True une
+        fois le carton pesé (poids_carton, poids_tare, au journal), False tant
+        qu'on lit, ou la raison de le reposer (pas assez de lectures bras
+        immobiles en duree_pesee_max_s)."""
+        r = self.r
+        t = self._horloge()
+        forces = self._mesurer_forces(tau)
+        relache = bool(forces) and min(forces.values()) < r.force_min_n
+        lecture, self._lecture_charge = self._lecture_charge, None
+        angles = self._angles_mesures()
+        if angles is not None:
+            bras = {j: float(angles[j]) for c in self._ROULIS for j in self._BRAS_COTE[c]
+                    if j in angles}
+            avant, self._angles_pesee = self._angles_pesee, (t, bras)
+            if lecture is not None and avant is not None and t > avant[0]:
+                v = max((abs(q - avant[1][j]) for j, q in bras.items() if j in avant[1]),
+                        default=0.0) / (t - avant[0])
+                if v <= r.vitesse_pesee_max_rad_s:
+                    self._lectures_pesee.append(lecture)
+                    self._vitesse_pesee = max(self._vitesse_pesee, v)
+                else:
+                    self._ecartees_pesee += 1
+        n, n_min = len(self._lectures_pesee), max(1, r.filtre_force * 3)
+        duree = t - self._t_attente_serrage
+        # Bras commandés immobiles qui bougent quand même : le carton bouge
+        # entre les mains (campagne de cartons variés : un carton de 1,27 kg
+        # glissait de 12 mm/s au serrage de prise, l'épaule broutait). Décidé
+        # dès que les lectures écartées passent les immobiles, sans le laisser
+        # glisser jusqu'à duree_pesee_max_s.
+        bouge = self._ecartees_pesee >= n_min and self._ecartees_pesee > n
+        ecourtee = relache and n >= n_min and n < r.lectures_pesee
+        if n < r.lectures_pesee and duree < r.duree_pesee_max_s and not ecourtee and not bouge:
+            return False
+        if n < n_min:
+            return (f"pesée impossible : les bras ne se posent pas en haut du levage ({n} "
+                    f"lecture(s) immobiles en {duree:.1f} s, au moins {n_min} ; "
+                    f"{self._ecartees_pesee} à plus de {r.vitesse_pesee_max_rad_s:g} rad/s) : le "
+                    f"carton bouge entre les mains (trop lourd ou trop glissant pour le serrage "
+                    f"de prise, il n'a pas suivi)")
+        self.poids_carton, incertitude = poids_pese([v[0] for v in self._lectures_pesee],
+                                                    r.part_ecartee_pesee)
+        tares = [v[2] for v in self._lectures_pesee if v[2] is not None]
+        self.poids_tare = poids_pese(tares, r.part_ecartee_pesee)[0] if tares else None
+        self._noter(f"poids du carton : {self.poids_carton:.1f} N (moyenne tronquée de {n} "
+                    f"lectures en {duree:.1f} s, bras immobiles : au plus "
+                    f"{self._vitesse_pesee:.3f} rad/s"
+                    + (f", {self._ecartees_pesee} écartée(s)" if self._ecartees_pesee else "")
+                    + (f" ; écourtée, une main sous {r.force_min_n:g} N "
+                       f"({min(forces.values()):.1f})" if ecourtee else "")
+                    + f" ; à ±{2 * incertitude:.2f} N près, deux écarts types ; en haut du "
+                    f"levage, avant de serrer plus)"
+                    + ("" if self.poids_tare is None else
+                       f" ; taré depuis la fermeture : {self.poids_tare:.1f} N"))
+        return True
+
     def _pas_levage_mesure(self) -> None:
         r, p = self.r, self.p
         tau, raison = self._efforts()
@@ -2338,20 +2414,16 @@ class ManipulationService(IService):
             return
         if self._t_attente_serrage is not None:
             # Prise confirmée, en haut : on pèse le carton, bras immobiles,
-            # sur une fenêtre entière de lectures depuis la confirmation (leur
-            # médiane), puis on serre d'après ce poids, avant de ramener ; au
-            # plus duree_serrage_poids_max_s bloqué.
+            # sur lectures_pesee lectures depuis la confirmation (_peser,
+            # moyenne tronquée), puis on serre d'après ce poids, avant de
+            # ramener ; au plus duree_serrage_poids_max_s bloqué.
             if self.poids_carton is None and self.charge is not None:
-                if len(self._hist_charge) < self._hist_charge.maxlen:
+                pesee = self._peser(tau)
+                if isinstance(pesee, str):
+                    self._reposer(pesee)
                     return
-                self.poids_carton = float(np.median([v[0] for v in self._hist_charge]))
-                tares = [v[2] for v in self._hist_charge if v[2] is not None]
-                self.poids_tare = float(np.median(tares)) if tares else None
-                self._noter(f"poids du carton : {self.poids_carton:.1f} N (médiane de "
-                            f"{len(self._hist_charge)} lectures, bras immobiles en haut du "
-                            f"levage, avant de serrer plus)" + (
-                                "" if self.poids_tare is None else
-                                f" ; taré depuis la fermeture : {self.poids_tare:.1f} N"))
+                if not pesee:
+                    return
                 pese = self.poids_carton if self.poids_tare is None else self.poids_tare
                 if min(self.poids_carton, pese) < r.poids_min_n:
                     # Il ne pèse pas sur les mains : resté sur la table, elles ont
@@ -2420,6 +2492,9 @@ class ManipulationService(IService):
         if confirme:
             self._t_attente_serrage = self._horloge()
             self._hist_charge.clear()
+            # La pesée ne compte que les lectures qui suivent la confirmation.
+            self._lectures_pesee, self._lecture_charge, self._angles_pesee = [], None, None
+            self._vitesse_pesee, self._ecartees_pesee = 0.0, 0
             return
         self._essai += 1
         if self._essai >= r.essais_max:
@@ -2753,7 +2828,12 @@ class ManipulationService(IService):
                   f"{1000 * r.ecart_face_port_m:.0f})"] if ecartees else [])
                 + ([f"marge de frottement {self.marge_frottement:.2f} (au moins "
                     f"{r.securite_serrage:g}" + (f", {seuil:g} pour repartir"
-                                                  if seuil > r.securite_serrage else "") + ")"]
+                                                  if seuil > r.securite_serrage else "")
+                    # Le poids de la marge : celui pesé une fois, bras immobiles
+                    # (poids_carton), jamais le poids lu en marchant ; sans
+                    # pesée, le plus grand lu depuis le levage (le plus prudent).
+                    + (f" ; sur les {poids:.1f} N pesés)" if self.poids_carton else
+                       f" ; pas de pesée : sur le plus grand poids lu, {poids:.1f} N)")]
                    if faible else [])
                 + ([f"carton tourné au retour, serrage visé {cible / 2.0:.1f} N par main"]
                    if force else []))
@@ -2902,6 +2982,7 @@ class ManipulationService(IService):
                                   sum(float(f @ vers_robot) for f in forces),
                                   sum(float(f @ haut) for f in tare)
                                   if tare and all(f is not None for f in tare) else None))
+        self._lecture_charge = self._hist_charge[-1]     # pour la pesée, comptée une fois
         self.charge = (float(np.mean([v[0] for v in self._hist_charge])),
                        float(np.mean([v[1] for v in self._hist_charge])))
         return self.charge

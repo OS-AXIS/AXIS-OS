@@ -1056,3 +1056,170 @@ faisables sur 33 (le n° 75 au lieu du n° 90), 19 sur 35 au balayage.
 - **Repose sûre** : la PR suivante (même chemin rigide vérifié que la
   dépose, serrage gardé jusqu'au contact, ouverture vérifiée ; un carton
   qui tombe en repose devient un cas interdit de la campagne).
+
+## 12. Essai T1 du 19 novembre 2026, 22 h 04 : pesé 10,6 N pour 9,8, port interrompu, carton tenu
+
+- prise parfaite ;
+- « transport interrompu : serrage perdu au port malgré le resserrage
+  (marge de frottement 1.94 (au moins 2, 2.2 pour repartir)) », après 4
+  resserrages et 2 s de port ;
+- le carton était pourtant tenu : tourné de 1° au plus (mains mesurées),
+  force du juge de 12 à 13,3 N par main.
+
+Banc de posture du même jour (21 h 51) : sans carton, tout passe ; le
+carton de 1,2 kg est « LÂCHÉ par la seule prise ». Le rejeu est dans
+`test/test_rejeu_port_t2204.py` (`test/donnees/t1_prise_20261119_2204.csv`,
+levage et port ; `t1_levage_20261119_1716.csv`, le levage de 17 h 16).
+
+### La marge du port : déjà sur le poids pesé
+
+- **Calcul.** La marge vaut 0,8 × (somme des forces normales) / poids,
+  avec le poids pesé une fois, bras immobiles (`poids_carton`, depuis le
+  §7). Jamais avec le poids lu en marchant (`poids_os_n`, de 9,6 à
+  11,2 N). Le 1,94 vaut 0,8 × 25,7 N / 10,6 N ; sur les 9,81 N vrais,
+  2,10.
+- **Ce qui la faisait baisser :**
+  - le poids pesé 8 % trop lourd ;
+  - le serrage réel, qui varie à la marche : juge de 10,5 à 14,3 N par
+    main. Sur 1 s, avec le vrai poids, la marge réelle va de 2,03 à 2,12 :
+    tenu, au ras de 2 (poignets à leurs plafonds).
+- **Désormais** : le journal le dit (« marge de frottement … ; sur les
+  10.6 N pesés »), le relevé du banc T1 a une colonne `poids_pese_n` à
+  côté de `poids_os_n`, et `test_port_sans_derive` (§6) le vérifie : le
+  poids lu monte de 9,9 à 11,2 N, la marge ne bouge pas.
+
+### La pesée : d'où viennent les +8 %
+
+- **Bras immobiles : oui.** 1 mrad au plus pendant la fenêtre, et la
+  confirmation tombe à la fin du levage commandé (2 s, profil adouci).
+- **Dynamique de la base : non.** Aux mêmes instants, les couples du
+  relevé pèsent 9,65 N (−1,6 %). C'est une autre lecture du même état
+  physique : le banc tire un bruit neuf à chaque lecture des couples. Une
+  vraie charge (base qui accélère) aurait relevé les deux. Le poids estimé
+  est d'ailleurs peu sensible à l'inclinaison du bassin (0,09 N par degré
+  au plus).
+- **La fenêtre : oui.** 15 lectures (0,3 s), quand une lecture a ~1 N
+  d'écart type (bruit des couples estimés, 0,3 N·m par articulation) :
+  ±2,5 % (un écart type). L'OS est tombé haut ; 1716, par chance, juste.
+- **Et un biais de +2 à +5 %, côté lourd.** Sans les erreurs de gain des
+  couples estimés du banc (±5 % par moteur, comme l'estimation par le
+  courant du vrai G1 ; connues pour sa graine), les couples du relevé
+  pèsent 9,79 N (−0,2 %).
+  - Presque tout l'écart vient des deux coudes (gains 1,047 et 0,980), par
+    où passe le poids du carton.
+  - Leur pesanteur varie trop peu d'une posture de calibration à l'autre
+    pour en mesurer le gain (la calibration exige 1 N·m d'écart).
+- **Pas le point de contact.** Le vrai (juge) est à 12,3 cm le long de la
+  main, à la surface de la paume (4,7 cm de l'axe), 2,4 à 3,3 cm au-dessus
+  de l'axe. Le prendre allège la pesée de 4 %, mais la force normale
+  passerait de 2 à 4 % sous le juge, et le robot simulé de la CI génère
+  ses couples à 11 cm : inchangé.
+- **Pas plus serré.** L'estimation baisse quand on serre plus (−0,06 à
+  −0,12 N par newton de serrage par main) : la pesée reste au serrage de
+  prise, avant de serrer plus.
+
+### Ce qui change : la pesée longue (`poids_pese`, `_peser`)
+
+- **50 lectures** (`lectures_pesee`) en 1 s, en haut du levage, avant de
+  serrer plus.
+- **Bras immobiles, vérifiés** : une lecture prise pendant qu'une
+  articulation des bras bouge de plus de 0,05 rad/s
+  (`vitesse_pesee_max_rad_s`) est écartée.
+- **Moyenne tronquée** (`part_ecartee_pesee`, 10 % de chaque côté) : la
+  première lecture après la remise à zéro (12,06 N à 22 h 04) n'y pèse
+  pas.
+- **Au plus 2 s** (`duree_pesee_max_s`), puis sur ce qu'on a (au moins
+  15 lectures, la fenêtre d'avant), sinon le carton est reposé.
+- **Jamais au serrage de prise avec une main qui se relâche** : une main
+  sous `force_min_n` (le serrage qui confirme la prise) écourte la pesée,
+  au moins 15 lectures, et le serrage d'après le poids reprend. Trouvé par
+  `test_force_main` (§7) : carton pris 2 cm à côté de sa perception, la
+  main la moins enfoncée passait de 6,8 à 3,6 N en 1 s d'attente.
+- **Carton qui bouge entre les mains** : plus de lectures écartées
+  qu'immobiles (au moins 15), il est reposé sans attendre, « trop lourd ou
+  trop glissant pour le serrage de prise ». Trouvé par la campagne : un
+  carton de 1,27 kg glissait de 12 mm/s au serrage de prise, l'épaule
+  broutait ; reposé en 0,3 s, comme sur main.
+- **Au journal**, son incertitude (deux écarts types).
+
+| Rejoué | 15 lectures (avant) | Pesée longue |
+|---|---|---|
+| 22 h 04 | 10,61 N (+8,1 %) | 10,27 N (+4,7 %, 35 lectures du palier) |
+| 17 h 16 | 9,79 N (−0,2 %) | 9,97 N (+1,6 %) |
+| D'un tirage à l'autre (95 %) | ±4,6 % | ±1,4 % |
+
+**À 3 % près : pas encore.** La pesée est trois fois plus reproductible,
+mais le biais des gains des coudes reste : +2 à +5 % sur ces essais, côté
+lourd.
+
+### Le port rejoué : un carton de 1 kg à la limite de ces mains
+
+La règle du port de l'OS, rejouée sur sa marge de l'essai ramenée à
+chaque poids :
+- **10,6 N (l'essai)** : base arrêtée de 47,44 s jusqu'au bout du relevé ;
+  l'essai abandonne à 48,4 s, 1 s après ;
+- **9,81 N (le vrai)** : chaque arrêt est repris ;
+- **10,27 N (la pesée longue)** : le dernier arrêt n'est toujours pas
+  repris à la fin du relevé.
+
+La marge réelle va de 2,03 à 2,12. Les poignets sont à leurs plafonds
+(tangage et lacet, 2,5 N·m) : le serrage plafonne vers 12,7 N par main.
+Pour porter ce carton sans s'arrêter, il faut le peser à ~2 % près.
+Coefficient de sécurité (2), frottement (0,8) et plafonds sont inchangés.
+Les voies possibles, à décider :
+- calibrer le gain des coudes (une pesée de référence d'une masse connue,
+  par robot) ;
+- des cartons plus légers : 0,8 kg laissent une marge de ~2,6 au même
+  serrage ;
+- accepter qu'un carton de 1 kg arrête souvent la marche.
+
+### Test modifié : l'hystérésis stricte (`test_port_sans_derive`, §5)
+
+La pesée dure 1 s : la suite des tirages du bruit des couples pendant le
+port en est décalée. Le scénario « stricte, reprise 0,1 au-dessus » finit
+alors sur un arrêt propre au lieu d'un port mené au bout.
+- **Sur 8 tirages du bruit**, c'est 3 fois sur 8 : quand les bras
+  n'atteignent pas la reprise à temps, la stricte s'arrête proprement.
+  C'est son rôle. Le contrôle d'avant tenait à un tirage.
+- **Il vérifie désormais** ce qu'elle garantit : chaque reprise au-dessus
+  de la reprise (toutes, plus seulement la première), carton toujours
+  tenu, plafonds et garde-fou respectés, et en cas d'arrêt, un arrêt
+  propre.
+- **Le repli aux plafonds** (le réglage par défaut) mène le port au bout
+  dans les 8 tirages.
+
+### Banc de posture : la même prise que T1, la scène éclairée
+
+- **Avant** : carton de 1,2 kg glissé entre des mains molles (poignets à
+  kp 4, sans caoutchouc), lâché ; caméra spectateur sans image après 120
+  rendus (le seul dôme du pont).
+- **Désormais** : le carton T1 (1 kg), posé sur un plateau devant le
+  robot, là où T1 le prend, et pris par l'OS (`ManipulationService.prendre`)
+  avec la prise de T1 :
+  - ses gains de bras, raidis pendant la prise (`gains_prise`) ;
+  - mains caoutchouc ;
+  - couples estimés (même graine) ;
+  - calibration des couples et des mains.
+- Le plateau est retiré une fois le carton tenu.
+- **Éclairage** : celui de T1, code commun (`banc_prise.eclairer`,
+  `mains_caoutchouc`).
+- **Caméras** : l'attente d'une image non nulle regarde toute l'image, plus
+  seulement son coin haut gauche.
+
+### Scène T1 : cartons plus légers pour la vidéo
+
+`--masse-carton` (1,0 kg par défaut, le carton T1), par exemple
+`bash lancer_t1.sh 1800 10 --masse-carton 0.5 --vue-sans-calques`.
+
+### À vérifier au prochain essai GPU
+
+- T1 :
+  - `poids du carton : … (moyenne tronquée de 50 lectures en 1.0 s, bras
+    immobiles : …)` ;
+  - `port : marge de frottement … (… ; sur les … N pesés)` ;
+  - la colonne `poids_pese_n` du relevé.
+- Banc de posture :
+  - `prise de l'OS : TENU` ;
+  - `carton tenu par la seule prise` ;
+  - la série « avec carton » ;
+  - `[spectateur] premières données après …`.

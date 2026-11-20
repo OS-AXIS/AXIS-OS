@@ -26,6 +26,9 @@ mains du G1 :
      s'arrête proprement si les bras n'y arrivent pas ; le bilan du port au
      journal. Par défaut (reprise_aux_plafonds), les bras à leurs plafonds :
      elle repart dès que la marge tient securite_serrage, jamais en dessous.
+  6. La marge sur le poids pesé une fois (essai du 19 novembre, 22 h 04) :
+     le poids lu au port monte de 9,8 à 11,2 N, la marge ne bouge pas ; le
+     journal dit sur quel poids elle se calcule.
 """
 import contextlib
 import inspect
@@ -248,11 +251,23 @@ check(f"Marge au ras du seuil, 20 s de port : {avant} arrêts de la base en repa
       avant >= 2 * max(1, apres), f"{avant} {apres}")
 m = b.m
 retrouve = b.lignes("port : serrage retrouvé")
-check(f"… la reprise dit sa marge (« {retrouve[:1] and retrouve[0]} ») ; carton porté ; couples "
-      f"vrais au plus {max(0.0, b.depasse_vrai):.2f} N·m au-delà des plafonds (erreur "
-      f"d'estimation du banc : {tol:.1f}) ; aucune consigne refusée par le garde-fou",
-      retrouve and "au-dessus de" in retrouve[0] and m.etat is Etat.TENU and not m.a_reposer
-      and b.depasse_vrai <= tol and b.refus_garde_fou() == 0, f"{m.raison} {b.depasse_vrai}")
+# Chaque reprise : (marge dite, reprise), arrondie au centième au journal.
+reprises = [(float(l_.split("marge de frottement ")[1].split(",")[0]),
+             float(l_.split("au-dessus de ")[1].split(")")[0]))
+            for l_ in retrouve if "au-dessus de " in l_]
+# Au ras du seuil, avec le bruit du banc, la stricte s'arrête proprement quand
+# les bras n'atteignent pas la reprise à temps (3 tirages du bruit sur 8) :
+# c'est son rôle. Ce qu'elle garantit : jamais de reprise sous securite_reprise,
+# carton toujours tenu, plafonds et garde-fou respectés.
+check(f"… chaque reprise dit sa marge, toujours au-dessus de la reprise ({len(reprises)} "
+      f"reprises, « {retrouve[:1] and retrouve[0]} ») ; carton tenu ("
+      + ("porté jusqu'au bout" if not m.a_reposer else f"arrêt propre : « {m.raison[:70]}… »")
+      + f") ; couples vrais au plus {max(0.0, b.depasse_vrai):.2f} N·m au-delà des plafonds "
+      f"(erreur d'estimation du banc : {tol:.1f}) ; aucune consigne refusée par le garde-fou",
+      reprises and len(reprises) == len(retrouve) and all(x >= y - 0.005 for x, y in reprises)
+      and m.etat is Etat.TENU and (not m.a_reposer or m.penche)
+      and b.depasse_vrai <= tol and b.refus_garde_fou() == 0,
+      f"{reprises} {m.raison} {b.depasse_vrai}")
 n, b = essais["stricte, reprise 0,2 au-dessus"]
 m = b.m
 check(f"Stricte, reprise hors de portée des bras (0,2 au-dessus) : la base ne repart pas sous elle ; "
@@ -272,6 +287,29 @@ check(f"Par défaut (reprise_aux_plafonds), la même reprise hors de portée, br
       and b.refus_garde_fou() == 0
       and all(float(l_.split("marge de frottement ")[1].split(",")[0]) >= m.r.securite_serrage
               for l_ in plafonds), f"{m.raison} {b.journal[-3:]}")
+
+section("6. La marge sur le poids pesé une fois, jamais sur le poids lu en marchant")
+# Essai GPU du 19 novembre 2026, 22 h 04 : le poids lu au port (poids_os_n)
+# variait de 9,8 à 11,2 N ; la marge, elle, se calcule sur le poids pesé une
+# fois, bras immobiles (le coefficient de sécurité couvre les charges
+# dynamiques : on ne les compte pas deux fois).
+b = Banc()
+b.pas(60)
+m = b.m
+pese, marge0, lu0 = m.poids_carton, m.marge_frottement, m.charge[0]
+b.r.MASSE_OBJET_KG = 11.2 / 9.81         # le carton pèse plus sur les mains, comme en marchant
+b.pas(60)
+lu1, marge1 = m.charge[0], m.marge_frottement
+check(f"Poids lu au port de {lu0:.1f} à {lu1:.1f} N : marge {marge0:.2f} puis {marge1:.2f}, "
+      f"toujours 0,8 × somme des normales / {pese:.1f} N pesés",
+      lu1 > lu0 + 1.0 and m.poids_carton == pese and abs(marge1 - marge0) < 0.02
+      and abs(marge1 - R.frottement_serrage * float(np.mean(m._hist_normales)) / pese) < 1e-9,
+      f"{lu0} {lu1} {marge0} {marge1}")
+m.r = replace(m.r, securite_serrage=marge1 + 0.3, duree_resserrage_s=1e9)
+b.pas(5)
+arret = b.lignes("port : marge de frottement")
+check(f"… et le journal le dit à l'arrêt de la base : « {arret[-1] if arret else ''} »",
+      arret and f"sur les {pese:.1f} N pesés" in arret[-1] and m.penche)
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

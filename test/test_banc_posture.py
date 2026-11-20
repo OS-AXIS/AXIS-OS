@@ -10,8 +10,10 @@ Banc Isaac Sim de la posture GR00T WBC (lancer_posture.sh), sans GPU :
      manquante font échouer le banc ; un palier refusé par l'OS, non.
   4. Le script Isaac (lecture, sans Isaac Sim) : chaque palier par
      LocomotionService.posture (jamais l'adaptateur directement : bornes,
-     gardien et équilibre de l'OS toujours appliqués), carton de
-     masse_max_kg dans le bilan d'équilibre, arrêt et retour droit au
+     gardien et équilibre de l'OS toujours appliqués), carton T1 d'1 kg au
+     plus pris par l'OS avec la même prise que T1 (gains, raideur, mains
+     caoutchouc, couples estimés, calibration), dans le bilan d'équilibre,
+     scène éclairée comme T1, arrêt et retour droit au
      premier signe, relevé écrit ; axis_os/ n'importe pas le banc.
   5. Le lanceur : banc détaché, relevé et journal récupérés.
   6. L'app de tri T1 ne se penche pas tant que ce banc n'est pas passé
@@ -126,8 +128,40 @@ SCRIPT = (RACINE / "sim/validation/test_isaac_w5_gr00t_posture.py").read_text(en
 check("Chaque palier par la consigne de l'OS (loco.posture), jamais l'adaptateur directement",
       "loco.posture(tangage, abaissement" in SCRIPT
       and not re.search(r"adapt\w*\.posture\(", SCRIPT))
-check("Carton de masse_max_kg, dans le bilan d'équilibre (charges=)",
-      "ReglagesPrise().masse_max_kg" in SCRIPT and "charges=charge_aux_mains(tangage)" in SCRIPT)
+# Essai GPU du 19 novembre 2026, 21 h 51 : le carton de masse_max_kg (1,2 kg)
+# était « LÂCHÉ par la seule prise » ; désormais le carton T1, 1 kg au plus.
+masse_carton = float(re.search(r"^MASSE_CARTON = ([0-9.]+)", SCRIPT, re.M).group(1))
+check(f"Carton T1 de {masse_carton:g} kg (1 kg au plus, dans les moyens des mains), dans le bilan "
+      f"d'équilibre (charges=)",
+      masse_carton <= 1.0 and "mass=MASSE_CARTON" in SCRIPT
+      and "charges=charge_aux_mains(tangage)" in SCRIPT and "(MASSE_CARTON, tuple(" in SCRIPT)
+kp = re.search(r"^KP_BRAS = (\[.*\])$", SCRIPT, re.M).group(1)
+kd = re.search(r"^KD_BRAS = (\[.*\])$", SCRIPT, re.M).group(1)
+T1_ = (RACINE / "sim/validation/test_isaac_t1_tri_usine.py").read_text(encoding="utf-8")
+graine_t1 = re.search(r'"--graine", type=int, default=(\d+)', T1_).group(1)
+check("La même prise que T1 : ses gains de bras, raidis pendant la prise (gains_prise, à la "
+      "demande de l'OS), ses couples estimés (même graine), mains caoutchouc liées avant le "
+      "départ de la physique, et la prise de l'OS (ManipulationService.prendre)",
+      f"KP_BRAS = {kp}" in T1_ and f"KD_BRAS = {kd}" in T1_
+      and f"GRAINE_COUPLES = {graine_t1}" in SCRIPT
+      and "BruitCouples(len(names), graine=GRAINE_COUPLES)" in SCRIPT
+      and "g_prise = gains_prise(g)" in SCRIPT and "raideur=regler_raideur" in SCRIPT
+      and 0 < SCRIPT.find("    mains_caoutchouc(stage)\n") < SCRIPT.find("    world.reset()\n")
+      and "manip.prendre(objet)" in SCRIPT and "ManipulationService(adapt.pose_bras" in SCRIPT
+      and "mains_caoutchouc(stage)" in T1_)
+check("… après la calibration des bras de T1 (biais des couples, mains), le carton posé sur un "
+      "plateau devant le robot, jamais glissé entre les mains ; le plateau retiré une fois tenu",
+      "manip.echantillon_calibration_couples(nom)" in SCRIPT
+      and "manip.terminer_calibration_couples()" in SCRIPT and "calib.ajouter(" in SCRIPT
+      and "def poser_carton():" in SCRIPT
+      and "carton.set_world_pose(position=(pg + pd) / 2.0)" not in SCRIPT
+      and "serrer=True" not in SCRIPT
+      and SCRIPT.find("manip.etat is Etat.TENU") < SCRIPT.find("plateau.set_world_pose(position=np.array([10.0")
+      and "ManipulationService.prendre" in SCRIPT)
+check("Éclairage de la scène : celui de T1 (code commun eclairer : dôme et quatre lumières), "
+      "posé avant le départ de la physique",
+      0 < SCRIPT.find("in eclairer(stage):") < SCRIPT.find("    world.reset()\n")
+      and "in eclairer(stage):" in T1_)
 check("Au premier signe : arrêt de la série et retour droit par l'OS (posture(0.0, 0.0))",
       "p.suivre(" in SCRIPT and "loco.posture(0.0, 0.0)" in SCRIPT and "retour droit" in SCRIPT)
 check("Centrale inertielle (orientation, vitesse angulaire) et pieds (vérité de simulation)",

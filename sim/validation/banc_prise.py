@@ -39,6 +39,58 @@ RAIDIS = ("wrist_roll_joint", "wrist_pitch_joint", "wrist_yaw_joint", "elbow_joi
           "shoulder_yaw_joint")
 
 
+def mains_caoutchouc(stage, racine: str = "/World/g1") -> int:
+    """Lie aux mains du robot le matériau des mains caoutchouc du G1 (W3 :
+    frottement statique 1,2, dynamique 1,0). AVANT world.reset() : ignoré
+    après. Rend le nombre de prims liés (bancs T1 et de posture)."""
+    from isaacsim.core.api.materials import PhysicsMaterial
+    from pxr import UsdShade
+    PhysicsMaterial(prim_path="/World/Materiaux/caoutchouc",
+                    static_friction=1.2, dynamic_friction=1.0)
+    mat = UsdShade.Material(stage.GetPrimAtPath("/World/Materiaux/caoutchouc"))
+    n = 0
+    for prim in stage.Traverse():
+        nom = prim.GetName()
+        if racine in str(prim.GetPath()) and ("rubber_hand" in nom or "wrist_yaw_link" in nom):
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                mat, UsdShade.Tokens.weakerThanDescendants, "physics")
+            n += 1
+    return n
+
+
+def eclairer(stage) -> List[str]:
+    """L'éclairage des bancs (scène T1, puis banc de posture) : une lumière
+    ambiante (dôme) et quatre lumières en diagonale, une par coin, plongée de
+    50°, comme les rampes d'un entrepôt. Rend le sens réel de chaque lumière,
+    pour le journal.
+
+    Historique GPU (scène T1) : la seule lumière venait de derrière la table,
+    la face des cartons tournée vers le robot était noire sur la caméra de
+    tête (RGB 0,0,0), avec une lumière de face à 60° puis presque verticale
+    (15°), puis deux en diagonale du côté du robot (±40°) — les faces
+    latérales s'allumaient, les faces avant restaient noires ; le dôme seul
+    ne suffit pas. Avec une lumière par coin, toute face verticale en reçoit
+    au moins deux, quel que soit le sens de rotation retenu par USD ; l'ombre
+    du robot n'en masque qu'une à la fois. Banc de posture (essai du
+    19 novembre 2026, 21 h 51) : avec le seul dôme du pont, la caméra
+    spectateur ne rendait rien après 120 images (T1 : dès la 2e)."""
+    from pxr import Gf, UsdGeom, UsdLux
+    dome = UsdLux.DomeLight.Define(stage, "/World/eclairage_ambiant")
+    dome.CreateIntensityAttr(400.0)   # 900 délavait les couleurs
+    sens = []
+    for nom_l, lacet in (("eclairage_1", 45.0), ("eclairage_2", -45.0),
+                         ("eclairage_3", 135.0), ("eclairage_4", -135.0)):
+        lum = UsdLux.DistantLight.Define(stage, f"/World/{nom_l}")
+        lum.CreateIntensityAttr(700.0)
+        lum.CreateAngleAttr(1.0)
+        xf_l = UsdGeom.Xformable(lum)
+        xf_l.AddRotateZOp().Set(lacet)
+        xf_l.AddRotateXOp().Set(50.0)
+        d_l = xf_l.ComputeLocalToWorldTransform(0.0).TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
+        sens.append(f"éclairage : {nom_l} vers ({d_l[0]:+.2f}, {d_l[1]:+.2f}, {d_l[2]:+.2f})")
+    return sens
+
+
 def gains_prise(normaux: Dict[str, Tuple[float, float]], facteur: float = 2.0
                 ) -> Dict[str, Tuple[float, float]]:
     """Gains (kp, kd) de prise : kp × `facteur`, borné à KP_MAX_PILOTE, kd
