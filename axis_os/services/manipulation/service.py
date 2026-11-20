@@ -630,6 +630,9 @@ class ManipulationService(IService):
         # la dernière foulée (fenetre_marge_s).
         self._hist_normales: deque = deque()
         self._t_normales: deque = deque()
+        # Poids lu à chaque pas du port (instant, N) : sa médiane sur la foulée
+        # compte dans la marge s'il passe la pesée (le plus prudent des deux).
+        self._poids_port: deque = deque()
         self.rotation_vue: Optional[float] = None
         self.appui_torse: Optional[float] = None
         self._poids_ref: Optional[float] = None
@@ -2940,6 +2943,7 @@ class ManipulationService(IService):
             self._serrage_port_ref, self._delta_port = serrage, dict(self._delta)
             self._hist_normales.clear()
             self._t_normales.clear()
+            self._poids_port.clear()
             return
         ecart = self._serrage_port_ref - serrage
         g = self._gravite_bassin()
@@ -2953,10 +2957,21 @@ class ManipulationService(IService):
             while t_ - self._t_normales[0] > r.fenetre_marge_s + 1e-9:
                 self._t_normales.popleft()
                 self._hist_normales.popleft()
+            haut = -g / max(1e-9, float(np.linalg.norm(g)))
+            self._poids_port.append((t_, sum(float(f @ haut) for f in forces)))
+            while t_ - self._poids_port[0][0] > r.fenetre_marge_s + 1e-9:
+                self._poids_port.popleft()
         # Marge sur la dernière foulée (dès filtre_force × 3 lectures), et sur
-        # les filtre_force × 3 dernières lectures (0,3 s) : le plancher.
-        poids = self.poids_carton or self._poids_ref
+        # les filtre_force × 3 dernières lectures (0,3 s) : le plancher. Son
+        # poids : le plus prudent de la pesée et de la médiane du poids lu sur
+        # la foulée (essai GPU du 20 novembre 2026, 21 h 37 : pesé 8,4 N pour
+        # 9,8, lu de 10,1 à 11,4 au port ; une pesée trop légère rendait la
+        # marge optimiste).
         n_court = max(1, r.filtre_force * 3)
+        pese = self.poids_carton or self._poids_ref
+        lu = float(np.median([w for _, w in self._poids_port])) \
+            if len(self._poids_port) >= n_court else None
+        poids = max(pese, lu) if pese and lu is not None else pese
         plein = len(self._hist_normales) >= n_court
         juge = bool(poids and poids > 0.5 and plein)
         self.marge_frottement = (r.frottement_serrage * float(np.mean(self._hist_normales))
@@ -3007,7 +3022,10 @@ class ManipulationService(IService):
                     # Le poids de la marge : celui pesé une fois, bras immobiles
                     # (poids_carton), jamais le poids lu en marchant ; sans
                     # pesée, le plus grand lu depuis le levage (le plus prudent).
-                    + (f" ; sur les {poids:.1f} N pesés)" if self.poids_carton else
+                    + (f" ; sur les {poids:.1f} N lus sur la foulée, plus que les "
+                       f"{self.poids_carton:.1f} pesés)" if self.poids_carton and poids
+                       > self.poids_carton else
+                       f" ; sur les {poids:.1f} N pesés)" if self.poids_carton else
                        f" ; pas de pesée : sur le plus grand poids lu, {poids:.1f} N)")]
                    if faible and not glisse else [])
                 + ([f"carton tourné au retour, serrage visé {cible / 2.0:.1f} N par main"]

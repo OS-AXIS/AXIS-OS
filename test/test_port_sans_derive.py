@@ -27,9 +27,10 @@ mains du G1 :
      s'arrête proprement si les bras n'y arrivent pas ; le bilan du port au
      journal. Par défaut (reprise_aux_plafonds), les bras à leurs plafonds :
      elle repart dès que la marge tient securite_serrage, jamais en dessous.
-  6. La marge sur le poids pesé une fois (essai du 19 novembre, 22 h 04) :
-     le poids lu au port monte de 9,8 à 11,2 N, la marge ne bouge pas ; le
-     journal dit sur quel poids elle se calcule.
+  6. La marge sur le poids le plus prudent (essai du 20 novembre, 21 h 37 :
+     pesé 8,4 N pour 9,8, lu de 10,1 à 11,4 au port) : le plus grand de la
+     pesée et de la médiane du poids lu sur la foulée ; une pesée trop légère
+     ne rend plus la marge optimiste ; le journal dit sur quel poids.
 """
 import contextlib
 import inspect
@@ -302,28 +303,39 @@ check(f"La foulée seule (1 s), toujours en repartant au seuil : {foulee} arrêt
       f"la marge sur 0,3 s ({avant}) : le bruit des couples arrête moins la base",
       foulee <= avant, f"{foulee} {avant}")
 
-section("6. La marge sur le poids pesé une fois, jamais sur le poids lu en marchant")
-# Essai GPU du 19 novembre 2026, 22 h 04 : le poids lu au port (poids_os_n)
-# variait de 9,8 à 11,2 N ; la marge, elle, se calcule sur le poids pesé une
-# fois, bras immobiles (le coefficient de sécurité couvre les charges
-# dynamiques : on ne les compte pas deux fois).
+section("6. La marge sur le poids le plus prudent : la pesée, ou le poids lu sur la foulée")
+# Essai GPU du 20 novembre 2026, 21 h 37 : pesé 8,4 N pour 9,8 (le couple que
+# le centre de gravité, hors de la ligne des mains, fait passer par elles, lu
+# comme une force), lu de 10,1 à 11,4 N au port. Sur la seule pesée, la marge
+# était optimiste de 17 %.
 b = Banc()
 b.pas(60)
 m = b.m
-pese, marge0, lu0 = m.poids_carton, m.marge_frottement, m.charge[0]
+lu = float(np.median([w for _, w in m._poids_port]))
+m.poids_carton = 0.85 * lu                # une pesée trop légère, comme à 21 h 37
+b.pas(5)
+somme = float(np.mean(m._hist_normales))
+check(f"Pesée trop légère ({m.poids_carton:.1f} N pour {lu:.1f} lus sur la foulée) : marge "
+      f"{m.marge_frottement:.2f} = 0,8 × somme des normales / {lu:.1f} N lus, pas "
+      f"{R.frottement_serrage * somme / m.poids_carton:.2f} sur la pesée : jamais optimiste",
+      abs(m.marge_frottement - R.frottement_serrage * somme
+          / float(np.median([w for _, w in m._poids_port]))) < 1e-9
+      and m.marge_frottement < R.frottement_serrage * somme / m.poids_carton - 0.1)
+m.poids_carton = 1.15 * lu                # une pesée trop lourde : c'est elle qui compte
+b.pas(5)
+check(f"Pesée plus lourde que le poids lu ({m.poids_carton:.1f} N) : la marge se calcule sur elle",
+      abs(m.marge_frottement - R.frottement_serrage * float(np.mean(m._hist_normales))
+          / m.poids_carton) < 1e-9)
+m.poids_carton = lu
 b.r.MASSE_OBJET_KG = 11.2 / 9.81         # le carton pèse plus sur les mains, comme en marchant
 b.pas(60)
-lu1, marge1 = m.charge[0], m.marge_frottement
-check(f"Poids lu au port de {lu0:.1f} à {lu1:.1f} N : marge {marge0:.2f} puis {marge1:.2f}, "
-      f"toujours 0,8 × somme des normales / {pese:.1f} N pesés",
-      lu1 > lu0 + 1.0 and m.poids_carton == pese and abs(marge1 - marge0) < 0.02
-      and abs(marge1 - R.frottement_serrage * float(np.mean(m._hist_normales)) / pese) < 1e-9,
-      f"{lu0} {lu1} {marge0} {marge1}")
-m.r = replace(m.r, securite_serrage=marge1 + 0.3, duree_resserrage_s=1e9)
+lu1 = float(np.median([w for _, w in m._poids_port]))
+m.r = replace(m.r, securite_serrage=m.marge_frottement + 0.3, duree_resserrage_s=1e9)
 b.pas(5)
 arret = b.lignes("port : marge de frottement")
-check(f"… et le journal le dit à l'arrêt de la base : « {arret[-1] if arret else ''} »",
-      arret and f"sur les {pese:.1f} N pesés" in arret[-1] and m.penche)
+check(f"Le poids lu monte à {lu1:.1f} N : la marge le suit, et le journal le dit à l'arrêt de la "
+      f"base : « {arret[-1] if arret else ''} »",
+      lu1 > lu + 1.0 and arret and "lus sur la foulée, plus que les" in arret[-1] and m.penche)
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
