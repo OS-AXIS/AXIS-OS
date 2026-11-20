@@ -10,6 +10,26 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Pesée longue ; banc de posture avec la prise de T1 ; cartons plus légers
+
+Essai GPU T1 du 19 novembre 2026, 22 h 04 ; détail dans
+docs/validation_port_carton.md, §12.
+- Pesée au levage : 50 lectures (`lectures_pesee`) prises bras immobiles
+  (`vitesse_pesee_max_rad_s`), moyenne tronquée (`prise.poids_pese`), au
+  plus `duree_pesee_max_s` ; son incertitude au journal. 15 lectures ne
+  pesaient qu'à ±2,5 % (bruit des couples estimés) ; trois fois plus
+  reproductible. Reste un biais de +2 à +5 % (gains des couples estimés
+  des coudes), côté lourd.
+- Marge de frottement au port : déjà calculée sur le poids pesé une fois,
+  jamais sur le poids lu en marchant ; le journal le dit (« sur les … N
+  pesés ») et le relevé du banc T1 ajoute `poids_pese_n`.
+- Banc de posture : carton T1 de 1 kg, pris par l'OS avec la prise de T1
+  (gains, raideur, mains caoutchouc, couples estimés, calibration), posé
+  sur un plateau ; scène éclairée comme T1 (`banc_prise.eclairer`) ;
+  attente des caméras sur toute l'image.
+- Scène T1 : `--masse-carton` (1 kg par défaut), pour la vidéo de
+  démonstration.
+
 ### Port sans dérive, carton surveillé pendant tout le port
 
 Essai GPU T1 du 19 novembre 2026, 17 h 16 ; détail dans
