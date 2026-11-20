@@ -24,6 +24,7 @@ contact PhysX doit être posé avant le départ de la physique), la main
 from __future__ import annotations
 
 import math
+import os
 from typing import Callable, Dict, List, Optional, Tuple
 
 # Plus grand gain kp du pilote du vrai G1 (_DEFAULT_KP de g1_dds_actuator :
@@ -56,6 +57,40 @@ def mains_caoutchouc(stage, racine: str = "/World/g1") -> int:
                 mat, UsdShade.Tokens.weakerThanDescendants, "physics")
             n += 1
     return n
+
+
+def profil_robot_banc(graine: int) -> Tuple[str, str]:
+    """Profil du robot simulé des bancs (axis_os/services/profil_robot.py) :
+    (chemin, identifiant). Ce qui distingue un robot du banc d'un autre, ce
+    sont les erreurs de ses couples estimés, tirées de la graine
+    (bruit_couples.BruitCouples) : une graine, un robot, un profil, gardé
+    hors du dépôt d'un lancement à l'autre (sa calibration de charge se fait
+    une fois, comme sur le vrai robot)."""
+    robot_id = f"isaac_g1_graine{graine}"
+    return (os.path.join(os.path.expanduser("~"), ".axis_os", "robots", f"{robot_id}.json"),
+            robot_id)
+
+
+def poser_devant(robot, carton, plateau, distance_m: float, plateau_m: float,
+                 hauteur_m: float):
+    """Le carton sur son plateau (cinématique), devant le robot, là où T1
+    prend un carton (bord du plateau contre sa face avant) ; rend ce que la
+    perception en dirait : (centre, lacet), repère monde. Carton et plateau
+    créés avant le départ de la physique, loin, à l'échelle (profondeur,
+    largeur, hauteur) dans le repère du robot."""
+    import numpy as np
+    pr, qr = robot.get_world_pose()
+    lacet_r = 2.0 * math.atan2(float(qr[3]), float(qr[0]))
+    avant = np.array([math.cos(lacet_r), math.sin(lacet_r), 0.0])
+    q_lacet = np.array([math.cos(lacet_r / 2), 0.0, 0.0, math.sin(lacet_r / 2)])
+    sol = np.array([float(pr[0]), float(pr[1]), 0.0])
+    centre = sol + distance_m * avant + np.array([0.0, 0.0, plateau_m + hauteur_m / 2])
+    plateau.set_world_pose(position=sol + (distance_m + 0.10) * avant
+                           + np.array([0.0, 0.0, plateau_m / 2]), orientation=q_lacet)
+    carton.set_world_pose(position=centre, orientation=q_lacet)
+    carton.set_linear_velocity(np.zeros(3))
+    carton.set_angular_velocity(np.zeros(3))
+    return tuple(float(v) for v in centre), lacet_r
 
 
 def eclairer(stage) -> List[str]:

@@ -5,6 +5,8 @@
 # simulateur de robotique de NVIDIA) sur la machine GPU louée. Le test est
 # sim/validation/test_isaac_w5_gr00t_posture.py (avec banc_posture.py et
 # banc_prise.py), copié dans le conteneur par copier_code.sh.
+# La pesée du carton se sert de la calibration de charge du robot du banc,
+# faite par T1 (lancer_t1.sh) et gardée à son profil ; sans elle, l'OS le dit.
 # Décision de revue : l'app de tri ne se penche pas tant que ce banc n'est pas
 # passé (docs/validation_port_carton.md, §9).
 #

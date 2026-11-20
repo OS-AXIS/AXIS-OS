@@ -141,8 +141,11 @@ with SimulatedRobot(objects=[], time_scale=2.0) as r:
 
 section("5. Banc T1 (lecture du script, sans Isaac Sim)")
 T1 = (RACINE / "sim/validation/test_isaac_t1_tri_usine.py").read_text(encoding="utf-8")
-check("Calibration des mains avant que la mission ne commande quoi que ce soit",
+check("Calibration des mains (puis celle de charge) avant que la mission ne commande quoi que "
+      "ce soit",
       "if not etat_calib[\"fini\"]:\n            etat_calib[\"fini\"] = pas_calibration()\n"
+      "        elif not etat_charge.get(\"fini\"):\n"
+      "            etat_charge[\"fini\"] = pas_charge()\n"
       "        else:\n            pilote.pas()" in T1)
 check("Mains réelles (main_monde) comparées au modèle sur les angles mesurés, 4 postures",
       "calib.ajouter(nom, {j: st_.joint_pos[j] for j in chaine_bras}" in T1

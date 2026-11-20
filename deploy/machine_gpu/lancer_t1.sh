@@ -11,6 +11,12 @@
 #   Vidéo de démonstration, cartons plus légers (1 kg par défaut, le carton T1,
 #   à la limite des mains en marchant) :
 #                    bash lancer_t1.sh 1800 10 --masse-carton 0.5 --vue-sans-calques
+#   Calibration de charge (docs/PREMIERE_MISE_EN_ROUTE.md) : au premier
+#     lancement, le robot du banc (sa graine) n'en a pas ; avant le tri, il prend
+#     une masse de référence (le carton T1, 1 kg) posée sur un plateau devant
+#     lui, la pèse, la repose, et garde le gain de ses coudes dans son profil
+#     (~/.axis_os/robots/isaac_g1_graine3.json, dans le conteneur ; un conteneur
+#     neuf la refait). Pour la refaire : --calibration-charge [--masse-reference 1.0]
 #   Cartons variés : bash lancer_t1.sh 3600 10 --cartons-varies 40 [--graine-cartons 20261118]
 #     (après un premier tri réussi) N cartons tirés comme ceux du test du robot
 #     simulé léger, test/test_campagne_cartons.py : même graine, mêmes cartons

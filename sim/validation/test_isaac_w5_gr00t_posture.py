@@ -50,7 +50,9 @@ from axis_os.hal.drivers.isaac_sim.bridge import (  # noqa: E402
 from banc_posture import (  # noqa: E402
     COLONNES, MAINTIEN_S, Palier, inclinaison_deg, paliers, verdict,
 )
-from banc_prise import eclairer, gains_prise, mains_caoutchouc  # noqa: E402
+from banc_prise import (  # noqa: E402
+    eclairer, gains_prise, mains_caoutchouc, poser_devant, profil_robot_banc,
+)
 
 POLICIES = Path("/isaac-sim/policies")
 SORTIE = Path("/isaac-sim/videos")
@@ -106,6 +108,7 @@ def main():
     from axis_os.services.manipulation.cinematique import ModeleBras
     from axis_os.services.manipulation.estimation import HauteurBassin
     from axis_os.services.manipulation.prise import CalibrationMains, MesuresBras, ReglagesPrise
+    from axis_os.services.profil_robot import ProfilRobotErreur, lire_profil
     from axis_os.services.manipulation.service import (
         Etat, ManipulationService, Objet, Postures, posture_bras,
     )
@@ -345,25 +348,23 @@ def main():
                 f"cinématique des bras non calibrée : main réelle à {100 * calib.ecart_max:.1f} "
                 f"cm du modèle (limite {100 * calib.ecart_max_m:.1f})")
         manip.resynchroniser()               # bras revenus en posture de port
+        # Calibration de charge du robot du banc (faite par T1, gardée à son
+        # profil) : la pesée du carton s'en sert ; sans elle, l'OS le dit.
+        chemin_, robot_id_ = profil_robot_banc(GRAINE_COUPLES)
+        try:
+            cal_ = lire_profil(chemin_, robot_id_).get("calibration_charge")
+        except ProfilRobotErreur as e_:
+            print(f"  profil du robot illisible, ignoré : {e_}", flush=True)
+            cal_ = None
+        print(f"  {manip.appliquer_calibration_charge(cal_)}", flush=True)
         return True
 
     def poser_carton():
         """Le carton T1 sur son plateau, devant le robot, là où T1 le prend
-        (bord du plateau contre sa face avant) ; rend ce que la perception en
-        dirait (Objet, repère monde)."""
-        pr, qr = robot.get_world_pose()
-        lacet_r = 2.0 * math.atan2(float(qr[3]), float(qr[0]))
-        avant = np.array([math.cos(lacet_r), math.sin(lacet_r), 0.0])
-        q_lacet = np.array([math.cos(lacet_r / 2), 0.0, 0.0, math.sin(lacet_r / 2)])
-        sol = np.array([float(pr[0]), float(pr[1]), 0.0])
-        centre = sol + X_CARTON * avant + np.array([0.0, 0.0, sd.PLATEAU + HAUTEUR / 2])
-        plateau.set_world_pose(position=sol + (X_CARTON + 0.10) * avant
-                               + np.array([0.0, 0.0, sd.PLATEAU / 2]), orientation=q_lacet)
-        carton.set_world_pose(position=centre, orientation=q_lacet)
-        carton.set_linear_velocity(np.zeros(3))
-        carton.set_angular_velocity(np.zeros(3))
-        return Objet(tuple(float(v) for v in centre), LARGEUR, PROFONDEUR, HAUTEUR,
-                     lacet=lacet_r, bord_m=0.0)
+        (banc_prise.poser_devant) ; rend ce que la perception en dirait
+        (Objet, repère monde)."""
+        centre, lacet_r = poser_devant(robot, carton, plateau, X_CARTON, sd.PLATEAU, HAUTEUR)
+        return Objet(centre, LARGEUR, PROFONDEUR, HAUTEUR, lacet=lacet_r, bord_m=0.0)
 
     def mesure():
         """Centrale inertielle (inclinaison, norme de la vitesse angulaire)
