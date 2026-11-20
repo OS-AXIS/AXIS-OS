@@ -566,6 +566,13 @@ class SimulatedRobot:
         # retour en corps rigide de la prise).
         self.poignets_cedent = False
         self.souplesse_poignets = 0.25
+        # Pannes d'articulation des bras (vrais desserrages : test_desserrage_port),
+        # vérité du monde simulé, jamais lue par l'OS : le moteur qui tient
+        # l'articulation à `decalage_articulations[j]` rad de sa consigne (il a
+        # glissé), et celui qui ne garde que `raideur_articulations[j]` de sa
+        # raideur (il faiblit).
+        self.decalage_articulations: Dict[str, float] = {}
+        self.raideur_articulations: Dict[str, float] = {}
         self.raideur_active = False
         self.changements_raideur: List[bool] = []
         self._poignets = {f"{c}_wrist_{a}_joint": 0.0 for c in ("left", "right")
@@ -927,7 +934,7 @@ class SimulatedRobot:
                 kp *= self.souplesse_poignets
             if self.raideur_active:
                 kp = min(2.0 * kp, max(kp, 100.0))
-        return kp
+        return kp * self.raideur_articulations.get(j, 1.0)
 
     def _contact(self) -> None:
         """Chaque articulation des bras va à sa consigne (le tangage plus bas
@@ -941,6 +948,8 @@ class SimulatedRobot:
         q.update(self._consignes_poignets)
         for j in ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
             q[j] += self.affaissement_rad
+        for j, d in self.decalage_articulations.items():
+            q[j] += d
         cmd = dict(q)
         o = self._objet_entre_les_mains(cmd)
         couples = {}

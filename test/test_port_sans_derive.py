@@ -22,7 +22,8 @@ mains du G1 :
      raison au journal avec le nombre de resserrages du port.
   5. Hystérésis : marge au ras du seuil, couples bruités comme au banc.
      Stricte : la base ne repart qu'au-dessus de securite_reprise, après
-     delai_reprise_s (bien moins d'arrêts qu'en repartant au seuil), et
+     delai_reprise_s (bien moins d'arrêts qu'avant, en repartant au seuil
+     sur la marge de 0,3 s ; la foulée seule en retire déjà), et
      s'arrête proprement si les bras n'y arrivent pas ; le bilan du port au
      journal. Par défaut (reprise_aux_plafonds), les bras à leurs plafonds :
      elle repart dès que la marge tient securite_serrage, jamais en dessous.
@@ -229,15 +230,21 @@ section("5. Hystérésis du resserrage")
 # l'erreur d'estimation du banc près (son biais au plus), comme la campagne de
 # cartons (violations).
 tol = 0.1 + inspect.signature(BruitCouples).parameters["biais_max_nm"].default
+# « Avant » : la règle d'avant l'hystérésis, sur la marge de 0,3 s d'alors
+# (fenetre_marge_s=0,3) ; les autres, la règle d'aujourd'hui (foulée de 1 s,
+# reprise jugée sur 0,3 s base arrêtée).
 essais = {}
-for nom, reprise, delai, plafonds in (
-        ("reprise au seuil (avant)", 0.0, 0.0, True),
-        ("stricte, reprise 0,1 au-dessus", 0.1, R.delai_reprise_s, False),
-        ("stricte, reprise 0,2 au-dessus", 0.2, R.delai_reprise_s, False),
-        ("reprise 0,2 au-dessus, aux plafonds au seuil", 0.2, R.delai_reprise_s, True)):
+for nom, reprise, delai, plafonds, fenetre in (
+        ("reprise au seuil (avant)", 0.0, 0.0, True, 0.3),
+        ("stricte, reprise 0,1 au-dessus", 0.1, R.delai_reprise_s, False, R.fenetre_marge_s),
+        ("stricte, reprise 0,2 au-dessus", 0.2, R.delai_reprise_s, False, R.fenetre_marge_s),
+        ("reprise 0,2 au-dessus, aux plafonds au seuil", 0.2, R.delai_reprise_s, True,
+         R.fenetre_marge_s),
+        ("reprise au seuil, sur la foulée", 0.0, 0.0, True, R.fenetre_marge_s)):
     b = Banc(bruit=True)
-    b.pas(60)
     m = b.m
+    m.r = replace(m.r, fenetre_marge_s=fenetre)
+    b.pas(60)
     seuil = (m.marge_frottement or 2.0) - 0.01
     m.r = replace(m.r, securite_serrage=seuil, securite_reprise=seuil + reprise,
                   delai_reprise_s=delai, reprise_aux_plafonds=plafonds)
@@ -287,6 +294,11 @@ check(f"Par défaut (reprise_aux_plafonds), la même reprise hors de portée, br
       and b.refus_garde_fou() == 0
       and all(float(l_.split("marge de frottement ")[1].split(",")[0]) >= m.r.securite_serrage
               for l_ in plafonds), f"{m.raison} {b.journal[-3:]}")
+
+foulee = essais["reprise au seuil, sur la foulée"][0]
+check(f"La foulée seule (1 s), toujours en repartant au seuil : {foulee} arrêts, au plus ceux de "
+      f"la marge sur 0,3 s ({avant}) : le bruit des couples arrête moins la base",
+      foulee <= avant, f"{foulee} {avant}")
 
 section("6. La marge sur le poids pesé une fois, jamais sur le poids lu en marchant")
 # Essai GPU du 19 novembre 2026, 22 h 04 : le poids lu au port (poids_os_n)

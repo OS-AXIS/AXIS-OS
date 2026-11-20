@@ -626,7 +626,10 @@ class ManipulationService(IService):
         self.ligne_cg: Optional[Tuple[float, float]] = None
         self.charge: Optional[Tuple[float, float]] = None
         self._hist_charge: deque = deque(maxlen=max(1, self.r.filtre_force * 3))
-        self._hist_normales: deque = deque(maxlen=max(1, self.r.filtre_force * 3))
+        # Somme des forces normales des deux mains au port, et ses instants :
+        # la dernière foulée (fenetre_marge_s).
+        self._hist_normales: deque = deque()
+        self._t_normales: deque = deque()
         self.rotation_vue: Optional[float] = None
         self.appui_torse: Optional[float] = None
         self._poids_ref: Optional[float] = None
@@ -650,6 +653,7 @@ class ManipulationService(IService):
         self._serrage_port_ref: Optional[float] = None
         self._delta_port: Optional[Dict[str, float]] = None
         self.marge_frottement: Optional[float] = None
+        self.marge_courte: Optional[float] = None      # sur 0,3 s : le plancher
         self._t_resserrage: Optional[float] = None
         self._resserrage_marge = False     # arrêté pour la marge : reprise au-dessus de securite_reprise
         self._t_bloque: Optional[float] = None   # dernier pas où les bras ne pouvaient serrer plus
@@ -2340,7 +2344,7 @@ class ManipulationService(IService):
                                  - r.penetration_max_m for c in self._ROULIS}
         mod0 = self._mains_modele()
         self._ecart_faces0 = None if mod0 is None else self._interieur(mod0)
-        self.marge_frottement = None
+        self.marge_frottement = self.marge_courte = None
         mg, md = self._contacts_bassin()
         # Milieu des mains mesurées au serrage : la référence des gestes avec l'objet.
         centre = self._c_serre = (mg + md) / 2.0
@@ -2935,28 +2939,47 @@ class ManipulationService(IService):
         if self._serrage_port_ref is None:
             self._serrage_port_ref, self._delta_port = serrage, dict(self._delta)
             self._hist_normales.clear()
+            self._t_normales.clear()
             return
         ecart = self._serrage_port_ref - serrage
         g = self._gravite_bassin()
         forces = [self._force_main(c, tau, angles, g, depuis_fermeture=False)
                   for c in self._ROULIS]
         if all(f is not None for f in forces):
+            t_ = self._horloge()
             self._hist_normales.append(sum(float(f @ self._vers_objet(c))
                                            for c, f in zip(self._ROULIS, forces)))
+            self._t_normales.append(t_)
+            while t_ - self._t_normales[0] > r.fenetre_marge_s + 1e-9:
+                self._t_normales.popleft()
+                self._hist_normales.popleft()
+        # Marge sur la dernière foulée (dès filtre_force × 3 lectures), et sur
+        # les filtre_force × 3 dernières lectures (0,3 s) : le plancher.
         poids = self.poids_carton or self._poids_ref
+        n_court = max(1, r.filtre_force * 3)
+        plein = len(self._hist_normales) >= n_court
+        juge = bool(poids and poids > 0.5 and plein)
         self.marge_frottement = (r.frottement_serrage * float(np.mean(self._hist_normales))
-                                 / poids if poids and poids > 0.5 and len(self._hist_normales)
-                                 == self._hist_normales.maxlen else None)
+                                 / poids if juge else None)
+        self.marge_courte = (r.frottement_serrage
+                             * float(np.mean(list(self._hist_normales)[-n_court:])) / poids
+                             if juge else None)
         # Hystérésis : la base s'arrête sous securite_serrage ; arrêtée pour la
         # marge, elle ne repart qu'au-dessus de securite_reprise (jamais moins).
         seuil = max(r.securite_reprise, r.securite_serrage) if self._resserrage_marge \
             else r.securite_serrage
-        faible = self.marge_frottement is not None and self.marge_frottement < seuil
+        glisse = self.marge_courte is not None and self.marge_courte < r.securite_glissement
+        # Base arrêtée (resserrage) : la marche ne fait plus varier le serrage,
+        # la reprise se juge sur 0,3 s ; sur la foulée, elle ne verrait l'effet
+        # du resserrage qu'au bout de 1 s, l'échéance de duree_resserrage_s.
+        arretee = self._t_resserrage is not None
+        marge = self.marge_courte if arretee else self.marge_frottement
+        sur = "sur 0,3 s, base arrêtée" if arretee else "sur la dernière foulée"
+        faible = glisse or (marge is not None and marge < seuil)
         ecartees = ecart > r.ecart_face_port_m
         # Carton qui a tourné au retour (_pas_ramener) : on resserre jusqu'au
         # serrage visé d'après le poids, et d'au moins marge_serrage_n à
         # chaque main, tant que les bras le permettent.
-        plein = len(self._hist_normales) == self._hist_normales.maxlen
         if self._resserrage_force is True and plein:
             # Demandé au retour (True) : la cible (somme des deux forces, N).
             self._resserrage_force = False if self.serrage_vise is None else max(
@@ -2975,15 +2998,18 @@ class ManipulationService(IService):
             pourquoi = " ; ".join(
                 ([f"mains écartées de {1000 * ecart:.0f} mm de leur serrage (au plus "
                   f"{1000 * r.ecart_face_port_m:.0f})"] if ecartees else [])
-                + ([f"marge de frottement {self.marge_frottement:.2f} (au moins "
-                    f"{r.securite_serrage:g}" + (f", {seuil:g} pour repartir"
-                                                  if seuil > r.securite_serrage else "")
+                + ([f"marge de frottement sur 0,3 s {self.marge_courte:.2f} (au moins "
+                    f"{r.securite_glissement:g} : le serrage ne porte plus le carton au "
+                    f"frottement prudent, un vrai desserrage)"] if glisse else [])
+                + ([f"marge de frottement {marge:.2f} {sur} "
+                    f"(au moins {r.securite_serrage:g}" + (f", {seuil:g} pour repartir"
+                                                           if seuil > r.securite_serrage else "")
                     # Le poids de la marge : celui pesé une fois, bras immobiles
                     # (poids_carton), jamais le poids lu en marchant ; sans
                     # pesée, le plus grand lu depuis le levage (le plus prudent).
                     + (f" ; sur les {poids:.1f} N pesés)" if self.poids_carton else
                        f" ; pas de pesée : sur le plus grand poids lu, {poids:.1f} N)")]
-                   if faible else [])
+                   if faible and not glisse else [])
                 + ([f"carton tourné au retour, serrage visé {cible / 2.0:.1f} N par main"]
                    if force else []))
             if self._t_resserrage is None:
@@ -3005,16 +3031,16 @@ class ManipulationService(IService):
             if bloques:
                 self._t_bloque = t
             if r.reprise_aux_plafonds and self._resserrage_marge and bloques and not ecartees \
-                    and not force \
-                    and self.marge_frottement is not None \
-                    and self.marge_frottement >= r.securite_serrage:
+                    and not force and not glisse \
+                    and marge is not None and marge >= r.securite_serrage:
                 self._t_resserrage, self._resserrage_marge = None, False
+                self._repartir_foulee()
                 self.penche = self.inclinaison is not None \
                     and self.inclinaison > r.inclinaison_max_deg
                 self.stats["reprises_aux_plafonds"] = \
                     self.stats.get("reprises_aux_plafonds", 0) + 1
                 self._noter(f"port : serrage retrouvé (marge de frottement "
-                            f"{self.marge_frottement:.2f}, au moins {r.securite_serrage:g} ; "
+                            f"{marge:.2f}, {sur}, au moins {r.securite_serrage:g} ; "
                             f"{seuil:g} hors de portée des bras, à leurs plafonds), la marche "
                             f"peut reprendre")
                 return
@@ -3025,11 +3051,11 @@ class ManipulationService(IService):
                 self.stats["port_interrompu"] = self.stats.get("port_interrompu", 0) + 1
                 self._port_interrompu = True
                 self.a_reposer = True
-                if not ecartees and not force and self.marge_frottement is not None \
-                        and self.marge_frottement >= r.securite_serrage:
+                if not ecartees and not force and not glisse \
+                        and marge is not None and marge >= r.securite_serrage:
                     # Au-dessus du seuil pour tenir, sous celui pour repartir :
                     # les bras n'y arrivent pas (plafonds, bornes du serrage).
-                    self.raison = (f"marge de frottement {self.marge_frottement:.2f} après "
+                    self.raison = (f"marge de frottement {marge:.2f} {sur} après "
                                    f"{r.duree_resserrage_s:g} s de resserrage : au moins "
                                    f"{r.securite_serrage:g} pour tenir, mais {seuil:g} pour "
                                    f"repartir, que les bras n'atteignent pas : à reposer")
@@ -3045,10 +3071,11 @@ class ManipulationService(IService):
             self.penche = True                    # pas avant le délai minimal
         elif self._t_resserrage is not None:
             self._t_resserrage, self._resserrage_marge = None, False
+            self._repartir_foulee()
             self.penche = self.inclinaison is not None and self.inclinaison > r.inclinaison_max_deg
             self._noter("port : serrage retrouvé" + (
-                f" (marge de frottement {self.marge_frottement:.2f}, au-dessus de {seuil:g})"
-                if self.marge_frottement is not None else "") + ", la marche peut reprendre")
+                f" (marge de frottement {marge:.2f}, {sur}, au-dessus de {seuil:g})"
+                if marge is not None else "") + ", la marche peut reprendre")
         if not a_rendre or not self._marge_plafonds(tau):
             return
         if self._port0 is not None:
@@ -3093,6 +3120,15 @@ class ManipulationService(IService):
             self._garder_borne(cote)
         self._ecrire_q(q)
         self._q_tenu = dict(q)
+
+    def _repartir_foulee(self) -> None:
+        """La base repart : la foulée repart des filtre_force × 3 dernières
+        lectures (0,3 s), celles qui ont justifié la reprise. Encore pleine des
+        lectures d'avant le resserrage, elle arrêterait la base aussitôt."""
+        n = max(1, self.r.filtre_force * 3)
+        while len(self._hist_normales) > n:
+            self._hist_normales.popleft()
+            self._t_normales.popleft()
 
     def _retard_vers_robot(self) -> Optional[float]:
         """De combien (m) le milieu des mains MESURÉES est en avant (loin du
@@ -3180,7 +3216,9 @@ class ManipulationService(IService):
         tourne = self._surveiller_rotation(tau)
         if not tourne and self.charge is not None and \
                 len(self._hist_charge) == self._hist_charge.maxlen:
-            poids = self.charge[0]
+            # Les filtre_force dernières lectures (0,1 s) : vu en 0,3 s au plus.
+            poids = float(np.mean([v[0] for v in
+                                   list(self._hist_charge)[-max(1, self.r.filtre_force):]]))
             if self._poids_ref is not None and poids < self.r.part_poids_min * self._poids_ref:
                 t = self._horloge()
                 self._t_sans_poids = t if self._t_sans_poids is None else self._t_sans_poids

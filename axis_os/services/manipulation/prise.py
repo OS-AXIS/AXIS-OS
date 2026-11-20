@@ -251,7 +251,10 @@ class ReglagesPrise:
     # marcher avec (ou, en marche, on s'arrête et on le signale).
     rotation_max_deg: float = 10.0
     part_poids_min: float = 0.4
-    duree_perte_s: float = 0.3
+    # Poids qui chute : jugé sur les filtre_force dernières lectures (0,1 s),
+    # pendant duree_perte_s, pour qu'un carton qui glisse ou s'échappe soit vu
+    # en 0,3 s au plus (avant : moyenne de 0,3 s, puis 0,3 s, ~0,5 s en tout).
+    duree_perte_s: float = 0.15
     # Serrage d'après le poids (essai GPU T1 du 5 novembre 2026, 21 h 57 :
     # carton de 10,9 N tenu à 6,5 N par main, soit un frottement d'au moins
     # 0,84 rien que pour le porter, aucune marge ; il a glissé à la marche).
@@ -387,6 +390,23 @@ class ReglagesPrise:
     correction_port_max_deg: float = 6.0
     securite_reprise: float = 2.2
     delai_reprise_s: float = 0.5
+    # La marge de frottement jugée sur une foulée (fenetre_marge_s, dès
+    # filtre_force × 3 lectures au début du port) : le serrage réel varie au
+    # pas de la marche (essai GPU T1 du 19 novembre 2026, 22 h 04 : juge de
+    # 10,5 à 14,3 N par main), la marge sur 0,3 s le suivait et arrêtait la
+    # base au ras de securite_serrage, le carton tenu (marge réelle sur 1 s de
+    # 2,03 à 2,12). Le glissement, lui, reste surveillé directement, à 0,3 s au
+    # plus : mains écartées et rotation à chaque pas, poids qui chute
+    # (duree_perte_s), et la marge sur les filtre_force × 3 dernières lectures
+    # (0,3 s), qui ne doit jamais passer sous securite_glissement (1 : le
+    # serrage ne porte plus le carton au frottement prudent ; la marche, elle,
+    # ne la fait varier que de quelques centièmes) : un vrai desserrage arrête
+    # la base aussitôt, sans attendre la foulée. Base arrêtée pour resserrer, la
+    # reprise se juge sur 0,3 s (la marche ne fait plus varier le serrage, et la
+    # foulée ne verrait l'effet du resserrage qu'au bout de 1 s, l'échéance de
+    # duree_resserrage_s) ; à la reprise, la foulée repart de ces 0,3 s.
+    fenetre_marge_s: float = 1.0
+    securite_glissement: float = 1.0
     # Les bras à leurs plafonds (une articulation à moins de 0,3 N·m du sien,
     # ou une main à sa borne) ne peuvent serrer plus : securite_reprise est
     # hors de leur portée. Vrai : la base repart dès que la marge tient
