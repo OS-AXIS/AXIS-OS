@@ -134,12 +134,7 @@ def main():
     bridge.bruit_couples = BruitCouples(len(names), graine=GRAINE_COUPLES)
     stage = omni.usd.get_context().get_stage()
 
-    # Scène : posée avant world.reset(). Mains caoutchouc et éclairage de T1
-    # (code commun des bancs : banc_prise).
-    mains_caoutchouc(stage)
-    for ligne_ in eclairer(stage):
-        print(f"  {ligne_}", flush=True)
-    # Le carton T1 et son plateau, créés AU DÉPART, loin ; posés devant le
+    # Scène : posée avant world.reset(). Le carton T1 et son plateau, créés AU DÉPART, loin ; posés devant le
     # robot au moment de la prise (le plateau, cinématique, se déplace).
     materiau = PhysicsMaterial(prim_path="/World/Materiaux/carton",
                                static_friction=1.0, dynamic_friction=0.8, restitution=0.0)
@@ -154,6 +149,13 @@ def main():
         scale=np.array([0.40, 0.60, sd.PLATEAU]), mass=50.0,
         color=np.array([0.55, 0.55, 0.58])))
     UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath("/World/plateau")).CreateKinematicEnabledAttr(True)
+    # Mains caoutchouc et éclairage de T1 (code commun : banc_prise), APRÈS les
+    # corps rigides, dans l'ordre de T1 : posés avant, ils invalidaient la vue
+    # physique et DynamicCuboid plantait (« Simulation view object is
+    # invalidated », essai GPU du 20/11).
+    mains_caoutchouc(stage)
+    for ligne_ in eclairer(stage):
+        print(f"  {ligne_}", flush=True)
 
     g = pol.gains()
     for i, j in enumerate(cfg.body_joints[cfg.num_actions:]):
