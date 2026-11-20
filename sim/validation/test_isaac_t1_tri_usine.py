@@ -103,6 +103,9 @@ def main():
     # référence (le carton T1) posée sur un plateau devant lui.
     ap.add_argument("--profil-robot", default=None, metavar="FICHIER",
                     help="profil du robot (défaut : ~/.axis_os/robots/isaac_g1_graine<N>.json)")
+    ap.add_argument("--sans-calibration-charge", action="store_true",
+                    help="ne pas faire la calibration de charge au démarrage (pesée non "
+                         "corrigée, comme avant #38)")
     ap.add_argument("--calibration-charge", action="store_true",
                     help="refaire la calibration de charge même si le profil en a une")
     ap.add_argument("--masse-reference", type=float, default=1.0, metavar="KG",
@@ -772,6 +775,9 @@ def main():
                 cal_ = None
             manip.appliquer_calibration_charge(cal_)
             if cal_ is not None and not args.calibration_charge:
+                return True
+            if args.sans_calibration_charge:
+                journaliser("calibration de charge sautée (--sans-calibration-charge)")
                 return True
             centre_, lacet_ = poser_devant(robot, reference, plateau_ref, 0.44, sd.PLATEAU,
                                            sd.HAUTEUR_CARTON)

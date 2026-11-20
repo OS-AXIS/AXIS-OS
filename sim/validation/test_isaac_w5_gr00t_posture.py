@@ -248,6 +248,9 @@ def main():
                                 lambda: manip.objet_entre_les_mains(),
                                 horloge=lambda: sim_t[0], mesures=mesures_bras,
                                 journal=lambda m: print(f"  [{sim_t[0]:6.1f}s] {m}", flush=True))
+    # Démarré comme dans T1 : sans lui, prendre() refusait « service non démarré »
+    # (essai GPU du 20/11, série avec carton jamais faite).
+    manip.start()
 
     chemins = {}
 
