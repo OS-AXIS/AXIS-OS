@@ -302,6 +302,25 @@ class ReglagesPrise:
     vitesse_pesee_max_rad_s: float = 0.05
     part_ecartee_pesee: float = 0.1
     duree_pesee_max_s: float = 2.0
+    # Calibration de charge (une fois par robot, à la première mise en route :
+    # ManipulationService.calibrer_charge, docs/PREMIERE_MISE_EN_ROUTE.md) :
+    # une masse de référence connue (au moins masse_reference_min_kg, au plus
+    # masse_max_kg), prise comme un carton (la prise de T1), levée et pesée
+    # comme lui, bras immobiles, mais plus longtemps
+    # (lectures_calibration_charge lectures, au plus
+    # duree_calibration_charge_max_s, au moins lectures_pesee) ; son poids,
+    # partagé moitié-moitié entre les deux mains (charge centrée, prise par
+    # ses deux faces), donne le gain du couple estimé de chaque coude
+    # (gain_coude). Essais GPU T1 du 19 novembre 2026 : les coudes font
+    # presque tout le biais de la pesée (+2 à +5 %) ; sur un palier de
+    # 35 lectures, ce calcul retrouve leurs gains au banc (1,048 pour 1,047 ;
+    # 0,981 pour 0,980). Hors de [gain_coude_min, gain_coude_max] :
+    # calibration refusée (masse décentrée ou mal déclarée), rien n'est changé.
+    lectures_calibration_charge: int = 250
+    duree_calibration_charge_max_s: float = 8.0
+    masse_reference_min_kg: float = 0.5
+    gain_coude_min: float = 0.85
+    gain_coude_max: float = 1.15
     marge_serrage_n: float = 1.0
     penetration_poids_max_m: float = 0.06
     duree_serrage_poids_max_s: float = 3.0
@@ -528,6 +547,20 @@ def poids_pese(lectures: Iterable[float], part_ecartee: float) -> Tuple[float, f
     k = int(part_ecartee * len(x))
     garde = x[k:len(x) - k] if len(x) > 2 * k else x
     return float(np.mean(garde)), float(np.std(x) / math.sqrt(len(x)))
+
+
+def gain_coude(poids_main_n: float, part_coude_n: float, poids_n: float) -> float:
+    """Gain du couple estimé du coude d'un bras (estimé = gain × vrai),
+    d'après la pesée d'une masse connue de `poids_n` (N) partagée
+    moitié-moitié entre les deux mains : la force vers le haut estimée à
+    cette main vaut `poids_main_n`, dont `part_coude_n` vient du couple du
+    coude (ce qu'elle perd sans lui). Corrigé du gain k, ce couple donne
+    poids_main_n + (1/k - 1) part_coude_n, qui doit valoir poids_n / 2.
+    NaN si le coude ne porte rien (pas de calibration possible)."""
+    if not part_coude_n > 1e-6:
+        return math.nan
+    u = 1.0 + (poids_n / 2.0 - poids_main_n) / part_coude_n
+    return 1.0 / u if u > 1e-6 else math.nan
 
 
 def tolerances_cg(r: "ReglagesPrise", force_n: Optional[float] = None,

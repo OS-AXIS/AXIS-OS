@@ -83,6 +83,20 @@ L'assistant demande une action impossible à distance, par exemple :
    - choisir le profil d'exécution : PRODUCTION par défaut sur un robot réel.
 5. Premier mouvement guidé, lent, avec une personne à côté et l'arrêt
    d'urgence à portée de main : se lever ou bouger les bras.
+6. **Calibration de charge, une fois par robot** (robot à bras et mains) :
+   une masse de référence connue — un carton lesté en son milieu, de 0,5 à
+   1,2 kg, sa masse écrite dessus — posée sur une table, à l'endroit marqué
+   devant le robot. Le robot la prend comme un carton (sa prise ordinaire),
+   la soulève de quelques centimètres, la pèse bras immobiles (5 s), la
+   repose et desserre ; ni serrée plus, ni portée. Son poids, partagé
+   moitié-moitié entre les deux mains, donne le gain du couple estimé de
+   chaque coude, gardé dans le **profil du robot** avec sa date. Hors de ses
+   bornes (gain d'un coude hors de 0,85 à 1,15 : masse décentrée ou mal
+   déclarée), elle est refusée et la précédente reste. Sans elle, le robot
+   le dit à chaque pesée et pèse comme avant : en simulation, +2 à +5 % de
+   trop, quand un carton de 1 kg, poignets à leurs plafonds, ne se porte
+   qu'avec un poids juste à ~2 % près. À refaire après le remplacement d'un
+   moteur de bras.
 
 ## 4. Jumelage avec le site AXIS-OS (facultatif)
 
@@ -139,6 +153,11 @@ tests). Briques déjà présentes :
 - profils simulation, développement et production ;
 - arrêt d'urgence logiciel, garde-fou articulaire, gardien de proximité ;
 - signatures, permissions et bac à sable des apps ;
+- calibration de charge (étape 3.6) : dans l'OS
+  (`ManipulationService.calibrer_charge`, profil du robot
+  `axis_os/services/profil_robot.py`) ; faite en simulation au démarrage du
+  banc T1 (`lancer_t1.sh`), avec une masse de référence posée devant le
+  robot ; l'étape de l'assistant, sur le robot réel, reste à écrire ;
 - SDK 1.2 : `go_to` (aussi vers un lieu nommé), `follow`, `speak`
   (factice), `where_am_i`, `notify`, `battery`, `thermal_status`, etc. ;
 - carte simple (`Carte`, obstacles écrits dans le code), sans SLAM ;

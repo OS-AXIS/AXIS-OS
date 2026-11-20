@@ -123,6 +123,7 @@ def os_():
     m.stats, m.journal = {}, []
     m._journal = m.journal.append
     m.biais_couples = BIAIS
+    m.gains_couples = {}               # sans calibration de charge, comme à l'essai
     m._plan = {"lacet": 0.0}
     m._tau0, m._g0 = {}, {}
     return m

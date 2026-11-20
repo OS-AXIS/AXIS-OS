@@ -122,6 +122,7 @@ def os_():
     m._init_mesure()
     m.mesures = SimpleNamespace(modele=ModeleBras(), contact_main_m=None)
     m.biais_couples = dict(BIAIS)
+    m.gains_couples = {}               # sans calibration de charge, comme à l'essai
     m._tau0, m._g0 = {}, {}
     return m
 
