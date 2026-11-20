@@ -237,7 +237,9 @@ essais = {}
 for nom, reprise, delai, plafonds, fenetre in (
         ("reprise au seuil (avant)", 0.0, 0.0, True, 0.3),
         ("stricte, reprise 0,1 au-dessus", 0.1, R.delai_reprise_s, False, R.fenetre_marge_s),
-        ("stricte, reprise 0,2 au-dessus", 0.2, R.delai_reprise_s, False, R.fenetre_marge_s),
+        # Hors de portée des bras : 0,5 au-dessus (0,2 l'était selon le tirage
+        # du bruit : resserrés, les bras gagnaient jusqu'à 0,21).
+        ("stricte, reprise hors de portée", 0.5, R.delai_reprise_s, False, R.fenetre_marge_s),
         ("reprise 0,2 au-dessus, aux plafonds au seuil", 0.2, R.delai_reprise_s, True,
          R.fenetre_marge_s),
         ("reprise au seuil, sur la foulée", 0.0, 0.0, True, R.fenetre_marge_s)):
@@ -275,9 +277,9 @@ check(f"… chaque reprise dit sa marge, toujours au-dessus de la reprise ({len(
       and m.etat is Etat.TENU and (not m.a_reposer or m.penche)
       and b.depasse_vrai <= tol and b.refus_garde_fou() == 0,
       f"{reprises} {m.raison} {b.depasse_vrai}")
-n, b = essais["stricte, reprise 0,2 au-dessus"]
+n, b = essais["stricte, reprise hors de portée"]
 m = b.m
-check(f"Stricte, reprise hors de portée des bras (0,2 au-dessus) : la base ne repart pas sous elle ; "
+check(f"Stricte, reprise hors de portée des bras (0,5 au-dessus) : la base ne repart pas sous elle ; "
       f"{n} arrêt(s), puis arrêt propre, carton tenu : « {m.raison[:150]}… »",
       m.etat is Etat.TENU and m.a_reposer and m.penche and b.depasse_vrai <= tol
       and b.refus_garde_fou() == 0, m.raison)

@@ -10,6 +10,13 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Pesée sur 100 lectures
+
+Décision sur la PR #38 ; détail dans docs/validation_port_carton.md, §14.
+- `lectures_pesee` 50 → 100 (2 s), `duree_pesee_max_s` 2 → 3 s : ±2 % à
+  95 % au lieu de ±2,8 % (calibrée, la pesée n'a plus de biais ; il restait
+  son bruit).
+
 ### Calibration de charge ; marge du port sur une foulée, glissement vu en 0,3 s
 
 Décisions sur la PR #37 ; détail dans docs/validation_port_carton.md, §13.

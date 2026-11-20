@@ -23,8 +23,9 @@ Ce que disent les lignes :
      au ras du coefficient de sécurité.
 
 Avec les corrections (prise.poids_pese, ManipulationService._peser) :
-  - la pesée sur 50 lectures bras immobiles, moyenne tronquée : trois fois
-    plus reproductible qu'avant ; il reste un biais de +2 à +5 % (côté
+  - la pesée sur lectures_pesee lectures bras immobiles (100, 2 s),
+    moyenne tronquée : à ±2 % près (95 %), contre ±5 % sur 15 lectures ; il
+    reste un biais de +2 à +5 % (côté
     lourd) : sans les erreurs de gain des couples estimés du banc (connues,
     graine 3), les couples du relevé pèsent le carton à 1,5 % près, et
     presque tout l'écart vient des deux coudes ;
@@ -198,7 +199,7 @@ check(f"Une lecture : {os_p.std():.2f} N d'écart type (OS), {csv_p.std():.2f} (
       f"(un écart type) : la fenêtre d'avant ne pouvait pas peser à 3 % près",
       0.6 <= sigma <= 1.4 and sigma / np.sqrt(15) / VRAI > 0.02)
 
-section("2. La pesée longue : 50 lectures bras immobiles, moyenne tronquée")
+section(f"2. La pesée longue : {R.lectures_pesee} lectures bras immobiles, moyenne tronquée")
 pese, incertitude = poids_pese(os_p, R.part_ecartee_pesee)
 check(f"Sur le palier de l'essai ({len(os_p)} lectures de l'OS, bras immobiles, serrage de "
       f"prise) : {pese:.2f} N ({100 * (pese / VRAI - 1):+.1f} %) ±{2 * incertitude:.2f} (deux écarts "
@@ -206,22 +207,30 @@ check(f"Sur le palier de l'essai ({len(os_p)} lectures de l'OS, bras immobiles, 
       VRAI * 0.99 <= pese <= VRAI * 1.05)
 # Reproductibilité : tirages de n lectures parmi les deux flux du palier (celui
 # du relevé recalé sur celui de l'OS de leur écart médian sur tout le levage :
-# la pesanteur de la centrale inertielle, que le relevé n'a pas).
+# la pesanteur de la centrale inertielle, que le relevé n'a pas), AVEC remise :
+# des lectures indépendantes, comme celles de l'OS (un bruit neuf à chaque
+# pas). Sans remise, n lectures prises parmi les 70 du palier variaient de
+# moins en moins à mesure que n approchait 70 (100 n'y tient plus) : c'était
+# optimiste. L'incertitude que l'OS annonce (poids_pese, deux écarts types)
+# doit tenir 2 %, et le tirage la retrouver.
 recal = float(np.median(LEC - np.array([poids_csv(P[x]) for x in T])))
 tous = np.concatenate([os_p, csv_p + recal])
 rng = np.random.default_rng(2204)
 
 
 def demi_largeur(n):
-    t_ = [poids_pese(rng.choice(tous, n, replace=False), R.part_ecartee_pesee)[0]
-          for _ in range(3000)]
+    t_ = [poids_pese(rng.choice(tous, n, replace=True), R.part_ecartee_pesee)[0]
+          for _ in range(4000)]
     return (np.percentile(t_, 97.5) - np.percentile(t_, 2.5)) / 2.0 / VRAI
 
 
-d15, d50 = demi_largeur(15), demi_largeur(min(R.lectures_pesee, len(tous) - 1))
-check(f"Reproductible : de tirage en tirage du palier, ±{100 * d50:.1f} % avec "
-      f"{R.lectures_pesee} lectures (95 %), contre ±{100 * d15:.1f} % avec 15",
-      d50 <= 0.02 and d50 <= 0.5 * d15, f"{d15} {d50}")
+d15, dn = demi_largeur(15), demi_largeur(R.lectures_pesee)
+annonce = 2.0 * float(np.std(tous)) / np.sqrt(R.lectures_pesee) / VRAI
+check(f"Reproductible : de tirage en tirage du palier, ±{100 * dn:.1f} % avec "
+      f"{R.lectures_pesee} lectures (95 %), contre ±{100 * d15:.1f} % avec 15 ; l'OS annonce "
+      f"±{100 * annonce:.2f} % (deux écarts types), à 2 % près",
+      annonce <= 0.02 and dn <= 0.5 * d15 and abs(dn - annonce) <= 0.003,
+      f"{d15} {dn} {annonce}")
 # Le biais qui reste : les erreurs de gain des couples estimés (bruit_couples,
 # ±5 % par moteur, comme l'estimation du vrai G1 par le courant), connues au
 # banc. L'ordre des articulations se vérifie sur les biais : ceux du banc
