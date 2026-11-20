@@ -1372,3 +1372,37 @@ compte plus que la fenêtre.
 - Chaque pesée : `… ; gains des coudes de la calibration de charge du …`.
 - Au port : `marge de frottement … sur la dernière foulée` ; `marge de
   frottement sur 0,3 s` ne doit apparaître que sur un vrai desserrage.
+
+## 14. Pesée sur 100 lectures (décision sur la PR #38)
+
+La calibration de charge enlève le biais de la pesée, pas son bruit : sur 50
+lectures (1 s), une pesée n'était sûre qu'à ±2,8 % (95 %), quand le carton de
+1 kg, poignets à leurs plafonds, ne se porte qu'avec un poids juste à ~2 %
+près. Décision : 100 lectures (`lectures_pesee`, 2 s ; `duree_pesee_max_s`
+3 s, la même seconde de marge qu'avant pour les lectures écartées).
+
+- Sur le palier de 22 h 04 (70 lectures des deux flux, tirées avec remise,
+  4 000 tirages) : ±2,0 % avec 100 lectures (95 %), contre ±5,3 % avec 15 ;
+  l'OS annonce ±1,96 % (deux écarts types, `poids_pese`). Au ras de 2 %.
+- Rien d'autre ne change : coefficient de sécurité 2, frottement 0,8, plafonds,
+  contrôles de prise (une main sous `force_min_n` écourte toujours la pesée ;
+  le carton qui bouge entre les mains la refuse toujours sans attendre).
+- Campagne de cartons : inchangée (6 déposés sur 120, 3 reposés, aucun cas
+  interdit).
+
+Tests modifiés :
+- `test_rejeu_port_t2204` §2 : la reproductibilité se tire désormais AVEC
+  remise (des lectures indépendantes, comme celles de l'OS). Sans remise, n
+  lectures prises parmi les 70 du palier variaient de moins en moins à mesure
+  que n approchait 70 (100 n'y tient plus ; 50 y donnaient ±1,5 %, optimiste).
+  Même seuil (2 %), sur l'incertitude que l'OS annonce, et le tirage doit la
+  retrouver ; même rapport (au moins deux fois plus serré que 15 lectures).
+- `test_port_sans_derive` §5 : le scénario « reprise hors de portée des
+  bras » met la reprise 0,5 au-dessus du seuil au lieu de 0,2. La pesée dure
+  1 s de plus, la suite des tirages du bruit du port en est décalée ; dans
+  ce tirage, resserrés, les bras gagnaient 0,21 : 0,2 n'était pas hors de
+  portée. Vérifications inchangées (pas de reprise sous elle, arrêt propre,
+  le journal du port).
+
+À vérifier au prochain essai GPU : `poids du carton : … (moyenne tronquée de
+100 lectures en 2.0 s, … ; à ±0.2 N près, deux écarts types …)`.

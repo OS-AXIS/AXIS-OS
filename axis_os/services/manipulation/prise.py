@@ -292,7 +292,10 @@ class ReglagesPrise:
     # pesés pour 9,8 sur 15 lectures (0,3 s), quand une lecture a ~1 N d'écart
     # type (bruit des couples estimés, 0,3 N·m par articulation) : 15 lectures
     # ne sont sûres qu'à ±3 % (un écart type) ; les couples du relevé, aux
-    # mêmes instants, donnaient 9,65 N. 50 lectures : ±1,5 %. Pas assez de
+    # mêmes instants, donnaient 9,65 N. 100 lectures (2 s, décision sur la PR
+    # #38) : ±2 % à 95 %, celles de l'essai tirées avec remise ; 50 en
+    # laissaient ±2,8 %, quand le carton de 1 kg, poignets à leurs plafonds, ne
+    # se porte qu'avec un poids juste à ~2 % près. Pas assez de
     # lectures immobiles en duree_pesee_max_s : pesé sur ce qu'on a s'il y en a
     # au moins filtre_force × 3 (la fenêtre d'avant), sinon reposé ; plus de
     # lectures écartées qu'immobiles (au moins filtre_force × 3) : le carton
@@ -301,10 +304,10 @@ class ReglagesPrise:
     # lectures) : on ne reste pas au serrage de prise pendant qu'elle se
     # relâche (carton pris 2 cm à côté de sa perception : la main la moins
     # enfoncée passait de 6,8 à 3,6 N en 1 s).
-    lectures_pesee: int = 50
+    lectures_pesee: int = 100
     vitesse_pesee_max_rad_s: float = 0.05
     part_ecartee_pesee: float = 0.1
-    duree_pesee_max_s: float = 2.0
+    duree_pesee_max_s: float = 3.0
     # Calibration de charge (une fois par robot, à la première mise en route :
     # ManipulationService.calibrer_charge, docs/PREMIERE_MISE_EN_ROUTE.md) :
     # une masse de référence connue (au moins masse_reference_min_kg, au plus
