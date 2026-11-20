@@ -274,14 +274,16 @@ def points_du_masque(depth: np.ndarray, intrinsics, rotation: np.ndarray, transl
 
 def rotation_dessus(points: np.ndarray, axe: np.ndarray, haut: np.ndarray = HAUT,
                     seuil_m: float = 0.006, iterations: int = 150, graine: int = 0,
-                    min_points: int = 30, inclinaison_max_deg: float = 60.0
-                    ) -> Optional[float]:
+                    min_points: int = 30, inclinaison_max_deg: float = 60.0,
+                    residu_max_m: float = 0.003) -> Optional[float]:
     """Rotation (degrés) d'un carton tenu autour de l'axe horizontal `axe`
     (la ligne qui joint les mains), d'après les points vus de son dessus :
     le plan qui en porte le plus (RANSAC à trois points, normale à moins de
     `inclinaison_max_deg` de la verticale), sa normale ramenée dans le plan
     perpendiculaire à `axe`, et son angle avec la verticale ; positif dans
-    le sens direct autour de `axe`. None : trop peu de points, ou aucun plan.
+    le sens direct autour de `axe`. None : trop peu de points, aucun plan,
+    ou un plan flou (écart type des points au plan au-delà de
+    `residu_max_m`) : un dessus vu en partie ne donne une pente que nette.
     Contrairement à plan_ransac, le plan n'est pas supposé horizontal : c'est
     justement sa pente que l'on cherche (essai GPU du 5 novembre 2026 : le
     carton levé a pivoté autour de la ligne des mains)."""
@@ -307,7 +309,9 @@ def rotation_dessus(points: np.ndarray, axe: np.ndarray, haut: np.ndarray = HAUT
     if meilleur is None or meilleur.sum() < min_points // 2:
         return None
     q = pts[meilleur]
-    _, _, vt = np.linalg.svd(q - q.mean(axis=0))
+    _, sv, vt = np.linalg.svd(q - q.mean(axis=0))
+    if sv[2] / math.sqrt(len(q)) > residu_max_m:
+        return None
     n = vt[2] if vt[2] @ haut > 0 else -vt[2]
     n = n - float(n @ a) * a                     # dans le plan perpendiculaire à l'axe
     if float(np.linalg.norm(n)) < 1e-9:

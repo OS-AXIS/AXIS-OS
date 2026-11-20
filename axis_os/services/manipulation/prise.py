@@ -250,6 +250,14 @@ class ReglagesPrise:
     # du début du port, pendant `duree_perte_s`) : on le repose au lieu de
     # marcher avec (ou, en marche, on s'arrête et on le signale).
     rotation_max_deg: float = 10.0
+    # Vue par la caméra de tête (en entier, ou son dessus en partie), le
+    # carton tenu s'arrête plus tôt : à rotation_vue_max_deg. Il tourne
+    # jusqu'à ~8°/s entre les paumes (essai GPU du 20 novembre 2026, 21 h 37 :
+    # de -4,8° à -8,7° en 0,5 s au début du port) ; 2° d'erreur de la vue et
+    # une image de retard (0,1 s) ne le laissent pas passer
+    # rotation_max_deg. Ne sert qu'à arrêter et reposer,
+    # jamais à autoriser : un carton vu droit n'efface aucune autre alerte.
+    rotation_vue_max_deg: float = 6.0
     part_poids_min: float = 0.4
     # Poids qui chute : jugé sur les filtre_force dernières lectures (0,1 s),
     # pendant duree_perte_s, pour qu'un carton qui glisse ou s'échappe soit vu
@@ -342,6 +350,19 @@ class ReglagesPrise:
     # (à reposer).
     ecart_face_port_m: float = 0.005
     duree_resserrage_s: float = 1.0
+    # Mains écartées à répétition : un carton qui tourne entre les paumes
+    # (essai GPU T1 du 20 novembre 2026, 21 h 37 : tourné de 50° autour de la
+    # ligne des mains, paumes immobiles à 3,8° près ; seul signe vu par l'OS,
+    # « mains écartées de 5 à 13 mm », 8 fois, chaque fois resserrées). Au
+    # ecartements_max-ième écartement en fenetre_ecartements_s, ou dès que
+    # l'écart grandit de croissance_ecart_m malgré le resserrage : transport
+    # interrompu, à reposer, avec la raison. L'écart de référence est le plus
+    # grand vu pendant delai_croissance_s (le temps que le resserrage agisse :
+    # la main glisse encore quelques pas, robot simulé).
+    ecartements_max: int = 2
+    fenetre_ecartements_s: float = 10.0
+    croissance_ecart_m: float = 0.002
+    delai_croissance_s: float = 0.2
     # Au retour (RAMENER), les deux mains bougent comme un seul corps rigide
     # avec le carton (essai GPU T1 du 6 novembre 2026, 18 h 21 : la
     # cinématique inverse ne tenait que la POSITION des points de contact ;

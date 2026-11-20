@@ -633,6 +633,10 @@ class ManipulationService(IService):
         # Poids lu à chaque pas du port (instant, N) : sa médiane sur la foulée
         # compte dans la marge s'il passe la pesée (le plus prudent des deux).
         self._poids_port: deque = deque()
+        # Instants des écartements des mains au port, et l'écart au début de
+        # celui en cours (un carton qui tourne entre les paumes).
+        self._ecartements: deque = deque()
+        self._ecart_debut: Optional[float] = None
         self.rotation_vue: Optional[float] = None
         self.appui_torse: Optional[float] = None
         self._poids_ref: Optional[float] = None
@@ -2944,6 +2948,8 @@ class ManipulationService(IService):
             self._hist_normales.clear()
             self._t_normales.clear()
             self._poids_port.clear()
+            self._ecartements.clear()
+            self._ecart_debut = None
             return
         ecart = self._serrage_port_ref - serrage
         g = self._gravite_bassin()
@@ -3008,6 +3014,34 @@ class ManipulationService(IService):
         # de couple à la marche) est rendu dès que les deux bras ont de la
         # marge ; au-delà, seulement pour retrouver le serrage perdu.
         a_rendre = [c for c in self._ROULIS if self._delta[c] < self._delta_port[c] - 1e-6]
+        # Un carton qui tourne entre les paumes les écarte, encore et encore
+        # (essai GPU du 20 novembre 2026, 21 h 37 : 8 fois, de 5 à 13 mm,
+        # chaque fois resserrées, jusqu'à 50°). Un écartement : les mains qui
+        # passent au-delà de ecart_face_port_m.
+        if not ecartees:
+            self._ecart_debut = None
+        elif self._ecart_debut is None:
+            t0 = self._horloge()
+            self._ecart_debut = ecart
+            self._ecartements.append(t0)
+            while t0 - self._ecartements[0] > r.fenetre_ecartements_s:
+                self._ecartements.popleft()
+            if len(self._ecartements) >= r.ecartements_max:
+                self._interrompre_port(
+                    f"carton qui tourne entre les paumes : mains écartées "
+                    f"{len(self._ecartements)} fois en {r.fenetre_ecartements_s:g} s "
+                    f"({1000 * ecart:.0f} mm cette fois)")
+                return
+        elif self._horloge() - self._ecartements[-1] <= r.delai_croissance_s:
+            # Le temps que le resserrage agisse : l'écart de référence suit
+            # le plus grand vu (la main glisse encore, la consigne la suit).
+            self._ecart_debut = max(self._ecart_debut, ecart)
+        elif ecart > self._ecart_debut + r.croissance_ecart_m and self._t_resserrage is not None:
+            self._interrompre_port(
+                f"carton qui tourne entre les paumes : mains écartées de "
+                f"{1000 * self._ecart_debut:.0f} puis {1000 * ecart:.0f} mm malgré le "
+                f"resserrage")
+            return
         if ecartees or faible or force:
             t = self._horloge()
             pourquoi = " ; ".join(
@@ -3192,8 +3226,9 @@ class ManipulationService(IService):
 
     def _surveiller_rotation(self, tau: Optional[Dict[str, float]]) -> str:
         """Objet tenu : tourne-t-il autour de la ligne des mains ? La
-        caméra de tête, quand elle le voit, au-delà de `rotation_max_deg`.
-        "" s'il tient, sinon pourquoi.
+        caméra de tête, quand elle le voit (en entier, ou son dessus en
+        partie), au-delà de `rotation_vue_max_deg` (jamais plus que
+        `rotation_max_deg`). "" s'il tient, sinon pourquoi.
 
         Les couples ne la voient pas : le couple de basculement qu'une
         rotation fait passer par les mains est plafonné à leur frottement en
@@ -3213,9 +3248,10 @@ class ManipulationService(IService):
             except Exception:             # noqa: BLE001 — caméra en panne : sans elle
                 v = None
         self.rotation_vue = None if v is None or not math.isfinite(float(v)) else float(v)
-        if self.rotation_vue is not None and abs(self.rotation_vue) > r.rotation_max_deg:
-            return (f"carton tourné de {self.rotation_vue:+.0f}° autour de la ligne des mains "
-                    f"(caméra de tête ; au plus {r.rotation_max_deg:.0f}°)")
+        seuil_vue = min(r.rotation_max_deg, r.rotation_vue_max_deg)
+        if self.rotation_vue is not None and abs(self.rotation_vue) > seuil_vue:
+            return (f"carton tourné de {self.rotation_vue:+.0f}° autour de la ligne des mains, "
+                    f"il tourne entre les paumes (caméra de tête ; au plus {seuil_vue:g}°)")
         if self._charge(tau) is not None:
             # Poids de référence du port : le plus grand porté depuis le levage.
             self._poids_ref = max(self._poids_ref or 0.0, self.charge[0])

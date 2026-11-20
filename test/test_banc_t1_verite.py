@@ -368,10 +368,12 @@ check("t1_prise.csv : de la fermeture au port (levage, ramené, tenu, reposé), 
 check("Juge : orientation du carton à chaque phase, et pendant le port jusqu'à la chute",
       "juge.noter_orientation(e_.name.lower(), ro_, ta_)" in T1
       and "juge (vérité simulation), port : " in T1)
-check("Caméra de tête branchée sur la prise (rotation du carton tenu, vue quand il est dans "
-      "l'image), sans vérité de la simulation",
+check("Caméra de tête branchée sur la prise (rotation du carton tenu, vue quand son dessus est "
+      "dans l'image, même en partie : essai GPU du 20 novembre 2026, 21 h 37), sans vérité de "
+      "la simulation",
       "rotation=lambda: rotation_tete())" in T1 and "def rotation_tete():" in T1
-      and "rotation_dessus(pts_b[dedans_], g_ - d_)" in T1)
+      and "rotation_dessus(pts_b[dedans_], g_ - d_)" in T1
+      and "np.clip(uv_.min(axis=0), 0.0, [w_, h_])" in T1 and "np.any(uv_ < 0)" not in T1)
 check("Juge : prise par prise au journal, compteurs dans l'évaluation",
       "juge.fin(manip.contacts_estimes)" in T1 and "**(juge.compteurs if juge" in T1)
 check("Vue du robot : vidéo, incrustation, page de suivi, réglage pour la démo",

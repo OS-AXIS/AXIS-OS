@@ -400,6 +400,20 @@ for _ang in (0.0, 15.0, -25.0):
           _v is not None and abs(_v - _ang) < 1.0, str(_v))
 check("Trop peu de points : rien (None), jamais un angle inventé",
       rotation_dessus(_dessus[:10], np.array([0.0, 1.0, 0.0])) is None)
+# Essai GPU du 20 novembre 2026, 21 h 37 : au port, le dessus coupé par le
+# bord bas de l'image ; seule sa moitié du fond (x > 0), bord avant hors champ.
+_moitie = _dessus[_dessus[:, 0] > 0.0]
+for _ang in (-8.0, 12.0):
+    _a = math.radians(_ang)
+    _r = np.array([[math.cos(_a), 0, math.sin(_a)], [0, 1, 0], [-math.sin(_a), 0, math.cos(_a)]])
+    _v = rotation_dessus(_moitie @ _r.T + _rng.normal(0, 0.002, _moitie.shape),
+                         np.array([0.0, 1.0, 0.0]))
+    check(f"Dessus vu en partie (moitié du fond), tourné de {_ang:+.0f}° : mesuré à 1° près",
+          _v is not None and abs(_v - _ang) < 1.0, str(_v))
+_flou = _moitie + _rng.normal(0, 0.008, _moitie.shape)
+check("Dessus flou (bruit de 8 mm) : rien (None), plutôt qu'une pente douteuse",
+      rotation_dessus(_flou, np.array([0.0, 1.0, 0.0])) is None,
+      str(rotation_dessus(_flou, np.array([0.0, 1.0, 0.0]))))
 
 print(f"\n  {'TOUT PASSE' if FAIL == 0 else f'{FAIL} ÉCHEC(S)'}")
 sys.exit(1 if FAIL else 0)

@@ -636,9 +636,13 @@ def main():
         par la caméra de profondeur de la tête : signal du vrai G1, sans
         vérité de la simulation. Le carton est placé par l'OS (points de
         contact des mains, cinématique sur les angles mesurés, et sa taille) ;
-        s'il tombe en entier dans l'image, les points de son dessus donnent
-        la pente (rotation_dessus). None sinon : en T1, à la prise, il est
-        sous le bord bas de l'image (voir la vue de diagnostic)."""
+        les points de son dessus donnent la pente (rotation_dessus), même
+        quand il n'est qu'en partie dans l'image (essai GPU du 20 novembre
+        2026, 21 h 37 : au port, le dessus coupé par le bord bas de l'image,
+        rotation_vue vide pendant que le carton tournait de 50°) : assez de
+        points, sur un plan net (résidu), sinon None. L'OS ne s'en sert que
+        pour arrêter et reposer (rotation_vue_max_deg), jamais pour
+        autoriser."""
         if manip.etat not in (Etat.LEVAGE, Etat.RAMENER, Etat.TENU) or manip.objet is None:
             return None
         try:
@@ -648,9 +652,10 @@ def main():
             c_b = (g_ + d_) / 2.0
             p_, q_ = robot.get_world_pose()
             r_w = quat_wxyz_to_matrix(q_)
+            # Les quatre coins du dessus ; le cadre, ramené dans l'image.
             coins_ = np.array([c_b + np.array([sx * o_.profondeur, sy * o_.largeur,
-                                               sz * o_.hauteur]) / 2.0
-                               for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+                                               o_.hauteur]) / 2.0
+                               for sx in (-1, 1) for sy in (-1, 1)])
             proj_ = perception.projeter(np.asarray(p_, dtype=float) + coins_ @ r_w.T)
             prof_ = dep.capture_depth()
             pose_ = pose_optique_os()
@@ -658,10 +663,12 @@ def main():
             if proj_ is None or prof_ is None or pose_ is None or k_ is None:
                 return None
             uv_, z_, (w_, h_) = proj_
-            if np.any(z_ < 0.1) or np.any(uv_ < 0) or np.any(uv_[:, 0] > w_) \
-                    or np.any(uv_[:, 1] > h_):
+            if np.any(z_ < 0.1):
                 return None
-            (u0, v0), (u1, v1) = uv_.min(axis=0), uv_.max(axis=0)
+            (u0, v0) = np.clip(uv_.min(axis=0), 0.0, [w_, h_])
+            (u1, v1) = np.clip(uv_.max(axis=0), 0.0, [w_, h_])
+            if u1 - u0 < 8 or v1 - v0 < 8:          # dessus hors de l'image
+                return None
             pts_ = points_du_masque(np.asarray(prof_), k_, pose_[0], pose_[1],
                                     bbox=(u0, v0, u1 - u0, v1 - v0))
             pts_b = (pts_ - np.asarray(p_, dtype=float)) @ r_w

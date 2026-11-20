@@ -29,7 +29,10 @@ raideur_articulations : un moteur qui faiblit) :
   3. la foulée : une variation du serrage au pas de la marche n'arrête plus
      la base (la marge sur 0,3 s l'aurait arrêtée) ; une main desserrée sans
      que le carton bouge est jugée sur la foulée, en ~1 s (le compromis
-     accepté).
+     accepté) ;
+  4. le carton qui tourne entre les paumes (essai GPU du 20 novembre 2026,
+     21 h 37) : au 2e écartement des mains en 10 s, ou dès que l'écart
+     grandit malgré le resserrage, transport interrompu, à reposer.
 """
 import contextlib
 import io
@@ -261,6 +264,66 @@ check(f"La foulée : {n} lectures sur {b.m._t_normales[-1] - b.m._t_normales[0]:
 check(f"Rien d'affaibli : coefficient {R.securite_serrage:g}, frottement {R.frottement_serrage:g}, "
       f"reprise {R.securite_reprise:g}",
       R.securite_serrage == 2.0 and R.frottement_serrage == 0.8 and R.securite_reprise == 2.2)
+
+section("4. Carton qui tourne entre les paumes : mains écartées à répétition")
+# Essai GPU du 20 novembre 2026, 21 h 37 : le carton a tourné de 50° autour de
+# la ligne des mains ; l'OS n'en a vu que « mains écartées de 5 à 13 mm »,
+# 8 fois, chaque fois resserrées. Ici, l'écart vu par l'OS (sa géométrie des
+# mains, _serrage_port) est imposé ; tout le reste de l'OS tourne tel quel.
+
+
+def ecart_impose(b):
+    e = [0.0]
+    b.m._serrage_port = lambda angles: b.m._serrage_port_ref - e[0]
+    return e
+
+
+def ecartement(b, e, mm, duree=0.1):
+    e[0] = mm / 1000.0
+    b.pas(round(duree / b.r._dt))
+    e[0] = 0.0
+
+
+def interrompu(b):
+    return next((ligne for ligne in b.journal if ligne.startswith("transport interrompu")), "")
+
+
+b = Banc()
+e = ecart_impose(b)
+ecartement(b, e, 7)
+b.pas(round(2.0 / b.r._dt))
+check("Un écartement de 7 mm, resserré : base arrêtée le temps de resserrer, le port continue",
+      b.m.etat is Etat.TENU and not b.m.a_reposer and b.r.held is not None
+      and any("mains écartées de 7 mm" in ligne for ligne in b.journal) and not interrompu(b),
+      f"{interrompu(b)} {b.journal[-3:]}")
+ecartement(b, e, 7)
+b.pas(5)
+check(f"Le 2e en moins de {R.fenetre_ecartements_s:g} s : transport interrompu, à reposer, "
+      f"« carton qui tourne entre les paumes »",
+      b.m.a_reposer and b.r.held is not None
+      and f"carton qui tourne entre les paumes : mains écartées 2 fois en "
+          f"{R.fenetre_ecartements_s:g} s" in interrompu(b), interrompu(b))
+b = Banc()
+e = ecart_impose(b)
+ecartement(b, e, 7)
+b.pas(round((R.fenetre_ecartements_s + 1.0) / b.r._dt))
+ecartement(b, e, 7)
+b.pas(round(2.0 / b.r._dt))
+check(f"Deux écartements à plus de {R.fenetre_ecartements_s:g} s l'un de l'autre : chacun "
+      f"resserré, le port continue", not b.m.a_reposer and not interrompu(b), interrompu(b))
+b = Banc()
+e = ecart_impose(b)
+e[0] = 0.006
+t0 = b.t[0]
+while not b.m.a_reposer and b.t[0] - t0 < 2.0:
+    b.pas()
+    e[0] += 0.0005                           # 2,5 cm/s : le carton tourne encore
+check(f"L'écart qui grandit malgré le resserrage (de plus de {1000 * R.croissance_ecart_m:g} mm "
+      f"après {R.delai_croissance_s:g} s) : transport interrompu en "
+      f"{b.t[0] - t0:.2f} s, avant l'abandon du resserrage ({R.duree_resserrage_s:g} s)",
+      b.m.a_reposer and b.t[0] - t0 < R.duree_resserrage_s
+      and "malgré le resserrage" in interrompu(b)
+      and "carton qui tourne entre les paumes" in interrompu(b), interrompu(b))
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
