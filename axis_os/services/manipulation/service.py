@@ -3897,14 +3897,17 @@ class ManipulationService(IService):
 
     def _essai_chemins(self, objet: Objet, centre: np.ndarray, lacet: float, cap_bord: float,
                        bord: float, q_c: Dict[str, float], fixes: Dict[str, float],
-                       dz: float = 0.0, tangage: float = 0.0) -> Tuple[bool, str]:
+                       dz: float = 0.0, tangage: float = 0.0, depose: bool = True
+                       ) -> Tuple[bool, str]:
         """Levage, retour vers le buste (comme _ramener) et dépose à la même
         place (comme la descente : chemin vérifié, ouverture des mains en
         bas), en corps rigide, SANS bouger : l'état de la prise posé le temps
         de l'essai, puis rendu tel qu'il était. `centre` : le milieu des
         points de contact, `dz` au-dessus du centre de l'objet (prise en
         pendule). Torse penché de `tangage` : il doit pouvoir se redresser,
-        l'objet tenu là où le retour l'a amené (on ne marche que droit)."""
+        l'objet tenu là où le retour l'a amené (on ne marche que droit).
+        `depose` False : sans la dépose à sa place (plan_penche : on pose
+        ailleurs, debout)."""
         r, p = self.r, self.p
         if not all(len(self._commandables(c_)) >= 6 for c_ in self._ROULIS):
             return True, "chemins non vérifiables : sans tangage du poignet, pas de corps rigide"
@@ -3944,9 +3947,15 @@ class ManipulationService(IService):
                 if qk is not None:
                     porte, q_porte = ck, qk
                     break
-            if tangage > 1e-3 and not self._redressable(porte, q_porte, t0=tangage):
+            # Torse penché : il se redresse l'objet tenu là où le retour l'amène,
+            # et là où le levage l'a laissé (_ramener y reste s'il ne trouve
+            # rien de plus près : robot simulé, table de 70 cm, torse à 5,7°).
+            if tangage > 1e-3 and not all(self._redressable(c_, q_, t0=tangage)
+                                          for c_, q_ in ((porte, q_porte), (leve, q))):
                 return False, ("chemin des bras : le torse ne se redresserait pas, l'objet tenu là "
-                               "où le retour l'amène (on ne marche que droit)")
+                               "où le retour ou le levage l'amène (on ne marche que droit)")
+            if not depose:
+                return True, "levage et retour vers le buste : chemins vérifiés"
             devant = np.array([float(centre[0]), float(porte[1]), float(porte[2])])
             bas = np.array([float(centre[0]), float(porte[1]),
                             plateau + p.jeu_depose + objet.hauteur / 2.0 + dz])
@@ -4114,7 +4123,25 @@ class ManipulationService(IService):
             r = self._posture(t, 0.0, angles={**port, **(q or {})},
                               charges=[(self.r.masse_max_kg, (d_t, 0.0, z))], essai=True)
             if r.ok:
-                return d_t, t, f"penché de {math.degrees(t):.0f}° : {r.reason}"
+                # Les chemins, comme le planificateur : levage, retour, dépose,
+                # et le torse qui se redresse l'objet tenu (on ne marche que droit).
+                cap_bord = (math.remainder(objet.lacet_bord - cap, 2.0 * math.pi)
+                            if cap is not None and objet.lacet_bord is not None else 0.0)
+                fixes = {**self._articulations_fixes(), self.TAILLE: t}
+                prise = np.array([d_t, 0.0, zm])
+                q_c, _ = resoudre(self._modele, *cibles_mains(prise, objet.largeur, 0.0,
+                                                             self.r.demi_main_m),
+                                  {**fixes, **self._q})
+                ok, texte = (False, "hors de portée des bras") if q_c is None else \
+                    self._essai_chemins(objet, prise, 0.0, cap_bord,
+                                        d_t * math.cos(cap_bord) - objet.profondeur / 2.0
+                                        - objet.bord_m, q_c, fixes, dz=zm - z, tangage=t,
+                                        depose=False)
+                if ok:
+                    return d_t, t, f"penché de {math.degrees(t):.0f}° : {r.reason}"
+                # Plus penché, le torse a plus à redresser : rien de mieux.
+                dernier = f"penché de {math.degrees(t):.0f}°, {texte}"
+                break
             dernier = r.reason
             if "équilibre" in r.reason:
                 break               # plus penché, le centre de masse n'avance que plus
