@@ -39,6 +39,14 @@ docs/validation_port_carton.md, §15.
   torse pour aller plus loin), `abaissement_pour_deposer` et
   `changer_abaissement` (plateau bas), `planifier_prise(postures=True)` ; la
   prise calculée sur la taille mesurée.
+- Après la revue : `plan_penche` vérifie que le torse se redresse l'objet
+  tenu ; placement des mains en profondeur à la moitié de ce que la ligne
+  des mains admet, `corrections_max` 2 → 3 ; `pick()` : le planificateur ne
+  s'égare plus sur la graine d'une candidate refusée ; distance de prise
+  refusée si les mains ouvertes n'atteignent pas ; mains ouvertes visées en
+  arrière de ce que la fermeture les avance (3,4 mm) ; suite de tests sous
+  les 45 min de la CI (cinématique inverse : 4 passes par tour au lieu
+  de 7).
 
 ### Pesée sur 100 lectures
 

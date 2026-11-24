@@ -1450,8 +1450,11 @@ vu comme un obstacle inexpliqué à 0,49 m.
 - La fermeture ne tourne que le roulis d'épaule : la main décrit un arc
   autour de l'épaule et descend en fermant, d'autant plus qu'elle est haut
   (robot simulé, carton T1 de la campagne : 5,5 cm ; il touchait 0,6 cm
-  au-dessus du centre, refusé au serrage). Les mains ouvertes sont visées
-  plus haut de ce qu'elles descendront, tant que les bras y arrivent
+  au-dessus du centre, refusé au serrage), et avance de 3,4 mm (la ligne des
+  mains devant le centre de gravité : son moment, lu comme une force,
+  faussait la pesée et la calibration de charge). Les mains ouvertes sont
+  visées plus haut de ce qu'elles descendront et plus en arrière de ce
+  qu'elles avanceront, tant que les bras y arrivent
   (`_ouvert_pendule`) ; si elles toucheraient encore à moins de 4 cm
   au-dessus du centre, la prise est refusée avant de bouger (« prise en
   pendule impossible d'ici : changer la distance ») et le planificateur
@@ -1555,7 +1558,7 @@ Table de la scène T1 (80 cm) :
 | faisables | 33 | 21 | 21 |
 | déposés | 6 | 3 | 3 |
 | reposés (dont faisables) | 3 (1) | 7 (5) | 7 (5) |
-| refus des faisables | dépose 18, trop lourd 5, avant-bras 3, glisse 1 | trop lourd 12, dépose 3, glisse 2, trop lourd ou glissant 1 | les mêmes |
+| refus des faisables | dépose 18, trop lourd 5, avant-bras 3, glisse 1 | trop lourd 11, dépose 3, glisse 3, trop lourd ou glissant 1 | les mêmes |
 | cas interdits | 0 | 0 | 0 |
 
 - 12 faisables de moins : 13 cartons de moins de 18 cm, trop bas pour une
@@ -1580,3 +1583,38 @@ La même campagne sur une table de 66 cm (les cartons posés dessus, déposés
 | refus des faisables | trop bas pour les mains 14, dépose 1 | trop bas pour les mains 6 (plus de 10 cm de jambes), dépose 1, contact 1, trop lourd ou glissant 1, glisse 1 |
 | postures | — | jambes pliées de 2,5 cm (4), 5 cm (6), 7,5 cm (5), 10 cm (2) |
 | cas interdits | 0 | 0 |
+
+### 15.8 Après la revue et la première CI
+
+La première CI dépassait ses 45 min (annulée à 90 %) et 8 tests échouaient.
+
+- Temps : la cinématique inverse recalculait la main au même angle 3 fois
+  de plus par tour (4 passes au lieu de 7, les mêmes nombres) ; campagne de
+  cartons 193 → 154 s, comme sur main ; suite de la CI 38,6 min.
+- Se pencher : `plan_penche` vérifie les chemins comme le planificateur, et
+  que le torse se redresse l'objet tenu là où le retour ou le levage le
+  laisse (table de 70 cm, carton à 29 cm : il était pris penché, puis plus
+  moyen de se redresser ni de marcher).
+- Redressement : la consigne du torse reste droite sous 1 mrad mesuré (une
+  taille lue à 0,05° bloquait le départ) ; un délai, l'échec dit au-delà.
+- Placement : en profondeur, les mains à la moitié de ce que la ligne des
+  mains admet autour du centre de gravité (`tolerances_cg`), corrigées avant
+  de fermer ; `corrections_max` 2 → 3 (bras affaissés de 0,25 rad : la prise
+  tient de nouveau).
+- Planificateur : la graine de la cinématique inverse des candidates
+  suivantes vient d'une candidate à portée (`pick()` du SDK refusait un
+  carton que le planificateur retenait seul).
+- Distance de prise : refusée si les mains ouvertes n'atteignent pas les
+  faces.
+- Calibration de charge, au robot simulé (décision de revue) : gains des
+  coudes retrouvés à 3 % près (−2,7 %) ; la pesée de ce robot simulé lit
+  1 % de moins aux gains vrais (poignets très souples, efforts calculés sur
+  les bras non déformés), la calibration l'absorbe ; la pesée calibrée reste
+  à 2 % près.
+- Carton tourné de 11°, au robot simulé (décision de revue) : poignets
+  × 0,5 ; à × 0,25, son modèle de contact n'a plus d'équilibre pendant le
+  levage.
+
+Campagne de cartons refaite avec ces corrections (chiffres du §15.7) : 3 déposés,
+7 reposés, aucun cas interdit, comme avant elles ; un refus « trop lourd »
+devient « glisse au port ». Table de 66 cm : inchangée.
