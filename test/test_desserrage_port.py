@@ -150,6 +150,14 @@ def carton_vide(b):
     b.r.MASSE_OBJET_KG = 0.1                   # le fond lâche, le contenu tombe
 
 
+def carton_allege(b):
+    # Il ne pèse plus que 0,35 kg (sous part_poids_min du poids de référence) :
+    # prise en pendule, le carton vidé à 0,1 kg (ou à 0,3) relâche assez les
+    # bras pour que les mains s'écartent aussi ; allégé à 0,35, seul le poids
+    # le dit.
+    b.r.MASSE_OBJET_KG = 0.35
+
+
 def carton_ecrase(b):
     o = b.r.held
     o.size = (o.size[0] - 0.01, o.size[1], o.size[2])
@@ -168,6 +176,7 @@ CAS = [
      "s'écarte, le carton est moins serré", lacets(droit=0.08, gauche=0.08)),
     ("les deux mains lâchent ensemble (lacets 0,09 rad)", lacets(droit=0.09, gauche=0.09)),
     ("le carton se vide : il ne pèse plus que 0,1 kg", carton_vide),
+    ("le carton s'allège : il ne pèse plus que 0,35 kg", carton_allege),
     ("le carton s'écrase de 1 cm entre les mains", carton_ecrase),
 ]
 RES = {}
@@ -183,14 +192,18 @@ for nom, panne in CAS:
           and min(premiers.values()) <= DELAI, f"{b.avant} {premiers}")
 
 section("2. Chaque contrôle direct, seul, en 0,3 s au plus")
-vu, lache, premiers = RES["le carton se vide : il ne pèse plus que 0,1 kg"]
-check(f"Poids qui chute, seul (le carton se vide, rien ne bouge) : vu en "
+vu, lache, premiers = RES["le carton s'allège : il ne pèse plus que 0,35 kg"]
+check(f"Poids qui chute, seul (le carton s'allège, rien ne bouge) : vu en "
       f"{premiers.get('poids qui chute', math.nan):.2f} s (avant : moyenne de 0,3 s puis 0,3 s, "
       f"~0,5 s)", set(premiers) <= {"poids qui chute", "rotation"}
       and premiers.get("poids qui chute", 9) <= DELAI)
-vu, lache, premiers = RES[CAS[0][0]]
+# Prise en pendule : la main droite qui glisse de 2,9 cm, ou les deux mains
+# de 0,09 rad, ne lâchent plus le carton (le transport est interrompu avant) ;
+# le bras droit qui faiblit, si.
+vu, lache, premiers = RES[CAS[1][0]]
 check(f"Poids qui chute, carton lâché : vu {premiers.get('poids qui chute', math.nan) - lache:.2f} s "
-      f"après qu'il a quitté les mains", premiers.get("poids qui chute", 9) - lache <= DELAI)
+      f"après qu'il a quitté les mains", lache is not None
+      and premiers.get("poids qui chute", 9) - lache <= DELAI, f"{lache} {premiers}")
 vu, lache, premiers = RES["le carton s'écrase de 1 cm entre les mains"]
 check(f"Mains écartées, seules (carton écrasé, tenu) : vu en "
       f"{premiers.get('mains écartées', math.nan):.2f} s, au pas suivant",
@@ -243,10 +256,14 @@ check(f"Serrage estimé qui varie au pas (±{100 * AMPL:.0f} %, un pas en 0,8 s,
       min(courtes) < R.securite_serrage and min(longues[60:]) >= R.securite_serrage
       and vu is None and lache is None and min(courtes) > R.securite_glissement,
       f"{vu} {premiers}")
-# Une main desserrée sans que le carton bouge : jugée sur la foulée.
+# Des mains desserrées sans que le carton bouge : jugées sur la foulée. Prise
+# en pendule (mains 6 cm au-dessus du centre) : une seule main qui s'ouvre de
+# 1,7 cm (lacet 0,06 rad) laisse la marge à 2,09, au-dessus du coefficient ; à
+# 0,065 rad, le carton tourne (vu en 0,06 s). Les deux mains de 1,2 cm chacune
+# (0,04 rad) : rien ne tourne, rien ne s'écarte.
 b = Banc()
-vu, lache, premiers = b.essai(lacets(droit=0.06), duree=1.5)
-check(f"La main droite s'ouvre de 1,7 cm, le carton ne bouge pas (rien ne tourne, rien ne "
+vu, lache, premiers = b.essai(lacets(droit=0.04, gauche=0.04), duree=1.5)
+check(f"Les deux mains s'ouvrent de 1,2 cm, le carton ne bouge pas (rien ne tourne, rien ne "
       f"s'écarte, il pèse toujours) : marge {b.m.marge_frottement:.2f} sur la foulée, vue en "
       f"{vu if vu is None else f'{vu:.2f}'} s (sur 0,3 s : ~0,3 s) — le compromis accepté",
       vu is not None and vu <= R.fenetre_marge_s + 0.1 and lache is None

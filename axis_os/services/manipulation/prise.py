@@ -237,6 +237,34 @@ class ReglagesPrise:
     # rayon du contact).
     frottement_main: float = 1.0
     rayon_contact_main_m: float = 0.02
+    # Prise en pendule : la ligne des mains AU-DESSUS du centre de gravité.
+    # Essai GPU du 20 novembre 2026, 21 h 37 : ligne 0,2 à 1 cm au-dessus du
+    # centre (l'OS la croyait 1,9 cm dessous), centre décalé de 0,9 cm en
+    # profondeur (l'OS : 0) ; le frottement en rotation du caoutchouc ne
+    # retenait presque rien (rayon effectif sous 5 mm) : le carton a tourné de
+    # 50°, l'équilibre d'un pendule presque sans bras (tan θ = e / d). Sous la
+    # ligne d'au moins d, le poids le ramène (couple de rappel m g d sin θ) ;
+    # au-dessus, rien ne le ramène. Les accélérations de la marche (~1 m/s²)
+    # le balancent de atan(a / g) ≈ 6° au plus, quel que soit d, et il revient
+    # (essai de 22 h 04 : ±3° au pas) ; un décalage en profondeur e non vu
+    # le penche de atan(e / d).
+    #   - marge_pendule_m : au moins, la ligne au-dessus du centre, estimée par
+    #     l'OS au serrage (mains mesurées) : plus que l'erreur de l'OS sur la
+    #     hauteur de la ligne à 21 h 37 (2,4 cm : vue à -1,9, vraie à +0,5),
+    #     pour que le centre soit sous la ligne à coup sûr ;
+    #   - affaissement_prise_m : de combien les mains se posent plus bas que
+    #     visé (bras sous leur poids, fermeture) : 1,9 cm à 21 h 37, 2,6 cm
+    #     sur le robot simulé ; la visée est marge + affaissement ;
+    #   - bord_face_m : le contact à au moins 3 cm sous l'arête du dessus (la
+    #     paume a une étendue, BORD_FACE_M du robot simulé : 2 cm, plus 1 cm) ;
+    #     un carton trop bas pour la visée (moins de 18 cm) est refusé, avec
+    #     la raison.
+    #   Un décalage en profondeur de 0,9 cm (21 h 37) penche alors le carton
+    #   de atan(0,9 / 3) = 17° au pire, sans aucun frottement en rotation, de
+    #   8,5° visé à 6 cm (la caméra l'arrête à rotation_vue_max_deg).
+    marge_pendule_m: float = 0.03
+    affaissement_prise_m: float = 0.03
+    bord_face_m: float = 0.03
     # La charge la plus lourde que l'OS porte : les tolérances ci-dessus sont
     # calculées pour elle, et un carton pesé au-delà est reposé aussitôt, avant
     # de serrer plus et de le porter. 1 kg, la masse du carton T1, était réglé
@@ -618,6 +646,16 @@ def tolerances_cg(r: "ReglagesPrise", force_n: Optional[float] = None,
     return e, e / math.sin(math.radians(r.rotation_max_deg))
 
 
+def hauteur_prise(r: "ReglagesPrise", hauteur_objet: float) -> Optional[float]:
+    """De combien (m) viser les mains au-dessus du centre d'un objet de
+    `hauteur_objet` (prise en pendule) : marge_pendule_m plus
+    affaissement_prise_m (elles se posent plus bas que visé) ; None si cela
+    les met à moins de bord_face_m de l'arête du dessus (objet trop bas pour
+    une prise en pendule)."""
+    dz = r.marge_pendule_m + r.affaissement_prise_m
+    return dz if dz <= hauteur_objet / 2.0 - r.bord_face_m + 1e-9 else None
+
+
 def ecart_ligne_cg(contact_g: np.ndarray, contact_d: np.ndarray, cg: np.ndarray
                    ) -> Tuple[float, float]:
     """Où passe la ligne qui joint les points de contact des mains, par
@@ -722,7 +760,8 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
             if bord < r.bord_min_m + debord_pieds \
                     or pieds < r.bord_min_m + debord_pieds + marge_pieds:
                 continue
-            c = np.array([float(d), 0.0, centre_z])
+            # Les mains visées au-dessus du centre (prise en pendule).
+            c = np.array([float(d), 0.0, centre_z + (hauteur_prise(r, hauteur) or 0.0)])
             q, _ = resoudre(modele, *cibles_mains(c, largeur, 0.0, r.demi_main_m), depart)
             if q is None:
                 continue

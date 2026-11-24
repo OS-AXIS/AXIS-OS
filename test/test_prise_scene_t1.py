@@ -75,22 +75,31 @@ with robot_devant(0.32) as robot:
           abs(c[0] - 0.32) < 1e-6 and abs(c[2] - 0.17) < 1e-6)
     check("Lacet monde 0, robot tourné d'un quart de tour : faces latérales, écart 0°",
           abs(m._lacet_relatif(carton())) < 1e-9)
+    d_facade, _ = m.distance_de_prise(carton(), d_min=CFG.distance_prise)
+# Prise en pendule : la fermeture (le roulis seul) fait descendre les mains en
+# arc ; à 0,32 m elles toucheraient trop bas sous la visée (refus « changer la
+# distance ») ; la façade arrête le robot là où elles touchent assez haut.
+with robot_devant(d_facade) as robot:
+    m = robot.manipulation
     ok, raison = m._planifier(carton())
-    check("Portée : les mains atteignent le milieu des deux faces", ok, raison)
+    check(f"Portée : les mains atteignent les deux faces, à la distance de prise de la façade "
+          f"({d_facade:.2f} m)", ok, raison)
     if ok:
         cg, cd = m._plan["cibles"]
         check("… les mains visent les faces gauche et droite (pas l'avant et l'arrière)",
-              abs(cg[0] - 0.32) < 1e-6 and abs(cd[0] - 0.32) < 1e-6 and cg[1] > 0 > cd[1])
+              abs(cg[0] - d_facade) < 1e-6 and abs(cd[0] - d_facade) < 1e-6
+              and cg[1] > 0 > cd[1])
 for d in (0.36,):
     with robot_devant(d) as robot:
         ok, raison = robot.manipulation._planifier(carton())
         check(f"Géométrie de l'ancienne prise (carton à {d:.2f} m) : atteignable", ok, raison)
 for lacet in (-12.0, 12.0):
-    with robot_devant(0.32) as robot:
+    with robot_devant(d_facade) as robot:
         m = robot.manipulation
         check(f"Carton tourné de {lacet:+.0f}° (bornes de l'évaluation) : écart {lacet:+.0f}°, "
-              f"atteignable", abs(math.degrees(m._lacet_relatif(carton(lacet_deg=lacet))) - lacet)
-              < 1e-6 and m._planifier(carton(lacet_deg=lacet))[0])
+              f"atteignable à la distance de prise de la façade ({d_facade:.2f} m)",
+              abs(math.degrees(m._lacet_relatif(carton(lacet_deg=lacet))) - lacet) < 1e-6
+              and m._planifier(carton(lacet_deg=lacet))[0])
 
 section("2. Distance de prise de la façade, puis prise complète")
 with robot_devant(0.32) as robot:
@@ -109,8 +118,12 @@ with robot_devant(d) as robot:
     check("… aucune consigne refusée par le garde-fou", robot.locomotion.stats["refused"] == 0)
 for largeur in (0.30,):
     with robot_devant(0.32, largeur=largeur) as robot:
+        d_l, _ = robot.manipulation.distance_de_prise(carton(largeur=largeur),
+                                                      d_min=CFG.distance_prise)
+    with robot_devant(d_l, largeur=largeur) as robot:
         ok, raison = robot.manipulation._planifier(carton(largeur=largeur))
-        check(f"Carton de {largeur:.2f} m de large, à 0,32 m : atteignable", ok, raison)
+        check(f"Carton de {largeur:.2f} m de large, à sa distance de prise ({d_l:.2f} m) : "
+              f"atteignable", ok, raison)
 
 section("3. Portée et « avant-bras à 3 cm du plateau » ne se contredisent pas (table T1)")
 modele, port = ModeleBras(), posture_bras(0.20, -0.30, 0.0)

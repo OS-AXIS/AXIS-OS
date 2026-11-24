@@ -154,14 +154,19 @@ def impossible_par_construction(c: CartonTire, m) -> str:
       - « trop large » : aucune paire de faces ne tient entre les mains
         ouvertes en grand, mais l'une serait atteinte (comme ci-dessous) si le
         carton n'était pas plus large qu'elles ne le prennent ;
+      - « trop bas pour une prise en pendule » : moins haut que deux fois la
+        visée au-dessus du centre et le bord sous l'arête (prise.hauteur_prise) ;
       - « hors de toute portée » : même ainsi, d'aucune position, pieds contre
         la table au plus (erreur d'approche comprise), les mains n'atteignent
         le milieu des faces d'une paire.
     Chaque carton reçoit la première de ces raisons, dans cet ordre."""
     from dataclasses import replace
     from axis_os.services.manipulation import planificateur as P
+    from axis_os.services.manipulation.prise import hauteur_prise
     if c.masse_kg > m.r.masse_max_kg:
         return "trop lourd"
+    if hauteur_prise(m.r, c.hauteur) is None:
+        return "trop bas pour une prise en pendule"
     bord = P.BordTable((0.0, 0.0), 0.0, PLATEAU_M)
     boite = P.boite_depuis_coins(P.coins_boite(place_sur_table(c), math.radians(c.lacet_deg),
                                                c.profondeur, c.largeur, c.hauteur))
@@ -467,6 +472,10 @@ def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[i
 # Catégories des raisons de refus (la première qui correspond).
 CATEGORIES = (
     ("trop large", ("trop large",)),
+    # Prise en pendule : un carton trop bas pour viser 6 cm au-dessus de son
+    # centre, 3 cm sous son arête (avant « hors de portée » : ce n'est pas la
+    # distance).
+    ("trop bas pour une prise en pendule", ("trop bas pour une prise en pendule",)),
     ("trop lourd ou trop glissant pour le serrage de prise", ("n'a pas suivi",
                                                                "n'a pas quitté la table")),
     ("trop lourd", ("trop lourd",)),

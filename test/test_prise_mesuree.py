@@ -24,7 +24,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from axis_os.services.manipulation.cinematique import COUDE, MAIN, POIGNET, ModeleBras  # noqa: E402
-from axis_os.services.manipulation.prise import ReglagesPrise, distance_ideale  # noqa: E402
+from axis_os.services.manipulation.prise import (  # noqa: E402
+    ReglagesPrise, distance_ideale, hauteur_prise,
+)
 from axis_os.services.manipulation.service import Etat, Objet, posture_bras  # noqa: E402
 from axis_os.testing import SimulatedObject, SimulatedRobot  # noqa: E402
 
@@ -122,7 +124,9 @@ check("Cinématique inverse : la main va où on la veut (3 mm près)", q is not 
 check("Hors de portée à 0,55 m : aucune solution", modele.gauche.inverse(
     np.array([0.55, 0.165, 0.18]), q_port)[0] is None)
 d, raison = distance_ideale(modele, 0.24, 0.20, 0.20, 0.18, q_port)
-d_bas, _ = distance_ideale(modele, 0.24, 0.20, 0.20, 0.22, q_port)
+# Prise en pendule : les mains visées 6 cm au-dessus du centre, la garde des
+# avant-bras ne joue qu'au-delà de 0,22 m (avant : 0,18) ; bassin 8 cm plus bas.
+d_bas, _ = distance_ideale(modele, 0.24, 0.20, 0.20, 0.26, q_port)
 check("Distance à la table calculée (avant-bras au-dessus du plateau)", d is not None, raison)
 check("Bassin plus bas : la distance s'adapte (au-delà de 0,30 m)", d_bas is not None
       and d_bas > d, f"{d} {d_bas}")
@@ -141,9 +145,16 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
     check("Prise réussie : TENU", res.ok and m.etat is Etat.TENU, m.raison)
     f = j.premier(Etat.FERMETURE)
     g, d = f["mains"]
-    check("Avant de fermer : mains au milieu des faces (2,5 cm en profondeur, 3 cm en hauteur)",
+    dz = hauteur_prise(R, 0.20)
+    haut = (g[2] + d[2]) / 2 - 0.90
+    check(f"Avant de fermer : mains au milieu des faces en profondeur (2,5 cm près) ; en hauteur, "
+          f"{100 * haut:.1f} cm au-dessus de leur milieu : la visée de la prise en pendule "
+          f"({100 * dz:.0f} cm, 3 cm près), plus ce que la fermeture (le roulis seul) les fera "
+          f"descendre ; touché à {100 * m.ligne_cg[1]:+.1f} cm du centre (au moins "
+          f"{100 * R.marge_pendule_m:.0f})",
           abs((g[0] + d[0]) / 2 - 0.30) <= R.tol_profondeur_m
-          and abs((g[2] + d[2]) / 2 - 0.90) <= R.tol_hauteur_m, f"{g} {d}")
+          and dz - R.tol_hauteur_m <= haut <= dz + 0.05
+          and m.ligne_cg is not None and m.ligne_cg[1] >= R.marge_pendule_m, f"{g} {d}")
     fermes = [p for p in j.pas if p["etat"] is Etat.FERMETURE]
     tangages = {round(p["q"]["left_shoulder_pitch_joint"], 6) for p in fermes}
     check("Fermeture : seuls les roulis bougent (le levage est une phase à part)",
@@ -459,26 +470,28 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
           m.inclinaison == 3.0)
 
 section("10. Avant-bras au-dessus du plateau : la distance s'en déduit, sinon refus")
-# Carton de 20 cm sur un plateau à 0,80 m, à 5 cm du bord de la table :
-# robot à 0,30 m, le bord est à 15 cm du bassin et les avant-bras passent à
-# 2,5 cm du plateau (il en faut 3).
-with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
+# Carton de 20 cm sur un plateau à 0,80 m, à 10 cm du bord de la table
+# (avant : 5 ; prise en pendule, les mains 6 cm plus haut : à 5 cm du bord,
+# les avant-bras passaient désormais au-dessus) : robot à 0,28 m, le bord est
+# à 8 cm du bassin et les avant-bras passent à 2,7 cm du plateau (il en faut 3).
+BORD = 0.10
+with SimulatedRobot(objects=[SimulatedObject("carton", (0.28, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
     time.sleep(0.2)                    # bras arrivés en posture de port
     avant = robot._angles_bras()
-    res = robot.manipulation.prendre(Objet((0.30, 0.0, 0.90), 0.24, 0.20, 0.20, bord_m=0.05))
+    res = robot.manipulation.prendre(Objet((0.28, 0.0, 0.90), 0.24, 0.20, 0.20, bord_m=BORD))
     check("Trop près de la table : refus « avant-bras … du plateau », bras immobiles",
           not res.ok and "avant-bras" in res.reason and immobiles(robot, avant),
           res.reason)
 # Pour les mains de CE robot (le robot simulé : contact à leur repère ; le G1
 # touche 11 cm plus loin, voir ReglagesPrise.contact_main_m).
-d, raison = distance_ideale(modele, 0.24, 0.20, 0.20, 0.18, q_port, bord_m=0.05,
+d, raison = distance_ideale(modele, 0.24, 0.20, 0.20, 0.18, q_port, bord_m=BORD,
                             reglages=ReglagesPrise(contact_main_m=SimulatedRobot.CONTACT_MAIN_M))
-check("distance_ideale() choisit une distance plus grande", d is not None and d > 0.30,
+check("distance_ideale() choisit une distance plus grande", d is not None and d > 0.28,
       f"{d} {raison}")
 with SimulatedRobot(objects=[SimulatedObject("carton", (d, 0.0, 0.90))],
                     time_scale=ECHELLE) as robot:
-    res, j = prise(robot, Objet((d, 0.0, 0.90), 0.24, 0.20, 0.20, bord_m=0.05))
+    res, j = prise(robot, Objet((d, 0.0, 0.90), 0.24, 0.20, 0.20, bord_m=BORD))
     m = robot.manipulation
     check(f"… à {d:.3f} m, la prise tient, avant-bras à {100 * (m._plan or {}).get('garde', 0):.1f}"
           f" cm du plateau", res.ok and m.etat is Etat.TENU
