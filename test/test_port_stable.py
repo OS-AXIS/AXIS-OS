@@ -158,14 +158,12 @@ section("3. Le défaut de l'essai GPU : la ligne des mains loin du centre de gra
 d = Banc(x=0.30, os_contact=0.0).prendre(jusqua=(Etat.ECHEC,))
 # Prise en pendule : les mains ouvertes visées plus haut de ce que la
 # fermeture les fera descendre ; touchant près de l'arête arrière, elles ne
-# portent plus le carton dès le levage (« n'a pas suivi ») au lieu de le
-# laisser tourner jusqu'à ce que la caméra le voie. Les deux arrêtent la
-# prise avant tout port, le carton reposé.
-check("L'OS croit toucher avec le repère de ses mains (le code d'avant) : levé, le carton tourne "
-      "(la caméra de tête le voit) ou ne suit pas les mains ; reposé doucement, la prise échoue "
-      "avec la raison, jamais tenu",
-      d.m.etat is Etat.ECHEC and ("carton tourné de" in d.m.raison
-                                  or "l'objet n'a pas suivi" in d.m.raison)
+# portent plus le carton dès le levage (« n'a pas suivi ») : la prise s'arrête
+# avant tout port, le carton reposé. La caméra qui arrête un carton qui
+# tourne entre les paumes : test_prise_pendule.
+check("L'OS croit toucher avec le repère de ses mains (le code d'avant) : levé, le carton ne "
+      "suit pas les mains ; reposé doucement, la prise échoue avec la raison, jamais tenu",
+      d.m.etat is Etat.ECHEC and "l'objet n'a pas suivi" in d.m.raison
       and Etat.TENU not in d.etats and Etat.REPOSE in d.etats, f"{d.m.raison} {d.etats}")
 o = d.r.objects[0]
 check("… reposé : sur la table, à sa place, mains ouvertes", d.r.held is None
