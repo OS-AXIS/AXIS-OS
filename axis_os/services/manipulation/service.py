@@ -3793,11 +3793,16 @@ class ManipulationService(IService):
             # et au-delà, depuis lui.
             q_c, _ = resoudre(self._modele, *cibles, ctx.get("graine", graine))
             if q_c is not None:
-                ctx["graine"] = depuis = {**graine, **q_c}
+                depuis = {**graine, **q_c}
                 q_o, _ = resoudre(self._modele, *cibles_mains(
                     centre, objet.largeur, lacet, r.demi_main_m + r.jeu_ouverture_m), depuis)
                 q_v, _ = resoudre(self._modele, *cibles_mains(
                     centre, objet.largeur, lacet, r.demi_main_m - r.penetration_max_m), depuis)
+                # Graine des suivantes : seulement d'une candidate à portée. Celle
+                # d'une candidate refusée (épaule à +0,2 rad, bras retournés)
+                # égarait toutes les suivantes (pick() du SDK, carton à 0,34 m).
+                if q_o is not None and q_v is not None:
+                    ctx["graine"] = depuis
         if not note("portée", math.inf if None not in (q_o, q_c, q_v) else -1.0,
                     f"objet à {centre[0]:.2f} m devant le bassin et {centre[2]:+.2f} m en "
                     f"hauteur : les mains " + ("atteignent le milieu de ses faces"
