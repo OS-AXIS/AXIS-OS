@@ -105,7 +105,12 @@ check("… aucun contact estimé, aucun serrage", m.contacts_estimes == {"left":
 r.__exit__(None, None, None)
 
 section("3. Carton tourné de 11°")
-r = robot(lacet_deg=11.0)
+# Poignets deux fois moins souples que la section 1 (le constat GPU des
+# poignets qui cèdent) : prise en pendule, carton tourné, raideur × 0,25, le
+# modèle de contact du robot simulé n'a plus d'équilibre au levage (il oscille
+# d'un pas à l'autre, ou une main perd peu à peu le contact) ; × 0,5 ou
+# raideur normale, la prise tient, à +11° comme à -11°.
+r = robot(lacet_deg=11.0, souplesse=0.5)
 etats = prendre(r, Objet((0.30, 0.0, 0.90), 0.24, 0.20, 0.20, lacet=math.radians(11.0)))
 m = r.manipulation
 check("Carton et lacet connus tournés de 11° : la prise tient", m.etat is Etat.TENU,
