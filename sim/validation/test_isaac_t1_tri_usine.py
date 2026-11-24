@@ -197,8 +197,8 @@ def main():
     # et la vue du robot lisent la vérité de la simulation, l'OS jamais.
     from banc_perception import EnregistreurImages
     from banc_prise import (
-        CapteursContactIsaac, JugeContacts, eclairer, gains_prise, mains_caoutchouc,
-        profil_robot_banc,
+        CapteursContactIsaac, JugeContacts, demarrer_services, gains_prise, objets_inconnus,
+        preparer_scene, profil_robot_banc,
     )
     from axis_os.services.profil_robot import ProfilRobotErreur, enregistrer, lire_profil
     from banc_vue_robot import VueRobot, coins
@@ -328,13 +328,6 @@ def main():
         UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath(path)).CreateKinematicEnabledAttr(True)
         silhouettes.append(s)
 
-    # Mains en caoutchouc (W3), liées avant reset (ignoré après), et éclairage
-    # d'entrepôt (dôme et quatre lumières en diagonale) : code commun des
-    # bancs (banc_prise), le sens réel de chaque lumière au journal.
-    mains_caoutchouc(stage)
-    for ligne_ in eclairer(stage):
-        print(f"  {ligne_}", flush=True)
-
     # Caméra de tête, grand angle (±30°) : les trois emplacements de la
     # table de prise doivent tenir dans l'image depuis le poste de prise.
     # Images horodatées à l'instant simulé de leur rendu (et non à l'heure
@@ -357,14 +350,19 @@ def main():
     # Juge (vérité simulation) : rapport de contact PhysX posé sur les mains
     # AVANT world.reset() (la physique le lit à son départ).
     capteurs = CapteursContactIsaac(cfg.physics_dt)
-    capteurs.preparer(stage, str(getattr(robot, "prim_path", "/World/g1")),
-                      [c_["obj"].prim_path for c_ in cartons])
+
+    # Préparation commune des bancs (banc_prise.preparer_scene), tous les
+    # corps rigides posés : mains en caoutchouc (W3), éclairage d'entrepôt
+    # (dôme et quatre lumières en diagonale, le sens réel de chaque lumière
+    # au journal), capteurs du juge, puis world.reset().
+    preparer_scene(world, stage, avant_reset=lambda: capteurs.preparer(
+        stage, str(getattr(robot, "prim_path", "/World/g1")),
+        [c_["obj"].prim_path for c_ in cartons]),
+        journal=lambda m_: print(f"  {m_}", flush=True))
 
     g = pol.gains()
     for i, j in enumerate(cfg.body_joints[cfg.num_actions:]):
         g[j] = (KP_BRAS[i % 7], KD_BRAS[i % 7])
-
-    world.reset()
     # ================================================================
 
     robot.get_articulation_controller().set_gains(
@@ -798,6 +796,12 @@ def main():
             reference.set_angular_velocity(np.zeros(3))
             journaliser(f"OPÉRATEUR : masse de référence de {args.masse_reference:g} kg posée sur "
                         f"la table de prise (emplacement x = {X_REFERENCE:.2f})")
+            inconnus_ = objets_inconnus([("masse de référence", (X_REFERENCE, sd.Y_CARTON))],
+                                        sd.OBSTACLES)
+            if inconnus_:                            # jamais : la table de prise est au site
+                journaliser(f"calibration de charge non faite : {inconnus_} hors des tables du site")
+                retirer_reference()
+                return True
             etat_charge["pose"] = sim_t[0]
             return False
         if etat_charge["accoste"] is None:
@@ -950,9 +954,8 @@ def main():
     # mesuré par la physique, ou, faute de mieux, efforts imposés (nuls).
     journaliser(f"[{sim_t[0]:7.1f}s] {bridge.source_couples}")
     sup = Superviseur(tri, list(sd.POSTES), sd.COULEURS, InterpreteurRegles())
-    for s in (loco, nav, manip):
-        s.start()
-    perception.start()
+    demarrer_services([("locomotion", loco), ("navigation", nav), ("manipulation", manip),
+                       ("perception", perception)], journal=journaliser)
 
     # ---- l'opérateur simulé -------------------------------------------------
     def poser_carton(c, xyz, lacet_deg=0.0):

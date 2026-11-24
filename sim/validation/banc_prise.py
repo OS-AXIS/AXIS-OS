@@ -93,6 +93,59 @@ def poser_devant(robot, carton, plateau, distance_m: float, plateau_m: float,
     return tuple(float(v) for v in centre), lacet_r
 
 
+def preparer_scene(world, stage, avant_reset: Optional[Callable[[], None]] = None,
+                   journal: Callable[[str], None] = print) -> None:
+    """Préparation commune des bancs (T1 et posture), une fois TOUS les
+    corps rigides posés (world.scene.add), dans l'ordre qui tient sur GPU :
+    mains caoutchouc et éclairage, puis ce qui doit précéder le départ de la
+    physique (`avant_reset` : capteurs de contact du juge), puis
+    world.reset(). Trois défauts de banc en trois soirs venaient de cet
+    ordre, recopié à la main dans chaque banc (essai GPU du 20 novembre
+    2026 : mains posées avant les corps rigides, « Simulation view object is
+    invalidated »)."""
+    n = mains_caoutchouc(stage)
+    journal(f"mains caoutchouc : {n} prim(s) lié(s)")
+    for ligne in eclairer(stage):
+        journal(ligne)
+    if avant_reset is not None:
+        avant_reset()
+    world.reset()
+
+
+def demarrer_services(services, journal: Callable[[str], None] = print) -> None:
+    """Démarre les services de l'OS du banc (locomotion, manipulation,
+    perception…), dans l'ordre donné, et le dit au journal : un banc qui
+    oubliait d'en démarrer un ne le disait nulle part (essai GPU du
+    20 novembre 2026)."""
+    for nom, service in services:
+        service.start()
+        journal(f"service démarré : {nom}")
+
+
+def objets_inconnus(objets, obstacles) -> List[str]:
+    """Les objets posés devant le robot (nom, (x, y) repère monde) que la
+    carte du site n'explique pas (sur aucun de ses `obstacles`, rectangles
+    de la carte) : vide si tous reposent sur une table connue. Le gardien
+    de proximité arrêterait le robot devant un objet inconnu (essai GPU du
+    20 novembre 2026, 20 h 27 : plateau de la calibration de charge)."""
+    return [nom for nom, (x, y) in objets
+            if not any(o.xmin <= x <= o.xmax and o.ymin <= y <= o.ymax for o in obstacles)]
+
+
+def plateau_site(pose_robot, distance_m: float, plateau_m: float, profondeur_m: float = 0.40,
+                 largeur_m: float = 0.60, chargement_m: float = 0.25):
+    """Le plateau que poser_devant pose devant le robot, déclaré comme les
+    tables du site : son rectangle (repère monde, aligné sur les axes, qui
+    le contient) et sa hauteur de chargement. `pose_robot` : (x, y, lacet)."""
+    from axis_os.services.navigation.service import Rectangle
+    x, y, lacet = pose_robot
+    cx, cy = x + (distance_m + 0.10) * math.cos(lacet), y + (distance_m + 0.10) * math.sin(lacet)
+    c, s_ = abs(math.cos(lacet)), abs(math.sin(lacet))
+    dx = (profondeur_m * c + largeur_m * s_) / 2.0
+    dy = (profondeur_m * s_ + largeur_m * c) / 2.0
+    return Rectangle(cx - dx, cy - dy, cx + dx, cy + dy, zmax=plateau_m + chargement_m)
+
+
 def eclairer(stage) -> List[str]:
     """L'éclairage des bancs (scène T1, puis banc de posture) : une lumière
     ambiante (dôme) et quatre lumières en diagonale, une par coin, plongée de

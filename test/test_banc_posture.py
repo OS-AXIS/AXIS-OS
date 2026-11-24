@@ -146,9 +146,8 @@ check("La même prise que T1 : ses gains de bras, raidis pendant la prise (gains
       and f"GRAINE_COUPLES = {graine_t1}" in SCRIPT
       and "BruitCouples(len(names), graine=GRAINE_COUPLES)" in SCRIPT
       and "g_prise = gains_prise(g)" in SCRIPT and "raideur=regler_raideur" in SCRIPT
-      and 0 < SCRIPT.find("    mains_caoutchouc(stage)\n") < SCRIPT.find("    world.reset()\n")
-      and "manip.prendre(objet)" in SCRIPT and "ManipulationService(adapt.pose_bras" in SCRIPT
-      and "mains_caoutchouc(stage)" in T1_)
+      and "preparer_scene(world, stage" in SCRIPT and "preparer_scene(world, stage" in T1_
+      and "manip.prendre(objet)" in SCRIPT and "ManipulationService(adapt.pose_bras" in SCRIPT)
 check("… après la calibration des bras de T1 (biais des couples, mains), le carton posé sur un "
       "plateau devant le robot, jamais glissé entre les mains ; le plateau retiré une fois tenu",
       "manip.echantillon_calibration_couples(nom)" in SCRIPT
@@ -158,10 +157,28 @@ check("… après la calibration des bras de T1 (biais des couples, mains), le c
       and "serrer=True" not in SCRIPT
       and SCRIPT.find("manip.etat is Etat.TENU") < SCRIPT.find("plateau.set_world_pose(position=np.array([10.0")
       and "ManipulationService.prendre" in SCRIPT)
-check("Éclairage de la scène : celui de T1 (code commun eclairer : dôme et quatre lumières), "
-      "posé avant le départ de la physique",
-      0 < SCRIPT.find("in eclairer(stage):") < SCRIPT.find("    world.reset()\n")
-      and "in eclairer(stage):" in T1_)
+BANC_PRISE = (RACINE / "sim/validation/banc_prise.py").read_text(encoding="utf-8")
+prep = BANC_PRISE[BANC_PRISE.find("def preparer_scene("):BANC_PRISE.find("def demarrer_services(")]
+prep = prep[prep.find('"""', prep.find('"""') + 3):]          # le code, après la docstring
+check("Mains caoutchouc et éclairage de T1 (dôme et quatre lumières), posés après les corps "
+      "rigides et avant le départ de la physique : par le code commun des bancs "
+      "(banc_prise.preparer_scene), appelé par T1 et par ce banc après leur dernier corps rigide, "
+      "jamais recopié",
+      0 < prep.find("mains_caoutchouc(stage)") < prep.find("eclairer(stage)")
+      < prep.find("avant_reset()") < prep.find("world.reset()")
+      and all(0 < S_.rfind("world.scene.add(") < S_.find("    preparer_scene(world, stage")
+              and "    world.reset()\n" not in S_ and "    mains_caoutchouc(stage)" not in S_
+              and "in eclairer(stage):" not in S_ for S_ in (SCRIPT, T1_)))
+check("Services de l'OS démarrés par le code commun (banc_prise.demarrer_services), dits au "
+      "journal, dans les deux bancs",
+      "demarrer_services([" in SCRIPT and "demarrer_services([" in T1_
+      and "    loco.start()\n    modele" not in SCRIPT and "    manip.start()\n" not in SCRIPT)
+check("Aucun objet posé devant le robot inconnu du site : le carton de ce banc sur son plateau "
+      "déclaré (plateau_site, objets_inconnus) ; la masse de référence de T1 sur la table de prise "
+      "(sd.OBSTACLES)",
+      "objets_inconnus([(\"carton\"" in SCRIPT and "plateau_site((" in SCRIPT
+      and "objets_inconnus([(\"masse de référence\"" in T1_ and "sd.OBSTACLES)" in T1_
+      and "plateau_reference" not in T1_)
 check("Au premier signe : arrêt de la série et retour droit par l'OS (posture(0.0, 0.0))",
       "p.suivre(" in SCRIPT and "loco.posture(0.0, 0.0)" in SCRIPT and "retour droit" in SCRIPT)
 check("Centrale inertielle (orientation, vitesse angulaire) et pieds (vérité de simulation)",

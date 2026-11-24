@@ -352,7 +352,7 @@ check("Raideur de prise et arrêt d'urgence branchés", "raideur=regler_raideur,
       and "arret_urgence=lambda: hal.estop_active," in T1)
 check("Juge : rapport de contact PhysX posé sur les mains AVANT world.reset(), raisons d'un "
       "échec dites au journal (constat GPU : « indisponible », sans raison)",
-      0 < T1.find("capteurs.preparer(") < T1.find("\n    world.reset()\n")
+      0 < T1.find("    preparer_scene(world, stage, avant_reset=lambda: capteurs.preparer(")
       < T1.find("capteurs.initialiser()")
       and "' ; '.join(capteurs.raisons)" in T1)
 check("… lacet réel du carton noté au placement, au contact, au serrage et à la fin",
@@ -388,7 +388,7 @@ check("Masse des cartons réglable pour la vidéo (--masse-carton, 1 kg par déf
       and "mass=1.0" not in T1 and "ap.error(" in T1
       and "cartons de la scène : {args.masse_carton:g} kg" in T1
       and "--masse-carton 0.5" in LANCEUR_T1)
-i_reset = T1.find("    world.reset()\n")
+i_reset = T1.find("    preparer_scene(world, stage")
 check("Calibration de charge au démarrage, après celle des bras, avant le tri : profil du robot du "
       "banc (une graine, un robot) relu ; sans calibration (ou --calibration-charge), masse de "
       "référence (créée avant le départ de la physique) posée sur un emplacement de la table de "
