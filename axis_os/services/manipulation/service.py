@@ -1447,7 +1447,12 @@ class ManipulationService(IService):
         prof = max(arriere, avant)
         haut = max(abs(float(e[2])) for e in erreurs + erreurs_mod)
         avance_max = r.avance_max(self.objet.profondeur)
-        if arriere <= r.tol_profondeur_m and avant <= avance_max and haut <= r.tol_hauteur_m:
+        # Prise en pendule : au serrage, la ligne des mains doit passer à
+        # tolerances_cg près du centre de gravité en profondeur, et la fermeture
+        # l'en écarte encore (bras affaissés de 0,25 rad : 0,7 cm) ; les mains
+        # placées à la moitié au plus, sinon corrigées avant de fermer.
+        tol_prof = min(r.tol_profondeur_m, tolerances_cg(r)[0] / 2.0)
+        if arriere <= tol_prof and avant <= min(avance_max, tol_prof) and haut <= r.tol_hauteur_m:
             self._debut_fermeture()
             return
         if self._corrections >= r.corrections_max:

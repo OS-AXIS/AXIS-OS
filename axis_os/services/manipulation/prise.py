@@ -78,7 +78,10 @@ class ReglagesPrise:
     # la compensation ci-dessous.
     tol_hauteur_m: float = 0.015
     compensation_max_m: float = 0.10   # visée décalée d'au plus 10 cm par main pour compenser
-    corrections_max: int = 2
+    # 3 : prise en pendule, mains placées à la moitié de ce que la ligne des
+    # mains admet en profondeur (tolerances_cg) ; bras affaissés de 0,25 rad,
+    # pas de 20 à 100 ms, la 3e correction y amène (test_fermeture_geometrique).
+    corrections_max: int = 3
     rayon_avant_bras_m: float = 0.035
     marge_plateau_m: float = 0.03      # sous l'avant-bras, au-dessus du plateau
     # Le bord d'une table n'est jamais plus près du bassin : pieds contre la
