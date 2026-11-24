@@ -186,7 +186,7 @@ def main():
     from axis_os.services.manipulation.estimation import HauteurBassin, inclinaison_mains
     from axis_os.services.manipulation.prise import CalibrationMains, MesuresBras, ReglagesPrise
     from axis_os.services.manipulation.service import (
-        Etat, ManipulationService, Objet, Postures, posture_bras,
+        Etat, ManipulationService, Postures, posture_bras,
     )
     from axis_os.services.navigation.service import NavigationService, Pose2D
     from axis_os.services.perception.boite import points_du_masque, rotation_dessus
@@ -198,7 +198,7 @@ def main():
     from banc_perception import EnregistreurImages
     from banc_prise import (
         CapteursContactIsaac, JugeContacts, eclairer, gains_prise, mains_caoutchouc,
-        poser_devant, profil_robot_banc,
+        profil_robot_banc,
     )
     from axis_os.services.profil_robot import ProfilRobotErreur, enregistrer, lire_profil
     from banc_vue_robot import VueRobot, coins
@@ -295,21 +295,18 @@ def main():
             cartons.append({"obj": c, "couleur": couleur, "lieu": "stock", "t": 0.0,
                             "parc": np.array([30.0 + 0.5 * k, 30.0, sd.HAUTEUR_CARTON / 2])})
 
-    # Calibration de charge : la masse de référence (un carton T1 de
-    # --masse-reference kg) et son plateau (cinématique), créés loin du site ;
-    # posés devant le robot au démarrage s'il faut la faire (pas_charge).
+    # Calibration de charge : la masse de référence (un carton T1 vert de
+    # --masse-reference kg, lesté en son milieu), créée loin du site ; posée
+    # par l'opérateur sur un emplacement libre de la table de prise (dans la
+    # carte du site) au démarrage s'il faut la faire (pas_charge). Essai GPU
+    # du 20 novembre 2026, 20 h 27 : sur un plateau ajouté devant le robot,
+    # inconnu de la carte, le gardien l'a vue comme un obstacle inexpliqué.
     reference = world.scene.add(DynamicCuboid(
         prim_path="/World/masse_reference", name="masse_reference",
         position=np.array([36.0, 30.0, sd.HAUTEUR_CARTON / 2]), size=1.0,
-        scale=np.array([sd.PROFONDEUR_CARTON, sd.LARGEUR_CARTON, sd.HAUTEUR_CARTON]),
-        mass=args.masse_reference, color=np.array([0.55, 0.55, 0.58]),
+        scale=np.array([sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON, sd.HAUTEUR_CARTON]),
+        mass=args.masse_reference, color=np.array(sd.COULEURS_RGB["vert"]),
         physics_material=mat_carton))
-    plateau_ref = world.scene.add(DynamicCuboid(
-        prim_path="/World/plateau_reference", name="plateau_reference",
-        position=np.array([36.0, 33.0, sd.PLATEAU / 2]), size=1.0,
-        scale=np.array([0.40, 0.60, sd.PLATEAU]), mass=50.0, color=GRIS))
-    UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath("/World/plateau_reference")) \
-        .CreateKinematicEnabledAttr(True)
 
     # Personnes : silhouettes cinématiques (déplacées, pas poussées).
     EVAL = args.evaluer_vla is not None
@@ -757,20 +754,29 @@ def main():
                     f"inertielle), vraie {h_vrai_:.3f} m, écart {100 * (h_est_ - h_vrai_):+.1f} cm")
         return True
 
-    # Calibration de charge, après celle des bras (docs/PREMIERE_MISE_EN_ROUTE.md) :
-    # le profil du robot relu ; sans calibration de charge (ou
-    # --calibration-charge), la masse de référence posée sur son plateau
-    # devant le robot, à l'endroit que la procédure marque (sa pose est celle
-    # de la procédure, comme sur le vrai robot), prise par la prise de T1
-    # (ManipulationService.calibrer_charge), pesée, reposée ; puis plateau et
-    # masse retirés de la scène, et le tri commence.
+    # Calibration de charge, après celle des bras (docs/PREMIERE_MISE_EN_ROUTE.md),
+    # par défaut : le profil du robot relu ; sans calibration de charge (ou
+    # --calibration-charge), l'opérateur pose la masse de référence sur un
+    # emplacement libre de la table de prise (une table que le site connaît :
+    # le gardien de proximité l'explique, une personne reste détectée) ; le
+    # robot la cherche, l'accoste et la prend comme un carton, par la façade
+    # (facade.calibrer_charge : la prise de T1, la même exemption du gardien),
+    # la pèse, la repose ; l'opérateur la retire, puis remplit la table et le
+    # tri commence. --sans-calibration-charge : sautée (essais).
     chemin_profil, robot_id = profil_robot_banc(args.graine)
     chemin_profil = args.profil_robot or chemin_profil
-    etat_charge = {"pose": None, "lance": None, "fin": None}
+    etat_charge = {"pose": None, "accoste": None, "lance": None, "fin": None}
+    X_REFERENCE = sd.EMPLACEMENTS_X[len(sd.EMPLACEMENTS_X) // 2]
 
     def retirer_reference():
-        plateau_ref.set_world_pose(position=np.array([36.0, 33.0, sd.PLATEAU / 2]))
         reference.set_world_pose(position=np.array([36.0, 30.0, sd.HAUTEUR_CARTON / 2]))
+        reference.set_linear_velocity(np.zeros(3))
+        reference.set_angular_velocity(np.zeros(3))
+
+    def charge_non_faite(raison_):
+        journaliser(f"calibration de charge non faite : {raison_}")
+        manip.reinitialiser()
+        etat_charge["fin"] = sim_t[0]
 
     def pas_charge():
         """Un pas de la calibration de charge ; vrai une fois finie (ou inutile)."""
@@ -786,41 +792,60 @@ def main():
             if args.sans_calibration_charge:
                 journaliser("calibration de charge sautée (--sans-calibration-charge)")
                 return True
-            centre_, lacet_ = poser_devant(robot, reference, plateau_ref, 0.44, sd.PLATEAU,
-                                           sd.HAUTEUR_CARTON)
-            etat_charge["objet"] = Objet(centre_, sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON,
-                                         sd.HAUTEUR_CARTON, lacet=lacet_, bord_m=0.0)
+            reference.set_world_pose(position=np.array(
+                [X_REFERENCE, sd.Y_CARTON, sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003]))
+            reference.set_linear_velocity(np.zeros(3))
+            reference.set_angular_velocity(np.zeros(3))
+            journaliser(f"OPÉRATEUR : masse de référence de {args.masse_reference:g} kg posée sur "
+                        f"la table de prise (emplacement x = {X_REFERENCE:.2f})")
             etat_charge["pose"] = sim_t[0]
             return False
-        if etat_charge["lance"] is None:
-            if sim_t[0] - etat_charge["pose"] < 0.5:    # la masse se pose sur son plateau
+        if etat_charge["accoste"] is None:
+            if sim_t[0] - etat_charge["pose"] < 0.5:    # la masse se pose sur la table
                 return False
-            r_ = manip.calibrer_charge(
-                etat_charge["objet"], args.masse_reference,
+            vus_ = [c_ for c_ in facade.chercher("vert")
+                    if abs(c_.position[0] - X_REFERENCE) < 0.15]
+            if not vus_:
+                if sim_t[0] - etat_charge["pose"] > 20.0:
+                    charge_non_faite("masse de référence pas vue sur la table de prise")
+                    etat_charge["accoste"] = etat_charge["lance"] = sim_t[0]
+                return False
+            etat_charge["colis"] = vus_[0]
+            ok_, raison_ = facade.accoster(vus_[0])
+            etat_charge["accoste"] = sim_t[0]
+            if not ok_:
+                charge_non_faite(f"accostage refusé : {raison_}")
+                etat_charge["lance"] = sim_t[0]
+            return False
+        if etat_charge["lance"] is None:
+            nav_ = facade.navigation()
+            if nav_ == "ECHEC" or sim_t[0] - etat_charge["accoste"] > 90.0:
+                charge_non_faite(f"accostage en échec ({nav_})")
+                etat_charge["lance"] = sim_t[0]
+                return False
+            if nav_ != "ARRIVE":
+                return False
+            ok_, raison_ = facade.calibrer_charge(
+                etat_charge["colis"], args.masse_reference,
                 enregistrer=lambda f_: enregistrer(chemin_profil, robot_id,
                                                    "calibration_charge", f_))
             etat_charge["lance"] = sim_t[0]
-            if not r_.ok:
-                journaliser(f"calibration de charge non faite : {r_.reason}")
-                etat_charge["fin"] = sim_t[0]
+            if not ok_:
+                charge_non_faite(raison_)
             return False
         if etat_charge["fin"] is None:
             if manip.etat is Etat.ECHEC:
-                journaliser(f"calibration de charge non faite : {manip.raison}")
-                manip.reinitialiser()
-                etat_charge["fin"] = sim_t[0]
+                charge_non_faite(manip.raison)
             elif manip.etat is Etat.LIBRE and sim_t[0] - etat_charge["lance"] > 1.0:
                 etat_charge["fin"] = sim_t[0]
             elif sim_t[0] - etat_charge["lance"] > 60.0:
-                journaliser(f"calibration de charge non finie en 60 s ({manip.etat.name})")
-                manip.reinitialiser()
-                etat_charge["fin"] = sim_t[0]
+                charge_non_faite(f"non finie en 60 s ({manip.etat.name})")
             return False
         if manip.etat is not Etat.LIBRE and sim_t[0] - etat_charge["fin"] < 10.0:
             return False                             # bras revenus en posture de port
         retirer_reference()
-        journaliser(f"calibration de charge : {manip.calibration_charge or 'aucune'} "
-                    f"(profil {chemin_profil})")
+        journaliser(f"OPÉRATEUR : masse de référence retirée ; calibration de charge : "
+                    f"{manip.calibration_charge or 'aucune'} (profil {chemin_profil})")
         return True
 
     tree = FrameTree()
@@ -1449,7 +1474,9 @@ def main():
         for f, s in zip(figurants, silhouettes):
             f.pas(cfg.control_dt, pr.x, pr.y)
             s.set_world_pose(position=np.array([f.p[0], f.p[1], 0.85]))
-        if k % 10 == 0 and not COLLECTE:
+        # L'opérateur ne remplit la table qu'une fois la calibration de charge
+        # finie (la masse de référence occupe un de ses emplacements).
+        if k % 10 == 0 and not COLLECTE and etat_charge.get("fini"):
             operateur(t, stats)
         # Pile AXIS-OS
         nav.tick()

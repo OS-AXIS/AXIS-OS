@@ -85,8 +85,13 @@ L'assistant demande une action impossible à distance, par exemple :
    d'urgence à portée de main : se lever ou bouger les bras.
 6. **Calibration de charge, une fois par robot** (robot à bras et mains) :
    une masse de référence connue — un carton lesté en son milieu, de 0,5 à
-   1,2 kg, sa masse écrite dessus — posée sur une table, à l'endroit marqué
-   devant le robot. Le robot la prend comme un carton (sa prise ordinaire),
+   1,2 kg, sa masse écrite dessus — posée par l'opérateur sur un emplacement
+   libre d'une table que le site connaît déjà (la table de prise : sa carte
+   l'explique au gardien de proximité, une personne qui approche reste
+   détectée et arrête le robot). Jamais sur un meuble ajouté devant le robot
+   sans le déclarer dans la carte du site : le gardien y verrait un obstacle
+   inexpliqué (essai GPU du 20 novembre 2026, 20 h 27 : le robot ne s'est
+   jamais mis en route). Le robot la prend comme un carton (sa prise ordinaire, la même exemption du gardien),
    la soulève de quelques centimètres, la pèse bras immobiles (5 s), la
    repose et desserre ; ni serrée plus, ni portée. Son poids, partagé
    moitié-moitié entre les deux mains, donne le gain du couple estimé de
@@ -156,8 +161,10 @@ tests). Briques déjà présentes :
 - calibration de charge (étape 3.6) : dans l'OS
   (`ManipulationService.calibrer_charge`, profil du robot
   `axis_os/services/profil_robot.py`) ; faite en simulation au démarrage du
-  banc T1 (`lancer_t1.sh`), avec une masse de référence posée devant le
-  robot ; l'étape de l'assistant, sur le robot réel, reste à écrire ;
+  banc T1 (`lancer_t1.sh`, par défaut ; `--sans-calibration-charge` pour
+  les essais), la masse de référence posée par l'opérateur sur la table de
+  prise, accostée et prise par l'app de tri (`FacadeServices.calibrer_charge`) ;
+  l'étape de l'assistant, sur le robot réel, reste à écrire ;
 - SDK 1.2 : `go_to` (aussi vers un lieu nommé), `follow`, `speak`
   (factice), `where_am_i`, `notify`, `battery`, `thermal_status`, etc. ;
 - carte simple (`Carte`, obstacles écrits dans le code), sans SLAM ;

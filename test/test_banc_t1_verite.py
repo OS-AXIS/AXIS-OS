@@ -391,13 +391,15 @@ check("Masse des cartons réglable pour la vidéo (--masse-carton, 1 kg par déf
 i_reset = T1.find("    world.reset()\n")
 check("Calibration de charge au démarrage, après celle des bras, avant le tri : profil du robot du "
       "banc (une graine, un robot) relu ; sans calibration (ou --calibration-charge), masse de "
-      "référence posée sur un plateau devant le robot (créés avant le départ de la physique), "
-      "prise par ManipulationService.calibrer_charge, enregistrée au profil, puis retirée",
+      "référence (créée avant le départ de la physique) posée sur un emplacement de la table de "
+      "prise, connue du site (plus de plateau ajouté : essai GPU du 20 novembre 2026, 20 h 27), "
+      "accostée et prise par la façade, enregistrée au profil, puis retirée",
       0 < T1.find('"/World/masse_reference"') < i_reset
-      and 0 < T1.find('"/World/plateau_reference"') < i_reset
+      and "plateau_reference" not in T1 and "poser_devant(" not in T1
       and "mass=args.masse_reference" in T1 and "profil_robot_banc(args.graine)" in T1
       and "manip.appliquer_calibration_charge(cal_)" in T1
-      and "manip.calibrer_charge(" in T1
+      and "facade.accoster(vus_[0])" in T1 and "facade.calibrer_charge(" in T1
+      and "sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003" in T1
       and 'enregistrer(chemin_profil, robot_id,\n                                                   "calibration_charge", f_)' in T1
       and T1.find("etat_calib[\"fini\"] = pas_calibration()") < T1.find("etat_charge[\"fini\"] = pas_charge()")
       < T1.find("            pilote.pas()")

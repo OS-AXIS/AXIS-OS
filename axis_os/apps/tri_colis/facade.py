@@ -1249,6 +1249,27 @@ class FacadeServices:
                                      self.cfg.profondeur, self.cfg.hauteur, lacet=colis.lacet))
         return r.ok, r.reason or ""
 
+    def calibrer_charge(self, colis: Colis, masse_kg: float,
+                        enregistrer=None) -> Tuple[bool, str]:
+        """Lance la calibration de charge (première mise en route) sur une
+        masse de référence de `masse_kg`, posée par l'opérateur sur un
+        emplacement libre d'une table que le site connaît (la table de prise) :
+        accostée comme un carton (accoster), revue après l'arrêt, prise par
+        la même prise, avec la même exemption du gardien
+        (ManipulationService.calibrer_charge). Une personne qui approche
+        arrête le robot, comme pendant toute prise."""
+        if self._observation_requise and (self._observe is None
+                                          or self._observe.couleur != colis.couleur):
+            return False, (f"calibration de charge refusée — masse de référence pas revue après "
+                           f"l'arrêt du robot (il faut {self.cfg.images_observation} images "
+                           f"cohérentes)")
+        if self._observation_requise:
+            colis = self._observe
+        r = self.manip.calibrer_charge(Objet(colis.position, self.cfg.largeur,
+                                             self.cfg.profondeur, self.cfg.hauteur,
+                                             lacet=colis.lacet), masse_kg, enregistrer=enregistrer)
+        return r.ok, r.reason or ""
+
     def poser(self) -> Tuple[bool, str]:
         """Lance la dépose : sur le plateau si le robot est accosté à un
         poste qui en a un, sinon en relâchant le carton à hauteur de port."""
