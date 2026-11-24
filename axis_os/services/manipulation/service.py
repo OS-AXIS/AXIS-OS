@@ -3658,8 +3658,13 @@ class ManipulationService(IService):
                 return d, raison
             # Prise en pendule : d'où, aussi, les mains toucheront assez haut
             # après la fermeture (le roulis seul les fait descendre en arc).
-            _, _, touche = self._ouvert_pendule(np.array([d, 0.0, z + dz]), objet.largeur,
-                                                0.0, port)
+            q_o, _, touche = self._ouvert_pendule(np.array([d, 0.0, z + dz]), objet.largeur,
+                                                  0.0, port)
+            if q_o is None:
+                # Plus loin, moins encore : la prise (_planifier) le refuserait.
+                return None, (f"hors de portée des bras : à {d:.2f} m, la plus courte que la "
+                              f"table permet, les mains ouvertes n'atteignent pas ses faces "
+                              f"{100 * dz:.0f} cm au-dessus de son centre (prise en pendule)")
             if touche is None or touche - z >= self.r.marge_pendule_m + 0.01:
                 return d, raison
             depuis = d + 0.005
