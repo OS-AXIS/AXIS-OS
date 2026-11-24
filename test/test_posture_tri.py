@@ -129,10 +129,15 @@ for table, attendu in ((0.66, True), (0.56, False)):
     b.jusqua(lambda: b.m.etat in (Etat.TENU, Etat.ECHEC), 40.0)
     check("… pris et tenu, jambes pliées", res.ok and b.m.etat is Etat.TENU
           and b.r.held is not None, f"{res} {b.m.raison}")
+    # La taille lue à 0,05° (bruit de la mesure) : la consigne du torse reste
+    # droite, sinon la marche le croirait penché et ne partirait jamais.
+    lue = b.m._articulations_fixes
+    b.m._articulations_fixes = lambda: {**lue(), b.m.TAILLE: 0.0008}
     red = b.m.changer_abaissement(0.0)
+    b.m._articulations_fixes = lue
     b.jusqua(lambda: b.r.locomotion.posture_atteinte, 10.0)
-    check("… jambes dépliées le carton tenu (il monte avec le bassin, les bras ne bougent pas) : "
-          "droit, prêt à marcher", red.ok and not b.r.locomotion.penche
+    check("… jambes dépliées le carton tenu (il monte avec le bassin, les bras ne bougent pas), "
+          "taille lue à 0,05° : droit, prêt à marcher", red.ok and not b.r.locomotion.penche
           and b.r.held is not None and b.m.etat is Etat.TENU, f"{red} {b.m.raison}")
 
 for plateau, attendu in ((0.64, True), (0.56, False)):
@@ -278,6 +283,16 @@ temps[0] = 4.0
 f.tick()
 check("… droit : le départ mis de côté repart", f._phase != "REDRESSEMENT"
       and f._redressement is None)
+
+f, loco, manip, temps, journal = facade()
+manip.etat, manip._rigide, manip.tangage_taille = Etat.TENU, object(), 0.08
+loco.cible = (0.10, 0.0)
+f.aller_au_poste("A")
+temps[0] = ConfigFacade().delai_accostage_s + 1.0
+f.tick()
+check("… jamais droit (posture jamais atteinte) : échec après le délai, la raison dite, aucun "
+      "départ", f.navigation() == "ECHEC" and "redressement" in f.raison_echec
+      and f._redressement is None, f"{f._phase} {f.raison_echec}")
 
 f, loco, manip, temps, journal = facade()
 pd = SimpleNamespace(hauteur=0.64)

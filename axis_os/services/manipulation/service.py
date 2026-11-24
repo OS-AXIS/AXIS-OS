@@ -4279,7 +4279,10 @@ class ManipulationService(IService):
                                                   f"rigide exigé (état {self.etat.name})")
         if self._posture is None:
             return ServiceResult(ok=False, reason="abaissement refusé : pas de consigne de posture")
-        t = max(0.0, float(self._articulations_fixes().get(self.TAILLE, 0.0)))
+        # Le torse reste où il est, droit sous 1 mrad : penché d'un bruit de
+        # mesure, la marche le croirait penché et refuserait de partir.
+        t = float(self._articulations_fixes().get(self.TAILLE, 0.0))
+        t = t if t > 1e-3 else 0.0
         masse, centre = self._masse_tenue()
         r = self._posture(t, float(abaissement), angles={**self._fixes, **self._q},
                           charges=[(masse, centre)])

@@ -551,7 +551,7 @@ class FacadeServices:
             # Penché ou jambes pliées : on ne marche que droit (la marche le
             # refuse) ; le départ attend le redressement.
             self._redressement = (dest, accostage, poste_depose)
-            self._phase = "REDRESSEMENT"
+            self._phase, self._t_posture = "REDRESSEMENT", self._horloge()
             ok, raison = self._redresser()
             if not ok:
                 self._phase, self._redressement = "ECHEC", None
@@ -757,6 +757,7 @@ class FacadeServices:
         if self.bloque_par_securite():
             self._t_accostage += dt
             self._t_stab0 += dt
+            self._t_posture += dt
             if self._obs is not None:
                 self._obs["debut"] += dt
         if self.manip.etat is Etat.RAMENER or getattr(self.manip, "penche", False):
@@ -882,6 +883,11 @@ class FacadeServices:
             return
         if self._phase == "REDRESSEMENT":
             self.loco.halt()
+            if self._horloge() - self._t_posture > self.cfg.delai_accostage_s:
+                self.raison_echec = "redressement non atteint : on ne marche que droit"
+                self._journal(f"redressement : {self.raison_echec}")
+                self._phase, self._redressement = "ECHEC", None
+                return
             if getattr(self.manip, "tangage_en_cours", False):
                 return
             if not getattr(self.loco, "penche", False):
