@@ -838,14 +838,16 @@ class ManipulationService(IService):
     def _ouvert_pendule(self, prise: np.ndarray, largeur: float, lacet: float,
                         graine: Dict[str, float]
                         ) -> Tuple[Optional[Dict[str, float]], np.ndarray, Optional[float]]:
-        """Mains ouvertes pour une prise à la hauteur de `prise` : la
-        fermeture ne tourne que le roulis d'épaule, la main décrit un arc
-        autour de l'épaule et descend en fermant, d'autant plus qu'elle est
-        haut (robot simulé, campagne de cartons : 5,5 cm pour le carton T1).
-        Les mains ouvertes sont visées plus haut de ce qu'elles descendront,
-        tant que les bras y arrivent. Rend (angles ouverts, leur cible,
-        hauteur où elles toucheront ; None si la fermeture n'y arrive pas par
-        le roulis seul)."""
+        """Mains ouvertes pour une prise en `prise` : la fermeture ne tourne
+        que le roulis d'épaule, la main décrit un arc autour de l'épaule et
+        descend en fermant, d'autant plus qu'elle est haut (robot simulé,
+        campagne de cartons : 5,5 cm pour le carton T1), et avance (3,4 mm :
+        la ligne des mains devant le centre de gravité, que son poids fait
+        basculer et que la pesée lit comme une force). Les mains ouvertes sont
+        visées plus haut de ce qu'elles descendront, et plus en arrière de ce
+        qu'elles avanceront, tant que les bras y arrivent. Rend (angles
+        ouverts, leur cible, hauteur où elles toucheront ; None si la
+        fermeture n'y arrive pas par le roulis seul)."""
         r = self.r
         ouvert = np.array(prise, dtype=float)
         q, _ = resoudre(self._modele, *cibles_mains(ouvert, largeur, lacet,
@@ -854,9 +856,9 @@ class ManipulationService(IService):
             return None, ouvert, None
         chute = self._chute_fermeture(q, prise, largeur, lacet, graine)
         for _ in range(4):
-            if chute is None or abs(chute) < 0.002:
+            if chute is None or float(np.abs(chute).max()) < 0.002:
                 break
-            essai = ouvert + np.array([0.0, 0.0, chute])
+            essai = ouvert + chute
             q2, _ = resoudre(self._modele, *cibles_mains(essai, largeur, lacet,
                                                         r.demi_main_m + r.jeu_ouverture_m),
                              {**graine, **q})
@@ -864,16 +866,18 @@ class ManipulationService(IService):
             if q2 is None or c2 is None:
                 break                         # plus haut, hors de portée : on garde
             ouvert, q, chute = essai, q2, c2
-        return q, ouvert, None if chute is None else float(prise[2]) - chute
+        return q, ouvert, None if chute is None else float(prise[2] - chute[2])
 
     def _chute_fermeture(self, q_ouvert: Dict[str, float], prise: np.ndarray, largeur: float,
-                         lacet: float, graine: Dict[str, float]) -> Optional[float]:
-        """De combien (m) les points de contact descendent, en moyenne, quand
-        la fermeture (le seul roulis d'épaule, _cible_fermeture) amène chaque
-        main des angles `q_ouvert` jusqu'à sa face (à `largeur` / 2 de `prise`
-        le long de la normale) : prise[2] moins leur hauteur au contact. None
-        si le roulis n'y suffit pas dans ses bornes (la fermeture irait alors
-        vers q_vide, tout le bras)."""
+                         lacet: float, graine: Dict[str, float]) -> Optional[np.ndarray]:
+        """De combien (m) le milieu des points de contact s'écarte de
+        `prise`, quand la fermeture (le seul roulis d'épaule,
+        _cible_fermeture) amène chaque main des angles `q_ouvert` jusqu'à sa
+        face (à `largeur` / 2 de `prise` le long de la normale) : `prise`
+        moins ce milieu, sans sa part le long de la normale (en hauteur : de
+        combien elles descendent ; en profondeur : de combien elles reculent,
+        négatif si elles avancent). None si le roulis n'y suffit pas dans ses
+        bornes (la fermeture irait alors vers q_vide, tout le bras)."""
         n = np.array([-math.sin(lacet), math.cos(lacet), 0.0])
         base = {**graine, **q_ouvert}
         z = []
@@ -895,8 +899,9 @@ class ManipulationService(IService):
                 a, b = (m, b) if ecart(m) > 0.0 else (a, m)
             q2 = dict(base)
             q2[j] = b
-            z.append(float(chaine.main(q2)[2]))
-        return float(prise[2]) - sum(z) / len(z)
+            z.append(chaine.main(q2))
+        e = np.asarray(prise, dtype=float) - sum(z) / len(z)
+        return e - float(e @ n) * n
 
     def _echouer(self, raison: str) -> None:
         """Échec de la prise mesurée : on ne bouge plus (la consigne reste

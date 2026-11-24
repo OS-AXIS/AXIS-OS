@@ -86,9 +86,11 @@ with robot_devant(d_facade) as robot:
           f"({d_facade:.2f} m)", ok, raison)
     if ok:
         cg, cd = m._plan["cibles"]
+        # Le contact au milieu des faces en profondeur ; les mains ouvertes,
+        # plus en arrière de ce que la fermeture (le roulis seul) les avance.
         check("… les mains visent les faces gauche et droite (pas l'avant et l'arrière)",
-              abs(cg[0] - d_facade) < 1e-6 and abs(cd[0] - d_facade) < 1e-6
-              and cg[1] > 0 > cd[1])
+              abs(m._plan["prise"][0] - d_facade) < 1e-6 and abs(cg[0] - d_facade) < 0.005
+              and abs(cd[0] - d_facade) < 0.005 and cg[1] > 0 > cd[1])
 for d in (0.36,):
     with robot_devant(d) as robot:
         ok, raison = robot.manipulation._planifier(carton())
