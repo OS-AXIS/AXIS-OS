@@ -155,6 +155,11 @@ with SimulatedRobot(objects=[SimulatedObject("carton", (0.30, 0.0, 0.90))],
           abs((g[0] + d[0]) / 2 - 0.30) <= R.tol_profondeur_m
           and dz - R.tol_hauteur_m <= haut <= dz + 0.05
           and m.ligne_cg is not None and m.ligne_cg[1] >= R.marge_pendule_m, f"{g} {d}")
+    vise = [float(c_[2]) for c_ in m._plan["cibles"]]
+    check(f"… en hauteur, chaque main à {100 * R.tol_hauteur_m:.1f} cm au plus de sa cible (celle que "
+          f"l'OS vérifie avant de fermer : la visée, plus ce que la fermeture la fera descendre)",
+          all(abs(float(p_[2]) - 0.72 - v_) <= R.tol_hauteur_m for p_, v_ in zip((g, d), vise)),
+          f"{g} {d} {vise}")
     fermes = [p for p in j.pas if p["etat"] is Etat.FERMETURE]
     tangages = {round(p["q"]["left_shoulder_pitch_joint"], 6) for p in fermes}
     check("Fermeture : seuls les roulis bougent (le levage est une phase à part)",

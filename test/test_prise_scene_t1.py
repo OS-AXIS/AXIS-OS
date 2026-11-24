@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from axis_os.apps.tri_colis import scene_demo as sd  # noqa: E402
 from axis_os.apps.tri_colis.facade import ConfigFacade  # noqa: E402
 from axis_os.services.manipulation.cinematique import ModeleBras  # noqa: E402
-from axis_os.services.manipulation.prise import ReglagesPrise, distance_ideale  # noqa: E402
+from axis_os.services.manipulation.prise import (  # noqa: E402
+    ReglagesPrise, distance_ideale, hauteur_prise)
 from axis_os.services.manipulation.service import Etat, Objet, posture_bras  # noqa: E402
 from axis_os.testing import SimulatedObject, SimulatedRobot  # noqa: E402
 
@@ -67,7 +68,7 @@ def robot_devant(d, largeur=CFG.largeur, dy=0.0, lacet_deg=0.0):
     return r
 
 
-section("1. Le constat GPU : carton à 0,32 m devant le bassin, +0,17 m — atteignable")
+section("1. Le constat GPU : carton à 0,32 m devant le bassin, +0,17 m — prise en pendule : refusée là, atteignable à la distance de la façade")
 with robot_devant(0.32) as robot:
     m = robot.manipulation
     c = m._vers_bassin(carton().centre)
@@ -76,6 +77,11 @@ with robot_devant(0.32) as robot:
     check("Lacet monde 0, robot tourné d'un quart de tour : faces latérales, écart 0°",
           abs(m._lacet_relatif(carton())) < 1e-9)
     d_facade, _ = m.distance_de_prise(carton(), d_min=CFG.distance_prise)
+    ok32, raison32 = m._planifier(carton())
+    check("À 0,32 m, prise en pendule : refusée avant de bouger, avec la raison (« prise en "
+          "pendule impossible d'ici … changer la distance »)",
+          not ok32 and "prise en pendule impossible d'ici" in raison32
+          and raison32.endswith("changer la distance"), raison32)
 # Prise en pendule : la fermeture (le roulis seul) fait descendre les mains en
 # arc ; à 0,32 m elles toucheraient trop bas sous la visée (refus « changer la
 # distance ») ; la façade arrête le robot là où elles touchent assez haut.
@@ -91,6 +97,12 @@ with robot_devant(d_facade) as robot:
         check("… les mains visent les faces gauche et droite (pas l'avant et l'arrière)",
               abs(m._plan["prise"][0] - d_facade) < 1e-6 and abs(cg[0] - d_facade) < 0.005
               and abs(cd[0] - d_facade) < 0.005 and cg[1] > 0 > cd[1])
+        c = m._vers_bassin(carton().centre)
+        check(f"… le contact visé au milieu des faces en profondeur et en largeur, "
+              f"{100 * hauteur_prise(R, CFG.hauteur):.0f} cm au-dessus du centre (prise en "
+              f"pendule), à 1e-6 m près",
+              np.allclose(m._plan["prise"], c + np.array([0.0, 0.0, hauteur_prise(R, CFG.hauteur)]),
+                          rtol=0.0, atol=1e-6), f"{m._plan['prise']} {c}")
 for d in (0.36,):
     with robot_devant(d) as robot:
         ok, raison = robot.manipulation._planifier(carton())
@@ -122,6 +134,11 @@ for largeur in (0.30,):
     with robot_devant(0.32, largeur=largeur) as robot:
         d_l, _ = robot.manipulation.distance_de_prise(carton(largeur=largeur),
                                                       d_min=CFG.distance_prise)
+        ok32, raison32 = robot.manipulation._planifier(carton(largeur=largeur))
+    check(f"Carton de {largeur:.2f} m de large, à 0,32 m : refusé avant de bouger, « prise en "
+          f"pendule impossible d'ici … changer la distance »",
+          not ok32 and "prise en pendule impossible d'ici" in raison32
+          and raison32.endswith("changer la distance"), raison32)
     with robot_devant(d_l, largeur=largeur) as robot:
         ok, raison = robot.manipulation._planifier(carton(largeur=largeur))
         check(f"Carton de {largeur:.2f} m de large, à sa distance de prise ({d_l:.2f} m) : "
