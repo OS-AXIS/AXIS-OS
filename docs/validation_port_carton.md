@@ -1406,3 +1406,177 @@ Tests modifiés :
 
 À vérifier au prochain essai GPU : `poids du carton : … (moyenne tronquée de
 100 lectures en 2.0 s, … ; à ±0.2 N près, deux écarts types …)`.
+
+## 15. Essai T1 du 20 novembre 2026, 21 h 37 : le carton a tourné entre les paumes
+
+Ce que montrent le relevé (`t1_prise_20261120_2137.csv`), le journal et la
+vidéo : pris, levé, ramené, le carton a tourné de -4° à -50° autour de la
+ligne des mains (le « roulis » du juge) et glissé de ~8 cm vers le bas
+(point de contact réel de +0,2 à +9 cm au-dessus de son centre) ; la force du
+juge est restée de 13 à 16 N par main ; les mains mesurées n'ont pas tourné de
+plus de 3,8°. L'OS n'a vu que « mains écartées de 5 à 13 mm », 8 fois,
+chaque fois resserrées, puis « ne pèse plus » à 72 s. La caméra de tête ne
+mesurait le carton qu'en entier dans l'image : coupé par son bord bas, elle
+n'a rien rendu.
+
+Pourquoi il a tourné : un pendule presque sans bras. La ligne des mains
+passait 0,2 à 1 cm au-dessus du centre de gravité (l'OS la croyait 1,9 cm
+dessous), le centre 0,9 cm devant elle (l'OS : 0), et le caoutchouc ne
+retenait presque rien en rotation (rayon de contact effectif sous 5 mm) :
+l'équilibre est à tan θ = e / d, ~60°.
+
+Et l'essai de 20 h 27 ne s'est jamais mis en route : la masse de référence
+de la calibration de charge était posée sur un plateau ajouté devant le
+robot, que la carte du site ne connaissait pas ; le gardien de proximité l'a
+vu comme un obstacle inexpliqué à 0,49 m.
+
+### 15.1 Prise en pendule (ReglagesPrise : marge_pendule_m, affaissement_prise_m, bord_face_m)
+
+- La ligne des mains doit passer AU-DESSUS du centre de gravité : estimée par
+  l'OS au serrage (mains mesurées), de `marge_pendule_m` (3 cm) au moins,
+  8,3 cm au plus (la tolérance d'avant, gardée). Avant : « à 8,3 cm au plus »,
+  dessus comme dessous.
+- Justification (commentaire de `ReglagesPrise`) : sous la ligne d'au moins
+  d, le poids ramène le carton (couple de rappel m g d sin θ) ; au-dessus,
+  rien. Les accélérations de la marche (~1 m/s²) le balancent de atan(a / g)
+  ≈ 6° au plus quel que soit d, et il revient (22 h 04 : ±3° au pas) ; un
+  décalage en profondeur e non vu le penche de atan(e / d). 3 cm : plus que
+  l'erreur de l'OS sur la hauteur de la ligne à 21 h 37 (2,4 cm).
+- Visée : `marge_pendule_m` + `affaissement_prise_m` (3 cm : les mains se
+  posent plus bas que visé, 1,9 cm à 21 h 37, 2,6 cm sur le robot simulé),
+  soit 6 cm au-dessus du centre, le contact à `bord_face_m` (3 cm) au moins
+  sous l'arête : un carton de moins de 18 cm de haut est refusé, avec la
+  raison (« trop bas pour une prise en pendule »).
+- La fermeture ne tourne que le roulis d'épaule : la main décrit un arc
+  autour de l'épaule et descend en fermant, d'autant plus qu'elle est haut
+  (robot simulé, carton T1 de la campagne : 5,5 cm ; il touchait 0,6 cm
+  au-dessus du centre, refusé au serrage). Les mains ouvertes sont visées
+  plus haut de ce qu'elles descendront, tant que les bras y arrivent
+  (`_ouvert_pendule`) ; si elles toucheraient encore à moins de 4 cm
+  au-dessus du centre, la prise est refusée avant de bouger (« prise en
+  pendule impossible d'ici : changer la distance ») et le planificateur
+  (contrôle « fermeture ») choisit une autre place.
+- Vérifié atteignable : planificateur (contrôles « pendule » et
+  « fermeture », la ligne jugée sur le centre de gravité), distance de
+  prise, garde des avant-bras, dépose (la hauteur de prise comptée), se
+  pencher (plan_penche) ; le retour vers le buste ne va que là d'où le torse
+  peut se redresser.
+- Robot simulé : le carton tourne autour de la ligne des mains dans le sens
+  qui annule son bras de levier (e cos θ - z sin θ), au-delà de ce que le
+  frottement des mains retient. Rejeu de la géométrie de 21 h 37 (frottement
+  en rotation de 1 mm de rayon effectif) : il tourne de 45° ; ligne 2 cm sous
+  le centre : il bascule et tombe ; ligne 6 cm au-dessus, écarté de 20° : il
+  revient vers son équilibre (test_prise_pendule).
+- Ce que ça coûte (campagne de cartons, plus bas) : les cartons de moins de
+  18 cm, et des cartons lourds bras plus hauts (épaules à leur plafond).
+
+### 15.2 Rotation entre les paumes, vue et arrêtée
+
+- Au 2e écartement des mains en 10 s (`ecartements_max`,
+  `fenetre_ecartements_s`), ou dès que l'écart grandit de 2 mm malgré le
+  resserrage (`croissance_ecart_m`, après `delai_croissance_s` = 0,2 s, le
+  temps qu'il agisse) : transport interrompu, à reposer, « carton qui tourne
+  entre les paumes ».
+- Caméra de tête : la pente du dessus mesurée même quand il n'est vu qu'en
+  partie (banc T1, `rotation_dessus` : nombre de points, plan net) ; l'OS
+  arrête à `rotation_vue_max_deg` (6°, jamais plus que `rotation_max_deg`).
+  Elle n'autorise rien : un carton vu droit ne fait que se taire.
+- Rejeu de 2137 (test_rejeu_port_t2137) : vue en retard de 0,1 s et 2° sous
+  la vérité, arrêt à 7,7° (10° passés 0,7 s plus tard) ; caméra aveugle, les
+  écartements vus à l'essai l'arrêtent à 55 s (25°) au lieu de 72 s.
+  Hypothèse à vérifier sur GPU : ce que la vue partielle du dessus donne
+  vraiment (ici, la vérité du juge dégradée).
+
+### 15.3 Pesée : les -14 % expliqués ; la marge sur le poids le plus prudent
+
+- Le poids de 2137 (8,4 N pour 9,8) : le moment du contact (le carton qui
+  tourne entre les paumes) lu comme une force. Moindres carrés force +
+  moment sur les 101 lectures : 9,72 N (-0,9 %), mais 4,5 N d'écart type par
+  lecture (contre 0,99) : trop bruité comme méthode.
+- La marge de frottement se juge désormais sur le plus prudent de la pesée
+  et de la médiane du poids lu sur la foulée : une pesée trop légère ne la
+  rend plus optimiste (test_port_sans_derive §6).
+
+### 15.4 Calibration de charge sur une table connue du site
+
+- La masse de référence est posée par l'opérateur sur un emplacement libre de
+  la table de prise (dans la carte du site) ; le robot la cherche, l'accoste
+  et la prend par la façade de l'app (`FacadeServices.calibrer_charge`),
+  exactement comme un carton (la prise de T1, la même exemption du gardien).
+  Une personne qui approche est détectée et arrête le robot pendant la
+  calibration (test_calibration_charge_site). T1 calibre par défaut ;
+  `--sans-calibration-charge` reste pour les essais.
+
+### 15.5 Préparation commune des bancs (banc_prise)
+
+- `preparer_scene` (mains caoutchouc et éclairage après les corps rigides,
+  puis ce qui précède le départ de la physique, puis `world.reset()`),
+  `demarrer_services`, `objets_inconnus` / `plateau_site` (aucun objet posé
+  devant le robot hors des tables du site) : appelés par T1 et par le banc
+  de posture. Trois défauts de banc en trois soirs venaient de cet ordre,
+  recopié à la main.
+
+### 15.6 Se pencher et plier les jambes, dans l'app de tri et le planificateur
+
+- Limites du banc de posture, inchangées (`BornesPosture`) : torse 0,35 rad au
+  plus demandé, bassin 10 cm au plus, marge d'équilibre 2 cm au moins ; toute
+  consigne passe par `LocomotionService.posture` (bornes, gardien de
+  proximité, équilibre).
+- Les jambes d'abord pour descendre (`plan_posture` : mains plus haut que le
+  carton, ou bras qui n'atteignent pas ; `abaissement_pour_deposer` : plateau
+  bas), le torse pour aller plus loin (`plan_penche`).
+- La prise se calcule sur la taille et le bassin MESURÉS (`_planifier`) : la
+  marche ne suit la taille qu'en partie (65 à 95 %, banc de posture) ; le
+  journal de l'app dit le torse demandé et le mesuré.
+- App de tri (façade) : posture prise une fois la base arrêtée à la pose de
+  prise, ARRIVE seulement atteinte ; on ne repart que droit (le torse
+  redressé l'objet tenu en place, puis les jambes) ; plateau bas : jambes
+  pliées, puis dépose.
+- Planificateur (`planifier_prise(postures=True)`) : si rien ne passe debout,
+  les candidates refusées pour la portée, la garde des avant-bras ou des
+  mains plus haut que le carton sont réévaluées jambes pliées puis torse
+  penché (couples, équilibre et chemins compris, redressement vérifié).
+- Robot simulé : carton sur une table de 66 cm pris jambes pliées de 7,5 cm ;
+  dépose sur un plateau de 64 cm (sous les 68 cm qu'atteignent les bras
+  debout) jambes pliées de 5 cm, à 3 mm près ; 56 cm : refusé avant de
+  bouger (test_posture_tri).
+
+### 15.7 Campagne de cartons
+
+Les 120 cartons de la campagne (graine 20261118 ; même robot simulé, mêmes
+erreurs de couples), essayés comme sur le banc T1 (planificateur, prise,
+port, dépose à leur place). « Faisables » : ni trop lourds, ni trop larges,
+ni hors de toute portée, ni (désormais) trop bas pour une prise en pendule.
+
+Table de la scène T1 (80 cm) :
+
+| | main | cette PR, debout | cette PR, postures |
+|---|---|---|---|
+| faisables | 33 | 21 | 21 |
+| déposés | 6 | 3 | 3 |
+| reposés (dont faisables) | 3 (1) | 7 (5) | 7 (5) |
+| refus des faisables | dépose 18, trop lourd 5, avant-bras 3, glisse 1 | trop lourd 12, dépose 3, glisse 2, trop lourd ou glissant 1 | les mêmes |
+| cas interdits | 0 | 0 | 0 |
+
+- 12 faisables de moins : 13 cartons de moins de 18 cm, trop bas pour une
+  prise en pendule (dont 2 déposés sur main, n° 15 et 75) ; un de plus (n° 40).
+- Déposés sur main, reposés ici : n° 85, la marge jugée sur le poids lu
+  (11,0 N, plus que les 10,1 pesés ; vrai 9,55) passe à 1,94 aux plafonds des
+  bras (§15.3 : la prudence demandée) ; n° 105 (0,22 kg), « ne pèse plus »
+  sur un poids lu bruité (0,8 N pour 2,5 au levage) : arrêt sûr, à tort.
+  Gagné : n° 69.
+- Les postures n'y changent rien : sur cette table, rien n'est trop bas
+  pour les mains, et les cartons trop loin qu'un torse penché atteindrait
+  font dépasser leur plafond aux épaules (10 N·m) avec la masse maximale
+  (1,2 kg), bras tendus.
+
+La même campagne sur une table de 66 cm (les cartons posés dessus, déposés
+à leur place) :
+
+| | debout | jambes et torse |
+|---|---|---|
+| déposés | 1 | 6 |
+| reposés | 1 | 4 |
+| refus des faisables | trop bas pour les mains 14, dépose 1 | trop bas pour les mains 6 (plus de 10 cm de jambes), dépose 1, contact 1, trop lourd ou glissant 1, glisse 1 |
+| postures | — | jambes pliées de 2,5 cm (4), 5 cm (6), 7,5 cm (5), 10 cm (2) |
+| cas interdits | 0 | 0 |

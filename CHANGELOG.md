@@ -10,6 +10,36 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Prise en pendule ; rotation entre les paumes ; calibration sur une table du site ; se pencher et plier les jambes
+
+Essais GPU T1 du 20 novembre 2026 (20 h 27 et 21 h 37) ; détail dans
+docs/validation_port_carton.md, §15.
+- Prise en pendule : la ligne des mains AU-DESSUS du centre de gravité, de
+  `marge_pendule_m` (3 cm) au moins au serrage (estimée par l'OS), visée
+  6 cm au-dessus (`affaissement_prise_m` : les mains se posent 3 cm plus bas
+  que visé), le contact à `bord_face_m` (3 cm) au moins sous l'arête ; un
+  carton de moins de 18 cm de haut est refusé, avec la raison. Avant : la
+  ligne « à 8,3 cm au plus » du centre, dessus comme dessous. Robot simulé :
+  le carton tenu tourne autour de la ligne des mains (pendule), dans les deux
+  sens.
+- Carton qui tourne entre les paumes : au 2e écartement des mains en 10 s,
+  ou dès que l'écart grandit malgré le resserrage, transport interrompu ;
+  caméra de tête : la pente du dessus vu en partie, arrêt à 6°
+  (`rotation_vue_max_deg`), jamais pour autoriser.
+- Marge de frottement au port sur le plus prudent de la pesée et du poids
+  lu sur la foulée.
+- Calibration de charge : la masse de référence sur un emplacement libre de
+  la table de prise (connue du site), prise par l'app comme un carton
+  (`FacadeServices.calibrer_charge`) ; le banc T1 calibre par défaut.
+- Bancs Isaac : préparation commune (`banc_prise.preparer_scene`,
+  `demarrer_services`, `objets_inconnus`), pour T1 et le banc de posture.
+- Se pencher et plier les jambes dans l'app de tri et le planificateur, dans
+  les limites du banc de posture (torse 0,35 rad, bassin 10 cm, marge 2 cm) :
+  `ManipulationService.plan_posture` (les jambes d'abord pour descendre, le
+  torse pour aller plus loin), `abaissement_pour_deposer` et
+  `changer_abaissement` (plateau bas), `planifier_prise(postures=True)` ; la
+  prise calculée sur la taille mesurée.
+
 ### Pesée sur 100 lectures
 
 Décision sur la PR #38 ; détail dans docs/validation_port_carton.md, §14.
