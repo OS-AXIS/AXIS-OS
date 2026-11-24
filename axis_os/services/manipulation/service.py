@@ -3024,8 +3024,10 @@ class ManipulationService(IService):
         `ecart_face_port_m` de leur place au serrage, ou si la marge de
         frottement μ (N_G + N_D) / poids passe sous `securite_serrage`, la
         base s'arrête (`penche`) et l'on resserre, bras sous leurs plafonds
-        (inchangés), consigne jusqu'à `penetration_poids_max_m` ; sans retour
-        en `duree_resserrage_s`, on s'arrête pour de bon : à reposer.
+        (inchangés), consigne jusqu'à `penetration_poids_max_m` ; l'écart, à
+        `hysteresis_ecart_m` sous ce seuil, la marge au-dessus de
+        `securite_reprise` ; sans retour en `duree_resserrage_s`, on s'arrête
+        pour de bon : à reposer.
         Constaté sur GPU (essai T1 du 5 novembre 2026, 21 h 57) : une pointe
         de couple du poignet, à la marche, avait desserré la consigne de la
         main droite de 5 mm (_garder_sous_la_limite), sans jamais la
@@ -3093,7 +3095,13 @@ class ManipulationService(IService):
         marge = self.marge_courte if arretee else self.marge_frottement
         sur = "sur 0,3 s, base arrêtée" if arretee else "sur la dernière foulée"
         faible = glisse or (marge is not None and marge < seuil)
-        ecartees = ecart > r.ecart_face_port_m
+        # Hystérésis des écartements, comme celle de la marge : arrêtée pour un
+        # écartement (au-delà de ecart_face_port_m), la base ne repart qu'une
+        # fois le resserrage revenu sous ecart_face_port_m - hysteresis_ecart_m.
+        bas_ecart = r.ecart_face_port_m - r.hysteresis_ecart_m
+        ecartees = ecart > r.ecart_face_port_m or (
+            self._t_resserrage is not None and self._ecart_debut is not None
+            and ecart >= bas_ecart)
         # Carton qui a tourné au retour (_pas_ramener) : on resserre jusqu'au
         # serrage visé d'après le poids, et d'au moins marge_serrage_n à
         # chaque main, tant que les bras le permettent.
@@ -3113,10 +3121,12 @@ class ManipulationService(IService):
         # Un carton qui tourne entre les paumes les écarte, encore et encore
         # (essai GPU du 20 novembre 2026, 21 h 37 : 8 fois, de 5 à 13 mm,
         # chaque fois resserrées, jusqu'à 50°). Un écartement : les mains qui
-        # passent au-delà de ecart_face_port_m.
-        if not ecartees:
+        # passent au-delà de ecart_face_port_m ; il ne finit, et le suivant ne
+        # peut compter, que sous bas_ecart : un écart qui oscille autour du
+        # seuil (bruit de mesure) n'en fait qu'un.
+        if ecart < bas_ecart:
             self._ecart_debut = None
-        elif self._ecart_debut is None:
+        elif self._ecart_debut is None and ecart > r.ecart_face_port_m:
             t0 = self._horloge()
             self._ecart_debut = ecart
             self._ecartements.append(t0)
@@ -3128,6 +3138,8 @@ class ManipulationService(IService):
                     f"{len(self._ecartements)} fois en {r.fenetre_ecartements_s:g} s "
                     f"({1000 * ecart:.0f} mm cette fois)")
                 return
+        elif self._ecart_debut is None:
+            pass                                # sous le seuil, aucun écartement en cours
         elif self._horloge() - self._ecartements[-1] <= r.delai_croissance_s:
             # Le temps que le resserrage agisse : l'écart de référence suit
             # le plus grand vu (la main glisse encore, la consigne la suit).
@@ -3142,7 +3154,8 @@ class ManipulationService(IService):
             t = self._horloge()
             pourquoi = " ; ".join(
                 ([f"mains écartées de {1000 * ecart:.0f} mm de leur serrage (au plus "
-                  f"{1000 * r.ecart_face_port_m:.0f})"] if ecartees else [])
+                  f"{1000 * r.ecart_face_port_m:g}, sous {1000 * bas_ecart:g} pour repartir)"]
+                 if ecartees else [])
                 + ([f"marge de frottement sur 0,3 s {self.marge_courte:.2f} (au moins "
                     f"{r.securite_glissement:g} : le serrage ne porte plus le carton au "
                     f"frottement prudent, un vrai desserrage)"] if glisse else [])
@@ -3178,19 +3191,25 @@ class ManipulationService(IService):
                 for c in self._ROULIS)
             if bloques:
                 self._t_bloque = t
-            if r.reprise_aux_plafonds and self._resserrage_marge and bloques and not ecartees \
-                    and not force and not glisse \
-                    and marge is not None and marge >= r.securite_serrage:
+            # De même pour les écartements : à leurs plafonds, la base repart
+            # l'écart revenu sous ecart_face_port_m (comme avant l'hystérésis) ;
+            # l'écartement, lui, reste en cours.
+            par_marge = self._resserrage_marge and marge is not None \
+                and marge >= r.securite_serrage
+            if r.reprise_aux_plafonds and bloques and ecart <= r.ecart_face_port_m \
+                    and not force and not glisse and (par_marge or ecartees and not faible):
                 self._t_resserrage, self._resserrage_marge = None, False
                 self._repartir_foulee()
                 self.penche = self.inclinaison is not None \
                     and self.inclinaison > r.inclinaison_max_deg
                 self.stats["reprises_aux_plafonds"] = \
                     self.stats.get("reprises_aux_plafonds", 0) + 1
-                self._noter(f"port : serrage retrouvé (marge de frottement "
-                            f"{marge:.2f}, {sur}, au moins {r.securite_serrage:g} ; "
-                            f"{seuil:g} hors de portée des bras, à leurs plafonds), la marche "
-                            f"peut reprendre")
+                self._noter("port : serrage retrouvé (" + (
+                    f"marge de frottement {marge:.2f}, {sur}, au moins "
+                    f"{r.securite_serrage:g} ; {seuil:g}" if par_marge else
+                    f"mains à {1000 * ecart:.0f} mm de leur serrage, au plus "
+                    f"{1000 * r.ecart_face_port_m:g} ; sous {1000 * bas_ecart:g}")
+                    + " hors de portée des bras, à leurs plafonds), la marche peut reprendre")
                 return
             if t - self._t_resserrage >= r.duree_resserrage_s and not (ecartees or faible):
                 # Visé pas atteint dans les plafonds, mais la marge suffit.

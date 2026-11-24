@@ -32,7 +32,9 @@ raideur_articulations : un moteur qui faiblit) :
      accepté) ;
   4. le carton qui tourne entre les paumes (essai GPU du 20 novembre 2026,
      21 h 37) : au 2e écartement des mains en 10 s, ou dès que l'écart
-     grandit malgré le resserrage, transport interrompu, à reposer.
+     grandit malgré le resserrage, transport interrompu, à reposer ;
+  5. l'hystérésis des écartements : le bruit de mesure de l'écart n'en fait
+     pas compter un 2e, un vrai 2e écartement compte toujours.
 """
 import contextlib
 import io
@@ -341,6 +343,115 @@ check(f"L'écart qui grandit malgré le resserrage (de plus de {1000 * R.croissa
       b.m.a_reposer and b.t[0] - t0 < R.duree_resserrage_s
       and "malgré le resserrage" in interrompu(b)
       and "carton qui tourne entre les paumes" in interrompu(b), interrompu(b))
+
+section("5. Hystérésis des écartements : le bruit de mesure n'en fait pas compter un 2e")
+# Le bruit de l'écart lu en marchant : 0,2 à 0,45 mm par lecture (essais GPU
+# 17 h 16, 18 h 21, 21 h 37 ; ReglagesPrise.hysteresis_ecart_m). Sans
+# hystérésis, l'écart qui repassait le seuil comptait un écartement de plus :
+# au 2e en 10 s, transport interrompu, le carton tenu.
+BAS = 1000 * (R.ecart_face_port_m - R.hysteresis_ecart_m)
+OSCILLE = (5.2, 4.8, 5.3, 4.6, 5.1, 4.9, 5.2)
+
+
+def oscille(b, e):
+    """L'écart lu qui oscille autour du seuil (toutes les 0,1 s), puis revenu
+    sous la bande ; rend le nombre d'écartements comptés pendant l'oscillation."""
+    for mm in OSCILLE:
+        e[0] = mm / 1000.0
+        b.pas(round(0.1 / b.r._dt))
+    compte = len(b.m._ecartements)
+    e[0] = (BAS - 0.5) / 1000.0
+    b.pas(round(1.0 / b.r._dt))
+    return compte
+
+
+b = Banc()
+e = ecart_impose(b)
+compte = oscille(b, e)
+check(f"Écart qui oscille autour du seuil ({', '.join(f'{v:g}' for v in OSCILLE)} mm), jamais "
+      f"sous {BAS:g} mm : un seul écartement compté, fini l'écart revenu sous {BAS:g} mm ; le "
+      f"port continue", compte == 1 and not interrompu(b) and not b.m.a_reposer
+      and b.m._ecart_debut is None and b.r.held is not None, f"{compte} {interrompu(b)}")
+b = Banc()
+b.m.r = replace(R, hysteresis_ecart_m=0.0)
+e = ecart_impose(b)
+oscille(b, e)
+check("… la même oscillation sans hystérésis (avant) : un écartement à chaque passage du seuil, "
+      "transport interrompu « mains écartées 2 fois en 10 s », le carton tenu",
+      b.m.a_reposer and "mains écartées 2 fois en" in interrompu(b), interrompu(b))
+ecartement(b := Banc(), e := ecart_impose(b), 7, duree=0.1)
+e[0] = (BAS - 0.5) / 1000.0
+b.pas(round(1.0 / b.r._dt))
+ecartement(b, e, 7)
+b.pas(5)
+check(f"Un vrai 2e écartement, l'écart revenu sous {BAS:g} mm entre les deux, en moins de "
+      f"{R.fenetre_ecartements_s:g} s : compté, transport interrompu",
+      b.m.a_reposer and "mains écartées 2 fois en" in interrompu(b), interrompu(b))
+
+
+def ecart_resserre(b, mm, sigma_mm=0.0, graine=0):
+    """Un vrai écartement de `mm`, que le resserrage résorbe : l'écart vrai
+    baisse de ce que la consigne des deux mains avance (carton rigide) ; l'OS
+    le lit avec un bruit gaussien de `sigma_mm` par lecture. Rend la lecture
+    de l'écart par l'OS."""
+    rng = np.random.default_rng(graine)
+    d0 = sum(b.m._delta.values())
+    b.m._serrage_port = lambda angles: b.m._serrage_port_ref - (
+        mm / 1000.0 - (sum(b.m._delta.values()) - d0) + rng.normal(0.0, sigma_mm / 1000.0))
+    return lambda: 1000 * (b.m._serrage_port_ref - b.m._serrage_port(None))
+
+
+# Carton de 0,5 kg : les bras ont de la marge sous leurs plafonds pour resserrer
+# (1 N·m ; à 1 kg, prise en pendule, les lacets des poignets en sont à 0,1).
+repart = {}
+for h in (R.hysteresis_ecart_m, 0.0):
+    b = Banc(masse=0.5)
+    b.m.r = replace(R, hysteresis_ecart_m=h)
+    lire = ecart_resserre(b, 7.0)
+    arretee = False
+    while b.t[0] < 60.0:
+        b.pas()
+        arretee = arretee or b.m.penche
+        if arretee and not b.m.penche:
+            break
+    repart[h] = lire()
+check(f"Un vrai écartement de 7 mm, resserré : la base repart l'écart à "
+      f"{repart[R.hysteresis_ecart_m]:.2f} mm, sous {BAS:g} (le resserrage l'y a amené) ; sans "
+      f"hystérésis, elle repartait à {repart[0.0]:.2f} mm, au ras du seuil, là où le bruit le "
+      f"refait passer", repart[R.hysteresis_ecart_m] < BAS
+      and BAS < repart[0.0] <= 1000 * R.ecart_face_port_m, str(repart))
+SIGMA = 0.45
+for h, attendu in ((R.hysteresis_ecart_m, 0), (0.0, 3)):
+    raisons = []
+    for graine in range(3):
+        b = Banc(masse=0.5)
+        b.m.r = replace(R, hysteresis_ecart_m=h)
+        ecart_resserre(b, 7.0, SIGMA, graine)
+        b.pas(round(10.0 / b.r._dt))
+        raisons.append(interrompu(b))
+    check(f"Un vrai écartement de 7 mm, puis 10 s d'écart lu à ±{SIGMA:g} mm (écart-type, le "
+          f"plus bruité des essais GPU), 3 tirages : " + (
+              f"hystérésis de {1000 * h:g} mm, jamais interrompu" if not attendu else
+              "sans hystérésis (avant), interrompu à tort à chaque tirage (2e écartement compté)"),
+          sum(bool(x) for x in raisons) == attendu
+          and all("mains écartées 2 fois en" in x for x in raisons if x), str(raisons))
+
+b = Banc()
+e = ecart_impose(b)
+ecartement(b, e, 7, duree=0.1)
+e[0] = 0.004
+b.pas(round(0.7 / b.r._dt))
+repartie = not b.m.penche and any("hors de portée des bras, à leurs plafonds" in ligne
+                                  for ligne in b.journal)
+e[0] = 0.0053
+b.pas(round(0.1 / b.r._dt))
+e[0] = 0.004
+b.pas(round(1.0 / b.r._dt))
+check(f"Carton de 1 kg, bras à leurs plafonds (rien de plus à serrer) : la base repart l'écart "
+      f"revenu sous le seuil (4 mm), comme avant l'hystérésis ; l'écartement reste en cours : "
+      f"un nouveau passage du seuil (5,3 mm) arrête la base, sans compter un 2e écartement",
+      repartie and len(b.m._ecartements) == 1 and not interrompu(b) and not b.m.a_reposer,
+      f"{repartie} {len(b.m._ecartements)} {interrompu(b)} {b.journal[-3:]}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

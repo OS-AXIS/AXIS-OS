@@ -392,6 +392,17 @@ class ReglagesPrise:
     # la main glisse encore quelques pas, robot simulé).
     ecartements_max: int = 2
     fenetre_ecartements_s: float = 10.0
+    # Hystérésis, comme celle de la marge (arrêt sous 2,0, reprise au-dessus de
+    # 2,2) : arrêtée pour un écartement, la base ne repart que l'écart revenu
+    # sous ecart_face_port_m - hysteresis_ecart_m (le resserrage l'y amène) ;
+    # alors seulement l'écartement finit, et le suivant peut compter. Le
+    # bruit de l'écart lu, en marchant : 0,2 à 0,45 mm par lecture (écart-type
+    # autour de sa médiane sur 0,3 à 0,5 s, hors l'arrondi au mm du journal ;
+    # essais GPU 17 h 16, 18 h 21, 21 h 37). Un vrai écartement, puis ce bruit
+    # 10 s (boucle simulée, resserrage de 0,25 à 1 mm par lecture) : 2e
+    # écartement compté à tort, donc transport interrompu, 59 à 100 % du temps
+    # sans hystérésis, 10 à 87 % à 1 mm, 0 à 8,5 % à 2 mm, 0,1 % au plus à 3.
+    hysteresis_ecart_m: float = 0.003
     croissance_ecart_m: float = 0.002
     delai_croissance_s: float = 0.2
     # Au retour (RAMENER), les deux mains bougent comme un seul corps rigide

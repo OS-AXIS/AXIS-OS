@@ -47,6 +47,10 @@ docs/validation_port_carton.md, §15.
   arrière de ce que la fermeture les avance (3,4 mm) ; suite de tests sous
   les 45 min de la CI (cinématique inverse : 4 passes par tour au lieu
   de 7).
+- Hystérésis des écartements des mains au port (`hysteresis_ecart_m`,
+  3 mm) : arrêtée pour un écartement, la base ne repart que l'écart revenu
+  sous 2 mm, et le suivant ne compte qu'alors ; un écart lu qui oscille
+  autour du seuil n'interrompt plus le transport (§15.9).
 
 ### Pesée sur 100 lectures
 

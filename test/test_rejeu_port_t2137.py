@@ -40,6 +40,9 @@ DONNEES = Path(__file__).resolve().parent / "donnees"
 LATENCE_S, ERREUR_DEG, PERIODE_S = 0.1, 2.0, 0.1
 # « port : mains écartées de … mm de leur serrage » au journal de l'essai.
 ECARTEMENTS_ESSAI = (52.1, 55.0, 58.2, 60.7, 63.4, 65.2, 65.8, 66.7, 71.8)
+# L'écart lu au plus bas entre les deux premiers (t1_prise_20261120_2137.csv,
+# faces commandées et mesurées, arrondies au mm : 0 mm à 52,9 s).
+CREUX_ENTRE_DEUX_MM = 0.0
 
 
 def check(label, cond, detail=""):
@@ -105,6 +108,10 @@ check(f"Au {R.ecartements_max}e écartement en {R.fenetre_ecartements_s:g} s : t
       f"interrompu à {deuxieme:.1f} s (carton tourné de {abs(vrai(deuxieme)):.0f}°), au lieu de "
       f"marcher jusqu'à « ne pèse plus » (~72 s, {abs(vrai(71.8)):.0f}°)",
       deuxieme < 60.0 and abs(vrai(deuxieme)) < abs(vrai(71.8)))
+bas = 1000 * (R.ecart_face_port_m - R.hysteresis_ecart_m)
+check(f"… avec l'hystérésis des écartements ({1000 * R.hysteresis_ecart_m:g} mm) : entre les deux "
+      f"premiers, l'écart lu est redescendu à {CREUX_ENTRE_DEUX_MM:g} mm (arrondi au mm), sous "
+      f"{bas:g} : le 2e compte, au même instant", CREUX_ENTRE_DEUX_MM + 1.0 < bas)
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

@@ -1618,3 +1618,49 @@ La première CI dépassait ses 45 min (annulée à 90 %) et 8 tests échouaient.
 Campagne de cartons refaite avec ces corrections (chiffres du §15.7) : 3 déposés,
 7 reposés, aucun cas interdit, comme avant elles ; un refus « trop lourd »
 devient « glisse au port ». Table de 66 cm : inchangée.
+
+### 15.9 Hystérésis des écartements des mains (`hysteresis_ecart_m`, 3 mm)
+
+Sans elle, après un vrai écartement des mains (au-delà de
+`ecart_face_port_m`, 5 mm), le resserrage s'arrêtait l'écart revenu à 5 mm,
+au ras du seuil ; l'écart lu, bruité, le repassait aussitôt : un 2e
+écartement compté, transport interrompu, le carton tenu.
+
+- Le bruit de l'écart lu, en marchant : 0,2 à 0,45 mm par lecture
+  (écart-type autour de sa médiane sur 0,3 à 0,5 s, hors l'arrondi au mm du
+  journal ; essais GPU 17 h 16, 18 h 21, 21 h 37), 2 mm au plus d'une lecture
+  à l'autre. Les grands écarts du journal (jusqu'à 11 mm) sont ceux de la
+  consigne (les resserrages), pas du bruit.
+- Boucle simulée : un vrai écartement de 7 mm, que le resserrage résorbe
+  (0,25 à 1 mm par lecture tant que la base est arrêtée), puis 10 s d'écart
+  lu avec ce bruit (0,3 ou 0,45 mm, 4 000 essais par cas). Transport
+  interrompu à tort :
+
+| hystérésis | sur le compte seul | le compte et la reprise de la base |
+|---|---|---|
+| aucune (avant) | 59 à 100 % | 59 à 100 % |
+| 1 mm | 19 à 100 % | 10 à 87 % |
+| 2 mm | 1 à 83 % | 0 à 8,5 % |
+| 3 mm | 0 à 1 % | 0 à 0,1 % |
+
+- Retenu : 3 mm, sur le compte et sur la reprise de la base, comme
+  l'hystérésis de la marge (arrêt sous 2,0, reprise au-dessus de 2,2) :
+  arrêtée pour un écartement, la base ne repart que l'écart revenu sous
+  2 mm (le resserrage l'y amène) ; alors seulement l'écartement finit et le
+  suivant peut compter. Sur le compte seul, le resserrage s'arrêtant à 5 mm,
+  l'écartement ne finirait presque jamais : un vrai 2e écartement ne
+  compterait plus.
+- Les bras à leurs plafonds (rien de plus à serrer ; carton de 1 kg en
+  pendule : lacets des poignets à 0,1 N·m du leur) : la base repart l'écart
+  revenu sous 5 mm, comme avant l'hystérésis (comme la marge,
+  `reprise_aux_plafonds`) ; l'écartement reste en cours : repasser le seuil
+  arrête la base, sans compter un 2e écartement.
+- Ce qu'elle coûte, à 21 h 37 : l'écart lu est redescendu à 0 mm entre les
+  deux premiers écartements de l'essai (52,9 s) ; le 2e compte au même
+  instant (55,0 s, rejeu). Recalculé sur le journal (arrondi au mm), l'écart
+  est revenu au seuil 0,6 s après le premier écartement, sans être
+  redescendu sous 3 à 4 mm : sans hystérésis, il pouvait compter pour un 2e
+  (52,7 s, carton tourné de 21°) ; avec, le 2e compte à 54,1 s (23°). La
+  caméra reste le premier signal (arrêt à 7,7°, §15.2).
+- Inchangés : le seuil (5 mm), 2 écartements en 10 s, l'écart qui grandit
+  de 2 mm malgré le resserrage, la durée du resserrage (1 s), les plafonds.
