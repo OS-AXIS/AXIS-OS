@@ -50,7 +50,9 @@ docs/validation_port_carton.md, §15.
 - Hystérésis des écartements des mains au port (`hysteresis_ecart_m`,
   3 mm) : arrêtée pour un écartement, la base ne repart que l'écart revenu
   sous 2 mm, et le suivant ne compte qu'alors ; un écart lu qui oscille
-  autour du seuil n'interrompt plus le transport (§15.9).
+  autour du seuil n'interrompt plus le transport (§15.10).
+- Campagne de cartons : les déposés perdus depuis la PR #35 attribués
+  carton par carton (§15.9).
 
 ### Pesée sur 100 lectures
 

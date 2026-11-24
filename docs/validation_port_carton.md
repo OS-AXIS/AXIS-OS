@@ -1619,7 +1619,52 @@ Campagne de cartons refaite avec ces corrections (chiffres du §15.7) : 3 dépos
 7 reposés, aucun cas interdit, comme avant elles ; un refus « trop lourd »
 devient « glisse au port ». Table de 66 cm : inchangée.
 
-### 15.9 Hystérésis des écartements des mains (`hysteresis_ecart_m`, 3 mm)
+### 15.9 Campagne : de 6 à 3 déposés depuis la PR #35, carton par carton
+
+La campagne refaite au commit de fusion de chaque PR depuis #35, puis aux
+commits de cette PR (les mêmes 120 cartons, la même graine) :
+
+| code | déposés |
+|---|---|
+| #35 | 6 : n° 15, 64, 70, 85, 90, 105 |
+| #36 | 6 : n° 90 perdu, n° 75 gagné |
+| #37 à #41 (main) | 6 : n° 15, 64, 70, 75, 85, 105 |
+| cette PR, marge sur le poids le plus prudent (§15.3) | 5 : n° 85 perdu |
+| cette PR, rotation entre les paumes (§15.2) | 5 |
+| cette PR, prise en pendule (§15.1) | 3 : n° 15, 75 et 105 perdus, n° 69 gagné |
+| cette PR, jusqu'au bout | 3 : n° 64, 69, 70 |
+
+- n° 90 (#36 ; 17,5 cm de haut, 0,44 kg) : refusé avant de bouger, « dépose
+  impossible ensuite » : la garde des avant-bras vérifiée aussi aux bornes
+  de l'erreur d'approche (§11). Voulu ; et il serait trop bas pour la prise
+  en pendule. n° 75, gagné par #36 : ses mains s'ouvrent sur place.
+- n° 85 (0,97 kg) : la marge jugée sur le poids lu sur la foulée (11,0 N ;
+  pesé 10,2 ; vrai 9,55), 1,94, sous le coefficient 2, et les bras à leurs
+  plafonds n'en serrent pas plus : reposé, jamais lâché. Voulu (§15.3) : la
+  marge n'est plus jamais calculée sur un poids plus léger que celui lu ; ce
+  carton-ci, le poids lu est trop lourd de 15 % (sur le vrai poids, marge
+  2,2) ; à 21 h 37, la pesée était trop légère de 14 %.
+- n° 15 (17 cm) et n° 75 (18 cm) : refusés avant de bouger, « trop bas pour
+  une prise en pendule » (mains au moins 3 cm au-dessus du centre de
+  gravité, contact 3 cm sous l'arête du dessus). Voulu (§15.1) : la prise qui
+  a laissé tourner le carton de 21 h 37 n'est plus faite.
+- n° 105 (0,224 kg, 2,2 N) : « le carton ne pèse plus sur les mains » au port,
+  alors qu'il est tenu (marge vraie 6,6, rotation 0°) : reposé, à tort. Un
+  défaut, que la prise en pendule a fait apparaître : dans sa posture, le
+  poids lu sur les couples est 1,6 fois plus bruité (0,43 → 0,68 N
+  d'écart-type sur 0,1 s, bruit des couples du banc GPU), et son décalage,
+  qui dépend de la posture, n'est plus celui du levage, où se prend la
+  référence (le plus grand poids lu depuis le levage) : 40 % de cette
+  référence tombe au niveau du poids lu au port. Sur 16 tirages du bruit
+  des couples, port de 10 s : 15 déposés avant la prise en pendule, 11
+  après ; le poids taré (le biais des couples s'y annule) n'y change rien
+  (11). Correction proposée, pas encore faite (elle change un contrôle du
+  port) : juger la chute depuis le niveau lu au début du port, dans sa
+  posture.
+- n° 69 (1,08 kg), gagné par la prise en pendule : refusé avant (« dépose
+  impossible ensuite »), posé.
+
+### 15.10 Hystérésis des écartements des mains (`hysteresis_ecart_m`, 3 mm)
 
 Sans elle, après un vrai écartement des mains (au-delà de
 `ecart_face_port_m`, 5 mm), le resserrage s'arrêtait l'écart revenu à 5 mm,
