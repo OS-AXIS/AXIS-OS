@@ -227,7 +227,7 @@ m.mesures.positions = lire
 section("5. Hystérésis du resserrage")
 # Couples bruités comme au banc : le desserrage aux plafonds (inchangé) fait
 # varier le serrage et la marge de quelques centièmes ; le seuil d'arrêt est
-# mis juste sous la marge du début du port. Le VRAI couple sous le plafond, à
+# mis juste sous la marge des 2 premières secondes du port. Le VRAI couple sous le plafond, à
 # l'erreur d'estimation du banc près (son biais au plus), comme la campagne de
 # cartons (violations).
 tol = 0.1 + inspect.signature(BruitCouples).parameters["biais_max_nm"].default
@@ -248,7 +248,15 @@ for nom, reprise, delai, plafonds, fenetre in (
     m = b.m
     m.r = replace(m.r, fenetre_marge_s=fenetre)
     b.pas(60)
-    seuil = (m.marge_frottement or 2.0) - 0.01
+    # Au ras de la marge du port : sa moyenne sur ses 2 premières secondes,
+    # 0,01 en dessous (prise en pendule : au début du port, elle est à son
+    # plus bas, puis remonte ; prise là, le bruit ne la ramenait jamais sous
+    # le seuil).
+    vues = []
+    for _ in range(100):
+        b.pas()
+        vues.append(m.marge_frottement or 2.0)
+    seuil = sum(vues) / len(vues) - 0.01
     m.r = replace(m.r, securite_serrage=seuil, securite_reprise=seuil + reprise,
                   delai_reprise_s=delai, reprise_aux_plafonds=plafonds)
     n0 = m.resserrages_ce_port
