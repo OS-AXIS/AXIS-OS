@@ -16,8 +16,10 @@ Banc Isaac Sim de la posture GR00T WBC (lancer_posture.sh), sans GPU :
      scène éclairée comme T1, arrêt et retour droit au
      premier signe, relevé écrit ; axis_os/ n'importe pas le banc.
   5. Le lanceur : banc détaché, relevé et journal récupérés.
-  6. L'app de tri T1 ne se penche pas tant que ce banc n'est pas passé
-     (décision de revue).
+  6. (Avant : l'app de tri T1 ne se penchait pas tant que ce banc n'était
+     pas passé. Il est passé, essai GPU du 20 novembre 2026 : l'app se
+     penche et plie les jambes dans ses limites, vérifiées par
+     test_posture_tri.py.)
 """
 import math
 import re
@@ -209,15 +211,6 @@ check("lancer_posture.sh : banc détaché (docker exec -d), journal et relevé r
       and "posture.csv" in LANCEUR and "posture.log" in LANCEUR and "--recuperer" in LANCEUR)
 check("copier_code.sh copie le script et son module de banc dans le conteneur",
       "sim/validation/test_isaac_*.py" in COPIER and "sim/validation/banc_*.py" in COPIER)
-
-section("6. L'app de tri T1 ne se penche pas tant que ce banc n'est pas passé")
-SOURCES = sorted((RACINE / "axis_os/apps/tri_colis").glob("*.py")) + [
-    RACINE / "sim/validation/test_isaac_t1_tri_usine.py"]
-penche = [f"{f.relative_to(RACINE)} : {m}" for f in SOURCES
-          for m in re.findall(r"plan_penche|changer_tangage|\.posture\(|pencher\s*=\s*True",
-                              f.read_text(encoding="utf-8"))]
-check(f"Ni plan_penche, ni changer_tangage, ni consigne de posture ({len(SOURCES)} fichiers : "
-      f"app tri_colis, scène T1 Isaac)", not penche and len(SOURCES) > 3, "; ".join(penche))
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

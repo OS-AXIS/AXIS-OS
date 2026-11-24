@@ -3517,37 +3517,9 @@ class ManipulationService(IService):
                 # est. Arrêtée en chemin, une descente ne remonte pas forcément
                 # (pose qui ne se tient plus là où le retour passe, coude en butée).
                 self._t_phase = self._horloge()
-                de = np.array(self._centre_porte, dtype=float)
-                devant = np.array([x_prise, de[1], de[2]])
-                bas = np.array([x_prise, de[1], self._surface + p.jeu_depose - float(
-                    self.mesures.bassin_z()) + (self.objet.hauteur / 2.0 if self.objet else 0.1)
-                    + dz])
-                # Au pas de la descente (1 à 2,5 mm par tour) : un coude qui tourne
-                # vite sans à-coup (0,16 rad au dernier cm vers 70 cm) n'y passe pas
-                # pour un saut ; un changement de solution, si (0,32 rad en 2 mm).
-                q = self._chemin_rigide(de, devant, None, pas_m=0.002)
-                q = None if q is None else self._chemin_rigide(devant, bas, None, graine=q,
-                                                               pas_m=0.002)
-                # En bas, les mains doivent aussi pouvoir s'ouvrir sur place, comme
-                # _ouvrir le fera (serrage relâché, jeu_ouverture_m de chaque côté) :
-                # sinon il rouvre les roulis et elles remontent en s'ouvrant (2,4 cm
-                # vers un plateau de 71 cm, carton lâché ~3 cm au-dessus de lui).
-                # _ouvrir part des mains mesurées, à quelques mm de leur consigne
-                # (bras qui cèdent sous la charge : 3 à 5 mm en avant et de côté,
-                # campagne de cartons variés), et l'ouverture d'un carton tourné en
-                # dépend (12° : possible 4 mm plus près du robot, pas à la consigne) :
-                # refus seulement si aucune de ces places ne le permet.
-                ecart = (self._ecart_mains or 0.33) + 2 * self.r.jeu_ouverture_m
-                relache = {c: 0.0 for c in self._ROULIS}
-                ouvre = q is not None and any(
-                    self._q_rigide(bas + np.array([dx, dy, 0.0]), ecart, graine=q,
-                                   delta=relache) is not None
-                    for dx in (0.0, -0.005, 0.005) for dy in (0.0, -0.005, 0.005))
-                if not ouvre:
+                q, pourquoi = self._depose_possible(self._surface)
+                if q is None:
                     self.stats["deposes_impossibles"] += 1
-                    pourquoi = ("hors d'atteinte des bras" if q is None else
-                                "les mains ne pourraient pas s'y ouvrir sur place, elles "
-                                "remonteraient en s'ouvrant")
                     self.raison = (f"dépose impossible : plateau à {self._surface:.2f} m, "
                                    f"{pourquoi} (chemin et ouverture vérifiés avant de "
                                    f"descendre, l'objet reste tenu là où il est)")
@@ -3640,15 +3612,17 @@ class ManipulationService(IService):
         self._aller(Etat.OUVERTURE)
 
     def distance_de_prise(self, objet: Objet, d_min: float = 0.25, tangage: float = 0.0,
-                          cap: Optional[float] = None) -> Tuple[Optional[float], str]:
+                          cap: Optional[float] = None, abaissement: float = 0.0
+                          ) -> Tuple[Optional[float], str]:
         """Prise mesurée : à quelle distance (m) du centre de l'objet, le long
         du cap de prise, arrêter le bassin pour que les mains atteignent le
         milieu de ses faces et que les avant-bras passent au-dessus du
         plateau ; la plus courte à partir de `d_min`. (None, raison) s'il
         n'y en a aucune, ou si l'objet est trop large pour glisser les mains
         ouvertes autour de lui, de face comme ici (ouverture_presaisie).
-        `tangage` : torse penché d'autant (rad, taille), voir plan_penche.
-        `cap` : cap du robot à la prise (rad, repère monde), face à une face de
+        `tangage` : torse penché d'autant (rad, taille), voir plan_penche ;
+        `abaissement` : bassin abaissé d'autant (m, jambes pliées), voir
+        plan_posture. `cap` : cap du robot à la prise (rad, repère monde), face à une face de
         l'objet (son lacet, à un quart de tour près). Si la normale du bord est
         connue (Objet.lacet_bord), le bord est vu en biais : la garde des
         avant-bras le suit, et les pieds, qui avancent alors plus vers lui
@@ -3657,7 +3631,7 @@ class ManipulationService(IService):
         pose, raison = self.ouverture_presaisie(objet, de_face=True)
         if pose is None:
             return None, raison
-        z = float(objet.centre[2]) - float(self.mesures.bassin_z())
+        z = float(objet.centre[2]) - float(self.mesures.bassin_z()) + float(abaissement)
         port = self._port_penche(tangage)
         # Penchées, les épaules avancent d'environ 0,45 m × sin(tangage) : la
         # recherche va d'autant plus loin (droit : jusqu'à 0,45 m, comme avant).
@@ -3715,7 +3689,8 @@ class ManipulationService(IService):
 
     def evaluer_prise(self, objet: Objet, pose: Tuple[float, float, float],
                       masse_kg: Optional[float] = None, chemins: bool = False,
-                      contexte: Optional[dict] = None) -> list:
+                      contexte: Optional[dict] = None,
+                      posture: Tuple[float, float] = (0.0, 0.0)) -> list:
         """Les contrôles de la prise de `objet` (ses faces serrées : celles
         de part et d'autre du cap), le bassin à `pose` (x, y, cap ; repère de
         la pièce), SANS bouger : ceux de la prise, aux mêmes seuils, dans
@@ -3747,7 +3722,8 @@ class ManipulationService(IService):
             c, s_ = math.cos(cap), math.sin(cap)
             dx, dy = float(objet.centre[0]) - x, float(objet.centre[1]) - y
             centre = np.array([c * dx + s_ * dy, -s_ * dx + c * dy,
-                               float(objet.centre[2]) - float(self.mesures.bassin_z())])
+                               float(objet.centre[2]) - float(self.mesures.bassin_z())
+                               + abaissement])
             lacet = (objet.lacet - cap + math.pi / 4) % (math.pi / 2) - math.pi / 4
             cap_bord = (math.remainder(objet.lacet_bord - cap, 2.0 * math.pi)
                         if objet.lacet_bord is not None else 0.0)
@@ -3755,6 +3731,10 @@ class ManipulationService(IService):
                     - objet.profondeur / 2.0 - objet.bord_m)
             return centre, lacet, cap_bord, bord
         x, y, cap = (float(v) for v in pose)
+        # Posture de la marche (tangage du torse, abaissement du bassin) : le
+        # bassin plus bas, l'objet d'autant plus haut dans son repère ; la
+        # taille penchée dans les angles des bras (plan_posture).
+        tangage, abaissement = (float(v) for v in posture)
         centre, lacet, cap_bord, bord = repere(x, y, cap)
         marges = []
 
@@ -3779,6 +3759,8 @@ class ManipulationService(IService):
                     f"{100 * libre:.0f} cm, il en faut {100 * besoin:.0f} (jeu compris)"):
             return marges
         fixes = self._articulations_fixes()
+        if tangage:
+            fixes[self.TAILLE] = tangage
         graine = {**fixes, **self._q}
         if "bras" not in ctx:
             # Épaule et longueur de chaque bras (épaule-coude-poignet-contact) :
@@ -3829,6 +3811,14 @@ class ManipulationService(IService):
                     "fermeture par tout le bras (le roulis n'y suffit pas)" if haut_touche is None
                     else f"en fermant, les mains toucheront {100 * haut_touche:.1f} cm au-dessus "
                          f"du centre de gravité (au moins {100 * besoin_touche:.0f})"):
+            return marges
+        # Les mains à la hauteur de l'objet avant de serrer (règle de Kenzo) :
+        # plus haut que lui, les jambes doivent descendre (plan_posture). Après
+        # la portée : un carton trop bas reste « à portée » pour la campagne.
+        haut_mains = self._abaissement_hauteur(objet) - abaissement
+        if not note("mains", -haut_mains / 0.01 if haut_mains > 0.0 else math.inf,
+                    f"mains {100 * haut_mains:.0f} cm au-dessus de l'objet : plier les jambes"
+                    if haut_mains > 0.0 else "mains à la hauteur de l'objet"):
             return marges
         qq = {**fixes, **q_c}
         plateau = float(centre_cg[2]) - objet.hauteur / 2.0
@@ -3887,26 +3877,34 @@ class ManipulationService(IService):
                     f"{self._nom_articulation(pire[1])} à {pire[2]:.2f} N·m pour {pire[3]:.2f} "
                     f"(serrage de {vise:.1f} N par main pour {masse:.1f} kg estimés)"):
             return marges
-        e = modele_g1().equilibre({**jambes(), **qq}, [(masse, tuple(centre_cg))])
+        e = modele_g1().equilibre({**jambes(-abaissement), **qq}, [(masse, tuple(centre_cg))])
         mmin = BornesPosture().marge_min_m
         if not note("équilibre", (e.marge - mmin) / mmin, f"{e.texte()} (au moins "
                                                           f"{100 * mmin:.0f} cm)"):
             return marges
+        if (tangage or abaissement) and self._posture is not None:
+            # La posture elle-même, par la marche, en essai : bornes, gardien
+            # de proximité, équilibre (le même modèle, l'objet aux mains).
+            rp = self._posture(tangage, abaissement, angles=qq,
+                               charges=[(masse, tuple(centre_cg))], essai=True)
+            if not note("posture", math.inf if rp.ok else -1.0, rp.reason or ""):
+                return marges
         if chemins:
             ok, texte = self._essai_chemins(objet, centre, lacet, cap_bord, bord, q_c, fixes,
-                                                 dz=dz)
+                                                 dz=dz, tangage=tangage)
             note("chemins", math.inf if ok else -1.0, texte)
         return marges
 
     def _essai_chemins(self, objet: Objet, centre: np.ndarray, lacet: float, cap_bord: float,
                        bord: float, q_c: Dict[str, float], fixes: Dict[str, float],
-                       dz: float = 0.0) -> Tuple[bool, str]:
+                       dz: float = 0.0, tangage: float = 0.0) -> Tuple[bool, str]:
         """Levage, retour vers le buste (comme _ramener) et dépose à la même
         place (comme la descente : chemin vérifié, ouverture des mains en
         bas), en corps rigide, SANS bouger : l'état de la prise posé le temps
         de l'essai, puis rendu tel qu'il était. `centre` : le milieu des
         points de contact, `dz` au-dessus du centre de l'objet (prise en
-        pendule)."""
+        pendule). Torse penché de `tangage` : il doit pouvoir se redresser,
+        l'objet tenu là où le retour l'a amené (on ne marche que droit)."""
         r, p = self.r, self.p
         if not all(len(self._commandables(c_)) >= 6 for c_ in self._ROULIS):
             return True, "chemins non vérifiables : sans tangage du poignet, pas de corps rigide"
@@ -3946,6 +3944,9 @@ class ManipulationService(IService):
                 if qk is not None:
                     porte, q_porte = ck, qk
                     break
+            if tangage > 1e-3 and not self._redressable(porte, q_porte, t0=tangage):
+                return False, ("chemin des bras : le torse ne se redresserait pas, l'objet tenu là "
+                               "où le retour l'amène (on ne marche que droit)")
             devant = np.array([float(centre[0]), float(porte[1]), float(porte[2])])
             bas = np.array([float(centre[0]), float(porte[1]),
                             plateau + p.jeu_depose + objet.hauteur / 2.0 + dz])
@@ -3968,14 +3969,24 @@ class ManipulationService(IService):
             for nom, v in avant.items():
                 setattr(self, nom, v)
 
+    # Postures que le planificateur essaie quand aucune prise ne passe debout
+    # (postures=True) : les jambes d'abord (descendre), puis le torse (aller
+    # plus loin), dans les bornes de la marche (BornesPosture).
+    POSTURES_PLAN = tuple((0.0, a) for a in (0.025, 0.05, 0.075, 0.10)) + tuple(
+        (t, 0.0) for t in (0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35))
+
     def planifier_prise(self, coins, bord, masse_kg: Optional[float] = None,
-                        pas_m: Optional[float] = None):
+                        pas_m: Optional[float] = None, postures: bool = False):
         """Planificateur de prise (voir planificateur.py) : d'après les 8
         coins de la boîte (repère de la pièce) et le bord de la table qui la
         porte (planificateur.BordTable), toutes les candidates (2 paires de
         faces × positions de base), évaluées SANS bouger (evaluer_prise) ; les
         chemins, pour les meilleures seulement, jusqu'à ce que l'une passe.
-        Rend un PlanPrise : la retenue, ou la raison de la meilleure."""
+        Rend un PlanPrise : la retenue, ou la raison de la meilleure.
+        `postures` : si aucune ne passe debout, les candidates refusées pour
+        la portée ou la garde des avant-bras sont réévaluées penché ou jambes
+        pliées (POSTURES_PLAN, la première posture qui donne une prise, avec
+        ses chemins, redressement compris) ; Candidate.posture la porte."""
         from axis_os.services.manipulation import planificateur as P
         boite = P.boite_depuis_coins(coins)
         candidates, contexte = [], {}
@@ -3995,7 +4006,10 @@ class ManipulationService(IService):
             cand.complete = True
             if cand.ok:
                 break
-        plan = P.PlanPrise(boite, bord, candidates, P.choisir(candidates))
+        choisie = P.choisir(candidates)
+        if choisie is None and postures and self._posture is not None:
+            choisie = self._planifier_posture(P, boite, bord, candidates, masse_kg)
+        plan = P.PlanPrise(boite, bord, candidates, choisie)
         if plan.choisie is None:
             m = plan.meilleure
             refus = None if m is None else m.refus
@@ -4006,9 +4020,38 @@ class ManipulationService(IService):
         self._noter(plan.resume())
         return plan
 
+    def _planifier_posture(self, P, boite, bord, candidates, masse_kg):
+        """Aucune prise debout : les candidates refusées pour la portée, la
+        garde des avant-bras ou des mains plus haut que l'objet, réévaluées
+        dans chaque posture de POSTURES_PLAN (jambes, puis torse) ; la
+        première qui passe, chemins compris."""
+        a_revoir = [c for c in candidates if c.refus is not None
+                    and c.refus.nom in ("portée", "garde", "mains")]
+        for posture in self.POSTURES_PLAN:
+            contexte, essais = {}, []
+            for c in a_revoir:
+                cand = P.Candidate(c.paire, c.x, c.y, c.cap, c.d, c.s, posture=posture)
+                cand.marges = self.evaluer_prise(self._objet_paire(boite, c.paire, bord),
+                                                 (c.x, c.y, c.cap), masse_kg, contexte=contexte,
+                                                 posture=posture)
+                essais.append(cand)
+            for cand in sorted((c for c in essais if c.ok), key=lambda c: -c.score)[
+                    :P.COMPLETES_MAX]:
+                contexte.pop("graine", None)
+                cand.marges = self.evaluer_prise(self._objet_paire(boite, cand.paire, bord),
+                                                 (cand.x, cand.y, cand.cap), masse_kg,
+                                                 chemins=True, contexte=contexte,
+                                                 posture=posture)
+                cand.complete = True
+                if cand.ok:
+                    candidates.append(cand)
+                    return cand
+        return None
+
     # Ce qu'un refus du planificateur veut dire, devant sa raison (les mots
     # du rapport de campagne et des codes de refus du SDK).
-    _QUOI_REFUS = {"pieds": "hors de portée sans que les pieds passent le bord : ",
+    _QUOI_REFUS = {"mains": "trop bas pour les mains : ",
+                   "pieds": "hors de portée sans que les pieds passent le bord : ",
                    "largeur": "trop large pour les mains : ",
                    "portée": "hors de portée des bras : ",
                    "couples": "trop lourd pour ces mains, là où il est : ",
@@ -4077,6 +4120,78 @@ class ManipulationService(IService):
                 break               # plus penché, le centre de masse n'avance que plus
         return None, 0.0, raison + (f" ; penché : {dernier}" if dernier else "")
 
+    # Bassins abaissés essayés (m, jambes pliées), du plus petit au plus grand.
+    # Les jambes d'abord pour descendre, le torse pour aller plus loin ; le
+    # service de marche borne (BornesPosture : torse 0,35 rad, bassin 10 cm,
+    # validés au banc lancer_posture.sh) et vérifie l'équilibre (2 cm).
+    ABAISSEMENTS_ESSAYES = (0.025, 0.05, 0.075, 0.10)
+
+    def plan_posture(self, objet: Objet, cap: Optional[float] = None, d_min: float = 0.25
+                     ) -> Tuple[Optional[float], float, float, str]:
+        """(distance de prise, tangage du torse, abaissement du bassin, raison) :
+        droit si les bras l'atteignent ainsi ; sinon les jambes d'abord (le
+        plus petit abaissement qui suffit : objet trop bas), puis le torse
+        penché (plan_penche : objet trop loin). Chaque posture passe par la
+        consigne de posture de la marche, en essai (bornes, gardien de
+        proximité, équilibre, objet de masse_max_kg aux mains). La prise se
+        calcule ensuite sur la taille et le bassin MESURÉS (_planifier : les
+        articulations fixes et la hauteur du bassin lues), jamais sur la
+        consigne : la marche ne suit la taille qu'en partie (65 à 95 %, banc
+        de posture du 20 novembre 2026)."""
+        d, raison = self.distance_de_prise(objet, d_min=d_min, cap=cap)
+        # Mains plus haut que l'objet (règle de Kenzo : à sa hauteur, à 2 cm
+        # près, avant de serrer) : les jambes doivent descendre d'au moins ça.
+        besoin = self._abaissement_hauteur(objet)
+        if (d is not None and besoin <= 0.0) or self._posture is None:
+            return (d if besoin <= 0.0 else None), 0.0, 0.0, (
+                raison if besoin <= 0.0 else f"mains {100 * besoin:.0f} cm au-dessus de l'objet, "
+                                             f"et pas de consigne de posture")
+        if d is None and besoin <= 0.0:
+            besoin = 0.0
+        z = float(objet.centre[2]) - float(self.mesures.bassin_z())
+        dz = hauteur_prise(self.r, objet.hauteur) or 0.0
+        dernier = ""
+        for a in self.ABAISSEMENTS_ESSAYES:
+            if a < besoin:
+                continue
+            d_a, _ = self.distance_de_prise(objet, d_min=d_min, cap=cap, abaissement=a)
+            if d_a is None:
+                continue
+            port = self._port_penche(0.0)
+            q, _ = resoudre(self.mesures.modele, *cibles_mains(
+                np.array([d_a - self._bout, 0.0, z + a + dz]), objet.largeur, 0.0,
+                self.r.demi_main_m), port)
+            r = self._posture(0.0, a, angles={**port, **(q or {})},
+                              charges=[(self.r.masse_max_kg, (d_a, 0.0, z + a))], essai=True)
+            if r.ok:
+                return d_a, 0.0, a, f"jambes pliées, bassin abaissé de {100 * a:.1f} cm : {r.reason}"
+            dernier = r.reason
+        if besoin > 0.0:
+            return None, 0.0, 0.0, (f"objet trop bas : mains {100 * besoin:.0f} cm au-dessus de "
+                                    f"lui, jambes pliées jusqu'à "
+                                    f"{100 * self.ABAISSEMENTS_ESSAYES[-1]:.0f} cm"
+                                    + (f" : {dernier}" if dernier else " sans prise possible"))
+        d_t, t, raison_t = self.plan_penche(objet, cap=cap)
+        if d_t is not None and d_t >= d_min:
+            return d_t, t, 0.0, raison_t
+        return None, 0.0, 0.0, raison_t + (f" ; jambes pliées : {dernier}" if dernier else "")
+
+    def _abaissement_hauteur(self, objet: Objet) -> float:
+        """De combien (m) les mains de la pré-saisie (sa hauteur fixe, d'où
+        prendre part : _ouverture) dépasseront le dessus de l'objet (2 cm de
+        tolérance de la règle de Kenzo, 1 cm de marge), le robot droit : ce
+        que les jambes doivent descendre ; 0 si elles sont à sa hauteur.
+        Calculé sur le modèle des bras, pas sur les mains du moment (au
+        démarrage, les bras ne sont pas encore en posture)."""
+        if self.mesures is None:
+            return 0.0
+        p = self.p
+        g, d = self._modele.mains({**self._articulations_fixes(),
+                                   **posture_bras(p.roulis_presaisie, p.tangage_port, p.coude)})
+        mains_z = float(self.mesures.bassin_z()) + (float(g[2]) + float(d[2])) / 2.0
+        dessus = float(objet.centre[2]) + objet.hauteur / 2.0 + 0.02
+        return max(0.0, mains_z - dessus + 0.01)
+
     def changer_tangage(self, tangage: float) -> ServiceResult:
         """Objet tenu (TENU, prise mesurée en corps rigide) : pencher ou
         redresser le torse sans que l'objet bouge, ni en position ni en
@@ -4116,14 +4231,123 @@ class ManipulationService(IService):
         self._noter(f"tangage du torse, objet tenu : {r.reason}")
         return ServiceResult(ok=True, reason=r.reason)
 
-    def _redressable(self, centre: np.ndarray, graine: Dict[str, float]) -> bool:
+    def _masse_tenue(self) -> Tuple[float, Tuple[float, float, float]]:
+        """(masse en kg, centre dans le repère du bassin) de l'objet tenu, pour
+        l'équilibre : son poids pesé (sinon masse_max_kg), sous les mains de
+        la hauteur de prise."""
+        masse = (self.poids_tare if self.poids_tare is not None else
+                 self.poids_carton if self.poids_carton is not None else
+                 9.81 * self.r.masse_max_kg) / 9.81
+        c = np.array(self._centre_porte, dtype=float) - np.array([0.0, 0.0, self._dz_prise or 0.0])
+        return max(0.0, masse), tuple(float(v) for v in c)
+
+    def changer_abaissement(self, abaissement: float) -> ServiceResult:
+        """Objet tenu (TENU, prise mesurée en corps rigide) : plier ou déplier
+        les jambes. Le bassin descend ou remonte, l'objet avec lui (il ne
+        bouge pas dans le repère du bassin : les bras ne bougent pas). Par la
+        consigne de posture de la marche (bornes, gardien, équilibre avec
+        l'objet pesé) ; le torse reste où il est (taille MESURÉE)."""
+        if self.etat is not Etat.TENU or self._rigide is None:
+            return ServiceResult(ok=False, reason=f"abaissement refusé : objet tenu en corps "
+                                                  f"rigide exigé (état {self.etat.name})")
+        if self._posture is None:
+            return ServiceResult(ok=False, reason="abaissement refusé : pas de consigne de posture")
+        t = max(0.0, float(self._articulations_fixes().get(self.TAILLE, 0.0)))
+        masse, centre = self._masse_tenue()
+        r = self._posture(t, float(abaissement), angles={**self._fixes, **self._q},
+                          charges=[(masse, centre)])
+        if not r.ok:
+            return ServiceResult(ok=False, reason=f"abaissement refusé — {r.reason}")
+        self._noter(f"jambes, objet tenu : {r.reason}")
+        return ServiceResult(ok=True, reason=r.reason)
+
+    def _depose_possible(self, surface: float, abaissement: float = 0.0
+                         ) -> Tuple[Optional[Dict[str, float]], str]:
+        """Le chemin de la dépose sur un plateau à `surface` (m, monde), sans
+        bouger : devant, puis vers le bas, en corps rigide, et l'ouverture des
+        mains en bas, à quelques mm près ; le bassin abaissé de `abaissement`
+        (m) de plus qu'il ne l'est (jambes pliées : le plateau d'autant plus
+        haut dans le repère du bassin). (angles en bas, "") ou (None, pourquoi)."""
+        p = self.p
+        x_prise = float(self._plan["centre"][0]) if self._plan else 0.29
+        de = np.array(self._centre_porte, dtype=float)
+        devant = np.array([x_prise, de[1], de[2]])
+        bas = np.array([x_prise, de[1], surface + p.jeu_depose - float(self.mesures.bassin_z())
+                        + float(abaissement)
+                        + (self.objet.hauteur / 2.0 if self.objet else 0.1) + (self._dz_prise or 0.0)])
+        # Au pas de la descente (1 à 2,5 mm par tour) : un coude qui tourne
+        # vite sans à-coup (0,16 rad au dernier cm vers 70 cm) n'y passe pas
+        # pour un saut ; un changement de solution, si (0,32 rad en 2 mm).
+        q = self._chemin_rigide(de, devant, None, pas_m=0.002)
+        q = None if q is None else self._chemin_rigide(devant, bas, None, graine=q, pas_m=0.002)
+        # En bas, les mains doivent aussi pouvoir s'ouvrir sur place, comme
+        # _ouvrir le fera (serrage relâché, jeu_ouverture_m de chaque côté) :
+        # sinon il rouvre les roulis et elles remontent en s'ouvrant (2,4 cm
+        # vers un plateau de 71 cm, carton lâché ~3 cm au-dessus de lui).
+        # _ouvrir part des mains mesurées, à quelques mm de leur consigne
+        # (bras qui cèdent sous la charge : 3 à 5 mm en avant et de côté,
+        # campagne de cartons variés), et l'ouverture d'un carton tourné en
+        # dépend (12° : possible 4 mm plus près du robot, pas à la consigne) :
+        # refus seulement si aucune de ces places ne le permet.
+        ecart = (self._ecart_mains or 0.33) + 2 * self.r.jeu_ouverture_m
+        relache = {c: 0.0 for c in self._ROULIS}
+        ouvre = q is not None and any(
+            self._q_rigide(bas + np.array([dx, dy, 0.0]), ecart, graine=q,
+                           delta=relache) is not None
+            for dx in (0.0, -0.005, 0.005) for dy in (0.0, -0.005, 0.005))
+        if ouvre:
+            return q, ""
+        return None, ("hors d'atteinte des bras" if q is None else
+                      "les mains ne pourraient pas s'y ouvrir sur place, elles remonteraient en "
+                      "s'ouvrant")
+
+    def abaissement_pour_deposer(self, hauteur_surface: float) -> Tuple[Optional[float], str]:
+        """Objet tenu en corps rigide : de combien plier les jambes (m) pour le
+        poser sur un plateau à `hauteur_surface` (m, monde), SANS bouger :
+        0 si debout suffit ; sinon le plus petit abaissement
+        (ABAISSEMENTS_ESSAYES) d'où le chemin de la dépose et l'ouverture
+        passent (_depose_possible), que la marche accepte l'objet aux mains
+        (consigne de posture, en essai : bornes, gardien, équilibre), et qui
+        ne pose pas l'objet sur le plateau en descendant. (None, raison)
+        sinon."""
+        if self.etat is not Etat.TENU:
+            return None, f"rien en main (état {self.etat.name})"
+        if self._rigide is None or self.mesures is None:
+            return 0.0, ""                   # sans corps rigide : debout, comme avant
+        q, pourquoi = self._depose_possible(hauteur_surface)
+        if q is not None:
+            return 0.0, ""
+        if self._posture is None:
+            return None, f"dépose impossible : plateau à {hauteur_surface:.2f} m, {pourquoi}"
+        masse, centre = self._masse_tenue()
+        t = max(0.0, float(self._articulations_fixes().get(self.TAILLE, 0.0)))
+        dernier = pourquoi
+        for a in self.ABAISSEMENTS_ESSAYES:
+            if self._fond_objet() - a < hauteur_surface + self.p.jeu_depose:
+                dernier = "jambes pliées, l'objet toucherait le plateau"
+                break
+            q, pourquoi = self._depose_possible(hauteur_surface, a)
+            if q is None:
+                dernier = pourquoi
+                continue
+            r = self._posture(t, a, angles={**self._fixes, **self._q}, charges=[(masse, centre)],
+                              essai=True)
+            if r.ok:
+                return a, f"jambes pliées, bassin abaissé de {100 * a:.1f} cm : {r.reason}"
+            dernier = r.reason
+        return None, (f"dépose impossible : plateau à {hauteur_surface:.2f} m, {dernier} (debout "
+                      f"et jambes pliées jusqu'à {100 * self.ABAISSEMENTS_ESSAYES[-1]:.0f} cm)")
+
+    def _redressable(self, centre: np.ndarray, graine: Dict[str, float],
+                     t0: Optional[float] = None) -> bool:
         """Torse penché (taille MESURÉE) : l'objet tenu en `centre` (repère du
         bassin) le reste-t-il pendant que le torse se redresse
         (changer_tangage(0) : les bras le tiennent à chaque centième de
         radian) ? Toujours vrai droit. Prise en pendule, mains plus haut : le
         retour vers le buste allait au plus près que les bras permettent, d'où
         le torse ne se redressait plus (torse à 2°)."""
-        t0 = float(self._articulations_fixes().get(self.TAILLE, 0.0))
+        if t0 is None:
+            t0 = float(self._articulations_fixes().get(self.TAILLE, 0.0))
         if t0 <= 1e-3:
             return True
         fixes, q = dict(self._fixes), dict(graine)
@@ -4137,6 +4361,12 @@ class ManipulationService(IService):
         finally:
             self._fixes = fixes
         return True
+
+    @property
+    def tangage_taille(self) -> Optional[float]:
+        """Tangage de la taille MESURÉ (rad), None s'il n'est pas lu."""
+        v = self._articulations_fixes().get(self.TAILLE)
+        return None if v is None else float(v)
 
     @property
     def tangage_en_cours(self) -> bool:

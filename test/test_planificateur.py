@@ -117,10 +117,11 @@ ch = plan.choisie
 check(f"Retenu : {ch and ch.explication()}", ch is not None and ch.ok and ch.complete
       and abs(ch.cap) < 1e-9 and all(m.relative >= 0 for m in ch.marges), plan.raison)
 check("Contrôles faits : pieds, largeur, prise en pendule (mains au-dessus du centre), portée, "
-      "où les mains toucheront après la fermeture, garde, ligne, couples, équilibre, chemins",
+      "où les mains toucheront après la fermeture, mains à la hauteur du carton, garde, ligne, "
+      "couples, équilibre, chemins",
       ch is not None and [m.nom for m in ch.marges] == ["pieds", "largeur", "pendule", "portée",
-                                                         "fermeture", "garde", "ligne", "couples",
-                                                         "équilibre", "chemins"],
+                                                         "fermeture", "mains", "garde", "ligne",
+                                                         "couples", "équilibre", "chemins"],
       str(ch and [m.nom for m in ch.marges]))
 check(f"Pieds derrière le bord, erreur d'approche comprise : "
       f"{ch and round(100 * pied_au_dela(ch), 1)} cm",

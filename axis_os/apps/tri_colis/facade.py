@@ -362,6 +362,16 @@ class FacadeServices:
         self.raison_echec = ""
         self.stats = {"accostages": 0, "accostages_ratees": 0,
                       "detections_filtrees": 0, "reculs": 0}
+        # Posture de la marche (LocomotionService.posture : bornes, gardien,
+        # équilibre) : celle qu'il faut pour prendre le colis visé (tangage
+        # du torse, abaissement du bassin ; ManipulationService.plan_posture),
+        # appliquée une fois la base arrêtée à la pose de prise ; le départ
+        # mis de côté le temps de se redresser (on ne marche que droit) ; le
+        # plateau bas où poser une fois les jambes pliées.
+        self._posture_prise: Optional[Tuple[float, float]] = None
+        self._redressement: Optional[tuple] = None
+        self._depose_basse: Optional[float] = None
+        self._t_posture = 0.0
 
     # ---- temps et sécurité ----------------------------------------------
     def maintenant(self) -> float:
@@ -537,6 +547,16 @@ class FacadeServices:
         `accostage` s'il est donné. Commence par un recul si le robot est
         collé à une table."""
         self.raison_echec, self._attente_s, self._attente_signalee = "", 0.0, False
+        if getattr(self.loco, "penche", False):
+            # Penché ou jambes pliées : on ne marche que droit (la marche le
+            # refuse) ; le départ attend le redressement.
+            self._redressement = (dest, accostage, poste_depose)
+            self._phase = "REDRESSEMENT"
+            ok, raison = self._redresser()
+            if not ok:
+                self._phase, self._redressement = "ECHEC", None
+                self.raison_echec = raison
+            return ok, raison
         self._dest, self._apres_nav = dest, accostage
         self._poste_depose = poste_depose
         self._colis_vise, self.veut_percevoir = None, False
@@ -661,10 +681,17 @@ class FacadeServices:
         manipulation si les avant-bras doivent passer au-dessus du
         plateau). (None, raison) si aucune ne convient."""
         d = self.cfg.distance_prise
+        self._posture_prise = None
         if getattr(self.manip, "mesures", None) is not None:
-            d, raison = self.manip.distance_de_prise(
-                Objet(tuple(centre), self.cfg.largeur, self.cfg.profondeur, self.cfg.hauteur),
-                d_min=self.cfg.distance_prise)
+            objet = Objet(tuple(centre), self.cfg.largeur, self.cfg.profondeur, self.cfg.hauteur)
+            d, raison = self.manip.distance_de_prise(objet, d_min=self.cfg.distance_prise)
+            if d is None and hasattr(self.manip, "plan_posture"):
+                # Debout, hors de portée : les jambes d'abord (trop bas), puis le
+                # torse (trop loin) ; bornes, gardien et équilibre de la marche.
+                d, t, a, raison = self.manip.plan_posture(objet, d_min=self.cfg.distance_prise)
+                if d is not None:
+                    self._posture_prise = (t, a)
+                    self._journal(f"prise : {raison}")
             if d is None:
                 return None, f"prise impossible : {raison}"
         c, s = math.cos(self.cap_prise), math.sin(self.cap_prise)
@@ -690,8 +717,10 @@ class FacadeServices:
         if ph == "ECHEC":
             return "ECHEC"
         if ph in ("ACCOSTAGE", "PRESAISIE", "INSERTION", "FRANCHISSEMENT",
-                  "STABILISATION", "VISEE", "OBSERVATION"):
+                  "STABILISATION", "VISEE", "OBSERVATION", "POSTURE_PRISE"):
             return self._etat_accostage
+        if ph == "REDRESSEMENT":
+            return "EN_ROUTE"
         if ph == "RECUL":
             return "ECHEC" if self._etat_accostage == "ECHEC" else "EN_ROUTE"
         if ph == "POSTE":
@@ -818,10 +847,73 @@ class FacadeServices:
                     return
                 self._phase, self._t_accostage = "PRESAISIE", self._horloge()
                 self.stats["presaisies"] = self.stats.get("presaisies", 0) + 1
+            elif self._phase_avant_stab == "INSERTION" and self._posture_prise is not None:
+                # Arrêté à la pose de prise : se pencher ou plier les jambes,
+                # base immobile (la marche refuse de marcher penchée).
+                t, a = self._posture_prise
+                r = self.loco.posture(t, a)
+                if not r.ok:
+                    self._journal(f"prise : {r.reason}")
+                    self.raison_echec = r.reason or ""
+                    self._etat_accostage = "ECHEC"
+                    self.stats["accostages_ratees"] += 1
+                    return
+                self._phase, self._t_posture = "POSTURE_PRISE", self._horloge()
             else:
                 self._phase = self._phase_avant_stab
                 self._accoste = True
                 self._etat_accostage = "ARRIVE"
+            return
+        if self._phase == "POSTURE_PRISE" and self._etat_accostage == "EN_ROUTE":
+            self.loco.halt()
+            if getattr(self.loco, "posture_atteinte", True):
+                # La prise se calcule sur la taille MESURÉE (_planifier), pas
+                # sur la consigne : la marche ne la suit qu'en partie.
+                t, a = self._posture_prise
+                mesure = getattr(self.manip, "tangage_taille", None)
+                self._journal(f"prise : posture atteinte (torse demandé {math.degrees(t):.1f}°"
+                              + (f", mesuré {math.degrees(mesure):.1f}°" if mesure is not None else "")
+                              + f" ; bassin abaissé de {100 * a:.1f} cm)")
+                self._phase, self._accoste, self._etat_accostage = "INSERTION", True, "ARRIVE"
+            elif self._horloge() - self._t_posture > self.cfg.delai_accostage_s:
+                self.raison_echec = "posture de prise non atteinte"
+                self._etat_accostage = "ECHEC"
+                self.stats["accostages_ratees"] += 1
+            return
+        if self._phase == "REDRESSEMENT":
+            self.loco.halt()
+            if getattr(self.manip, "tangage_en_cours", False):
+                return
+            if not getattr(self.loco, "penche", False):
+                # Droit : le départ mis de côté, sans perdre ce que l'appelant
+                # a préparé après lui (accoster : colis visé, insertion).
+                self._phase = None
+                dest, accostage, poste_depose = self._redressement
+                garde = (self._insertion, self._colis_vise, self._observation_requise,
+                         self._realignements)
+                self._redressement = None
+                ok, raison = self._partir(dest, accostage, poste_depose)
+                (self._insertion, self._colis_vise, self._observation_requise,
+                 self._realignements) = garde
+                if not ok:
+                    self._journal(f"départ après le redressement : {raison}")
+                return
+            if getattr(self.loco, "posture_atteinte", True):
+                ok, raison = self._redresser()
+                if not ok:
+                    self.raison_echec = raison
+                    self._journal(f"redressement : {raison}")
+                    self._phase = "ECHEC"
+            return
+        if self._depose_basse is not None:
+            # Jambes pliées pour un plateau bas : on pose une fois le bassin
+            # descendu.
+            self.loco.halt()
+            if getattr(self.loco, "posture_atteinte", True):
+                h, self._depose_basse = self._depose_basse, None
+                r = self.manip.poser(hauteur_surface=h)
+                if not r.ok:
+                    self._journal(f"dépose : {r.reason}")
             return
         if self._phase == "PRESAISIE" and self._etat_accostage == "EN_ROUTE":
             if self.manip.etat is Etat.PRET:           # bras grands ouverts
@@ -1270,10 +1362,40 @@ class FacadeServices:
                                              lacet=colis.lacet), masse_kg, enregistrer=enregistrer)
         return r.ok, r.reason or ""
 
+    def _redresser(self) -> Tuple[bool, str]:
+        """Revenir droit : le torse d'abord, l'objet tenu en place
+        (changer_tangage), puis les jambes (changer_abaissement : l'objet
+        suit le bassin) ; bras vides, la consigne droite de la marche."""
+        tenu = self.manip.etat is Etat.TENU and getattr(self.manip, "_rigide", None) is not None
+        t = getattr(self.manip, "tangage_taille", None) or 0.0
+        if tenu and t > 1e-3:
+            r = self.manip.changer_tangage(0.0)
+        elif tenu:
+            r = self.manip.changer_abaissement(0.0)
+        else:
+            r = self.loco.posture(0.0, 0.0)
+        return r.ok, r.reason or ""
+
     def poser(self) -> Tuple[bool, str]:
         """Lance la dépose : sur le plateau si le robot est accosté à un
-        poste qui en a un, sinon en relâchant le carton à hauteur de port."""
+        poste qui en a un, sinon en relâchant le carton à hauteur de port.
+        Plateau trop bas pour les bras debout : les jambes pliées d'abord
+        (ManipulationService.abaissement_pour_deposer, consigne de posture
+        de la marche), la dépose une fois le bassin descendu."""
         pd = self.postes_depose.get(self._poste_depose) if self._accoste else None
+        if pd is not None and self.manip.etat is Etat.TENU \
+                and getattr(self.manip, "mesures", None) is not None \
+                and hasattr(self.manip, "abaissement_pour_deposer"):
+            a, raison = self.manip.abaissement_pour_deposer(pd.hauteur)
+            if a is None:
+                return False, raison
+            if a > 0.0:
+                r = self.manip.changer_abaissement(a)
+                if not r.ok:
+                    return False, r.reason or ""
+                self._journal(f"dépose : plateau à {pd.hauteur:.2f} m, {raison}")
+                self._depose_basse = pd.hauteur
+                return True, ""
         r = self.manip.poser(hauteur_surface=pd.hauteur if pd else None)
         return r.ok, r.reason or ""
 
