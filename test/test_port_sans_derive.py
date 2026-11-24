@@ -227,13 +227,27 @@ m.mesures.positions = lire
 section("5. Hystérésis du resserrage")
 # Couples bruités comme au banc : le desserrage aux plafonds (inchangé) fait
 # varier le serrage et la marge de quelques centièmes ; le seuil d'arrêt est
-# mis juste sous la marge des 2 premières secondes du port. Le VRAI couple sous le plafond, à
+# mis au ras de la marge du port (son 10e centile). Le VRAI couple sous le plafond, à
 # l'erreur d'estimation du banc près (son biais au plus), comme la campagne de
 # cartons (violations).
 tol = 0.1 + inspect.signature(BruitCouples).parameters["biais_max_nm"].default
 # « Avant » : la règle d'avant l'hystérésis, sur la marge de 0,3 s d'alors
 # (fenetre_marge_s=0,3) ; les autres, la règle d'aujourd'hui (foulée de 1 s,
 # reprise jugée sur 0,3 s base arrêtée).
+# Le niveau de la marge du port, bruit compris : un port à blanc de 20 s
+# (sans arrêt), sur la foulée. Seuil d'arrêt à son 10e centile : la marge passe
+# dessous une lecture sur dix, au ras du seuil quel que soit son niveau (prise
+# en pendule, elle monte pendant les premières secondes du port, puis
+# plafonne ; prise à un instant, le bruit ne la ramenait plus sous le seuil).
+b = Banc(bruit=True)
+m = b.m
+m.r = replace(m.r, securite_serrage=0.5, securite_reprise=0.5)
+b.pas(60)
+vues = []
+for _ in range(1000):
+    b.pas()
+    vues.append(m.marge_frottement or 2.0)
+SEUIL = sorted(vues)[len(vues) // 10]
 essais = {}
 for nom, reprise, delai, plafonds, fenetre in (
         ("reprise au seuil (avant)", 0.0, 0.0, True, 0.3),
@@ -248,15 +262,7 @@ for nom, reprise, delai, plafonds, fenetre in (
     m = b.m
     m.r = replace(m.r, fenetre_marge_s=fenetre)
     b.pas(60)
-    # Au ras de la marge du port : sa moyenne sur ses 2 premières secondes,
-    # 0,01 en dessous (prise en pendule : au début du port, elle est à son
-    # plus bas, puis remonte ; prise là, le bruit ne la ramenait jamais sous
-    # le seuil).
-    vues = []
-    for _ in range(100):
-        b.pas()
-        vues.append(m.marge_frottement or 2.0)
-    seuil = sum(vues) / len(vues) - 0.01
+    seuil = SEUIL
     m.r = replace(m.r, securite_serrage=seuil, securite_reprise=seuil + reprise,
                   delai_reprise_s=delai, reprise_aux_plafonds=plafonds)
     n0 = m.resserrages_ce_port
