@@ -234,7 +234,11 @@ class ChaineBras:
         cible = np.asarray(cible, dtype=float)
         erreur = math.inf
         for _ in range(iterations):
-            e = cible - self.main(q)
+            # La main en q, calculée une fois : _reperes ne garde que le
+            # dernier calcul, main(q2) l'efface (7 passes par tour sinon, 4 ici,
+            # les mêmes nombres).
+            m = self.main(q)
+            e = cible - m
             erreur = float(np.linalg.norm(e))
             if erreur < tol:
                 break
@@ -242,7 +246,7 @@ class ChaineBras:
             for i, n in enumerate(noms):
                 q2 = dict(q)
                 q2[n] += 1e-5
-                jac[:, i] = (self.main(q2) - self.main(q)) / 1e-5
+                jac[:, i] = (self.main(q2) - m) / 1e-5
             dq = jac.T @ np.linalg.solve(jac @ jac.T + 1e-4 * np.eye(3), e)
             for i, n in enumerate(noms):
                 lo, hi = self.bornes[n]
