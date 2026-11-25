@@ -130,7 +130,8 @@ def place_sur_table(c: CartonTire) -> Tuple[float, float, float]:
     return c.retrait_m + etendue_x / 2.0, c.decalage_m, PLATEAU_M + c.hauteur / 2.0
 
 
-# Gestes où l'OS croit tenir le carton.
+# Gestes où l'OS croit tenir le carton (et la repose, tant qu'il redescend à
+# sa place : REPOSE, « redescendre »).
 _TENU = ("RAMENER", "TENU", "MONTEE", "DESCENTE", "POSE")
 
 
@@ -200,7 +201,7 @@ def plan_en_bref(plan) -> Dict:
 
 def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: bool = True,
                    pencher: bool = True, planificateur: bool = True,
-                   postures: bool = False) -> Dict:
+                   postures: bool = False, reposer: bool = False) -> Dict:
     """Le banc T1 sur le robot simulé léger, pour un carton (voir l'en-tête
     du module) ; rend ce qui s'est passé (dictionnaire, voir rapport()).
     `bruit` : couples estimés avec le bruit, le biais et le gain du banc
@@ -216,7 +217,9 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
     le planificateur) : si aucune prise ne passe debout, il essaie les jambes
     pliées puis le torse penché (planifier_prise(postures=True)) ; le robot
     prend la posture avant d'ouvrir les bras, se redresse le carton tenu
-    pour le porter, la reprend pour le poser à sa place."""
+    pour le porter, la reprend pour le poser à sa place. `reposer` : le
+    carton porté est reposé à sa place (poser() sans plateau) au lieu d'être
+    déposé sur la table : la repose, essayée sur chaque carton tenu."""
     from axis_os.hal.drivers.isaac_sim.bruit_couples import BruitCouples
     from axis_os.services.manipulation.service import Etat, Objet
     from axis_os.testing.robot_simule import SimulatedObject, SimulatedRobot
@@ -339,7 +342,8 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
                 if bornes:
                     res["depasse_borne_m"] = max(res["depasse_borne_m"],
                                                  *(m._delta[k] - bornes[k] for k in bornes))
-                if e in _TENU and r.held is None and not (m.a_reposer or m.penche):
+                tenu_os = e in _TENU or (e == "REPOSE" and m._sous == "redescendre")
+                if tenu_os and r.held is None and not (m.a_reposer or m.penche):
                     perdu[0] = perdu[0] or t[0]
                     res["perte_ignoree_s"] = max(res["perte_ignoree_s"], t[0] - perdu[0])
                 elif r.held is not None:
@@ -419,11 +423,11 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
                 if a_:
                     if m.changer_abaissement(a_).ok:
                         jusqua(lambda: r.locomotion.posture_atteinte, 10.0)
-            pose = m.poser(PLATEAU_M)
+            pose = m.poser(None if reposer else PLATEAU_M)
             if pose.ok:
                 jusqua(lambda: m.etat is Etat.LIBRE or (m.etat is Etat.TENU and m.raison != ""),
                        20.0)
-            if m.etat is Etat.TENU:           # dépose refusée ou impossible : là où il a été pris
+            if m.etat is Etat.TENU and not reposer:   # dépose refusée ou impossible : à sa place
                 signale = signale or m.raison or str(pose.reason)
                 m.poser()
                 jusqua(lambda: m.etat is Etat.LIBRE, 20.0)
@@ -467,13 +471,14 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
 
 def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[int] = None,
              port_s: float = 2.0, bruit: bool = True, pencher: bool = True,
-             planificateur: bool = True, postures: bool = False) -> List[Dict]:
+             planificateur: bool = True, postures: bool = False,
+             reposer: bool = False) -> List[Dict]:
     """essayer_carton() sur chaque carton, en parallèle (un robot simulé par
     carton, rien de partagé) ; résultats dans l'ordre des cartons."""
     n = processus or max(1, min(len(cartons), os.cpu_count() or 1))
     if n == 1:
-        return [essayer_carton(c, reglages, port_s, bruit, pencher, planificateur, postures)
-                for c in cartons]
+        return [essayer_carton(c, reglages, port_s, bruit, pencher, planificateur, postures,
+                               reposer) for c in cartons]
     import multiprocessing
     # fork (Linux) : les processus partent du nôtre, modules déjà chargés ;
     # ailleurs, spawn (le script appelant doit alors garder `if __name__ == "__main__"`).
@@ -483,7 +488,7 @@ def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[i
         return list(ex.map(essayer_carton, cartons, [reglages] * len(cartons),
                            [port_s] * len(cartons), [bruit] * len(cartons),
                            [pencher] * len(cartons), [planificateur] * len(cartons),
-                           [postures] * len(cartons)))
+                           [postures] * len(cartons), [reposer] * len(cartons)))
 
 
 # ---- rapport ---------------------------------------------------------------
@@ -499,7 +504,8 @@ CATEGORIES = (
     ("trop lourd ou trop glissant pour le serrage de prise", ("n'a pas suivi",
                                                                "n'a pas quitté la table")),
     ("trop lourd", ("trop lourd",)),
-    ("dépose refusée ou impossible", ("dépose impossible", "plateau trop haut")),
+    ("dépose refusée ou impossible", ("dépose impossible", "repose impossible",
+                                      "plateau trop haut")),
     # Avant « hors de portée » : « avant-bras trop près du plateau à toute
     # distance » est un carton trop bas, pas trop loin.
     ("avant-bras trop près du plateau", ("avant-bras",)),

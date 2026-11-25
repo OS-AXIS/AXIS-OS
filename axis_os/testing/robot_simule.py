@@ -1168,15 +1168,24 @@ class SimulatedRobot:
     # glisse si le frottement ne le porte plus, et le perdre, c'est une chute.
     _ETATS_PORT = (Etat.LEVAGE, Etat.RAMENER, Etat.TENU, Etat.MONTEE, Etat.DESCENTE, Etat.POSE)
 
+    def _porte(self) -> bool:
+        """L'OS porte-t-il l'objet ? Les gestes du port, et la repose tant que
+        l'objet redescend à sa place (REPOSE, « redescendre ») : il y glisse,
+        s'y met entre les mains, et le perdre en chemin est une chute."""
+        m = self.manipulation
+        return m.etat in self._ETATS_PORT or (
+            m.etat is Etat.REPOSE and getattr(m, "_sous", "") == "redescendre")
+
     # Lâché par l'OS plus haut que cela au-dessus de sa place : il tombe (m).
     HAUTEUR_CHUTE_M = 0.03
 
-    def _plateau_sous(self, o: SimulatedObject) -> Optional[float]:
+    def _plateau_sous(self, o: SimulatedObject, enfonce_m: float = 0.03) -> Optional[float]:
         """Hauteur du plus haut plateau sous le centre de l'objet, pas plus
-        haut que son fond à 3 cm près (ce qu'il traverse, il est dessus), ou None."""
+        haut que son fond à `enfonce_m` près (ce qu'il traverse, il est
+        dessus), ou None."""
         x, y, z = o.position
         sous = [p[4] for p in self.plateaux if p[0] <= x <= p[1] and p[2] <= y <= p[3]
-                and p[4] <= z - o.size[2] / 2.0 + 0.03 + 1e-9]
+                and p[4] <= z - o.size[2] / 2.0 + enfonce_m + 1e-9]
         return max(sous) if sous else None
 
     def _au_dessus_de_sa_place(self) -> Optional[float]:
@@ -1215,7 +1224,11 @@ class SimulatedRobot:
         plateau porte son poids ; les mains, plus bas que leur prise (bras qui
         cèdent sous la charge au début du levage, consigne un peu sous le
         plateau à la dépose), ne glissent pas pour autant le long de ses faces."""
-        dessous = self._plateau_sous(self.held)
+        # Déjà posé dessus, il ne le traverse pas tant que son centre est
+        # au-dessus : les mains, plus bas, glissent le long de ses faces (repose
+        # d'un carton qui avait glissé entre elles : 3,8 cm, campagne n° 51).
+        dessous = self._plateau_sous(self.held, self.held.size[2] / 2.0 if self._sur_plateau
+                                     else 0.03)
         x, y, z = self.held.position
         bas = None if dessous is None else dessous + self.held.size[2] / 2.0
         self._sur_plateau = bas is not None and z <= bas + 1e-9
@@ -1249,8 +1262,7 @@ class SimulatedRobot:
         milieu = (g + d) / 2.0
         eq = getattr(self, "_equilibre", {})
         if self._centre_tenu is not None and len(eq) == 2 \
-                and self.manipulation.etat in self._ETATS_PORT \
-                and self.manipulation.etat is not Etat.LEVAGE:
+                and self._porte() and self.manipulation.etat is not Etat.LEVAGE:
             # Porté entre deux mains souples, il se met là où leurs forces
             # normales s'équilibrent : de δ le long de la normale de la face
             # gauche, (λD - λG) / (1/CG + 1/CD), C la souplesse de chaque main
@@ -1279,8 +1291,7 @@ class SimulatedRobot:
                 and self.manipulation.etat not in (Etat.SERRAGE, Etat.FERMETURE):
             # Mains du G1 qui ne serrent plus : il est lâché, là où il est ;
             # au-dessus de sa place, il y retombe, à plat.
-            self._lacher("mains qui ne serrent plus" if self.manipulation.etat in self._ETATS_PORT
-                         else None)
+            self._lacher("mains qui ne serrent plus" if self._porte() else None)
             return
         self.held.position = (float(milieu[0]), float(milieu[1]), float(milieu[2]))
         # Glissement (mains du G1) : le frottement des mains ne porte plus le
@@ -1288,8 +1299,7 @@ class SimulatedRobot:
         # g (1 - portance / poids), s'arrête dès qu'elles le portent de nouveau,
         # et leur échappe une fois descendu de la moitié de sa hauteur (les
         # mains sont à mi-hauteur) : il tombe.
-        if self.CONTACT_MAIN_M and self.manipulation.etat in self._ETATS_PORT \
-                and not self._sur_plateau:
+        if self.CONTACT_MAIN_M and self._porte() and not self._sur_plateau:
             poids, portance = self._masse(self.held) * 9.81, self._portance(self.held)
             if portance < poids:
                 self._glissement_v += 9.81 * (1.0 - portance / poids) * self._dt

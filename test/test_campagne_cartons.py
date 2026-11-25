@@ -19,6 +19,10 @@ vrai, à l'erreur d'estimation du banc près ; limite matérielle, toujours),
 prise confirmée les mains vides, carton perdu sans que l'OS le voie. Le
 moindre de ces cas fait échouer le test.
 
+La repose aussi : chaque carton du balayage tenu est encore reposé à sa
+place (poser() sans plateau) au lieu d'être déposé ; un carton qui tombe en
+repose est un cas interdit, comme au port.
+
 Le rapport montre les vraies limites du robot : réussite par plage, toutes
 les raisons de refus, un balayage d'un paramètre à la fois autour du
 carton T1, et l'audit des réglages choisis sur ce seul carton.
@@ -88,6 +92,7 @@ if __name__ == "__main__":
     balayes = K.balayage()
     tous = K.campagne(cartons + [c for _, _, c in balayes])
     res, bal = tous[:N], tous[N:]
+    reposes = K.campagne([c for _, _, c in balayes], reposer=True)
 
     section(f"2. {N} cartons tirés : ce qui ne doit jamais arriver")
     jamais(res, "de carton tombé", ("tombé",))
@@ -124,6 +129,22 @@ if __name__ == "__main__":
     check(f"Autour de lui, chaque paramètre a des valeurs prises et déposées ({len(passes)} sur "
           f"{len(K.BALAYAGE)})", passes == {cle for cle, _ in K.BALAYAGE},
           str(sorted({cle for cle, _ in K.BALAYAGE} - passes)))
+
+    section("4 bis. La repose, sur chaque carton du balayage tenu")
+    tenus = [x for x in reposes if x["tenu"]]
+    jamais(reposes, "de carton tombé en repose, ni laissé ailleurs que sur sa table, ni écrasé, "
+           "ni de plafond de couple dépassé", ("tombé", "ni sur la table", "écrasé",
+                                               "plafond de couple", "limite matérielle",
+                                               "mains vides", "sans que l'OS le voie", "issue",
+                                               "sans raison"))
+    check(f"{len(tenus)} cartons tenus (autant qu'à la dépose : "
+          f"{sum(x['tenu'] for x in bal)}), chacun reposé à sa place sur la table, bras libres, "
+          f"jamais par l'interpolation des angles (POSE)",
+          len(tenus) == sum(x["tenu"] for x in bal) and len(tenus) >= len(K.BALAYAGE)
+          and all(x["issue"] != "bloquée" and x["sur_table"] and "POSE" not in x["etats"]
+                  for x in tenus),
+          str([(x["carton"]["numero"], x["issue"], x["raison"][:60]) for x in tenus
+               if x["issue"] == "bloquée" or not x["sur_table"]][:3]))
 
     section("5. Rapport : les vraies limites du robot")
     print(K.rapport(res, GRAINE))
