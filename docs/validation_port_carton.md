@@ -1730,9 +1730,11 @@ de plus de 60 % du poids pesé (1 - `part_poids_min`), pendant 0,15 s.
 - Le niveau : la moyenne des lectures de la première foulée du port (1 s),
   dans sa posture, sans celles des 0,3 s les plus récentes tant qu'elle se
   remplit (`recentes_niveau_s`), puis figée ; repris à chaque nouvelle
-  posture (fin d'un geste du port). Pas lu avant 0,4 s de port. Une chute en
-  cours garde le niveau d'avant elle (lâché dans la première seconde, les
-  lectures d'après l'abaisseraient : jamais vu, prise normale).
+  posture (fin d'un geste du port). Pas encore lu (ses 0,4 premières
+  secondes) : le plus bas de la pesée et du poids lu sur 0,1 s en entrant au
+  port (ci-dessous). Une chute en cours garde le niveau d'avant elle (lâché
+  dans la première seconde, les lectures d'après l'abaisseraient : jamais
+  vu, prise normale).
 - Encore jeune, le niveau est incertain : la chute doit le dépasser aussi de
   deux fois son incertitude (`sigmas_niveau_port` ; l'écart-type de ses
   lectures, jamais moins que celui d'une lecture à la pesée, sur la racine
@@ -1749,7 +1751,9 @@ normale : mains visées au centre de gravité) :
 |---|---|---|
 | lâcher total, les deux mains ouvertes de 2,9 cm | lâché à 0,18 s ; poids 0,18 s après ; vu d'abord à 0,04 s (rotation) | lâché à 0,14 s ; poids 0,12 s après ; vu à 0,04 s (rotation) |
 | lâcher total, le bras droit à 30 % de sa raideur | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,02 s | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,02 s |
-| lâcher total 0,1 s après le début du port, niveau pas encore lu | poids 0,28 s après ; vu à 0,04 s (rotation) | poids 0,32 s après ; vu à 0,04 s (rotation) |
+| lâcher total dès l'entrée au port (niveau pas encore lu), les deux mains ouvertes | lâché à 0,16 s ; poids 0,18 s après ; vu d'abord à 0,16 s (mains écartées) | lâché à 0,14 s ; poids 0,12 s après, le premier à le voir |
+| lâcher total dès l'entrée au port, le bras droit à 30 % | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,04 s (rotation) | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,04 s |
+| lâcher total 0,2 s après l'entrée au port, les deux mains ouvertes | lâché à 0,16 s ; poids 0,18 s après ; vu à 0,04 s | lâché à 0,14 s ; poids 0,12 s après ; vu à 0,04 s |
 | lâcher partiel : glisse sans tomber | 4,7 cm (mains ouvertes de 0,089 rad) ; poids lu −11 % ; marge sur 0,3 s à 0,26 s, 0,24 s après le début du glissement | 5,3 cm (0,083 rad) ; poids lu −13 % ; marge à 0,26 s, 0,24 s après |
 
 - Le lâcher partiel n'était pas vu par le poids avant non plus : pendant le
@@ -1763,6 +1767,36 @@ normale : mains visées au centre de gravité) :
   (0,7) tombe 0,2 à 0,3 s après que les mains s'ouvrent, vu au même moment
   (mains écartées, marge), puis par le poids 0,22 s après. Rien de ce que
   l'OS lit ne le voit glisser avant.
+
+Les 0,4 premières secondes du port, avant que le niveau soit lu : d'abord
+sans référence, un lâcher y était vu tard par le poids, ou jamais (la panne
+de 0 à 0,6 s après l'entrée au port) : dès l'entrée, jamais, ses lectures
+dans le niveau ; prise normale, seule la marge l'avait vu (base arrêtée,
+« on resserre »), le port jamais interrompu, le carton par terre ; les deux
+mains ouvertes à 0,04 s, jamais non plus ; de 0,04 à 0,22 s, 0,20 à 0,46 s
+après que le carton a quitté les mains. L'ancienne règle, elle, avait
+toujours sa référence.
+
+Maintenant, tant que le niveau n'est pas lu : le plus bas de la pesée et du
+poids lu sur 0,1 s au premier pas du port, à l'incertitude d'une moyenne de
+5 lectures (celle d'une lecture à la pesée sur racine de 5). La panne à tout
+instant de ces 0,4 s : vu par le poids 0,12 à 0,24 s après que le carton a
+quitté les mains, comme plus tard.
+
+- Ni la pesée seule (une autre posture) : sur les 21 ports de la campagne
+  (n° 29, 64, 69, 70, 85 et 105 ; 15 tirages du bruit des couples du n° 105,
+  le 16e refusé à la pesée), la plus grande baisse du
+  poids lu dans les 0,4 premières secondes, carton tenu, atteint 1,09 fois le
+  seuil sous la pesée : le n° 105 (pesé 1,95 N) lu −0,2 N en entrant au port
+  en pendule, une fausse alerte. Ni le poids lu en entrant seul (la fin du
+  geste, en mouvement) : 0,80 fois le seuil au pire. Le plus bas des deux :
+  0,59 fois au pire (n° 105, tirage 0).
+- Sur le bruit réel des essais GPU (tableau plus bas), les mêmes fausses
+  alertes qu'avant : la référence du début du port n'en ajoute aucune.
+- Limite : un carton que les couples lisent déjà presque nul en entrant au
+  port (n° 105 : −0,2 N pour 2,2) n'a pas de chute de poids à montrer ; un
+  lâcher n'y est vu que par les autres contrôles (rotation, mains écartées,
+  marge).
 
 Fausses alertes sur le bruit réel des essais GPU (17 h 16, 22 h 04, 18 h 21 :
 27 s de port ; 25 ports de 10 s au plus, commencés chaque seconde ; un carton

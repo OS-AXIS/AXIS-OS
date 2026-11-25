@@ -55,8 +55,10 @@ docs/validation_port_carton.md, §15.
   carton par carton (§15.9).
 - Poids qui chute au port, jugé depuis le niveau lu au début du port, dans
   la même posture : plus bas de 60 % du poids pesé (plus deux fois
-  l'incertitude du niveau encore jeune), pendant 0,15 s ; le carton n° 105
-  n'est plus reposé à tort (§15.11).
+  l'incertitude du niveau encore jeune), pendant 0,15 s ; avant qu'il soit
+  lu (0,4 s), depuis le plus bas de la pesée et du poids lu en entrant au
+  port : un lâcher dès l'entrée au port est vu en 0,3 s au plus, comme
+  plus tard. Le carton n° 105 n'est plus reposé à tort (§15.11).
 - CI : délai du job tests porté à 60 min (la suite prend de 33 à 43 min
   selon la machine).
 
