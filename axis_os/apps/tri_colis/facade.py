@@ -280,7 +280,9 @@ class FacadeServices:
                         du poste de prise dans la carte).
         journal       : reçoit les messages destinés à l'opérateur.
         postes_depose : postes équipés d'un plateau. Aux autres, le carton
-                        est relâché à hauteur de port.
+                        est relâché à hauteur de port (prise mesurée : à la
+                        hauteur de sa prise, par le geste vérifié de la
+                        repose ; à sa place si le robot y est encore).
         points_lidar  : rend les points du LiDAR (N × 3, repère monde), ou
                         None : ceux du carton s'ajoutent à ceux de la caméra.
         """
@@ -1384,7 +1386,9 @@ class FacadeServices:
 
     def poser(self) -> Tuple[bool, str]:
         """Lance la dépose : sur le plateau si le robot est accosté à un
-        poste qui en a un, sinon en relâchant le carton à hauteur de port.
+        poste qui en a un, sinon en relâchant le carton à hauteur de port
+        (prise mesurée : à la hauteur de sa prise, par le geste vérifié de la
+        repose ; à sa place si le robot y est encore).
         Plateau trop bas pour les bras debout : les jambes pliées d'abord
         (ManipulationService.abaissement_pour_deposer, consigne de posture
         de la marche), la dépose une fois le bassin descendu."""

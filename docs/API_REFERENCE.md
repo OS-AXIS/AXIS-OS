@@ -1,6 +1,6 @@
 # AXIS-OS App SDK — API reference
 
-SDK API version **1.4.0** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
+SDK API version **1.4.1** (`ctx.api_version`, `axis_os/store/sdk/version.py`).
 Guides: [CREATE_AN_APP.md](CREATE_AN_APP.md) (English) ·
 [CREER_UNE_APP.md](CREER_UNE_APP.md) (français). Examples:
 [examples/](../examples/).
@@ -270,12 +270,20 @@ Permissions: those of `pick`. Puts the held object down. `target`: `None`
 (lower to carrying height and open), a surface height in metres, an
 `ObjectSpec` of the surface (its top), or a `Detection` in the world frame.
 With a surface, the object goes down until it touches it before the arms
-open: it is never dropped from above. A put-down that has started goes to
+open: it is never dropped from above. With `None`, on a robot with measured
+grasp (G1), since 1.4.1: the object goes down to the height it was taken
+at, by the same path as a put-down, the grip kept, then the hands open in
+place, all checked before moving; back to its place on its table if the
+robot is still where it took it (2 cm, 3°); elsewhere no table is known
+under the hands, as before. `REFUSED` with `OUT_OF_REACH`, the object still
+held, if the path or the opening do not pass. Before 1.4.1, the arm angles
+were interpolated, which could loosen the grip on the way. A put-down that has started goes to
 its end even if a stop is requested (lowering then opening is the safe way
 to finish).
 
-`PLACED`; `REFUSED` (`OUT_OF_REACH`: surface too high; `FAILED`: nothing
-held; `CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED`); `FAILED` with
+`PLACED`; `REFUSED` (`OUT_OF_REACH`: surface too high, or, with `None`, the
+path or the opening do not pass; `FAILED`: nothing held;
+`CAPABILITY_MISSING`, `ESTOP_ACTIVE`, `CANCELLED`); `FAILED` with
 `OUT_OF_REACH` (arms at their lowest without touching: the object stays
 held); `TIMEOUT`.
 

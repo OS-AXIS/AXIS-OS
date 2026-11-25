@@ -654,6 +654,12 @@ class ManipulationService(IService):
         self._bruit_pesee: Optional[float] = None    # écart-type d'une lecture à la pesée (N)
         self._t_sans_poids: Optional[float] = None
         self._raison_repose = ""
+        # Repose : les étapes du chemin qui restent (milieu des mains, repère du
+        # bassin) ; finale : poser() sans plateau, les bras rendus ensuite.
+        self._etapes_repose: list = []
+        self._place_repose: Optional[np.ndarray] = None
+        self._q_ouvre_repose: Optional[Dict[str, float]] = None   # ouverture vérifiée, en bas
+        self._repose_finale = False
         self._c_actuel: Optional[np.ndarray] = None
         self._port_interrompu = False
         # Serrage d'après le poids (ReglagesPrise.securite_serrage) : visé par
@@ -2641,7 +2647,11 @@ class ManipulationService(IService):
                     f"moitié-moitié entre les mains ; gains des couples estimés : "
                     + " ; ".join(details) + f" ; {enregistree} ; masse reposée")
         self._calibration_finie = True
-        self._redescendre()
+        pourquoi = self._redescendre()
+        if pourquoi:
+            self._calibration_finie = False
+            self._interrompre_port(f"masse de référence : repose impossible : {pourquoi}")
+            self._tenir_ici()
 
     def _pas_levage_mesure(self) -> None:
         r, p = self.r, self.p
@@ -2834,47 +2844,177 @@ class ManipulationService(IService):
                 f"{100 * r.penetration_poids_max_m:.0f} cm atteints")
 
     def _reposer(self, raison: str) -> None:
-        """L'objet tenu tourne : on ne marche pas avec, on le repose
-        doucement là où il a été pris (le milieu des mains au serrage, en
-        ligne droite, serrage gardé), on desserre, puis la prise échoue avec
-        la raison (l'app recommence, ou signale)."""
+        """L'objet tenu tourne, ou pèse mal : on ne marche pas avec, on le
+        repose là où il a été pris (_redescendre), on desserre, puis la prise
+        échoue avec la raison (l'app recommence, ou signale). Si le chemin ne
+        passe pas (vérifié avant de bouger), il reste tenu là où il est, à
+        reposer (penche, a_reposer) : jamais lâché en l'air."""
         self.stats["reposes_rotation"] = self.stats.get("reposes_rotation", 0) + 1
+        pourquoi = self._redescendre()
+        if pourquoi:
+            self._interrompre_port(f"{raison} ; repose impossible : {pourquoi}")
+            self._tenir_ici()
+            return
         self._raison_repose = raison
         self._noter(f"objet reposé : {raison}")
-        self._redescendre()
 
-    def _redescendre(self) -> None:
-        """Le geste de _reposer : l'objet redescend là où il a été pris, en
-        ligne droite, serrage gardé ; puis les mains se desserrent (REPOSE)."""
+    def _tenir_ici(self) -> None:
+        """L'objet reste tenu là où les mains sont arrivées (TENU) : la
+        référence du port qui suit, comme à la fin du retour."""
+        if self._c_actuel is not None:
+            self._centre_porte = np.array(self._c_actuel, dtype=float)
+        self._q_tenu = dict(self._q)
+        self._centre_transport = np.array(self._centre_porte, dtype=float)
+        self.etat = Etat.TENU
+
+    def _redescendre(self, bouge: Optional[np.ndarray] = None) -> str:
+        """Le geste de la repose : l'objet redescend là où il a été pris (le
+        milieu des mains au serrage, décalé de `bouge`, ce que le bassin a
+        bougé depuis la prise, dans son repère), serrage gardé jusqu'à sa
+        place sur la table, puis les mains se desserrent (REPOSE). En corps
+        rigide (depuis le retour, ou à partir d'ici au levage), comme la
+        dépose : devant, à la hauteur où il est, puis vers le bas, et
+        l'ouverture sur place (serrage relâché, mains écartées de
+        jeu_ouverture_m de plus que le contact, sans remonter), TOUT vérifié
+        avant de bouger. Jamais une interpolation des angles avec l'objet
+        tenu, qui relâchait le serrage en chemin (campagne de cartons variés,
+        n° 1004 : tombé ; n° 51, au levage : mains 2,8 cm plus bas d'un pas) ;
+        ni l'ouverture du placement, qui remonte les mains de 2 cm encore au
+        contact (la fermeture en pendule descend en fermant). Bras sans
+        corps rigide (moins de six articulations commandées) : droit vers le
+        bas, comme avant. Rend "" (geste lancé), ou pourquoi il ne passe
+        pas : rien n'a bougé."""
+        if self.etat is Etat.TENU:
+            depart = np.array(self._centre_porte, dtype=float)
+        else:
+            depart = np.array(self._c_actuel if self._c_actuel is not None else self._c_serre,
+                              dtype=float)
+        place = np.array(self._c_serre, dtype=float)
+        if bouge is not None:
+            place = place + np.asarray(bouge, dtype=float)
+        etapes, ouvre = [place], None
+        if self._rigide is None:
+            self._figer_rigide(depart)                 # au levage : à partir d'ici
+        if self._rigide is not None:
+            devant = np.array([place[0], place[1], depart[2]])
+            q = self._chemin_rigide(depart, devant, None, pas_m=0.002)
+            q = None if q is None else self._chemin_rigide(devant, place, None, graine=q,
+                                                           pas_m=0.002)
+            if q is None:
+                return ("hors d'atteinte des bras : le chemin jusqu'à sa place (devant, puis vers "
+                        "le bas, en corps rigide) ne passe pas")
+            # Comme la dépose (_depose_possible) : à sa place, ou à 5 mm près
+            # (les mains mesurées, à quelques mm de leur consigne).
+            ecart = (self._ecart_mains or 0.33) + 2 * self.r.jeu_ouverture_m
+            relache = {c: 0.0 for c in self._ROULIS}
+            for dx in (0.0, -0.005, 0.005):
+                for dy in (0.0, -0.005, 0.005):
+                    ouvre = ouvre or self._q_rigide(place + np.array([dx, dy, 0.0]), ecart,
+                                                    graine=q, delta=relache)
+            if ouvre is None:
+                return ("les mains ne pourraient pas s'y ouvrir sur place, elles remonteraient en "
+                        "s'ouvrant")
+            etapes = [devant, place]
         self._fin_port("reposé")
-        depart = self._c_actuel if self._c_actuel is not None else self._c_serre
-        self._c_de, self._c_vers = np.array(depart, dtype=float), np.array(self._c_serre)
+        self._place_repose, self._etapes_repose, self._q_ouvre_repose = place, etapes[1:], ouvre
+        self._c_de, self._c_vers, self._c_actuel = depart, etapes[0], None
         self._q_de, self._q_vers, self._sous = dict(self._q), dict(self._q_serre), "redescendre"
         self._aller(Etat.REPOSE)
+        return ""
+
+    def _reposer_a_sa_place(self) -> ServiceResult:
+        """poser() sans plateau, en prise mesurée : l'objet redescend à la
+        hauteur de sa prise, devant le robot, et les mains s'ouvrent, par le
+        geste de la repose (_redescendre : chemin et ouverture vérifiés avant
+        de bouger, serrage gardé jusqu'en bas ; sinon refusé, l'objet tenu).
+        Le robot encore là où il l'a pris, à l'erreur d'approche près
+        (erreur_approche_m, erreur_cap_rad ; la position de l'objet perçue à
+        la prise, revue d'ici) : à sa place, sur sa table, ce qu'il a bougé
+        rattrapé (hauteur du bassin comprise). Plus loin : aucune table n'est
+        connue sous les mains ; posé quand même à la hauteur de la prise,
+        comme avant (ctx.place(None) du SDK), et le journal le dit."""
+        r, o = self.r, self.objet
+        if o is None or self._plan is None or self._c_serre is None:
+            return ServiceResult(ok=False, reason="repose impossible : rien de pris à reposer")
+        ou, bouge = "là où il a été pris, sur sa table", None
+        try:
+            cap = self._lacet_relatif(o) - float(self._plan["lacet"])
+            bouge = (np.asarray(self._vers_bassin(o.centre), dtype=float)
+                     - np.asarray(self._plan["centre"], dtype=float))
+        except Exception as exc:          # noqa: BLE001 — pose ou hauteur illisible
+            ou = (f"devant le robot, à la hauteur de sa prise : position du robot illisible "
+                  f"({type(exc).__name__})")
+        if bouge is not None:
+            cap = (cap + math.pi / 4) % (math.pi / 2) - math.pi / 4
+            loin = float(np.linalg.norm(bouge[:2]))
+            if loin > r.erreur_approche_m or abs(cap) > r.erreur_cap_rad:
+                ou = (f"devant le robot, à la hauteur de sa prise : le robot n'est plus là où il "
+                      f"l'a pris ({100 * loin:.1f} cm et {math.degrees(cap):+.1f}° de là ; au plus "
+                      f"{100 * r.erreur_approche_m:g} cm et {math.degrees(r.erreur_cap_rad):g}°), "
+                      f"aucune table connue sous les mains")
+                bouge = None
+        self._repose_finale, self._raison_repose = True, ""
+        pourquoi = self._redescendre(bouge)
+        if pourquoi:
+            self._repose_finale = False
+            self.raison = (f"repose impossible : {pourquoi} (chemin et ouverture vérifiés avant de "
+                           f"bouger) : l'objet reste tenu là où il est")
+            return ServiceResult(ok=False, reason=self.raison)
+        self.stats["reposes"] = self.stats.get("reposes", 0) + 1
+        self._noter(f"repose : l'objet redescend {ou} ; serrage gardé jusqu'en bas, chemin et "
+                    f"ouverture vérifiés")
+        return ServiceResult(ok=True)
 
     def _pas_repose(self) -> None:
         r, p = self.r, self.p
         if self._sous == "redescendre":
-            q, fini = self._interp_c(r.duree_levage_test_s)
+            # Au plus à la vitesse de descente de la dépose (5 cm/s), en
+            # duree_levage_test_s au moins (le chemin du levage, comme avant).
+            duree = max(r.duree_levage_test_s,
+                        float(np.linalg.norm(self._c_vers - self._c_de)) / 0.05)
+            q, fini = self._interp_c(duree)
         else:
             duree = r.duree_levage_test_s if self._sous == "descendre" else p.duree_ouverture_s
             q, fini = self._interp_q(duree)
         self._ecrire_q(q)
         if not fini:
             return
+        if self._sous == "redescendre" and self._etapes_repose:
+            self._c_de = np.array(self._c_vers, dtype=float)
+            self._c_vers = self._etapes_repose.pop(0)
+            self._aller(Etat.REPOSE)
+            return
+        if self._sous == "redescendre" and self._rigide is not None and float(np.linalg.norm(
+                (self._c_actuel if self._c_actuel is not None else self._c_de)
+                - self._place_repose)) > 0.005:
+            # Arrêté en chemin (une pose qui ne se tenait plus) : on n'ouvre
+            # pas en l'air, l'objet reste tenu là, à reposer.
+            self._repose_finale, self._raison_repose = False, ""
+            self._interrompre_port("repose interrompue avant sa place sur la table")
+            self._tenir_ici()
+            return
         if self._sous in ("descendre", "redescendre"):
-            self._q_de, self._q_vers, self._sous = dict(self._q), dict(self._plan["q_ouvert"]), \
-                "desserrer"
+            ouvre = self._q_ouvre_repose if self._sous == "redescendre" else None
+            if ouvre is not None:
+                # Corps rigide : l'ouverture sur place vérifiée (_redescendre),
+                # serrage relâché, comme celle de la dépose (_ouvrir).
+                self._delta = {"left": 0.0, "right": 0.0}
+            self._q_de, self._q_vers = dict(self._q), dict(
+                ouvre if ouvre is not None else self._plan["q_ouvert"])
+            self._sous, self._q_ouvre_repose = "desserrer", None
             self._aller(Etat.REPOSE)
             return
         if self._raison_repose:
             raison, self._raison_repose = self._raison_repose, ""
             self._echouer(f"prise refusée — {raison} : carton reposé sur la table")
             return
-        if self._calibration_finie:
-            # Masse de référence reposée, mains desserrées : comme après un
-            # dépôt, gains normaux, puis retour progressif à la posture de port.
-            self._calibration_finie = False
+        if self._calibration_finie or self._repose_finale:
+            # Masse de référence, ou objet (poser() sans plateau), reposé, mains
+            # desserrées : comme après un dépôt, gains normaux, puis retour
+            # progressif à la posture de port.
+            if self._repose_finale:
+                self.stats["poses"] += 1
+            self._calibration_finie = self._repose_finale = False
             self.objet, self._q_tenu = None, None
             self._lever_exemption()
             self._regler_raideur(False)
@@ -2884,6 +3024,22 @@ class ManipulationService(IService):
             return
         self._corrections, self._delta = 0, {"left": 0.0, "right": 0.0}
         self._vers_placement(self._plan.get("q_place", self._plan["q_ouvert"]), 0.0)
+
+    def _figer_rigide(self, depart: np.ndarray) -> bool:
+        """Les deux mains, comme un seul corps rigide avec l'objet, à partir
+        d'ici (`depart`, son centre, repère du bassin) : leurs poses
+        commandées, la direction du serrage, l'écart (_rigide). La pose
+        entière d'une main (position et orientation) demande six
+        articulations commandées au moins (le tangage du poignet) : sinon
+        _rigide vaut None. Rend s'il tient."""
+        poses = self._poses(self._q)
+        u = poses["right"][0] - poses["left"][0]
+        u = u / max(1e-9, float(np.linalg.norm(u)))
+        tenable = all(len(self._commandables(c)) >= 6 for c in self._ROULIS)
+        self._rigide = (np.array(depart, dtype=float),
+                        {"left": (*poses["left"], u), "right": (*poses["right"], -u)},
+                        dict(self._delta), self._ecart_mains) if tenable else None
+        return tenable
 
     def _ramener(self, plus_pres: float = 0.0) -> None:
         """Vers le buste : la face arrière de l'objet à `distance_torse_m`
@@ -2899,17 +3055,8 @@ class ManipulationService(IService):
         plateau = None
         if self._plan is not None and self.objet is not None:
             plateau = float(self._plan["centre"][2]) - self.objet.hauteur / 2.0
-        # Les deux mains, comme un seul corps rigide avec l'objet : leurs
-        # poses commandées au départ, la direction du serrage, l'écart.
         depart = np.array(depart, dtype=float)
-        poses = self._poses(self._q)
-        u = poses["right"][0] - poses["left"][0]
-        u = u / max(1e-9, float(np.linalg.norm(u)))
-        # La pose entière d'une main (position et orientation) demande six
-        # articulations commandées au moins (le tangage du poignet).
-        tenable = all(len(self._commandables(c)) >= 6 for c in self._ROULIS)
-        self._rigide = (depart, {"left": (*poses["left"], u), "right": (*poses["right"], -u)},
-                        dict(self._delta), self._ecart_mains) if tenable else None
+        tenable = self._figer_rigide(depart)
         for k in range(12 if tenable else 0):
             x = max(r.distance_torse_m - r.appui_torse_m - plus_pres + prof / 2.0
                     + 0.02 * k, 0.05)
@@ -4849,7 +4996,12 @@ class ManipulationService(IService):
 
     @sous_verrou
     def poser(self, hauteur_surface: Optional[float] = None) -> ServiceResult:
-        """Sans plateau : redescend à hauteur de port et ouvre les bras.
+        """Sans plateau : redescend à hauteur de port et ouvre les bras. En
+        prise mesurée, l'objet redescend à la hauteur de sa prise, à sa
+        place sur sa table si le robot y est encore (_reposer_a_sa_place :
+        chemin et ouverture vérifiés avant de bouger, serrage gardé jusqu'en
+        bas) ; refusé, et l'objet reste tenu, si le chemin ou l'ouverture ne
+        passent pas.
 
         Avec `hauteur_surface` (en mètres, repère monde) : descend jusqu'à
         ce que le fond de l'objet effleure le plateau, puis ouvre, pour ne
@@ -4861,10 +5013,11 @@ class ManipulationService(IService):
             return ServiceResult(ok=False, reason="rien en main")
         self.raison, self._franchi = "", None
         if hauteur_surface is None:
-            self._surface, self._tangage_ouverture = None, self.p.tangage_port
             if self.mesures is not None and self._q_serre is not None:
-                # Prise mesurée : l'objet revient là où il a été pris.
-                self._q_de, self._q_vers = dict(self._q), dict(self._q_serre)
+                # Prise mesurée : l'objet reposé là où il a été pris, chemin et
+                # ouverture vérifiés, ou refusé et tenu (_reposer_a_sa_place).
+                return self._reposer_a_sa_place()
+            self._surface, self._tangage_ouverture = None, self.p.tangage_port
             self._aller(Etat.POSE)
             return ServiceResult(ok=True)
         fond = self._fond_objet()

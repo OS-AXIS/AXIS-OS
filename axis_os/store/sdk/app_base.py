@@ -1062,7 +1062,8 @@ class RobotContext:
         n'a pas suivi le levage) reste FAILED : rien ne dit lequel."""
         if "trop lourd" in raison and "trop glissant" not in raison:
             return RefusalCode.TOO_HEAVY
-        if raison.startswith(("prise refusée", "plateau trop haut", "dépose impossible")):
+        if raison.startswith(("prise refusée", "plateau trop haut", "dépose impossible",
+                              "repose impossible")):
             return RefusalCode.OUT_OF_REACH
         if raison.startswith(("exemption refusée", "serrage refusé", "levage interrompu")):
             return RefusalCode.SAFETY_LIMIT
