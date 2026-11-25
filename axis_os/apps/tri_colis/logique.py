@@ -132,6 +132,34 @@ class Bilan:
 _ETATS_TERMINABLES = ("CHERCHER", "ATTENDRE", "PAUSE")
 
 
+class ArretMemeCause:
+    """Arrêt de sécurité qui dure pour la même cause (même point à
+    rayon_ignore_m près, reprises de moins de reprise_breve_s comprises) :
+    le texte de l'alerte, une fois, au bout de alerte_meme_cause_s
+    (ConfigTri). Pour la mission, et pour tout geste qui attend la sécurité
+    hors d'elle (calibration de charge : essai GPU du 25 novembre 2026,
+    16 h 43, 90 s d'arrêt sans alerte)."""
+
+    def __init__(self, cfg: ConfigTri):
+        self.cfg = cfg
+        # Point, début, dernier instant vu, déjà signalée.
+        self._cause: Optional[dict] = None
+
+    def pas(self, t: float, point: Optional[Tuple[float, float]], texte: str) -> Optional[str]:
+        """À chaque pas où la sécurité arrête le robot : l'alerte à donner, ou None."""
+        c = self._cause
+        if c is None or t - c["vu"] > self.cfg.reprise_breve_s \
+                or (point is None) != (c["point"] is None) \
+                or (point is not None and math.dist(point, c["point"]) > self.cfg.rayon_ignore_m):
+            c = self._cause = {"point": point, "debut": t, "signale": False}
+        c["vu"] = t
+        if not c["signale"] and t - c["debut"] >= self.cfg.alerte_meme_cause_s:
+            c["signale"] = True
+            return (f"robot arrêté par la sécurité depuis {t - c['debut']:.0f} s, toujours "
+                    f"pour la même cause : {texte} ; merci d'intervenir")
+        return None
+
+
 class TriColis:
     """La mission de tri. pas() est appelé à chaque cycle de la boucle de
     commande ; chaque état a sa méthode _etat_<nom>().
@@ -171,9 +199,7 @@ class TriColis:
         self._inactif_depuis: Optional[float] = None   # rien à trier depuis
         self._bloque_s = 0.0            # durée de l'arrêt de sécurité en cours
         self._blocage_signale = False
-        # Cause de l'arrêt de sécurité en cours : point, début, dernier
-        # instant vu, déjà signalée.
-        self._cause: Optional[dict] = None
+        self._arret = ArretMemeCause(cfg)  # cause de l'arrêt de sécurité en cours
         self._inactivite_signalee = False
 
     # ------------------------------------------------------------------
@@ -224,17 +250,9 @@ class TriColis:
         lire = getattr(self.robot, "cause_arret", None)
         if lire is None:
             return
-        point, texte = lire()
-        c = self._cause
-        if c is None or t - c["vu"] > self.cfg.reprise_breve_s \
-                or (point is None) != (c["point"] is None) \
-                or (point is not None and math.dist(point, c["point"]) > self.cfg.rayon_ignore_m):
-            c = self._cause = {"point": point, "debut": t, "signale": False}
-        c["vu"] = t
-        if not c["signale"] and t - c["debut"] >= self.cfg.alerte_meme_cause_s:
-            c["signale"] = True
-            self._alerte(f"robot arrêté par la sécurité depuis {t - c['debut']:.0f} s, toujours "
-                         f"pour la même cause : {texte} ; merci d'intervenir")
+        alerte = self._arret.pas(t, *lire())
+        if alerte:
+            self._alerte(alerte)
 
     def _aller(self, etat: str) -> None:
         """Passe dans `etat`, avec un compteur de temps remis à zéro."""

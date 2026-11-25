@@ -160,7 +160,7 @@ def main():
     from axis_os.apps.tri_colis import scene_demo as sd
     from axis_os.apps.tri_colis.couleur import PerceptionCouleur
     from axis_os.apps.tri_colis.facade import ConfigFacade, FacadeServices
-    from axis_os.apps.tri_colis.logique import ConfigTri, TriColis
+    from axis_os.apps.tri_colis.logique import ArretMemeCause, ConfigTri, TriColis
     from axis_os.apps.tri_colis.superviseur import InterpreteurRegles, Superviseur
     from axis_os.hal.core.frames import (
         FRAME_BASE, FRAME_CAMERA, FRAME_CAMERA_OPTICAL, FRAME_WORLD, FrameTree, Transform,
@@ -197,8 +197,8 @@ def main():
     # et la vue du robot lisent la vérité de la simulation, l'OS jamais.
     from banc_perception import EnregistreurImages
     from banc_prise import (
-        CapteursContactIsaac, JugeContacts, demarrer_services, gains_prise, objets_inconnus,
-        preparer_scene, profil_robot_banc,
+        CapteursContactIsaac, JugeContacts, chevauchements, demarrer_services, gains_prise,
+        objets_inconnus, preparer_scene, profil_robot_banc,
     )
     from axis_os.services.profil_robot import ProfilRobotErreur, enregistrer, lire_profil
     from banc_vue_robot import VueRobot, coins
@@ -790,6 +790,20 @@ def main():
             if args.sans_calibration_charge:
                 journaliser("calibration de charge sautée (--sans-calibration-charge)")
                 return True
+            # Jamais posée sur un carton : la physique l'éjecterait au sol, dans
+            # la zone de marche (essai GPU du 25 novembre 2026, 16 h 43 : table
+            # remplie avant elle, masse éjectée en (3.23, 0.41), robot arrêté
+            # 90 s par le gardien, calibration non faite).
+            occupe_ = chevauchements(
+                (X_REFERENCE, sd.Y_CARTON),
+                [(c_["couleur"], tuple(float(v_) for v_ in c_["obj"].get_world_pose()[0][:2]))
+                 for c_ in cartons],
+                (sd.LARGEUR_CARTON, sd.PROFONDEUR_CARTON))
+            if occupe_:
+                journaliser(f"calibration de charge non faite : emplacement x = {X_REFERENCE:.2f} "
+                            f"de la table de prise occupé (carton {', '.join(occupe_)}) ; masse "
+                            f"de référence pas posée")
+                return True
             reference.set_world_pose(position=np.array(
                 [X_REFERENCE, sd.Y_CARTON, sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003]))
             reference.set_linear_velocity(np.zeros(3))
@@ -804,6 +818,18 @@ def main():
                 return True
             etat_charge["pose"] = sim_t[0]
             return False
+        p_ref = np.asarray(reference.get_world_pose()[0], dtype=float)
+        if p_ref[2] < 0.3:
+            journaliser(f"[{sim_t[0]:7.1f}s] OPÉRATEUR : masse de référence tombée au sol en "
+                        f"({p_ref[0]:.2f}, {p_ref[1]:.2f}) : retirée")
+            if etat_charge["fin"] is None:
+                charge_non_faite("masse de référence tombée au sol")
+            retirer_reference()
+            return True
+        if facade.bloque_par_securite():
+            alerte_ = alerte_charge.pas(sim_t[0], *facade.cause_arret())
+            if alerte_:
+                journaliser(f"[{sim_t[0]:7.1f}s] ALERTE (calibration de charge) {alerte_}")
         if etat_charge["accoste"] is None:
             if sim_t[0] - etat_charge["pose"] < 0.5:    # la masse se pose sur la table
                 return False
@@ -950,6 +976,8 @@ def main():
                                              z_min=0.70, z_max=1.20),
                             postes_depose=sd.postes_depose(), points_lidar=points_lidar)
     tri = TriColis(facade, ConfigTri(regles=dict(sd.REGLES_INITIALES), duree_mission_s=DUREE))
+    # Calibration de charge, avant la mission : la même alerte « même cause ».
+    alerte_charge = ArretMemeCause(tri.cfg)
     # D'où viennent les couples que lit l'OS (garde-fou, prise) : effort
     # mesuré par la physique, ou, faute de mieux, efforts imposés (nuls).
     journaliser(f"[{sim_t[0]:7.1f}s] {bridge.source_couples}")
@@ -1256,10 +1284,10 @@ def main():
 
     # ---- boucle à 50 Hz -----------------------------------------------------
     stats = {"chutes_carton": 0, "sur_plateau": [], "prochain_reappro": 0.0}
-    # Table de prise remplie au départ. Pas de pas de physique « à vide » :
-    # sans la politique d'équilibre, le robot tomberait avant de commencer.
-    if not COLLECTE:
-        operateur(0.0, stats)
+    # Table de prise remplie dans la boucle, une fois la calibration de charge
+    # finie (la masse de référence occupe un de ses emplacements). Remplie
+    # ici, avant elle, la masse était posée sur un carton et éjectée au sol
+    # (essai GPU du 25 novembre 2026, 16 h 43).
     viol_humain, d_min_humain = 0, float("inf")
     # Rapprochement cumulé vers chaque personne tant qu'elle est à moins de
     # 0.75 m. Un robot debout oscille de quelques millimètres en gardant

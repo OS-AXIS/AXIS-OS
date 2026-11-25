@@ -132,6 +132,20 @@ def objets_inconnus(objets, obstacles) -> List[str]:
             if not any(o.xmin <= x <= o.xmax and o.ymin <= y <= o.ymax for o in obstacles)]
 
 
+def chevauchements(position, objets, taille) -> List[str]:
+    """Les objets déjà posés (nom, (x, y) repère monde) dont l'empreinte
+    chevaucherait celle d'un objet posé en `position` (même `taille` :
+    largeur, profondeur, alignées sur les axes). Deux corps posés l'un dans
+    l'autre, la physique en éjecte un (essai GPU du 25 novembre 2026,
+    16 h 43 : la masse de référence posée sur l'emplacement d'un carton,
+    éjectée au sol dans la zone de marche, vue par le gardien comme un
+    obstacle inconnu ; robot arrêté 90 s)."""
+    x, y = position
+    largeur, profondeur = taille
+    return [nom for nom, (xo, yo) in objets
+            if abs(xo - x) < largeur and abs(yo - y) < profondeur]
+
+
 def plateau_site(pose_robot, distance_m: float, plateau_m: float, profondeur_m: float = 0.40,
                  largeur_m: float = 0.60, chargement_m: float = 0.25):
     """Le plateau que poser_devant pose devant le robot, déclaré comme les

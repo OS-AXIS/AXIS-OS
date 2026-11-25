@@ -10,6 +10,20 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Essai GPU du 25 novembre 2026, 16 h 43 : masse de référence au sol, marge au port
+
+Détail dans docs/validation_port_carton.md, §16.
+- Banc T1 : la table de prise remplie une fois la calibration de charge
+  finie (avant, la masse de référence était posée sur un carton et éjectée
+  au sol, dans la zone de marche) ; la masse posée sur un emplacement libre
+  seulement (`banc_prise.chevauchements`) ; tombée au sol, retirée et dit.
+- L'alerte « même cause » (20 s) aussi pendant la calibration de charge
+  (`logique.ArretMemeCause`, commune à la mission).
+- Poids de la marge de frottement au port, jamais lu en marchant : avec une
+  calibration de charge valide, la pesée seule ; sans, le plus grand de la
+  pesée et du poids lu base arrêtée à la fin du retour (`fin_retour_s`,
+  0,5 s). Avant : le plus grand de la pesée et du poids lu sur la foulée.
+
 ### Prise en pendule ; rotation entre les paumes ; calibration sur une table du site ; se pencher et plier les jambes
 
 Essais GPU T1 du 20 novembre 2026 (20 h 27 et 21 h 37) ; détail dans

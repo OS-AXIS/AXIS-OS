@@ -1498,7 +1498,9 @@ vu comme un obstacle inexpliqué à 0,49 m.
   lecture (contre 0,99) : trop bruité comme méthode.
 - La marge de frottement se juge désormais sur le plus prudent de la pesée
   et de la médiane du poids lu sur la foulée : une pesée trop légère ne la
-  rend plus optimiste (test_port_sans_derive §6).
+  rend plus optimiste (test_port_sans_derive §6). Remplacé depuis : jamais
+  le poids lu en marchant, le poids lu base arrêtée à la fin du retour, ou
+  la pesée seule avec une calibration de charge (§16.3).
 
 ### 15.4 Calibration de charge sur une table connue du site
 
@@ -1825,3 +1827,105 @@ rejouée, `_surveiller_port`) :
   fausse alerte (pesé 1,6 N pour 2,2 vrais) au lieu de 4 ; un tirage reste
   refusé à la pesée (« ne pèse pas sur les mains », 0,8 N, au moins 1),
   inchangé. Campagne : 4 déposés (n° 64, 69, 70, 105), le reste inchangé.
+
+## 16. Essai T1 du 25 novembre 2026, 16 h 43 : prise en pendule tenue, calibration non faite, port interrompu
+
+Essai GPU de main après la PR #42 (zip `t1_20261125_1643`).
+
+- La prise en pendule tient : « ligne des mains au serrage : +0.2 cm en
+  profondeur, +5.7 cm en hauteur » ; le carton ne tourne plus au port (mains
+  1,6° au plus ; juge : roulis −1,3°, tangage 0,5°, contre −50° à 21 h 37).
+  Contacts : 2 vrais, 0 manqué, 0 faux.
+- Calibration de charge non faite : « accostage en échec (EN_ROUTE) », le
+  robot arrêté 90 s par le gardien devant un obstacle en (3.23, 0.41),
+  « PAS une personne » (§16.1, §16.2).
+- « transport interrompu : marge 1.89 … sur les 11.0 N lus sur la foulée,
+  plus que les 9.3 pesés », le carton tenu (vrai 9,81 N) (§16.3).
+
+### 16.1 La masse de référence au sol
+
+La vue extérieure montre, à 6,9 s, la masse de référence (verte) projetée
+au-dessus du carton rouge de l'emplacement du milieu, puis au sol, à gauche
+du robot, en (3.23, 0.41) : dans la zone de marche, hors des tables du site.
+Elle n'était pas créée deux fois : le banc T1 remplissait la table de prise
+AVANT la boucle (`operateur(0.0, stats)`, « table remplie au départ »), puis
+posait la masse sur l'emplacement du milieu, déjà occupé (le carton rouge
+était là : « cartons : rouge réel (1.685, 0.020, …) » au journal de la
+calibration des couples). Deux corps posés l'un dans l'autre : la physique a
+éjecté la masse. Le gardien l'a vue, à raison, comme un obstacle inconnu à
+0,9 m : on ne le touche pas.
+
+Corrigé dans le banc (rien dans l'OS) :
+- la table de prise n'est remplie qu'une fois la calibration de charge finie
+  (dans la boucle, comme le disait déjà son commentaire) ;
+- la masse n'est posée que sur un emplacement libre (`banc_prise.
+  chevauchements` : aucun carton du banc dessus), sinon pas posée, et dit ;
+- tombée au sol, l'opérateur la retire et le journal le dit (comme les
+  cartons tombés) ; la calibration est alors « non faite ».
+
+`test_banc_posture` : deux objets jamais posés l'un dans l'autre (la masse
+sur l'emplacement du milieu de la table remplie comme à 16 h 43 : occupé ;
+table vide, voisins à 40 cm, parcs éloignés : libre) ; aucun objet posé par
+le banc T1 dans la zone de marche inconnu du site (table remplie après la
+calibration, emplacement vérifié avant de poser, masse tombée retirée) ; ceux
+du banc de posture sur son plateau déclaré.
+
+### 16.2 L'alerte « même cause » n'est pas partie pendant la calibration
+
+Arrêté 90 s pour la même cause, aucune alerte au journal : l'alerte (20 s,
+`ConfigTri.alerte_meme_cause_s`) est celle de la mission (`TriColis.pas`),
+qui ne commence qu'après la calibration de charge ; la calibration, elle, est
+menée par le banc, par la façade, hors de la mission. Maintenant la
+surveillance est une classe à part (`logique.ArretMemeCause`), la même pour
+la mission et pour la calibration du banc : « ALERTE (calibration de charge)
+robot arrêté par la sécurité depuis 20 s, toujours pour la même cause : … ».
+`test_arret_meme_cause` §5 : 90 s d'arrêt hors de la mission, une alerte à
+20 s, avec la cause.
+
+### 16.3 Le poids de la marge, jamais lu en marchant (décision sur l'essai)
+
+Décision : le poids de la marge de frottement n'est jamais lu en marchant
+(`securite_serrage` couvre déjà les charges de la marche, elles étaient
+comptées deux fois) ; avec une calibration de charge valide, la pesée seule ;
+sans, le plus grand de la pesée et du poids lu base arrêtée.
+
+Le poids lu base arrêtée : la médiane des `fin_retour_s` (0,5 s) dernières
+secondes du retour (la base ne marche qu'au port, les bras arrivent en
+posture de port, le serrage est fait), figée à l'entrée au port et dite au
+journal. Pas les arrêts du port : le resserrage y change le serrage, et le
+poids lu avec. Sans retour (prise sans mesure), la médiane du poids lu sur la
+foulée, comme avant (la plus prudente).
+
+Ce que disent les relevés (`test_rejeu_port_t1643`, `test_rejeu_port_t2137`
+§4, `test_rejeu_port_t2204` §3) :
+
+| essai | pesé | fin du retour, base arrêtée | au port, en marche | au port, base arrêtée (resserrage) | vrai |
+|---|---|---|---|---|---|
+| 16 h 43 | 9,28 (−5 %) | 10,36 (+6 %) | 10,31 | 10,69 | 9,81 |
+| 21 h 37 | 8,41 (−14 %) | 10,89 (+11 %) | 10,48 (tout le port) | — | 9,81 |
+
+- Le poids lu en marchant n'est pas plus haut que base arrêtée : l'excès sur
+  le vrai poids (+6 % à 16 h 43) est un biais de l'estimation sans
+  calibration dans la posture de port (gains des coudes, serrage), pas les
+  secousses.
+- 16 h 43, rejoué sur la règle du port de l'OS (la marge du relevé ramenée
+  au poids retenu ; le poids de l'essai pris au journal à chaque arrêt) :
+  sans calibration, la règle retient 10,36 N, l'issue ne change pas (7 arrêts,
+  le dernier jamais repris) ; avec la calibration de charge (la pesée seule) :
+  au vrai poids, 2 arrêts repris, 2 % en dessous aucun, le port continue ;
+  2 % au-dessus, le dernier arrêt est encore en cours à la fin du relevé. La
+  marge réelle (juge) va de 2,06 à 2,19 : ce carton de 1 kg, aux plafonds des
+  bras, ne se porte qu'avec un poids juste. La pesée seule sans calibration
+  (9,28 N) n'arrêterait pas la base, mais elle est optimiste de 6 % : jamais
+  retenue sans calibration.
+- 21 h 37 : sans calibration, 10,89 N (fin du retour) contre 8,41 pesés : la
+  marge n'est pas optimiste (sur la pesée seule, elle l'aurait été de 17 %).
+- 22 h 04 : sans calibration, au moins la pesée longue (10,27 N) : le dernier
+  arrêt n'est toujours pas repris ; avec la calibration, à 2 % près, chaque
+  arrêt est repris.
+
+`test_port_sans_derive` §6 : pesée trop légère → la marge sur le poids lu
+base arrêtée ; pesée plus lourde → sur elle ; calibration valide → la pesée
+seule ; le poids lu au port qui monte (comme en marchant) → la marge ne le
+suit plus (avant : elle le suivait) ; le journal dit sur quel poids ; sans
+retour, la foulée, comme avant.

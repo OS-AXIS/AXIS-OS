@@ -339,6 +339,18 @@ check(f"… mais avec la pesée longue ({pese:.2f} N, {100 * (pese / VRAI - 1):+
       ab_long is None and ouvert_long is not None and min(reelle) < 1.04 * R.securite_serrage,
       f"{ouvert_long} {ab_long}")
 
+# Le poids de la marge, jamais lu en marchant (décision du 25 novembre 2026) :
+# avec une calibration de charge valide, la pesée seule (juste à 2 % près) ;
+# sans (comme à cet essai), le plus grand de la pesée et du poids lu base
+# arrêtée à la fin du retour (le relevé réduit ne l'a pas) : au moins la pesée.
+cal = {k: regle(VRAI * k) for k in (0.98, 1.0, 1.02)}
+check(f"Sans calibration de charge, au moins la pesée longue ({pese:.2f} N) : le dernier arrêt "
+      f"n'est toujours pas repris (comme avant) ; avec elle, la pesée seule, juste à 2 % près : au "
+      f"vrai poids et 2 % en dessous, chaque arrêt repris ; 2 % au-dessus, le dernier arrêt "
+      f"{'encore en cours' if cal[1.02][1] is not None else 'repris'} à la fin du relevé",
+      ouvert_long is not None and cal[1.0][1] is None and cal[0.98][1] is None
+      and cal[0.98][2] is None and cal[1.0][2] is None)
+
 section("4. L'essai de 17 h 16 : pesé juste, rien ne change")
 P2, LEV2, T2, LEC2, KC2, PALIER2, _ = levage("t1_levage_20261119_1716.csv")
 fen2 = LEC2[KC2:KC2 + 3 * R.filtre_force]

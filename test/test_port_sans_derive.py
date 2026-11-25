@@ -317,39 +317,68 @@ check(f"La foulée seule (1 s), toujours en repartant au seuil : {foulee} arrêt
       f"la marge sur 0,3 s ({avant}) : le bruit des couples arrête moins la base",
       foulee <= avant, f"{foulee} {avant}")
 
-section("6. La marge sur le poids le plus prudent : la pesée, ou le poids lu sur la foulée")
+section("6. Le poids de la marge : jamais lu en marchant")
 # Essai GPU du 20 novembre 2026, 21 h 37 : pesé 8,4 N pour 9,8 (le couple que
 # le centre de gravité, hors de la ligne des mains, fait passer par elles, lu
-# comme une force), lu de 10,1 à 11,4 N au port. Sur la seule pesée, la marge
-# était optimiste de 17 %.
+# comme une force). Sur la seule pesée, la marge était optimiste de 17 %.
+# Essai du 25 novembre 2026, 16 h 43 : la marge se calculait sur le poids lu
+# en marchant ; securite_serrage couvre déjà les charges de la marche, elles
+# étaient comptées deux fois. Maintenant : avec une calibration de charge
+# valide, la pesée seule ; sans, le plus grand de la pesée et du poids lu base
+# arrêtée, à la fin du retour.
 b = Banc()
 b.pas(60)
 m = b.m
-lu = float(np.median([w for _, w in m._poids_port]))
-m.poids_carton = 0.85 * lu                # une pesée trop légère, comme à 21 h 37
+statique = m._poids_statique
+fin_retour = b.lignes("poids lu base arrêtée, à la fin du retour")
+check(f"Poids lu base arrêtée, à la fin du retour : {statique:.2f} N, la médiane des "
+      f"{R.fin_retour_s:g} dernières secondes du retour (la base ne marche qu'au port) ; au "
+      f"journal : « {fin_retour[-1] if fin_retour else ''} »",
+      statique is not None and bool(fin_retour) and abs(statique / 9.81 - 1.0) < 0.1)
+m.poids_carton = 0.85 * statique          # une pesée trop légère, comme à 21 h 37
 b.pas(5)
 somme = float(np.mean(m._hist_normales))
-check(f"Pesée trop légère ({m.poids_carton:.1f} N pour {lu:.1f} lus sur la foulée) : marge "
-      f"{m.marge_frottement:.2f} = 0,8 × somme des normales / {lu:.1f} N lus, pas "
+check(f"Pesée trop légère ({m.poids_carton:.1f} N pour {statique:.1f} lus base arrêtée) : marge "
+      f"{m.marge_frottement:.2f} = 0,8 × somme des normales / {statique:.1f} N, pas "
       f"{R.frottement_serrage * somme / m.poids_carton:.2f} sur la pesée : jamais optimiste",
-      abs(m.marge_frottement - R.frottement_serrage * somme
-          / float(np.median([w for _, w in m._poids_port]))) < 1e-9
+      abs(m.marge_frottement - R.frottement_serrage * somme / statique) < 1e-9
       and m.marge_frottement < R.frottement_serrage * somme / m.poids_carton - 0.1)
-m.poids_carton = 1.15 * lu                # une pesée trop lourde : c'est elle qui compte
+m.poids_carton = 1.15 * statique          # une pesée plus lourde : c'est elle qui compte
 b.pas(5)
-check(f"Pesée plus lourde que le poids lu ({m.poids_carton:.1f} N) : la marge se calcule sur elle",
+check(f"Pesée plus lourde que le poids lu base arrêtée ({m.poids_carton:.1f} N) : la marge se "
+      f"calcule sur elle",
       abs(m.marge_frottement - R.frottement_serrage * float(np.mean(m._hist_normales))
           / m.poids_carton) < 1e-9)
-m.poids_carton = lu
+m.poids_carton = 0.9 * statique
+m.calibration_charge = {"date": "2026-11-25", "masse_kg": 1.0}
+b.pas(5)
+check(f"Avec une calibration de charge valide : la pesée seule ({m.poids_carton:.1f} N), même "
+      f"sous le poids lu base arrêtée ({statique:.1f})",
+      abs(m.marge_frottement - R.frottement_serrage * float(np.mean(m._hist_normales))
+          / m.poids_carton) < 1e-9)
+m.calibration_charge = None
+m.poids_carton = statique
 b.r.MASSE_OBJET_KG = 11.2 / 9.81         # le carton pèse plus sur les mains, comme en marchant
 b.pas(60)
 lu1 = float(np.median([w for _, w in m._poids_port]))
+check(f"Le poids lu au port monte à {lu1:.1f} N (comme en marchant) : la marge ne le suit pas, "
+      f"elle reste sur les {max(m.poids_carton, statique):.1f} N (avant : elle le suivait)",
+      lu1 > statique + 1.0 and abs(m.marge_frottement - R.frottement_serrage
+                                   * float(np.mean(m._hist_normales))
+                                   / max(m.poids_carton, statique)) < 1e-9)
 m.r = replace(m.r, securite_serrage=m.marge_frottement + 0.3, duree_resserrage_s=1e9)
 b.pas(5)
 arret = b.lignes("port : marge de frottement")
-check(f"Le poids lu monte à {lu1:.1f} N : la marge le suit, et le journal le dit à l'arrêt de la "
-      f"base : « {arret[-1] if arret else ''} »",
-      lu1 > lu + 1.0 and arret and "lus sur la foulée, plus que les" in arret[-1] and m.penche)
+check(f"Le journal dit sur quel poids, à l'arrêt de la base : « {arret[-1] if arret else ''} »",
+      bool(arret) and ("N pesés)" in arret[-1] or "lus base arrêtée à la fin du retour" in arret[-1])
+      and "lus sur la foulée" not in arret[-1] and m.penche)
+m._poids_statique = None                  # un port sans retour : comme avant
+m.r = replace(m.r, securite_serrage=R.securite_serrage, duree_resserrage_s=R.duree_resserrage_s)
+b.pas(5)
+check(f"Sans poids lu base arrêtée (port sans retour) : comme avant, la médiane du poids lu sur "
+      f"la foulée ({float(np.median([w for _, w in m._poids_port])):.1f} N), la plus prudente",
+      abs(m.marge_frottement - R.frottement_serrage * float(np.mean(m._hist_normales))
+          / max(m.poids_carton, float(np.median([w for _, w in m._poids_port])))) < 1e-9)
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
