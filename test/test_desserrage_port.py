@@ -407,7 +407,7 @@ repart = {}
 for h in (R.hysteresis_ecart_m, 0.0):
     b = Banc(masse=0.5)
     b.m.r = replace(R, hysteresis_ecart_m=h)
-    lire = ecart_resserre(b, 7.0)
+    lire = ecart_resserre(b, 7.5)
     arretee = False
     while b.t[0] < 60.0:
         b.pas()
@@ -415,9 +415,9 @@ for h in (R.hysteresis_ecart_m, 0.0):
         if arretee and not b.m.penche:
             break
     repart[h] = lire()
-check(f"Un vrai écartement de 7 mm, resserré : la base repart l'écart à "
-      f"{repart[R.hysteresis_ecart_m]:.2f} mm, sous {BAS:g} (le resserrage l'y a amené) ; sans "
-      f"hystérésis, elle repartait à {repart[0.0]:.2f} mm, au ras du seuil, là où le bruit le "
+check(f"Un vrai écartement de 7,5 mm, resserré : la base repart l'écart à "
+      f"{repart[R.hysteresis_ecart_m]:.1f} mm, sous {BAS:g} (le resserrage l'y a amené) ; sans "
+      f"hystérésis, elle repartait à {repart[0.0]:.1f} mm, au ras du seuil, là où le bruit le "
       f"refait passer", repart[R.hysteresis_ecart_m] < BAS
       and BAS < repart[0.0] <= 1000 * R.ecart_face_port_m, str(repart))
 SIGMA = 0.45
