@@ -277,8 +277,9 @@ class ReglagesPrise:
     securite_basculement: float = 1.25
     # Le carton tenu qui tourne de plus de `rotation_max_deg` autour de la
     # ligne des mains (caméra de tête quand elle le voit), ou qui ne pèse
-    # plus sur les mains pendant le port (moins de `part_poids_min` du poids
-    # du début du port, pendant `duree_perte_s`) : on le repose au lieu de
+    # plus sur les mains pendant le port (le poids lu plus bas que celui du
+    # début du port de plus de 1 - `part_poids_min` du poids pesé, pendant
+    # `duree_perte_s` : voir recentes_niveau_s) : on le repose au lieu de
     # marcher avec (ou, en marche, on s'arrête et on le signale).
     rotation_max_deg: float = 10.0
     # Vue par la caméra de tête (en entier, ou son dessus en partie), le
@@ -294,6 +295,23 @@ class ReglagesPrise:
     # pendant duree_perte_s, pour qu'un carton qui glisse ou s'échappe soit vu
     # en 0,3 s au plus (avant : moyenne de 0,3 s, puis 0,3 s, ~0,5 s en tout).
     duree_perte_s: float = 0.15
+    # Au port, la chute se juge depuis le niveau lu au début du port, dans la
+    # même posture (le décalage des couples, qui change avec la posture, s'y
+    # annule) : le poids lu plus bas que ce niveau de plus de
+    # (1 - part_poids_min) du poids pesé, 60 %. Le niveau : la moyenne des
+    # lectures de la première foulée du port (fenetre_marge_s), sans celles des
+    # recentes_niveau_s les plus récentes tant qu'elle se remplit (une chute en
+    # cours n'abaisse pas sa propre référence). Avant, « moins de 40 % du plus
+    # grand poids lu depuis le levage », pris dans d'autres postures : prise en
+    # pendule, un carton de 0,22 kg tenu y était lu sous ce seuil (campagne,
+    # n° 105).
+    recentes_niveau_s: float = 0.3
+    # Encore jeune (ses premières lectures), le niveau est lui-même incertain :
+    # la chute doit le dépasser de sigmas_niveau_port fois son incertitude
+    # (écart-type des lectures sur la racine de leur nombre) ; mûr (une
+    # foulée), presque rien. Sur le bruit réel des essais GPU, sans elle, plus
+    # de fausses alertes que l'ancienne règle à 5 et 10 N (test_poids_qui_chute).
+    sigmas_niveau_port: float = 2.0
     # Serrage d'après le poids (essai GPU T1 du 5 novembre 2026, 21 h 57 :
     # carton de 10,9 N tenu à 6,5 N par main, soit un frottement d'au moins
     # 0,84 rien que pour le porter, aucune marge ; il a glissé à la marche).

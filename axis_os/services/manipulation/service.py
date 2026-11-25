@@ -641,6 +641,12 @@ class ManipulationService(IService):
         self.rotation_vue: Optional[float] = None
         self.appui_torse: Optional[float] = None
         self._poids_ref: Optional[float] = None
+        # Le niveau du poids lu au début du port, dans sa posture : les
+        # lectures (instant, N) de sa première foulée, puis leur moyenne figée.
+        self._niveau_port: list = []
+        self._niveau_port_fige: Optional[Tuple[float, float]] = None
+        self._niveau_chute: Optional[Tuple[float, float]] = None   # celui d'avant une chute en cours
+        self._bruit_pesee: Optional[float] = None    # écart-type d'une lecture à la pesée (N)
         self._t_sans_poids: Optional[float] = None
         self._raison_repose = ""
         self._c_actuel: Optional[np.ndarray] = None
@@ -2434,6 +2440,7 @@ class ManipulationService(IService):
         r = self.r
         self.serrage_vise, self.serrage_requis, self.charge = None, None, None
         self.poids_carton, self.poids_tare, self._t_attente_serrage = None, None, None
+        self._bruit_pesee = None
         self._lectures_pesee, self._lecture_charge, self._angles_pesee = [], None, None
         self._releves_pesee = []
         self._vitesse_pesee, self._ecartees_pesee = 0.0, 0
@@ -2512,6 +2519,7 @@ class ManipulationService(IService):
                     f"de prise, il n'a pas suivi)")
         self.poids_carton, incertitude = poids_pese([v[0] for v in self._lectures_pesee],
                                                     r.part_ecartee_pesee)
+        self._bruit_pesee = incertitude * math.sqrt(n)        # par lecture, bras immobiles
         tares = [v[2] for v in self._lectures_pesee if v[2] is not None]
         self.poids_tare = poids_pese(tares, r.part_ecartee_pesee)[0] if tares else None
         self._noter(f"poids du carton : {self.poids_carton:.1f} N (moyenne tronquée de {n} "
@@ -3386,19 +3394,63 @@ class ManipulationService(IService):
         if not tourne and self.charge is not None and \
                 len(self._hist_charge) == self._hist_charge.maxlen:
             # Les filtre_force dernières lectures (0,1 s) : vu en 0,3 s au plus.
+            r, t = self.r, self._horloge()
             poids = float(np.mean([v[0] for v in
-                                   list(self._hist_charge)[-max(1, self.r.filtre_force):]]))
-            if self._poids_ref is not None and poids < self.r.part_poids_min * self._poids_ref:
-                t = self._horloge()
-                self._t_sans_poids = t if self._t_sans_poids is None else self._t_sans_poids
-                if t - self._t_sans_poids >= self.r.duree_perte_s:
-                    tourne = (f"le carton ne pèse plus sur les mains ({poids:.1f} N, "
-                              f"{self._poids_ref:.1f} au levage) : il glisse ou s'est "
-                              f"échappé")
+                                   list(self._hist_charge)[-max(1, r.filtre_force):]]))
+            lu = self._niveau_debut_port(t, self._hist_charge[-1][0])
+            if self._t_sans_poids is not None and self._niveau_chute is not None:
+                # Une chute en cours : le niveau d'avant elle, même s'il se remplit
+                # encore (lâché dans la première seconde du port, ses lectures
+                # l'abaisseraient : jamais vu, prise normale).
+                lu = self._niveau_chute
+            niveau, incertain = lu if lu is not None else (None, 0.0)
+            pese = self.poids_carton
+            if pese:
+                # Depuis le niveau du début du port, dans la même posture ; pas
+                # encore lu (ses 0,4 premières secondes) : rien à comparer. Encore
+                # jeune (quelques lectures), plus son incertitude.
+                perte = niveau is not None and niveau - poids > \
+                    (1.0 - r.part_poids_min) * pese + r.sigmas_niveau_port * incertain
             else:
-                self._t_sans_poids = None
+                # Sans pesée : le plus grand poids lu depuis le levage, comme avant.
+                perte = self._poids_ref is not None and poids < r.part_poids_min * self._poids_ref
+            if perte:
+                if self._t_sans_poids is None:
+                    self._t_sans_poids, self._niveau_chute = t, lu
+                if t - self._t_sans_poids >= r.duree_perte_s:
+                    tourne = ("le carton ne pèse plus sur les mains (" + (
+                        f"{poids:.1f} N, {niveau:.1f} au début du port : {niveau - poids:.1f} "
+                        f"de moins, au plus {100 * (1.0 - r.part_poids_min):.0f} % des "
+                        f"{pese:.1f} pesés" if pese else
+                        f"{poids:.1f} N, {self._poids_ref:.1f} au levage")
+                        + ") : il glisse ou s'est échappé")
+            else:
+                self._t_sans_poids = self._niveau_chute = None
         if tourne:
             self._interrompre_port(tourne)
+
+    def _niveau_debut_port(self, t: float, lecture: float) -> Optional[Tuple[float, float]]:
+        """Le poids lu au début du port, dans sa posture : (la moyenne des
+        lectures de sa première foulée (fenetre_marge_s), son incertitude :
+        leur écart-type sur la racine de leur nombre), en N ; tant qu'elle se
+        remplit, sans les recentes_niveau_s les plus récentes (une chute en
+        cours n'abaisse pas sa propre référence), puis figée. None avant
+        filtre_force lectures (ses 0,4 premières secondes)."""
+        r, lues = self.r, self._niveau_port
+        if self._niveau_port_fige is not None:
+            return self._niveau_port_fige
+        if not lues or t - lues[0][0] <= r.fenetre_marge_s + 1e-9:
+            lues.append((t, lecture))
+        anciennes = [w for tt, w in lues if tt <= t - r.recentes_niveau_s + 1e-9]
+        if len(anciennes) < max(2, r.filtre_force):
+            return None
+        # Leur écart-type, jamais moins que celui d'une lecture à la pesée, bras
+        # immobiles (sur quelques lectures, il peut tomber au plus bas par hasard).
+        ecart = max(float(np.std(anciennes, ddof=1)), self._bruit_pesee or 0.0)
+        lu = (float(np.mean(anciennes)), ecart / math.sqrt(len(anciennes)))
+        if len(anciennes) == len(lues) and t - lues[0][0] > r.fenetre_marge_s:
+            self._niveau_port_fige = lu
+        return lu
 
     def _surveiller_inclinaison(self) -> None:
         """Pendant le transport : au-delà de `inclinaison_max_deg`, `penche`
@@ -3459,6 +3511,8 @@ class ManipulationService(IService):
             if not self._port_actif:
                 self._figer_port()
                 self._port_actif = True
+                # Nouvelle posture (début du port, ou fin d'un geste) : nouveau niveau.
+                self._niveau_port, self._niveau_port_fige, self._niveau_chute = [], None, None
             if self._tangage_vise is not None:
                 self._pas_tangage()
             self._garder_sous_la_limite(dt)
