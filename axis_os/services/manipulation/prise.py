@@ -492,6 +492,16 @@ class ReglagesPrise:
     # duree_resserrage_s) ; à la reprise, la foulée repart de ces 0,3 s.
     fenetre_marge_s: float = 1.0
     securite_glissement: float = 1.0
+    # Le poids de la marge n'est jamais lu en marchant : securite_serrage
+    # couvre déjà les charges de la marche. Avec une calibration de charge
+    # valide, la pesée seule ; sans, le plus grand de la pesée et du poids lu
+    # base arrêtée : la médiane des fin_retour_s dernières secondes du retour
+    # (la base ne marche qu'au port, les bras arrivent en posture de port, le
+    # serrage est fait). Pas les arrêts du port : le resserrage y change le
+    # serrage, et le poids lu avec (essai GPU du 25 novembre 2026, 16 h 43 :
+    # 10,7 N base arrêtée pour resserrer, 10,3 en marchant, 10,4 à la fin du
+    # retour ; pesé 9,3, vrai 9,8).
+    fin_retour_s: float = 0.5
     # Les bras à leurs plafonds (une articulation à moins de 0,3 N·m du sien,
     # ou une main à sa borne) ne peuvent serrer plus : securite_reprise est
     # hors de leur portée. Vrai : la base repart dès que la marge tient

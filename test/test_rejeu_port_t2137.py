@@ -27,6 +27,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from axis_os.services.manipulation.prise import ReglagesPrise  # noqa: E402
@@ -112,6 +114,28 @@ bas = 1000 * (R.ecart_face_port_m - R.hysteresis_ecart_m)
 check(f"… avec l'hystérésis des écartements ({1000 * R.hysteresis_ecart_m:g} mm) : entre les deux "
       f"premiers, l'écart lu est redescendu à {CREUX_ENTRE_DEUX_MM:g} mm (arrondi au mm), sous "
       f"{bas:g} : le 2e compte, au même instant", CREUX_ENTRE_DEUX_MM + 1.0 < bas)
+
+section("4. Le poids de la marge : la pesée trop légère ne la rend pas optimiste")
+# Pesé 8,4 N pour 9,81 (le moment du contact, le carton qui tourne, lu comme
+# une force). Le poids de la marge, jamais lu en marchant : sans calibration
+# de charge (il n'y en avait pas), le plus grand de la pesée et du poids lu
+# base arrêtée à la fin du retour (t1_poids_20261120_2137.csv : le poids que
+# l'OS a relevé, la dernière seconde du retour et le port).
+VRAI = 9.81
+PO = [(float(r_["t_s"]), r_["phase"], float(r_["poids_os_n"]), float(r_["poids_pese_n"]))
+      for r_ in csv.DictReader(open(DONNEES / "t1_poids_20261120_2137.csv", encoding="utf-8"))]
+fin_ram = max(t for t, ph, _, _ in PO if ph == "RAMENER")
+statique = float(np.median([w for t, ph, w, _ in PO
+                            if ph == "RAMENER" and t >= fin_ram - R.fin_retour_s + 1e-9]))
+pese = PO[0][3]
+marche = float(np.median([w for t, ph, w, _ in PO if ph == "TENU"]))
+check(f"Pesé {pese:.2f} N ({100 * (pese / VRAI - 1):+.0f} %) ; base arrêtée à la fin du retour "
+      f"{statique:.2f} N ; le poids de la marge, le plus grand : {max(pese, statique):.2f} N, au "
+      f"moins les {VRAI} vrais — la marge n'est pas optimiste (sur la pesée seule, elle l'aurait "
+      f"été de {100 * (VRAI / pese - 1):.0f} %)",
+      max(pese, statique) >= VRAI and pese < 0.9 * VRAI)
+check(f"… au port, le poids lu en marchant ou presque ({marche:.2f} N, médiane) n'était pas plus "
+      f"haut que base arrêtée à la fin du retour ({statique:.2f})", marche <= statique)
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

@@ -647,6 +647,10 @@ class ManipulationService(IService):
         self._niveau_port_fige: Optional[Tuple[float, float]] = None
         self._niveau_chute: Optional[Tuple[float, float]] = None   # celui d'avant une chute en cours
         self._poids_entree = 0.0                     # le poids lu (0,1 s) en entrant au port (N)
+        # Le poids lu base arrêtée, en posture de port : les lectures de la fin
+        # du retour (fin_retour_s), puis leur médiane, figée au port.
+        self._poids_retour: deque = deque()
+        self._poids_statique: Optional[float] = None
         self._bruit_pesee: Optional[float] = None    # écart-type d'une lecture à la pesée (N)
         self._t_sans_poids: Optional[float] = None
         self._raison_repose = ""
@@ -2442,6 +2446,8 @@ class ManipulationService(IService):
         self.serrage_vise, self.serrage_requis, self.charge = None, None, None
         self.poids_carton, self.poids_tare, self._t_attente_serrage = None, None, None
         self._bruit_pesee = None
+        self._poids_retour.clear()
+        self._poids_statique = None
         self._lectures_pesee, self._lecture_charge, self._angles_pesee = [], None, None
         self._releves_pesee = []
         self._vitesse_pesee, self._ecartees_pesee = 0.0, 0
@@ -2947,10 +2953,18 @@ class ManipulationService(IService):
 
     def _pas_ramener(self) -> None:
         tau, _ = self._efforts()
+        derniere = self._hist_charge[-1] if self._hist_charge else None
         tourne = self._surveiller_rotation(tau)
         if tourne:
             self._reposer(tourne)
             return
+        if self._hist_charge and self._hist_charge[-1] is not derniere:
+            # Base arrêtée (on ne marche qu'au port), bras qui arrivent en
+            # posture de port : les fin_retour_s dernières lectures du poids.
+            t_ = self._horloge()
+            self._poids_retour.append((t_, self._hist_charge[-1][0]))
+            while t_ - self._poids_retour[0][0] > self.r.fin_retour_s + 1e-9:
+                self._poids_retour.popleft()
         q, fini = self._interp_c(self.r.duree_ramener_s)
         appui = self._appui_torse()
         # En corps rigide, les paumes commandées ne tournent pas : une rotation
@@ -2994,6 +3008,13 @@ class ManipulationService(IService):
             self._centre_transport = np.array(self._c_actuel if self._c_actuel is not None
                                               else self._centre_porte, dtype=float)
             self._t_sans_poids = None
+            lus = [w for _, w in self._poids_retour]
+            if len(lus) >= max(1, self.r.filtre_force * 3):
+                self._poids_statique = float(np.median(lus))
+                self._noter(f"poids lu base arrêtée, à la fin du retour : "
+                            f"{self._poids_statique:.1f} N (médiane de {len(lus)} lectures en "
+                            f"{self.r.fin_retour_s:g} s)"
+                            + (f", pesé {self.poids_carton:.1f}" if self.poids_carton else ""))
             self.etat = Etat.TENU
 
     def _appui_torse(self) -> str:
@@ -3076,15 +3097,31 @@ class ManipulationService(IService):
                 self._poids_port.popleft()
         # Marge sur la dernière foulée (dès filtre_force × 3 lectures), et sur
         # les filtre_force × 3 dernières lectures (0,3 s) : le plancher. Son
-        # poids : le plus prudent de la pesée et de la médiane du poids lu sur
-        # la foulée (essai GPU du 20 novembre 2026, 21 h 37 : pesé 8,4 N pour
-        # 9,8, lu de 10,1 à 11,4 au port ; une pesée trop légère rendait la
-        # marge optimiste).
+        # poids, jamais lu en marchant (securite_serrage couvre déjà les
+        # charges de la marche) : avec une calibration de charge valide, la
+        # pesée seule ; sans, le plus grand de la pesée et du poids lu base
+        # arrêtée à la fin du retour (essai GPU du 20 novembre 2026, 21 h 37 :
+        # pesé 8,4 N pour 9,8 ; une pesée trop légère rendait la marge
+        # optimiste). Sans retour : la médiane du poids lu sur la foulée.
         n_court = max(1, r.filtre_force * 3)
         pese = self.poids_carton or self._poids_ref
-        lu = float(np.median([w for _, w in self._poids_port])) \
-            if len(self._poids_port) >= n_court else None
-        poids = max(pese, lu) if pese and lu is not None else pese
+        if self.poids_carton and self.calibration_charge is not None:
+            poids = pese
+            sur_poids = f"sur les {poids:.1f} N pesés, calibration de charge"
+        elif self._poids_statique is not None:
+            poids = max(pese, self._poids_statique) if pese else self._poids_statique
+            sur_poids = (f"sur les {poids:.1f} N lus base arrêtée à la fin du retour, plus que "
+                         f"les {pese:.1f} pesés" if not pese or poids > pese else
+                         f"sur les {poids:.1f} N pesés")
+        else:
+            lu = float(np.median([w for _, w in self._poids_port])) \
+                if len(self._poids_port) >= n_court else None
+            poids = max(pese, lu) if pese and lu is not None else pese
+            sur_poids = (f"sur les {poids:.1f} N lus sur la foulée, plus que les "
+                         f"{pese:.1f} pesés" if pese and poids > pese else
+                         f"sur les {poids:.1f} N pesés" if pese else "")
+        if not self.poids_carton and poids:
+            sur_poids = f"pas de pesée : sur le plus grand poids lu, {poids:.1f} N"
         plein = len(self._hist_normales) >= n_court
         juge = bool(poids and poids > 0.5 and plein)
         self.marge_frottement = (r.frottement_serrage * float(np.mean(self._hist_normales))
@@ -3171,14 +3208,7 @@ class ManipulationService(IService):
                 + ([f"marge de frottement {marge:.2f} {sur} "
                     f"(au moins {r.securite_serrage:g}" + (f", {seuil:g} pour repartir"
                                                            if seuil > r.securite_serrage else "")
-                    # Le poids de la marge : celui pesé une fois, bras immobiles
-                    # (poids_carton), jamais le poids lu en marchant ; sans
-                    # pesée, le plus grand lu depuis le levage (le plus prudent).
-                    + (f" ; sur les {poids:.1f} N lus sur la foulée, plus que les "
-                       f"{self.poids_carton:.1f} pesés)" if self.poids_carton and poids
-                       > self.poids_carton else
-                       f" ; sur les {poids:.1f} N pesés)" if self.poids_carton else
-                       f" ; pas de pesée : sur le plus grand poids lu, {poids:.1f} N)")]
+                    + f" ; {sur_poids})"]
                    if faible and not glisse else [])
                 + ([f"carton tourné au retour, serrage visé {cible / 2.0:.1f} N par main"]
                    if force else []))
