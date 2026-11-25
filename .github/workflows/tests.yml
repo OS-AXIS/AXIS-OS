@@ -19,9 +19,10 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    # La suite prend environ 7 minutes ; au-delà de 45, quelque chose est
-    # bloqué et il vaut mieux échouer que d'occuper la machine.
-    timeout-minutes: 45
+    # La suite prend de 33 à 43 minutes selon la machine (25 novembre 2026) ;
+    # au-delà de 60, quelque chose est bloqué et il vaut mieux échouer que
+    # d'occuper la machine. Découper la suite en plusieurs jobs : plus tard.
+    timeout-minutes: 60
     steps:
       # Actions épinglées par leur empreinte de commit, pas par un tag : un
       # tag peut être déplacé vers un autre code, une empreinte non.
