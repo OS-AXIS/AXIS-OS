@@ -1929,3 +1929,114 @@ base arrêtée ; pesée plus lourde → sur elle ; calibration valide → la pes
 seule ; le poids lu au port qui monte (comme en marchant) → la marge ne le
 suit plus (avant : elle le suivait) ; le journal dit sur quel poids ; sans
 retour, la foulée, comme avant.
+
+## 17. Repose sûre (décision sur la PR #35)
+
+Décision : « Repose sûre : même chemin rigide vérifié que la dépose,
+serrage gardé jusqu'au contact avec la table, ouverture vérifiée ; un carton
+qui tombe en repose devient un cas interdit de la campagne. »
+
+### 17.1 Ce qui faisait tomber le carton
+
+- `poser()` sans plateau, en prise mesurée (la repose à sa place, après une
+  dépose refusée ou impossible), interpolait les angles des bras jusqu'à
+  ceux du serrage (état POSE) : les mains ne restaient pas un corps rigide
+  avec le carton. Rejoué sur main : le n° 1004 du balayage (30 cm de large),
+  l'essai de dépose du planificateur fidèle (mains au contact, et non
+  serrées au plus) : pris, porté, dépose à sa place impossible en bas
+  (« les mains ne s'y ouvriraient pas sur place (vu en bas) »), puis reposé
+  par POSE : « mains qui ne serrent plus », tombé. (Le n° 1005 de #35 est
+  aujourd'hui refusé plus tôt, couple du poignet.)
+- La repose au levage (carton qui tourne, pèse mal, calibration de charge)
+  descendait par la cinématique de la prise, position seule ; là où elle
+  échouait, elle passait à l'interpolation des angles : n° 51 (1,37 kg,
+  pesée impossible), les mains 2,8 cm plus bas d'un pas. Et elle desserrait
+  vers l'ouverture du placement : la fermeture en pendule descend en
+  fermant, donc à l'envers les mains remontent, ~2 cm encore au contact
+  (n° 1004 : 2,2 cm).
+- Le robot simulé ne portait pas le carton pendant la repose : ni équilibre
+  entre les mains, ni glissement, et une main qui lâchait n'y était pas une
+  chute. Le n° 1004 finissait au sol sans chute comptée ; le n° 51 retombait
+  « à sa place » sans rien dire.
+
+### 17.2 La repose, désormais
+
+`ManipulationService._redescendre`, pour toutes les reposes :
+1. le chemin de la dépose, en corps rigide : devant, à la hauteur où il est,
+   puis vers le bas, jusqu'à sa place (le milieu des mains au serrage) ; tout
+   le chemin vérifié avant de bouger (`_chemin_rigide`, pas de 2 mm), comme
+   `_depose_possible` ; au levage aussi, le corps rigide partant d'ici
+   (`_figer_rigide`, commun avec le retour) ;
+2. serrage gardé jusqu'à sa place sur la table, au plus à 5 cm/s ; arrêtée en
+   chemin (une pose qui ne se tient plus), la repose n'ouvre pas : l'objet
+   reste tenu, à reposer (« repose interrompue avant sa place sur la
+   table ») ;
+3. l'ouverture de la dépose, sur place : serrage relâché, mains écartées de
+   `jeu_ouverture_m` de plus que le contact, sans remonter (à 5 mm près, comme
+   la dépose), vérifiée avant de bouger ; plus l'ouverture du placement ;
+4. rien de vérifié : rien ne bouge, l'objet reste tenu, avec la raison
+   (« repose impossible : … »). Jamais d'interpolation des angles avec
+   l'objet tenu.
+
+`poser()` sans plateau (`_reposer_a_sa_place`) : ce geste, jusqu'à la
+hauteur de la prise. Le robot encore là où il a pris l'objet, à l'erreur
+d'approche près (2 cm, 3° : la position de l'objet perçue à la prise, revue
+d'ici), il le repose à sa place, sur sa table, le décalage et la hauteur du
+bassin rattrapés. Plus loin, aucune table n'est connue sous les mains : posé
+devant lui à la hauteur de sa prise, comme avant, et le journal le dit
+(« le robot n'est plus là où il l'a pris … aucune table connue sous les
+mains »). Bras sans corps rigide (moins de six articulations commandées) :
+comme avant.
+
+Ce que ça change ailleurs :
+- app de tri (postes sans plateau : colis ramené au poste de prise, ou posé
+  sur place quand le retour échoue), collecte et évaluation VLA (la repose
+  juste après la prise) : les mêmes gestes qu'avant, sans l'interpolation
+  des angles ; refusés, l'objet tenu, si le chemin ou l'ouverture ne passent
+  pas (l'app de tri réessaie, puis s'arrête proprement, colis en main) ;
+- SDK : `ctx.place(None)` par ce geste ; refusé avec `OUT_OF_REACH`
+  (« repose impossible »), l'objet tenu, si le chemin ou l'ouverture ne
+  passent pas (API 1.4.1, correction sans changement d'interface). L'exemple
+  `fetch` et `test_sdk_services_haut_niveau` lâchent ainsi la boîte au point
+  de dépose, sans table : faut-il refuser `place(None)` loin de la prise ?
+  À décider.
+
+### 17.3 Robot simulé et campagne
+
+- La descente de la repose est un geste du port pour le robot simulé
+  (`SimulatedRobot._porte`) : le carton s'y met entre les mains, y glisse, et
+  une main qui lâche est une chute ; pour la campagne aussi (perdu sans que
+  l'OS le voie).
+- Posé sur une table, un carton ne la traverse plus quand les mains
+  descendent plus bas que leur prise (n° 51, glissé de 3,8 cm entre elles :
+  elles glissent le long de ses faces).
+- `essayer_carton(reposer=True)` : le carton porté est reposé à sa place au
+  lieu d'être déposé. `test_campagne_cartons` §4 bis : chaque carton du
+  balayage tenu, reposé ; un carton tombé en repose y est un cas interdit,
+  comme au port.
+
+### 17.4 Mesuré (graine 20261118, 120 cartons et le balayage)
+
+- Réglages actuels : mêmes issues qu'avant, carton par carton (4 déposés, 6
+  reposés, 110 refusés ; balayage 16 / 6 / 13), aucun cas interdit, n° 51
+  compris (que le robot simulé corrigé aurait compté tombé avec l'ancienne
+  repose).
+- Balayage, chaque carton tenu reposé au lieu d'être déposé : sur main
+  (POSE), 3 des 22 tombent pendant la repose, « mains qui ne serrent plus »
+  (n° 1021 et 1022, frottement 0,6 et 0,7 ; n° 1030, retrait de 10 cm) ; avec
+  la repose sûre, les 22 sont reposés à leur place, aucun cas interdit.
+- L'essai de dépose fidèle du planificateur (mains au contact) ne rend aucun
+  carton déposé : des 7 qu'il écarte aujourd'hui (n° 18, 114, 116, 1004, 1031
+  à 1033), 6 échouent ensuite pour une autre raison (n° 18 : il glisse entre
+  les mains, refusé ; les 5 autres : pesée impossible ou serrage
+  insuffisant, reposés au levage) ; le n° 1004 voit sa dépose impossible en
+  bas et est reposé (avant : tombé). Gardé prudent : il évite des prises qui
+  finiraient refusées ou reposées.
+
+`test_repose_sure` : repose du carton T1 (sur sa table, à sa place, serrage
+gardé pendant la descente, lâché à l'ouverture seulement, sans remonter) ;
+chemin ou ouverture qui ne passent pas : refusé, rien ne bouge
+(`OUT_OF_REACH` pour une app) ; robot à 1 cm : reposé à sa place, le
+décalage rattrapé ; à 5 cm : posé devant lui, à la hauteur de sa prise, et
+dit ; pose perdue en chemin : pas d'ouverture en l'air ; repose pendant le
+retour ; le n° 1004 avec l'essai fidèle, reposé sans chute.

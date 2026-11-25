@@ -150,7 +150,9 @@ Constats à reporter dans la scène Isaac Sim :
 Manques identifiés, non traités :
 - **Colis ramené au poste de prise** (poste de dépose inaccessible) : il
   est encore relâché à hauteur de port, faute de place connue sur la table
-  de prise. Cas rare ; prévoir un emplacement de retour.
+  de prise, par le geste vérifié de la repose (validation_port_carton §17) ;
+  à sa place, sur la table, seulement si le robot y est encore à 2 cm et 3°
+  près. Cas rare ; prévoir un emplacement de retour.
 - **Marche arrière** : déjà validée sur GPU — W3 a reculé de 68 cm carton
   en main, W4 aussi, sans chute. Le recul de sortie s'appuie dessus.
 - **Glissement du carton** : W3 a mesuré 8 cm en 11 s. Les trajets de la

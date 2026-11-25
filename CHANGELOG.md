@@ -10,6 +10,30 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Repose sûre (API du SDK 1.4.1)
+
+Décision sur la PR #35 ; détail dans docs/validation_port_carton.md, §17.
+- `ManipulationService.poser()` sans plateau, en prise mesurée : l'objet
+  redescend à la hauteur de sa prise par le chemin de la dépose, en corps
+  rigide (devant, puis vers le bas), serrage gardé jusqu'en bas, puis
+  l'ouverture de la dépose, sur place ; chemin et ouverture vérifiés avant
+  de bouger, sinon refusé, l'objet tenu. À sa place sur sa table si le robot
+  y est encore (2 cm et 3°, le décalage rattrapé) ; plus loin, comme avant,
+  aucune table connue sous les mains, et le journal le dit. Avant : les
+  angles des bras interpolés jusqu'à ceux du serrage (état POSE), qui
+  relâchaient le serrage en chemin.
+- La repose au levage ou au retour (carton qui tourne, pèse mal, calibration
+  de charge) : même chemin vérifié, même ouverture ; arrêtée en chemin, elle
+  n'ouvre pas, l'objet reste tenu, à reposer.
+- SDK : `ctx.place(None)` par ce geste ; refusé avec `OUT_OF_REACH`
+  (« repose impossible »), l'objet tenu, si le chemin ou l'ouverture ne
+  passent pas. `API_VERSION` 1.4.1 (correction, sans changement
+  d'interface), paquet `axis-os-sdk` 1.4.1.
+- Robot simulé : la descente de la repose est un geste du port (un carton
+  perdu y est une chute) ; un carton posé sur une table ne la traverse plus.
+  Campagne : `essayer_carton(reposer=True)`, et chaque carton du balayage
+  tenu reposé (cas interdits comme au port).
+
 ### Essai GPU du 25 novembre 2026, 16 h 43 : masse de référence au sol, marge au port
 
 Détail dans docs/validation_port_carton.md, §16.
