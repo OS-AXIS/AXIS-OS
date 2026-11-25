@@ -154,14 +154,19 @@ def impossible_par_construction(c: CartonTire, m) -> str:
       - « trop large » : aucune paire de faces ne tient entre les mains
         ouvertes en grand, mais l'une serait atteinte (comme ci-dessous) si le
         carton n'était pas plus large qu'elles ne le prennent ;
+      - « trop bas pour une prise en pendule » : moins haut que deux fois la
+        visée au-dessus du centre et le bord sous l'arête (prise.hauteur_prise) ;
       - « hors de toute portée » : même ainsi, d'aucune position, pieds contre
         la table au plus (erreur d'approche comprise), les mains n'atteignent
         le milieu des faces d'une paire.
     Chaque carton reçoit la première de ces raisons, dans cet ordre."""
     from dataclasses import replace
     from axis_os.services.manipulation import planificateur as P
+    from axis_os.services.manipulation.prise import hauteur_prise
     if c.masse_kg > m.r.masse_max_kg:
         return "trop lourd"
+    if hauteur_prise(m.r, c.hauteur) is None:
+        return "trop bas pour une prise en pendule"
     bord = P.BordTable((0.0, 0.0), 0.0, PLATEAU_M)
     boite = P.boite_depuis_coins(P.coins_boite(place_sur_table(c), math.radians(c.lacet_deg),
                                                c.profondeur, c.largeur, c.hauteur))
@@ -194,7 +199,8 @@ def plan_en_bref(plan) -> Dict:
 
 
 def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: bool = True,
-                   pencher: bool = True, planificateur: bool = True) -> Dict:
+                   pencher: bool = True, planificateur: bool = True,
+                   postures: bool = False) -> Dict:
     """Le banc T1 sur le robot simulé léger, pour un carton (voir l'en-tête
     du module) ; rend ce qui s'est passé (dictionnaire, voir rapport()).
     `bruit` : couples estimés avec le bruit, le biais et le gain du banc
@@ -206,7 +212,11 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
     (ManipulationService.planifier_prise : la paire de faces et la position
     de base, contrôles faits sans bouger), y va, face à cette paire, et prend
     comme aujourd'hui (debout : `pencher` ne sert alors pas) ; False : face à
-    la table, à la distance de prise (le rapport « avant »)."""
+    la table, à la distance de prise (le rapport « avant »). `postures` (avec
+    le planificateur) : si aucune prise ne passe debout, il essaie les jambes
+    pliées puis le torse penché (planifier_prise(postures=True)) ; le robot
+    prend la posture avant d'ouvrir les bras, se redresse le carton tenu
+    pour le porter, la reprend pour le poser à sa place."""
     from axis_os.hal.drivers.isaac_sim.bruit_couples import BruitCouples
     from axis_os.services.manipulation.service import Etat, Objet
     from axis_os.testing.robot_simule import SimulatedObject, SimulatedRobot
@@ -249,20 +259,22 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
         from axis_os.services.manipulation.planificateur import BordTable, coins_boite
         bord = BordTable((0.0, 0.0), 0.0, PLATEAU_M)
         plan = m.planifier_prise(coins_boite((cx, cy, cz), lacet, c.profondeur, c.largeur,
-                                             c.hauteur), bord)
+                                             c.hauteur), bord, postures=postures)
         res["plan"] = plan_en_bref(plan)
         if plan.choisie is None:
             res.update(issue="refusée", raison=f"prise refusée — {plan.raison}",
-                       tangage_deg=0.0)
+                       tangage_deg=0.0, abaissement_cm=0.0)
             return res
         ch = plan.choisie
         objet = m._objet_paire(plan.boite, ch.paire, bord)
-        d, tangage, cap = ch.d, 0.0, ch.cap
+        d, cap = ch.d, ch.cap
+        tangage, abaissement = ch.posture
     elif pencher:
-        d, tangage, pourquoi = m.plan_penche(objet)
+        (d, tangage, pourquoi), abaissement = m.plan_penche(objet), 0.0
     else:
-        (d, pourquoi), tangage = m.distance_de_prise(objet), 0.0
+        (d, pourquoi), tangage, abaissement = m.distance_de_prise(objet), 0.0, 0.0
     res["tangage_deg"] = round(math.degrees(tangage), 1)
+    res["abaissement_cm"] = round(100 * abaissement, 1)
     if d is None:
         res.update(issue="refusée", raison=f"approche impossible — {pourquoi}",
                    portee=pourquoi_hors_de_portee(m, objet, pourquoi))
@@ -348,8 +360,8 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
             pas()
 
     pas(20)
-    if tangage:                                 # penché avant d'ouvrir les bras
-        penche = r.locomotion.posture(tangage)
+    if tangage or abaissement:                  # penché, jambes pliées, avant d'ouvrir les bras
+        penche = r.locomotion.posture(tangage, abaissement)
         if not penche.ok:
             res.update(issue="refusée", raison=str(penche.reason))
             return res
@@ -389,13 +401,24 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
             if red.ok:
                 jusqua(lambda: not m.tangage_en_cours, 10.0)
                 redresse = abs(r.tangage_taille) < 1e-3
+        elif m.etat is Etat.TENU and abaissement:  # jambes dépliées, le carton tenu
+            red = m.changer_abaissement(0.0)
+            res["redressement"] = red.reason
+            if red.ok:
+                jusqua(lambda: r.locomotion.posture_atteinte, 10.0)
+                redresse = r.abaissement_bassin < 1e-4
         if m.etat is Etat.TENU:
             pas(int(port_s / r._dt))
             signale = m.raison if (m.a_reposer or m.penche) else ""
-            if redresse:                        # penché de nouveau, pour le poser à sa place
+            if redresse and tangage:            # penché de nouveau, pour le poser à sa place
                 rep = m.changer_tangage(tangage)
                 if rep.ok:
                     jusqua(lambda: not m.tangage_en_cours, 10.0)
+            elif redresse and abaissement:      # jambes pliées de nouveau
+                a_, _ = m.abaissement_pour_deposer(PLATEAU_M)
+                if a_:
+                    if m.changer_abaissement(a_).ok:
+                        jusqua(lambda: r.locomotion.posture_atteinte, 10.0)
             pose = m.poser(PLATEAU_M)
             if pose.ok:
                 jusqua(lambda: m.etat is Etat.LIBRE or (m.etat is Etat.TENU and m.raison != ""),
@@ -444,12 +467,12 @@ def essayer_carton(c: CartonTire, reglages=None, port_s: float = 2.0, bruit: boo
 
 def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[int] = None,
              port_s: float = 2.0, bruit: bool = True, pencher: bool = True,
-             planificateur: bool = True) -> List[Dict]:
+             planificateur: bool = True, postures: bool = False) -> List[Dict]:
     """essayer_carton() sur chaque carton, en parallèle (un robot simulé par
     carton, rien de partagé) ; résultats dans l'ordre des cartons."""
     n = processus or max(1, min(len(cartons), os.cpu_count() or 1))
     if n == 1:
-        return [essayer_carton(c, reglages, port_s, bruit, pencher, planificateur)
+        return [essayer_carton(c, reglages, port_s, bruit, pencher, planificateur, postures)
                 for c in cartons]
     import multiprocessing
     # fork (Linux) : les processus partent du nôtre, modules déjà chargés ;
@@ -459,7 +482,8 @@ def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[i
     with ProcessPoolExecutor(max_workers=n, mp_context=contexte) as ex:
         return list(ex.map(essayer_carton, cartons, [reglages] * len(cartons),
                            [port_s] * len(cartons), [bruit] * len(cartons),
-                           [pencher] * len(cartons), [planificateur] * len(cartons)))
+                           [pencher] * len(cartons), [planificateur] * len(cartons),
+                           [postures] * len(cartons)))
 
 
 # ---- rapport ---------------------------------------------------------------
@@ -467,6 +491,11 @@ def campagne(cartons: Sequence[CartonTire], reglages=None, processus: Optional[i
 # Catégories des raisons de refus (la première qui correspond).
 CATEGORIES = (
     ("trop large", ("trop large",)),
+    # Prise en pendule : un carton trop bas pour viser 6 cm au-dessus de son
+    # centre, 3 cm sous son arête (avant « hors de portée » : ce n'est pas la
+    # distance) ; et les mains plus haut que le carton, jambes au plus pliées.
+    ("trop bas pour une prise en pendule", ("trop bas pour une prise en pendule",)),
+    ("trop bas pour les mains", ("trop bas pour les mains", "objet trop bas", "objet entre")),
     ("trop lourd ou trop glissant pour le serrage de prise", ("n'a pas suivi",
                                                                "n'a pas quitté la table")),
     ("trop lourd", ("trop lourd",)),

@@ -4,12 +4,13 @@ de haut.
 
 Carton de la scène T1 (24 × 20 × 20 cm) pris par pick(), bras à 7
 articulations (G1 29 DOF : porté en corps rigide), robot simulé léger.
-Porté là où les mains l'ont serré, il est bien posé jusqu'à un plateau de
-72 cm, à 3 mm près (docs/validation_port_carton.md, §8). Plus bas :
-  1. plateau à 70 cm, hors d'atteinte du chemin en corps rigide : place()
+Porté là où les mains l'ont serré (prise en pendule : ~5 cm au-dessus de son
+centre), il est bien posé jusqu'à un plateau de 68 cm (avant : 72 ; docs/
+validation_port_carton.md, §8). Plus bas :
+  1. plateau à 66 cm (avant : 70), hors d'atteinte du chemin en corps rigide : place()
      rend FAILED/OUT_OF_REACH ; le carton reste tenu, rien ne bouge (bras,
      carton, base) ;
-  2. plateau à 71 cm : le chemin de descente passe, mais en bas les mains
+  2. plateau à 67 cm (avant : 71) : le chemin de descente passe, mais en bas les mains
      ne pourraient pas s'ouvrir sur place. Avant, le repli d'_ouvrir
      rouvrait les roulis : elles remontaient de 2,4 cm en s'ouvrant, le
      carton lâché 3,4 cm au-dessus du plateau. Désormais vérifié avant de
@@ -18,7 +19,7 @@ Porté là où les mains l'ont serré, il est bien posé jusqu'à un plateau de
      mains mesurées, d'où _ouvrir part, ne sont pas tout à fait à leur
      consigne) : si, en bas, les mains ne peuvent pas s'ouvrir sur place
      (simulé ici), l'objet n'est jamais lâché, il est remonté, tenu ;
-  4. plateau à 73 cm, juste au-dessus : posé, mains ouvertes sur place, le
+  4. plateau à 68 cm (avant : 73), juste au-dessus : posé, mains ouvertes sur place, le
      carton à 1 cm au plus au-dessus du plateau (jeu_depose).
 """
 import contextlib
@@ -122,11 +123,11 @@ def refus_propre(plateau, motif, label):
         robot.__exit__(None, None, None)
 
 
-section("1. Plateau à 70 cm, hors d'atteinte : refusé proprement")
-refus_propre(0.70, "hors d'atteinte des bras", "chemin hors d'atteinte des bras")
+section("1. Plateau à 66 cm, hors d'atteinte : refusé proprement")
+refus_propre(0.66, "hors d'atteinte des bras", "chemin hors d'atteinte des bras")
 
-section("2. Plateau à 71 cm : chemin possible, mains qui ne s'ouvriraient pas sur place")
-refus_propre(0.71, "ne pourraient pas s'y ouvrir sur place",
+section("2. Plateau à 67 cm : chemin possible, mains qui ne s'ouvriraient pas sur place")
+refus_propre(0.67, "ne pourraient pas s'y ouvrir sur place",
              "les mains ne pourraient pas s'y ouvrir sur place (vérifié avant de descendre)")
 
 section("3. Ouverture possible avant de descendre, impossible vue en bas : jamais lâché")
@@ -147,15 +148,15 @@ try:
 finally:
     robot.__exit__(None, None, None)
 
-section("4. Plateau à 73 cm, juste au-dessus de la limite : posé, mains ouvertes sur place")
-prise, pose, robot, boite, _ = deposer(0.73)
+section("4. Plateau à 68 cm, juste au-dessus de la limite : posé, mains ouvertes sur place")
+prise, pose, robot, boite, _ = deposer(0.68)
 try:
     fond = boite.position[2] - TAILLE[2] / 2.0
     check("Carton pris, puis posé (PLACED), mains vides", prise.ok and pose.ok
           and pose.status == "PLACED" and robot.held is None
           and robot.manipulation.etat is Etat.LIBRE, f"{prise} {pose}")
-    check(f"… lâché à {100 * (fond - 0.73):.1f} cm au-dessus du plateau (au plus 1, jeu_depose) : "
-          f"les mains s'ouvrent sur place, sans remonter", -0.005 <= fond - 0.73 <= 0.01,
+    check(f"… lâché à {100 * (fond - 0.68):.1f} cm au-dessus du plateau (au plus 1, jeu_depose) : "
+          f"les mains s'ouvrent sur place, sans remonter", -0.005 <= fond - 0.68 <= 0.01,
           str(boite.position))
     check("… aucune chute", not robot.chutes, str(robot.chutes))
 finally:

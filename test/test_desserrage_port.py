@@ -29,7 +29,12 @@ raideur_articulations : un moteur qui faiblit) :
   3. la foulée : une variation du serrage au pas de la marche n'arrête plus
      la base (la marge sur 0,3 s l'aurait arrêtée) ; une main desserrée sans
      que le carton bouge est jugée sur la foulée, en ~1 s (le compromis
-     accepté).
+     accepté) ;
+  4. le carton qui tourne entre les paumes (essai GPU du 20 novembre 2026,
+     21 h 37) : au 2e écartement des mains en 10 s, ou dès que l'écart
+     grandit malgré le resserrage, transport interrompu, à reposer ;
+  5. l'hystérésis des écartements : le bruit de mesure de l'écart n'en fait
+     pas compter un 2e, un vrai 2e écartement compte toujours.
 """
 import contextlib
 import io
@@ -147,6 +152,14 @@ def carton_vide(b):
     b.r.MASSE_OBJET_KG = 0.1                   # le fond lâche, le contenu tombe
 
 
+def carton_allege(b):
+    # Il ne pèse plus que 0,35 kg (sous part_poids_min du poids de référence) :
+    # prise en pendule, le carton vidé à 0,1 kg (ou à 0,3) relâche assez les
+    # bras pour que les mains s'écartent aussi ; allégé à 0,35, seul le poids
+    # le dit.
+    b.r.MASSE_OBJET_KG = 0.35
+
+
 def carton_ecrase(b):
     o = b.r.held
     o.size = (o.size[0] - 0.01, o.size[1], o.size[2])
@@ -165,6 +178,7 @@ CAS = [
      "s'écarte, le carton est moins serré", lacets(droit=0.08, gauche=0.08)),
     ("les deux mains lâchent ensemble (lacets 0,09 rad)", lacets(droit=0.09, gauche=0.09)),
     ("le carton se vide : il ne pèse plus que 0,1 kg", carton_vide),
+    ("le carton s'allège : il ne pèse plus que 0,35 kg", carton_allege),
     ("le carton s'écrase de 1 cm entre les mains", carton_ecrase),
 ]
 RES = {}
@@ -180,14 +194,18 @@ for nom, panne in CAS:
           and min(premiers.values()) <= DELAI, f"{b.avant} {premiers}")
 
 section("2. Chaque contrôle direct, seul, en 0,3 s au plus")
-vu, lache, premiers = RES["le carton se vide : il ne pèse plus que 0,1 kg"]
-check(f"Poids qui chute, seul (le carton se vide, rien ne bouge) : vu en "
+vu, lache, premiers = RES["le carton s'allège : il ne pèse plus que 0,35 kg"]
+check(f"Poids qui chute, seul (le carton s'allège, rien ne bouge) : vu en "
       f"{premiers.get('poids qui chute', math.nan):.2f} s (avant : moyenne de 0,3 s puis 0,3 s, "
       f"~0,5 s)", set(premiers) <= {"poids qui chute", "rotation"}
       and premiers.get("poids qui chute", 9) <= DELAI)
-vu, lache, premiers = RES[CAS[0][0]]
+# Prise en pendule : la main droite qui glisse de 2,9 cm, ou les deux mains
+# de 0,09 rad, ne lâchent plus le carton (le transport est interrompu avant) ;
+# le bras droit qui faiblit, si.
+vu, lache, premiers = RES[CAS[1][0]]
 check(f"Poids qui chute, carton lâché : vu {premiers.get('poids qui chute', math.nan) - lache:.2f} s "
-      f"après qu'il a quitté les mains", premiers.get("poids qui chute", 9) - lache <= DELAI)
+      f"après qu'il a quitté les mains", lache is not None
+      and premiers.get("poids qui chute", 9) - lache <= DELAI, f"{lache} {premiers}")
 vu, lache, premiers = RES["le carton s'écrase de 1 cm entre les mains"]
 check(f"Mains écartées, seules (carton écrasé, tenu) : vu en "
       f"{premiers.get('mains écartées', math.nan):.2f} s, au pas suivant",
@@ -240,10 +258,14 @@ check(f"Serrage estimé qui varie au pas (±{100 * AMPL:.0f} %, un pas en 0,8 s,
       min(courtes) < R.securite_serrage and min(longues[60:]) >= R.securite_serrage
       and vu is None and lache is None and min(courtes) > R.securite_glissement,
       f"{vu} {premiers}")
-# Une main desserrée sans que le carton bouge : jugée sur la foulée.
+# Des mains desserrées sans que le carton bouge : jugées sur la foulée. Prise
+# en pendule (mains 6 cm au-dessus du centre) : une seule main qui s'ouvre de
+# 1,7 cm (lacet 0,06 rad) laisse la marge à 2,09, au-dessus du coefficient ; à
+# 0,065 rad, le carton tourne (vu en 0,06 s). Les deux mains de 1,2 cm chacune
+# (0,04 rad) : rien ne tourne, rien ne s'écarte.
 b = Banc()
-vu, lache, premiers = b.essai(lacets(droit=0.06), duree=1.5)
-check(f"La main droite s'ouvre de 1,7 cm, le carton ne bouge pas (rien ne tourne, rien ne "
+vu, lache, premiers = b.essai(lacets(droit=0.04, gauche=0.04), duree=1.5)
+check(f"Les deux mains s'ouvrent de 1,2 cm, le carton ne bouge pas (rien ne tourne, rien ne "
       f"s'écarte, il pèse toujours) : marge {b.m.marge_frottement:.2f} sur la foulée, vue en "
       f"{vu if vu is None else f'{vu:.2f}'} s (sur 0,3 s : ~0,3 s) — le compromis accepté",
       vu is not None and vu <= R.fenetre_marge_s + 0.1 and lache is None
@@ -261,6 +283,175 @@ check(f"La foulée : {n} lectures sur {b.m._t_normales[-1] - b.m._t_normales[0]:
 check(f"Rien d'affaibli : coefficient {R.securite_serrage:g}, frottement {R.frottement_serrage:g}, "
       f"reprise {R.securite_reprise:g}",
       R.securite_serrage == 2.0 and R.frottement_serrage == 0.8 and R.securite_reprise == 2.2)
+
+section("4. Carton qui tourne entre les paumes : mains écartées à répétition")
+# Essai GPU du 20 novembre 2026, 21 h 37 : le carton a tourné de 50° autour de
+# la ligne des mains ; l'OS n'en a vu que « mains écartées de 5 à 13 mm »,
+# 8 fois, chaque fois resserrées. Ici, l'écart vu par l'OS (sa géométrie des
+# mains, _serrage_port) est imposé ; tout le reste de l'OS tourne tel quel.
+
+
+def ecart_impose(b):
+    e = [0.0]
+    b.m._serrage_port = lambda angles: b.m._serrage_port_ref - e[0]
+    return e
+
+
+def ecartement(b, e, mm, duree=0.1):
+    e[0] = mm / 1000.0
+    b.pas(round(duree / b.r._dt))
+    e[0] = 0.0
+
+
+def interrompu(b):
+    return next((ligne for ligne in b.journal if ligne.startswith("transport interrompu")), "")
+
+
+b = Banc()
+e = ecart_impose(b)
+ecartement(b, e, 7)
+b.pas(round(2.0 / b.r._dt))
+check("Un écartement de 7 mm, resserré : base arrêtée le temps de resserrer, le port continue",
+      b.m.etat is Etat.TENU and not b.m.a_reposer and b.r.held is not None
+      and any("mains écartées de 7 mm" in ligne for ligne in b.journal) and not interrompu(b),
+      f"{interrompu(b)} {b.journal[-3:]}")
+ecartement(b, e, 7)
+b.pas(5)
+check(f"Le 2e en moins de {R.fenetre_ecartements_s:g} s : transport interrompu, à reposer, "
+      f"« carton qui tourne entre les paumes »",
+      b.m.a_reposer and b.r.held is not None
+      and f"carton qui tourne entre les paumes : mains écartées 2 fois en "
+          f"{R.fenetre_ecartements_s:g} s" in interrompu(b), interrompu(b))
+b = Banc()
+e = ecart_impose(b)
+ecartement(b, e, 7)
+b.pas(round((R.fenetre_ecartements_s + 1.0) / b.r._dt))
+ecartement(b, e, 7)
+b.pas(round(2.0 / b.r._dt))
+check(f"Deux écartements à plus de {R.fenetre_ecartements_s:g} s l'un de l'autre : chacun "
+      f"resserré, le port continue", not b.m.a_reposer and not interrompu(b), interrompu(b))
+b = Banc()
+e = ecart_impose(b)
+e[0] = 0.006
+t0 = b.t[0]
+while not b.m.a_reposer and b.t[0] - t0 < 2.0:
+    b.pas()
+    e[0] += 0.0005                           # 2,5 cm/s : le carton tourne encore
+check(f"L'écart qui grandit malgré le resserrage (de plus de {1000 * R.croissance_ecart_m:g} mm "
+      f"après {R.delai_croissance_s:g} s) : transport interrompu en "
+      f"{b.t[0] - t0:.2f} s, avant l'abandon du resserrage ({R.duree_resserrage_s:g} s)",
+      b.m.a_reposer and b.t[0] - t0 < R.duree_resserrage_s
+      and "malgré le resserrage" in interrompu(b)
+      and "carton qui tourne entre les paumes" in interrompu(b), interrompu(b))
+
+section("5. Hystérésis des écartements : le bruit de mesure n'en fait pas compter un 2e")
+# Le bruit de l'écart lu en marchant : 0,2 à 0,45 mm par lecture (essais GPU
+# 17 h 16, 18 h 21, 21 h 37 ; ReglagesPrise.hysteresis_ecart_m). Sans
+# hystérésis, l'écart qui repassait le seuil comptait un écartement de plus :
+# au 2e en 10 s, transport interrompu, le carton tenu.
+BAS = 1000 * (R.ecart_face_port_m - R.hysteresis_ecart_m)
+OSCILLE = (5.2, 4.8, 5.3, 4.6, 5.1, 4.9, 5.2)
+
+
+def oscille(b, e):
+    """L'écart lu qui oscille autour du seuil (toutes les 0,1 s), puis revenu
+    sous la bande ; rend le nombre d'écartements comptés pendant l'oscillation."""
+    for mm in OSCILLE:
+        e[0] = mm / 1000.0
+        b.pas(round(0.1 / b.r._dt))
+    compte = len(b.m._ecartements)
+    e[0] = (BAS - 0.5) / 1000.0
+    b.pas(round(1.0 / b.r._dt))
+    return compte
+
+
+b = Banc()
+e = ecart_impose(b)
+compte = oscille(b, e)
+check(f"Écart qui oscille autour du seuil ({', '.join(f'{v:g}' for v in OSCILLE)} mm), jamais "
+      f"sous {BAS:g} mm : un seul écartement compté, fini l'écart revenu sous {BAS:g} mm ; le "
+      f"port continue", compte == 1 and not interrompu(b) and not b.m.a_reposer
+      and b.m._ecart_debut is None and b.r.held is not None, f"{compte} {interrompu(b)}")
+b = Banc()
+b.m.r = replace(R, hysteresis_ecart_m=0.0)
+e = ecart_impose(b)
+oscille(b, e)
+check("… la même oscillation sans hystérésis (avant) : un écartement à chaque passage du seuil, "
+      "transport interrompu « mains écartées 2 fois en 10 s », le carton tenu",
+      b.m.a_reposer and "mains écartées 2 fois en" in interrompu(b), interrompu(b))
+ecartement(b := Banc(), e := ecart_impose(b), 7, duree=0.1)
+e[0] = (BAS - 0.5) / 1000.0
+b.pas(round(1.0 / b.r._dt))
+ecartement(b, e, 7)
+b.pas(5)
+check(f"Un vrai 2e écartement, l'écart revenu sous {BAS:g} mm entre les deux, en moins de "
+      f"{R.fenetre_ecartements_s:g} s : compté, transport interrompu",
+      b.m.a_reposer and "mains écartées 2 fois en" in interrompu(b), interrompu(b))
+
+
+def ecart_resserre(b, mm, sigma_mm=0.0, graine=0):
+    """Un vrai écartement de `mm`, que le resserrage résorbe : l'écart vrai
+    baisse de ce que la consigne des deux mains avance (carton rigide) ; l'OS
+    le lit avec un bruit gaussien de `sigma_mm` par lecture. Rend la lecture
+    de l'écart par l'OS."""
+    rng = np.random.default_rng(graine)
+    d0 = sum(b.m._delta.values())
+    b.m._serrage_port = lambda angles: b.m._serrage_port_ref - (
+        mm / 1000.0 - (sum(b.m._delta.values()) - d0) + rng.normal(0.0, sigma_mm / 1000.0))
+    return lambda: 1000 * (b.m._serrage_port_ref - b.m._serrage_port(None))
+
+
+# Carton de 0,5 kg : les bras ont de la marge sous leurs plafonds pour resserrer
+# (1 N·m ; à 1 kg, prise en pendule, les lacets des poignets en sont à 0,1).
+repart = {}
+for h in (R.hysteresis_ecart_m, 0.0):
+    b = Banc(masse=0.5)
+    b.m.r = replace(R, hysteresis_ecart_m=h)
+    lire = ecart_resserre(b, 7.5)
+    arretee = False
+    while b.t[0] < 60.0:
+        b.pas()
+        arretee = arretee or b.m.penche
+        if arretee and not b.m.penche:
+            break
+    repart[h] = lire()
+check(f"Un vrai écartement de 7,5 mm, resserré : la base repart l'écart à "
+      f"{repart[R.hysteresis_ecart_m]:.1f} mm, sous {BAS:g} (le resserrage l'y a amené) ; sans "
+      f"hystérésis, elle repartait à {repart[0.0]:.1f} mm, au ras du seuil, là où le bruit le "
+      f"refait passer", repart[R.hysteresis_ecart_m] < BAS
+      and BAS < repart[0.0] <= 1000 * R.ecart_face_port_m, str(repart))
+SIGMA = 0.45
+for h, attendu in ((R.hysteresis_ecart_m, 0), (0.0, 3)):
+    raisons = []
+    for graine in range(3):
+        b = Banc(masse=0.5)
+        b.m.r = replace(R, hysteresis_ecart_m=h)
+        ecart_resserre(b, 7.0, SIGMA, graine)
+        b.pas(round(10.0 / b.r._dt))
+        raisons.append(interrompu(b))
+    check(f"Un vrai écartement de 7 mm, puis 10 s d'écart lu à ±{SIGMA:g} mm (écart-type, le "
+          f"plus bruité des essais GPU), 3 tirages : " + (
+              f"hystérésis de {1000 * h:g} mm, jamais interrompu" if not attendu else
+              "sans hystérésis (avant), interrompu à tort à chaque tirage (2e écartement compté)"),
+          sum(bool(x) for x in raisons) == attendu
+          and all("mains écartées 2 fois en" in x for x in raisons if x), str(raisons))
+
+b = Banc()
+e = ecart_impose(b)
+ecartement(b, e, 7, duree=0.1)
+e[0] = 0.004
+b.pas(round(0.7 / b.r._dt))
+repartie = not b.m.penche and any("hors de portée des bras, à leurs plafonds" in ligne
+                                  for ligne in b.journal)
+e[0] = 0.0053
+b.pas(round(0.1 / b.r._dt))
+e[0] = 0.004
+b.pas(round(1.0 / b.r._dt))
+check(f"Carton de 1 kg, bras à leurs plafonds (rien de plus à serrer) : la base repart l'écart "
+      f"revenu sous le seuil (4 mm), comme avant l'hystérésis ; l'écartement reste en cours : "
+      f"un nouveau passage du seuil (5,3 mm) arrête la base, sans compter un 2e écartement",
+      repartie and len(b.m._ecartements) == 1 and not interrompu(b) and not b.m.a_reposer,
+      f"{repartie} {len(b.m._ecartements)} {interrompu(b)} {b.journal[-3:]}")
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")

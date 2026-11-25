@@ -6,8 +6,10 @@ changer_tangage), par la consigne de posture de la marche (bornée,
 Robot simulé léger, G1 29 DOF (sa taille tangue), mains du G1, carton de
 la scène T1 posé de plus en plus loin du bord de la table :
   1. Plan : à portée debout, pas de penche ; un peu plus loin, le plus petit
-     tangage qui suffit, la marge d'équilibre écrite ; trop loin, refus pour
-     l'équilibre (carton de masse_max_kg aux mains), la marge écrite.
+     tangage qui suffit, la marge d'équilibre écrite ; penché sans que le
+     torse puisse se redresser le carton tenu, refus avant de bouger ; trop
+     loin, refus pour l'équilibre (carton de masse_max_kg aux mains), la
+     marge écrite.
   2. Penché, pris (0,5 kg : bras ainsi tendus, 1 kg dépasse les plafonds
      des poignets), puis redressé le carton tenu : le carton ne bouge pas
      pendant le redressement (ni en place ni en orientation), le robot finit
@@ -47,16 +49,19 @@ def section(t):
 class Banc:
     """Le carton T1 à `retrait` du bord de la table, robot démarré."""
 
-    def __init__(self, retrait, masse=1.0):
+    def __init__(self, retrait, masse=1.0, hauteur=None, table=K.PLATEAU_M):
         self.t = [0.0]
-        c = replace(K.CARTON_T1, retrait_m=retrait, masse_kg=masse)
+        c = replace(K.CARTON_T1, retrait_m=retrait, masse_kg=masse,
+                    hauteur=K.CARTON_T1.hauteur if hauteur is None else hauteur)
         self.c = c
         cx, cy, cz = K.place_sur_table(c)
+        cz += table - K.PLATEAU_M                  # la table à `table` m
         self.carton = SimulatedObject("carton", (cx, cy, cz), size=(c.largeur, c.profondeur,
                                                                      c.hauteur), masse_kg=c.masse_kg)
         with contextlib.redirect_stdout(io.StringIO()):
             self.r = SimulatedRobot(objects=[self.carton], horloge=lambda: self.t[0],
-                                    contact_main_m=0.11, poignets_29dof=True, plateaux=[K.TABLE])
+                                    contact_main_m=0.11, poignets_29dof=True,
+                                    plateaux=[K.TABLE[:4] + (table,)])
             self.r.start(fil=False)
         self.m = self.r.manipulation
         self.objet = Objet((cx, cy, cz), c.largeur, c.profondeur, c.hauteur,
@@ -99,10 +104,21 @@ section("1. Plan : debout, penché juste assez, ou refus pour l'équilibre")
 d, t, raison = Banc(0.15).m.plan_penche(Banc(0.15).objet)
 check(f"Carton à 15 cm du bord : à portée debout (d = {d}), pas de penche", d is not None and t == 0.0,
       raison)
-b = Banc(0.29)
+# Prise en pendule (mains ~5 cm au-dessus du centre) : sur la table de 80 cm,
+# le carton qu'il faut se pencher pour atteindre (31 cm du bord) est pris,
+# mais les bras, au plus haut de leur portée, ne le ramènent plus ni ne le
+# tiennent quand le torse se redresse. Sur une table de 70 cm (mains plus bas
+# par rapport aux épaules) : debout jusqu'à 27 cm, penché à 28 cm ; à 29 cm,
+# penché de 5,7°, le torse ne se redresserait pas le carton tenu (le plan le
+# vérifie, comme le planificateur) ; refusé pour l'équilibre au-delà.
+b = Banc(0.28, table=0.70)
 d, t, raison = b.m.plan_penche(b.objet)
-check(f"À 29 cm : penché de {math.degrees(t):.1f}°, la marge d'équilibre écrite (« {raison} »)",
+check(f"Table de 70 cm, carton à 28 cm : penché de {math.degrees(t):.1f}°, la marge d'équilibre écrite (« {raison} »)",
       d is not None and 0.0 < t <= 0.10 and "cm dans l'appui" in raison, raison)
+b = Banc(0.29, table=0.70)
+d, t, raison = b.m.plan_penche(b.objet)
+check(f"… à 29 cm : refusé avant de bouger, le torse ne se redresserait pas le carton tenu "
+      f"(« {raison[-110:]} »)", d is None and "ne se redresserait pas" in raison, raison)
 d, t, raison = Banc(0.32).m.plan_penche(Banc(0.32).objet)
 check(f"À 32 cm : refusé pour l'équilibre, la marge écrite (« {raison[-110:]} »)",
       d is None and "équilibre" in raison and "appui des pieds" in raison, raison)
@@ -110,7 +126,7 @@ check(f"À 32 cm : refusé pour l'équilibre, la marge écrite (« {raison[-110:
 section("2. Penché, pris, redressé le carton tenu (0,5 kg)")
 # 1 kg, bras ainsi tendus : « trop lourd pour ces mains » (les plafonds des
 # poignets). Le plan, lui, juge l'équilibre avec masse_max_kg aux mains.
-b = Banc(0.29, masse=0.5)
+b = Banc(0.28, masse=0.5, table=0.70)
 d, t, raison = b.prendre_penche()
 check(f"Penché de {math.degrees(t):.1f}°, carton pris et tenu (TENU)",
       t > 0.0 and b.m.etat is Etat.TENU and b.r.held is b.carton, f"{b.m.etat} {b.m.raison}")

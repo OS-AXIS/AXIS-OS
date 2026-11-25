@@ -10,6 +10,58 @@ du SDK (manifest, HAL, interfaces store) — pas chaque commit interne.
 
 ## [Non publié]
 
+### Prise en pendule ; rotation entre les paumes ; calibration sur une table du site ; se pencher et plier les jambes
+
+Essais GPU T1 du 20 novembre 2026 (20 h 27 et 21 h 37) ; détail dans
+docs/validation_port_carton.md, §15.
+- Prise en pendule : la ligne des mains AU-DESSUS du centre de gravité, de
+  `marge_pendule_m` (3 cm) au moins au serrage (estimée par l'OS), visée
+  6 cm au-dessus (`affaissement_prise_m` : les mains se posent 3 cm plus bas
+  que visé), le contact à `bord_face_m` (3 cm) au moins sous l'arête ; un
+  carton de moins de 18 cm de haut est refusé, avec la raison. Avant : la
+  ligne « à 8,3 cm au plus » du centre, dessus comme dessous. Robot simulé :
+  le carton tenu tourne autour de la ligne des mains (pendule), dans les deux
+  sens.
+- Carton qui tourne entre les paumes : au 2e écartement des mains en 10 s,
+  ou dès que l'écart grandit malgré le resserrage, transport interrompu ;
+  caméra de tête : la pente du dessus vu en partie, arrêt à 6°
+  (`rotation_vue_max_deg`), jamais pour autoriser.
+- Marge de frottement au port sur le plus prudent de la pesée et du poids
+  lu sur la foulée.
+- Calibration de charge : la masse de référence sur un emplacement libre de
+  la table de prise (connue du site), prise par l'app comme un carton
+  (`FacadeServices.calibrer_charge`) ; le banc T1 calibre par défaut.
+- Bancs Isaac : préparation commune (`banc_prise.preparer_scene`,
+  `demarrer_services`, `objets_inconnus`), pour T1 et le banc de posture.
+- Se pencher et plier les jambes dans l'app de tri et le planificateur, dans
+  les limites du banc de posture (torse 0,35 rad, bassin 10 cm, marge 2 cm) :
+  `ManipulationService.plan_posture` (les jambes d'abord pour descendre, le
+  torse pour aller plus loin), `abaissement_pour_deposer` et
+  `changer_abaissement` (plateau bas), `planifier_prise(postures=True)` ; la
+  prise calculée sur la taille mesurée.
+- Après la revue : `plan_penche` vérifie que le torse se redresse l'objet
+  tenu ; placement des mains en profondeur à la moitié de ce que la ligne
+  des mains admet, `corrections_max` 2 → 3 ; `pick()` : le planificateur ne
+  s'égare plus sur la graine d'une candidate refusée ; distance de prise
+  refusée si les mains ouvertes n'atteignent pas ; mains ouvertes visées en
+  arrière de ce que la fermeture les avance (3,4 mm) ; suite de tests sous
+  les 45 min de la CI (cinématique inverse : 4 passes par tour au lieu
+  de 7).
+- Hystérésis des écartements des mains au port (`hysteresis_ecart_m`,
+  3 mm) : arrêtée pour un écartement, la base ne repart que l'écart revenu
+  sous 2 mm, et le suivant ne compte qu'alors ; un écart lu qui oscille
+  autour du seuil n'interrompt plus le transport (§15.10).
+- Campagne de cartons : les déposés perdus depuis la PR #35 attribués
+  carton par carton (§15.9).
+- Poids qui chute au port, jugé depuis le niveau lu au début du port, dans
+  la même posture : plus bas de 60 % du poids pesé (plus deux fois
+  l'incertitude du niveau encore jeune), pendant 0,15 s ; avant qu'il soit
+  lu (0,4 s), depuis le plus bas de la pesée et du poids lu en entrant au
+  port : un lâcher dès l'entrée au port est vu en 0,3 s au plus, comme
+  plus tard. Le carton n° 105 n'est plus reposé à tort (§15.11).
+- CI : délai du job tests porté à 60 min (la suite prend de 33 à 43 min
+  selon la machine).
+
 ### Pesée sur 100 lectures
 
 Décision sur la PR #38 ; détail dans docs/validation_port_carton.md, §14.

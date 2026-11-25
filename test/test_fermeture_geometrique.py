@@ -31,7 +31,13 @@ from axis_os.testing import SimulatedObject, SimulatedRobot  # noqa: E402
 FAIL = 0
 R = ReglagesPrise()
 CARTON = Objet((0.30, 0.0, 0.90), 0.24, 0.20, 0.20)
-Z_CIBLE = 0.90 - SimulatedRobot.PELVIS_HEIGHT_M       # milieu des faces, repère du bassin
+
+
+def sous_cibles(m, mains):
+    """De combien (m) les mains sont sous leurs cibles, au plus : les mains
+    ouvertes visées au-dessus du centre (prise en pendule), plus haut de ce que
+    la fermeture les fera descendre (plan["cibles"], ce que l'OS vérifie)."""
+    return max(float(c[2]) - float(p[2]) for p, c in zip(mains, m._plan["cibles"]))
 
 
 def check(label, cond, detail=""):
@@ -85,13 +91,16 @@ section("1. Le constat GPU : bras affaissés, borne q_vide atteinte avant les fa
 # les mains » ; le critère géométrique continue jusqu'au contact. Cette
 # section imite le placement d'avant (tolérances larges) pour atteindre la
 # fermeture : sans la règle des 7 cm derrière la face avant, venue après
-# (recul_face_min_m), que l'affaissement non compensé enfreint (5,6 cm).
+# (recul_face_min_m), que l'affaissement non compensé enfreint (5,6 cm) ; et
+# sans la ligne des mains de la prise en pendule (mains placées à la moitié
+# de ce qu'elle admet en profondeur, venue après) : securite_basculement
+# 0,3, elle admet 6 cm.
 large = ReglagesPrise(tol_hauteur_m=0.12, tol_profondeur_m=0.06, corrections_max=0,
-                      recul_face_min_m=0.0)
+                      recul_face_min_m=0.0, securite_basculement=0.3)
 r, etats, mains, _ = prise(0.25, reglages=large)
 m = r.manipulation
 check("Mains 6 à 7 cm sous leurs cibles à la fermeture (affaissement non compensé)",
-      mains is not None and Z_CIBLE - mains[0][2] > 0.05, str(mains))
+      mains is not None and sous_cibles(m, mains) > 0.05, str(mains))
 check("Pas de « rien entre les mains » : la fermeture va jusqu'au contact, puis serre",
       "rien entre les mains" not in m.raison and Etat.SERRAGE in etats, f"{m.raison} {etats}")
 r.__exit__(None, None, None)
@@ -109,12 +118,12 @@ check("… exemption levée, aucun serrage", r.guard._exemption is None
       and m.force_max_mesuree < R.force_serrage_n)
 r.__exit__(None, None, None)
 
-section("3. Affaissement compensé : mains au milieu des faces avant de fermer")
+section("3. Affaissement compensé : mains à leur visée avant de fermer")
 for aff in (0.11, 0.25):
     r, etats, mains, _ = prise(aff)
     m = r.manipulation
-    ecart = None if mains is None else max(abs(mains[0][2] - Z_CIBLE), abs(mains[1][2] - Z_CIBLE))
-    check(f"Affaissement de {aff} rad : mains à {100 * ecart:.1f} cm de la mi-hauteur à la "
+    ecart = None if mains is None else abs(sous_cibles(m, mains))
+    check(f"Affaissement de {aff} rad : mains à {100 * ecart:.1f} cm de leur visée à la "
           f"fermeture (1,5 au plus), après {m.stats.get('corrections_placement', 0)} "
           f"correction(s)", ecart is not None and ecart <= R.tol_hauteur_m
           and m.stats.get("corrections_placement", 0) >= 1, str(mains))
@@ -131,9 +140,9 @@ for aff in (0.11, 0.25):
     alea = random.Random(7)
     r, etats, mains, _ = prise(aff, pas_s=lambda: alea.uniform(0.02, 0.10))
     m = r.manipulation
-    ecart = None if mains is None else max(abs(mains[0][2] - Z_CIBLE), abs(mains[1][2] - Z_CIBLE))
+    ecart = None if mains is None else abs(sous_cibles(m, mains))
     check(f"Affaissement de {aff} rad, pas de 20 à 100 ms : mains à "
-          f"{100 * (ecart if ecart is not None else 0):.1f} cm de la mi-hauteur à la fermeture "
+          f"{100 * (ecart if ecart is not None else 0):.1f} cm de leur visée à la fermeture "
           f"(1,5 au plus), et la prise tient", ecart is not None and ecart <= R.tol_hauteur_m
           and m.etat is Etat.TENU, f"{mains} {m.raison}")
     check("… sans consigne refusée par le garde-fou", r.locomotion.stats["refused"] == 0)

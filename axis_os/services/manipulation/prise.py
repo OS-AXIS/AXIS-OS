@@ -78,7 +78,10 @@ class ReglagesPrise:
     # la compensation ci-dessous.
     tol_hauteur_m: float = 0.015
     compensation_max_m: float = 0.10   # visée décalée d'au plus 10 cm par main pour compenser
-    corrections_max: int = 2
+    # 3 : prise en pendule, mains placées à la moitié de ce que la ligne des
+    # mains admet en profondeur (tolerances_cg) ; bras affaissés de 0,25 rad,
+    # pas de 20 à 100 ms, la 3e correction y amène (test_fermeture_geometrique).
+    corrections_max: int = 3
     rayon_avant_bras_m: float = 0.035
     marge_plateau_m: float = 0.03      # sous l'avant-bras, au-dessus du plateau
     # Le bord d'une table n'est jamais plus près du bassin : pieds contre la
@@ -237,6 +240,34 @@ class ReglagesPrise:
     # rayon du contact).
     frottement_main: float = 1.0
     rayon_contact_main_m: float = 0.02
+    # Prise en pendule : la ligne des mains AU-DESSUS du centre de gravité.
+    # Essai GPU du 20 novembre 2026, 21 h 37 : ligne 0,2 à 1 cm au-dessus du
+    # centre (l'OS la croyait 1,9 cm dessous), centre décalé de 0,9 cm en
+    # profondeur (l'OS : 0) ; le frottement en rotation du caoutchouc ne
+    # retenait presque rien (rayon effectif sous 5 mm) : le carton a tourné de
+    # 50°, l'équilibre d'un pendule presque sans bras (tan θ = e / d). Sous la
+    # ligne d'au moins d, le poids le ramène (couple de rappel m g d sin θ) ;
+    # au-dessus, rien ne le ramène. Les accélérations de la marche (~1 m/s²)
+    # le balancent de atan(a / g) ≈ 6° au plus, quel que soit d, et il revient
+    # (essai de 22 h 04 : ±3° au pas) ; un décalage en profondeur e non vu
+    # le penche de atan(e / d).
+    #   - marge_pendule_m : au moins, la ligne au-dessus du centre, estimée par
+    #     l'OS au serrage (mains mesurées) : plus que l'erreur de l'OS sur la
+    #     hauteur de la ligne à 21 h 37 (2,4 cm : vue à -1,9, vraie à +0,5),
+    #     pour que le centre soit sous la ligne à coup sûr ;
+    #   - affaissement_prise_m : de combien les mains se posent plus bas que
+    #     visé (bras sous leur poids, fermeture) : 1,9 cm à 21 h 37, 2,6 cm
+    #     sur le robot simulé ; la visée est marge + affaissement ;
+    #   - bord_face_m : le contact à au moins 3 cm sous l'arête du dessus (la
+    #     paume a une étendue, BORD_FACE_M du robot simulé : 2 cm, plus 1 cm) ;
+    #     un carton trop bas pour la visée (moins de 18 cm) est refusé, avec
+    #     la raison.
+    #   Un décalage en profondeur de 0,9 cm (21 h 37) penche alors le carton
+    #   de atan(0,9 / 3) = 17° au pire, sans aucun frottement en rotation, de
+    #   8,5° visé à 6 cm (la caméra l'arrête à rotation_vue_max_deg).
+    marge_pendule_m: float = 0.03
+    affaissement_prise_m: float = 0.03
+    bord_face_m: float = 0.03
     # La charge la plus lourde que l'OS porte : les tolérances ci-dessus sont
     # calculées pour elle, et un carton pesé au-delà est reposé aussitôt, avant
     # de serrer plus et de le porter. 1 kg, la masse du carton T1, était réglé
@@ -246,15 +277,42 @@ class ReglagesPrise:
     securite_basculement: float = 1.25
     # Le carton tenu qui tourne de plus de `rotation_max_deg` autour de la
     # ligne des mains (caméra de tête quand elle le voit), ou qui ne pèse
-    # plus sur les mains pendant le port (moins de `part_poids_min` du poids
-    # du début du port, pendant `duree_perte_s`) : on le repose au lieu de
+    # plus sur les mains pendant le port (le poids lu plus bas que celui du
+    # début du port de plus de 1 - `part_poids_min` du poids pesé, pendant
+    # `duree_perte_s` : voir recentes_niveau_s) : on le repose au lieu de
     # marcher avec (ou, en marche, on s'arrête et on le signale).
     rotation_max_deg: float = 10.0
+    # Vue par la caméra de tête (en entier, ou son dessus en partie), le
+    # carton tenu s'arrête plus tôt : à rotation_vue_max_deg. Il tourne
+    # jusqu'à ~8°/s entre les paumes (essai GPU du 20 novembre 2026, 21 h 37 :
+    # de -4,8° à -8,7° en 0,5 s au début du port) ; 2° d'erreur de la vue et
+    # une image de retard (0,1 s) ne le laissent pas passer
+    # rotation_max_deg. Ne sert qu'à arrêter et reposer,
+    # jamais à autoriser : un carton vu droit n'efface aucune autre alerte.
+    rotation_vue_max_deg: float = 6.0
     part_poids_min: float = 0.4
     # Poids qui chute : jugé sur les filtre_force dernières lectures (0,1 s),
     # pendant duree_perte_s, pour qu'un carton qui glisse ou s'échappe soit vu
     # en 0,3 s au plus (avant : moyenne de 0,3 s, puis 0,3 s, ~0,5 s en tout).
     duree_perte_s: float = 0.15
+    # Au port, la chute se juge depuis le niveau lu au début du port, dans la
+    # même posture (le décalage des couples, qui change avec la posture, s'y
+    # annule) : le poids lu plus bas que ce niveau de plus de
+    # (1 - part_poids_min) du poids pesé, 60 %. Le niveau : la moyenne des
+    # lectures de la première foulée du port (fenetre_marge_s), sans celles des
+    # recentes_niveau_s les plus récentes tant qu'elle se remplit (une chute en
+    # cours n'abaisse pas sa propre référence) ; pas encore lu (0,4 s), le plus
+    # bas de la pesée et du poids lu en entrant au port. Avant, « moins de 40 %
+    # du plus grand poids lu depuis le levage », pris dans d'autres postures :
+    # prise en pendule, un carton de 0,22 kg tenu y était lu sous ce seuil
+    # (campagne, n° 105).
+    recentes_niveau_s: float = 0.3
+    # Encore jeune (ses premières lectures), le niveau est lui-même incertain :
+    # la chute doit le dépasser de sigmas_niveau_port fois son incertitude
+    # (écart-type des lectures sur la racine de leur nombre) ; mûr (une
+    # foulée), presque rien. Sur le bruit réel des essais GPU, sans elle, plus
+    # de fausses alertes que l'ancienne règle à 5 et 10 N (test_poids_qui_chute).
+    sigmas_niveau_port: float = 2.0
     # Serrage d'après le poids (essai GPU T1 du 5 novembre 2026, 21 h 57 :
     # carton de 10,9 N tenu à 6,5 N par main, soit un frottement d'au moins
     # 0,84 rien que pour le porter, aucune marge ; il a glissé à la marche).
@@ -342,6 +400,30 @@ class ReglagesPrise:
     # (à reposer).
     ecart_face_port_m: float = 0.005
     duree_resserrage_s: float = 1.0
+    # Mains écartées à répétition : un carton qui tourne entre les paumes
+    # (essai GPU T1 du 20 novembre 2026, 21 h 37 : tourné de 50° autour de la
+    # ligne des mains, paumes immobiles à 3,8° près ; seul signe vu par l'OS,
+    # « mains écartées de 5 à 13 mm », 8 fois, chaque fois resserrées). Au
+    # ecartements_max-ième écartement en fenetre_ecartements_s, ou dès que
+    # l'écart grandit de croissance_ecart_m malgré le resserrage : transport
+    # interrompu, à reposer, avec la raison. L'écart de référence est le plus
+    # grand vu pendant delai_croissance_s (le temps que le resserrage agisse :
+    # la main glisse encore quelques pas, robot simulé).
+    ecartements_max: int = 2
+    fenetre_ecartements_s: float = 10.0
+    # Hystérésis, comme celle de la marge (arrêt sous 2,0, reprise au-dessus de
+    # 2,2) : arrêtée pour un écartement, la base ne repart que l'écart revenu
+    # sous ecart_face_port_m - hysteresis_ecart_m (le resserrage l'y amène) ;
+    # alors seulement l'écartement finit, et le suivant peut compter. Le
+    # bruit de l'écart lu, en marchant : 0,2 à 0,45 mm par lecture (écart-type
+    # autour de sa médiane sur 0,3 à 0,5 s, hors l'arrondi au mm du journal ;
+    # essais GPU 17 h 16, 18 h 21, 21 h 37). Un vrai écartement, puis ce bruit
+    # 10 s (boucle simulée, resserrage de 0,25 à 1 mm par lecture) : 2e
+    # écartement compté à tort, donc transport interrompu, 59 à 100 % du temps
+    # sans hystérésis, 10 à 87 % à 1 mm, 0 à 8,5 % à 2 mm, 0,1 % au plus à 3.
+    hysteresis_ecart_m: float = 0.003
+    croissance_ecart_m: float = 0.002
+    delai_croissance_s: float = 0.2
     # Au retour (RAMENER), les deux mains bougent comme un seul corps rigide
     # avec le carton (essai GPU T1 du 6 novembre 2026, 18 h 21 : la
     # cinématique inverse ne tenait que la POSITION des points de contact ;
@@ -597,6 +679,16 @@ def tolerances_cg(r: "ReglagesPrise", force_n: Optional[float] = None,
     return e, e / math.sin(math.radians(r.rotation_max_deg))
 
 
+def hauteur_prise(r: "ReglagesPrise", hauteur_objet: float) -> Optional[float]:
+    """De combien (m) viser les mains au-dessus du centre d'un objet de
+    `hauteur_objet` (prise en pendule) : marge_pendule_m plus
+    affaissement_prise_m (elles se posent plus bas que visé) ; None si cela
+    les met à moins de bord_face_m de l'arête du dessus (objet trop bas pour
+    une prise en pendule)."""
+    dz = r.marge_pendule_m + r.affaissement_prise_m
+    return dz if dz <= hauteur_objet / 2.0 - r.bord_face_m + 1e-9 else None
+
+
 def ecart_ligne_cg(contact_g: np.ndarray, contact_d: np.ndarray, cg: np.ndarray
                    ) -> Tuple[float, float]:
     """Où passe la ligne qui joint les points de contact des mains, par
@@ -701,7 +793,8 @@ def distance_ideale(modele: ModeleBras, largeur: float, profondeur: float, haute
             if bord < r.bord_min_m + debord_pieds \
                     or pieds < r.bord_min_m + debord_pieds + marge_pieds:
                 continue
-            c = np.array([float(d), 0.0, centre_z])
+            # Les mains visées au-dessus du centre (prise en pendule).
+            c = np.array([float(d), 0.0, centre_z + (hauteur_prise(r, hauteur) or 0.0)])
             q, _ = resoudre(modele, *cibles_mains(c, largeur, 0.0, r.demi_main_m), depart)
             if q is None:
                 continue

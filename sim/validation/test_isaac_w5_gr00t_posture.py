@@ -51,7 +51,8 @@ from banc_posture import (  # noqa: E402
     COLONNES, MAINTIEN_S, Palier, inclinaison_deg, paliers, verdict,
 )
 from banc_prise import (  # noqa: E402
-    eclairer, gains_prise, mains_caoutchouc, poser_devant, profil_robot_banc,
+    demarrer_services, gains_prise, objets_inconnus, plateau_site, poser_devant,
+    preparer_scene, profil_robot_banc,
 )
 
 POLICIES = Path("/isaac-sim/policies")
@@ -149,18 +150,16 @@ def main():
         scale=np.array([0.40, 0.60, sd.PLATEAU]), mass=50.0,
         color=np.array([0.55, 0.55, 0.58])))
     UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath("/World/plateau")).CreateKinematicEnabledAttr(True)
-    # Mains caoutchouc et éclairage de T1 (code commun : banc_prise), APRÈS les
-    # corps rigides, dans l'ordre de T1 : posés avant, ils invalidaient la vue
-    # physique et DynamicCuboid plantait (« Simulation view object is
-    # invalidated », essai GPU du 20/11).
-    mains_caoutchouc(stage)
-    for ligne_ in eclairer(stage):
-        print(f"  {ligne_}", flush=True)
+    # Préparation commune des bancs (banc_prise.preparer_scene, celle de T1),
+    # APRÈS les corps rigides : mains caoutchouc et éclairage de T1, puis
+    # world.reset(). Posés avant les corps, ils invalidaient la vue physique
+    # et DynamicCuboid plantait (« Simulation view object is invalidated »,
+    # essai GPU du 20/11).
+    preparer_scene(world, stage, journal=lambda m_: print(f"  {m_}", flush=True))
 
     g = pol.gains()
     for i, j in enumerate(cfg.body_joints[cfg.num_actions:]):
         g[j] = (KP_BRAS[i % 7], KD_BRAS[i % 7])
-    world.reset()
     robot.get_articulation_controller().set_gains(
         kps=np.array([g[j][0] for j in names]), kds=np.array([g[j][1] for j in names]))
     # Gains de prise : poignets, coude et lacet d'épaule raidis de la
@@ -202,7 +201,6 @@ def main():
     adapt = GR00TWBCAdapter(pol)
     loco = LocomotionService(adapt, read_state, send_targets,
                              command_timeout_s=0.5, clock=lambda: sim_t[0])
-    loco.start()
     modele = ModeleBras()
 
     # ---- la prise de l'OS, branchée comme dans le banc T1 -----------------
@@ -248,9 +246,11 @@ def main():
                                 lambda: manip.objet_entre_les_mains(),
                                 horloge=lambda: sim_t[0], mesures=mesures_bras,
                                 journal=lambda m: print(f"  [{sim_t[0]:6.1f}s] {m}", flush=True))
-    # Démarré comme dans T1 : sans lui, prendre() refusait « service non démarré »
-    # (essai GPU du 20/11, série avec carton jamais faite).
-    manip.start()
+    # Services démarrés comme dans T1 (banc_prise.demarrer_services) : sans
+    # elle, prendre() refusait « service non démarré » (essai GPU du 20/11,
+    # série avec carton jamais faite).
+    demarrer_services([("locomotion", loco), ("manipulation", manip)],
+                      journal=lambda m_: print(f"  {m_}", flush=True))
 
     chemins = {}
 
@@ -369,6 +369,14 @@ def main():
         (banc_prise.poser_devant) ; rend ce que la perception en dirait
         (Objet, repère monde)."""
         centre, lacet_r = poser_devant(robot, carton, plateau, X_CARTON, sd.PLATEAU, HAUTEUR)
+        # Le plateau, déclaré comme une table du site (sa carte : la même API
+        # que les tables de T1) ; le carton doit reposer dessus. Ce banc n'a
+        # pas de lidar, donc pas de gardien de proximité.
+        pr_, _ = robot.get_world_pose()
+        site = [plateau_site((float(pr_[0]), float(pr_[1]), lacet_r), X_CARTON, sd.PLATEAU)]
+        inconnus_ = objets_inconnus([("carton", (centre[0], centre[1]))], site)
+        if inconnus_:
+            raise RuntimeError(f"objets posés devant le robot hors des tables du site : {inconnus_}")
         return Objet(centre, LARGEUR, PROFONDEUR, HAUTEUR, lacet=lacet_r, bord_m=0.0)
 
     def mesure():

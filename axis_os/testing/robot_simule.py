@@ -1018,6 +1018,16 @@ class SimulatedRobot:
         for j in self._poignets:
             self._poignets[j], self._couples_poignets[j] = q[j], couples[j]
 
+    def _bras_levier(self) -> float:
+        """Bras de levier horizontal (m) du centre de l'objet tenu autour de
+        la ligne des mains, tourné de rotation_objet_deg : e cos θ - z sin θ,
+        e devant la ligne (+), z au-dessus d'elle (+). Le poids fait tourner
+        l'objet dans le sens qui l'annule : sous la ligne (z < 0), il revient
+        (pendule) ; au-dessus, il s'en éloigne."""
+        th = math.radians(self.rotation_objet_deg)
+        e, z = float(self._centre_tenu[0]), float(self._centre_tenu[2])
+        return e * math.cos(th) - z * math.sin(th)
+
     def _efforts_objet_tenu(self, q: Dict[str, float]) -> Dict[str, np.ndarray]:
         """Effort (force et moment, 6 valeurs, repère du bassin) que l'objet
         tenu exerce sur chaque main : la moitié de son poids, le couple de
@@ -1032,11 +1042,9 @@ class SimulatedRobot:
         milieu = (g + d) / 2.0
         a = (g - d) / max(1e-9, float(np.linalg.norm(g - d)))
         poids = self._masse(self.held) * 9.81
-        e = float(self._centre_tenu[0])           # centre devant (+) ou derrière la ligne
         retenu = 2.0 * (2.0 / 3.0) * self._frottement(self.held) \
             * min(self.forces_contact.values()) * self.RAYON_CONTACT_M
-        couple = max(-retenu, min(retenu, poids * e * math.cos(math.radians(
-            self.rotation_objet_deg))))
+        couple = max(-retenu, min(retenu, poids * self._bras_levier()))
         prof = self.held.size[1]
         avant = float(milieu[0] + self._centre_tenu[0]) - prof / 2.0
         p = max(0.0, self.TORSE_X_M - avant)
@@ -1303,9 +1311,14 @@ class SimulatedRobot:
             poids = self._masse(self.held) * 9.81
             retenu = 2.0 * (2.0 / 3.0) * self._frottement(self.held) \
                 * min(self.forces_contact.values()) * self.RAYON_CONTACT_M
-            e = float(self._centre_tenu[0])
-            if self.force_torse <= 0.0 and poids * abs(e) > retenu:
-                self.rotation_objet_deg += self.VITESSE_ROTATION_DEG_S * self._dt
+            # Le poids tourne l'objet dans le sens qui annule son bras de
+            # levier (_bras_levier), tant qu'il dépasse ce que les mains
+            # retiennent : un pendule (centre sous la ligne) revient à son
+            # équilibre ; centre au-dessus, il bascule.
+            bras = self._bras_levier()
+            if self.force_torse <= 0.0 and poids * abs(bras) > retenu:
+                self.rotation_objet_deg -= math.copysign(self.VITESSE_ROTATION_DEG_S * self._dt,
+                                                         bras)
             # Encore au-dessus de sa place, peu levé : son arête touche la table,
             # qui l'arrête (à 4 cm de levage, vers 24°) et le remet à plat
             # quand on le repose.
@@ -1313,9 +1326,9 @@ class SimulatedRobot:
             if x0 is not None and math.hypot(self.held.position[0] - x0,
                                              self.held.position[1] - y0) < self.held.size[1] / 2.0:
                 leve = max(0.0, self.held.position[2] - z0)
-                self.rotation_objet_deg = min(self.rotation_objet_deg, math.degrees(
-                    math.asin(min(1.0, leve / (self.held.size[1] / 2.0)))))
-            if self.rotation_objet_deg >= self.ROTATION_CHUTE_DEG:
+                arete = math.degrees(math.asin(min(1.0, leve / (self.held.size[1] / 2.0))))
+                self.rotation_objet_deg = max(-arete, min(arete, self.rotation_objet_deg))
+            if abs(self.rotation_objet_deg) >= self.ROTATION_CHUTE_DEG:
                 self.chutes.append((self.clock(), "trop tourné entre les mains",
                                     self.manipulation.etat.name))
                 x, y, _ = self.held.position

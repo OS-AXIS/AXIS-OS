@@ -57,10 +57,12 @@ def section(t):
 
 
 class Banc:
-    def __init__(self, x=0.41, contact=0.11, os_contact=None, reglages=None, objets=True):
+    def __init__(self, x=0.41, contact=0.11, os_contact=None, reglages=None, objets=True,
+                 profondeur=0.20):
         self.t = [0.0]
-        self.x = x
-        self.r = SimulatedRobot(objects=[SimulatedObject("carton", (x, 0.0, 0.90))]
+        self.x, self.profondeur = x, profondeur
+        self.r = SimulatedRobot(objects=[SimulatedObject("carton", (x, 0.0, 0.90),
+                                                         size=(0.24, profondeur, 0.20))]
                                 if objets else [], horloge=lambda: self.t[0],
                                 contact_main_m=contact, poignets_29dof=True)
         self.r.start(fil=False)
@@ -91,7 +93,7 @@ class Banc:
                     self.levage.append((self.t[0], float(self.m._c_actuel[2])))
 
     def prendre(self, jusqua=(Etat.TENU, Etat.ECHEC), duree=30.0):
-        self.res = self.m.prendre(Objet((self.x, 0.0, 0.90), 0.24, 0.20, 0.20))
+        self.res = self.m.prendre(Objet((self.x, 0.0, 0.90), 0.24, self.profondeur, 0.20))
         t0 = self.t[0]
         while self.m.etat not in jusqua and self.t[0] - t0 < duree:
             self.pas()
@@ -138,9 +140,13 @@ check(f"Levage de {100 * R.hauteur_test_m:.0f} cm en {t_lev:.1f} s (au moins "
 check("Mains du G1 : ramené au plus près que les bras le permettent sans changer de posture en "
       "chemin ; le journal dit où, et que le torse n'est pas touché",
       "carton ramené sans toucher le torse : face arrière à" in "".join(b.journal), b.journal[-3:])
-c = Banc(x=0.30, contact=0.0).prendre()
-check("Mains idéales (contact à leur repère) : carton contre le torse, arrêt au toucher (au "
-      "journal), poussée du torse modérée",
+# Prise en pendule (mains 6 cm au-dessus du centre) : plus haut, les bras ne
+# ramènent plus les mains aussi près du buste ; un carton de 20 cm de
+# profondeur s'arrête juste au buste attendu, sans le toucher. Celui-ci, de
+# 24 cm, l'atteint.
+c = Banc(x=0.30, contact=0.0, profondeur=0.24).prendre()
+check("Mains idéales (contact à leur repère), carton de 24 cm de profondeur : carton contre le "
+      "torse, arrêt au toucher (au journal), poussée du torse modérée",
       c.m.etat is Etat.TENU and c.ligne("carton contre le torse") and 0.0 < c.r.force_torse < 15.0,
       f"{c.m.raison} {c.r.force_torse} {c.journal[-3:]}")
 c.pas(250)
@@ -150,11 +156,15 @@ section("3. Le défaut de l'essai GPU : la ligne des mains loin du centre de gra
 # Carton là où l'OS d'avant le prenait (son repère de main au centre) ; les
 # mains touchent 11 cm plus loin, près de la face arrière.
 d = Banc(x=0.30, os_contact=0.0).prendre(jusqua=(Etat.ECHEC,))
-check("L'OS croit toucher avec le repère de ses mains (le code d'avant) : le carton levé tourne, "
-      "la caméra de tête le voit, il est reposé doucement, la prise échoue avec la raison",
-      d.m.etat is Etat.ECHEC and "carton tourné de" in d.m.raison
-      and "carton reposé sur la table" in d.m.raison and Etat.TENU not in d.etats
-      and Etat.REPOSE in d.etats, f"{d.m.raison} {d.etats}")
+# Prise en pendule : les mains ouvertes visées plus haut de ce que la
+# fermeture les fera descendre ; touchant près de l'arête arrière, elles ne
+# portent plus le carton dès le levage (« n'a pas suivi ») : la prise s'arrête
+# avant tout port, le carton reposé. La caméra qui arrête un carton qui
+# tourne entre les paumes : test_prise_pendule.
+check("L'OS croit toucher avec le repère de ses mains (le code d'avant) : levé, le carton ne "
+      "suit pas les mains ; reposé doucement, la prise échoue avec la raison, jamais tenu",
+      d.m.etat is Etat.ECHEC and "l'objet n'a pas suivi" in d.m.raison
+      and Etat.TENU not in d.etats and Etat.REPOSE in d.etats, f"{d.m.raison} {d.etats}")
 o = d.r.objects[0]
 check("… reposé : sur la table, à sa place, mains ouvertes", d.r.held is None
       and abs(o.position[2] - 0.90) < 0.03 and abs(o.position[0] - 0.30) < 0.03

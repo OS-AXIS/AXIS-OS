@@ -155,6 +155,9 @@ class Candidate:
     s: float
     marges: List[Marge] = field(default_factory=list)
     complete: bool = False
+    # Posture de la marche qu'il y faut : (tangage du torse en rad,
+    # abaissement du bassin en m) ; (0, 0) debout.
+    posture: Tuple[float, float] = (0.0, 0.0)
 
     @property
     def refus(self) -> Optional[Marge]:

@@ -193,12 +193,16 @@ for graine in (1, 2, 3):
 
 section("4. Une vraie main en appui reste refusée, par la force corrigée et par la géométrie")
 # Carton 6.5 cm à gauche de sa perception : l'ouverture (5 cm) ne suffit
-# pas, la main gauche repose sur lui à la pose d'ouverture.
-for nom, reglages, signal in (("force et géométrie", ReglagesPrise(), "déjà en appui"),
-                              ("force seule", ReglagesPrise(retard_appui_m=1.0), "N, seuil"),
-                              ("géométrie seule", ReglagesPrise(force_appui_n=1e3),
-                               "retenue à")):
-    r = robot(y=0.065, biais=BIAIS)
+# pas, la main gauche repose sur lui à la pose d'ouverture. Géométrie seule :
+# 7,5 cm. À 6,5 cm, la main n'était retenue que de 1,0 cm (le seuil exact) ;
+# prise en pendule, mains plus haut, le bras cède moins le long de la
+# normale : 0,9 cm, et le recalage au toucher le refuse (vérifié plus bas).
+for nom, reglages, signal, y in (("force et géométrie", ReglagesPrise(), "déjà en appui", 0.065),
+                                 ("force seule", ReglagesPrise(retard_appui_m=1.0), "N, seuil",
+                                  0.065),
+                                 ("géométrie seule", ReglagesPrise(force_appui_n=1e3),
+                                  "retenue à", 0.075)):
+    r = robot(y=y, biais=BIAIS)
     calibrer(r)
     r.manipulation.r = reglages
     m = prendre(r)
@@ -206,6 +210,14 @@ for nom, reglages, signal in (("force et géométrie", ReglagesPrise(), "déjà 
           m.etat is Etat.ECHEC and "main G déjà en appui" in m.raison and signal in m.raison
           and Etat.FERMETURE is not None and not any(m.contacts_estimes.values()), m.raison)
     r.__exit__(None, None, None)
+r = robot(y=0.065, biais=BIAIS)
+calibrer(r)
+r.manipulation.r = ReglagesPrise(force_appui_n=1e3)
+m = prendre(r)
+check("… géométrie seule, carton 6,5 cm à côté (main retenue de 0,9 cm, sous le seuil) : refusé "
+      "au toucher (recalage), jamais tenu", m.etat is Etat.ECHEC and "recalage au toucher" in m.raison
+      and r.held is None, m.raison)
+r.__exit__(None, None, None)
 check("Seuil inchangé : max(3 N, 4 × bruit au repos)",
       ReglagesPrise().force_appui_n == 3.0 and ReglagesPrise().sigmas_appui == 4.0)
 

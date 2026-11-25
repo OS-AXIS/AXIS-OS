@@ -1406,3 +1406,422 @@ Tests modifiés :
 
 À vérifier au prochain essai GPU : `poids du carton : … (moyenne tronquée de
 100 lectures en 2.0 s, … ; à ±0.2 N près, deux écarts types …)`.
+
+## 15. Essai T1 du 20 novembre 2026, 21 h 37 : le carton a tourné entre les paumes
+
+Ce que montrent le relevé (`t1_prise_20261120_2137.csv`), le journal et la
+vidéo : pris, levé, ramené, le carton a tourné de -4° à -50° autour de la
+ligne des mains (le « roulis » du juge) et glissé de ~8 cm vers le bas
+(point de contact réel de +0,2 à +9 cm au-dessus de son centre) ; la force du
+juge est restée de 13 à 16 N par main ; les mains mesurées n'ont pas tourné de
+plus de 3,8°. L'OS n'a vu que « mains écartées de 5 à 13 mm », 8 fois,
+chaque fois resserrées, puis « ne pèse plus » à 72 s. La caméra de tête ne
+mesurait le carton qu'en entier dans l'image : coupé par son bord bas, elle
+n'a rien rendu.
+
+Pourquoi il a tourné : un pendule presque sans bras. La ligne des mains
+passait 0,2 à 1 cm au-dessus du centre de gravité (l'OS la croyait 1,9 cm
+dessous), le centre 0,9 cm devant elle (l'OS : 0), et le caoutchouc ne
+retenait presque rien en rotation (rayon de contact effectif sous 5 mm) :
+l'équilibre est à tan θ = e / d, ~60°.
+
+Et l'essai de 20 h 27 ne s'est jamais mis en route : la masse de référence
+de la calibration de charge était posée sur un plateau ajouté devant le
+robot, que la carte du site ne connaissait pas ; le gardien de proximité l'a
+vu comme un obstacle inexpliqué à 0,49 m.
+
+### 15.1 Prise en pendule (ReglagesPrise : marge_pendule_m, affaissement_prise_m, bord_face_m)
+
+- La ligne des mains doit passer AU-DESSUS du centre de gravité : estimée par
+  l'OS au serrage (mains mesurées), de `marge_pendule_m` (3 cm) au moins,
+  8,3 cm au plus (la tolérance d'avant, gardée). Avant : « à 8,3 cm au plus »,
+  dessus comme dessous.
+- Justification (commentaire de `ReglagesPrise`) : sous la ligne d'au moins
+  d, le poids ramène le carton (couple de rappel m g d sin θ) ; au-dessus,
+  rien. Les accélérations de la marche (~1 m/s²) le balancent de atan(a / g)
+  ≈ 6° au plus quel que soit d, et il revient (22 h 04 : ±3° au pas) ; un
+  décalage en profondeur e non vu le penche de atan(e / d). 3 cm : plus que
+  l'erreur de l'OS sur la hauteur de la ligne à 21 h 37 (2,4 cm).
+- Visée : `marge_pendule_m` + `affaissement_prise_m` (3 cm : les mains se
+  posent plus bas que visé, 1,9 cm à 21 h 37, 2,6 cm sur le robot simulé),
+  soit 6 cm au-dessus du centre, le contact à `bord_face_m` (3 cm) au moins
+  sous l'arête : un carton de moins de 18 cm de haut est refusé, avec la
+  raison (« trop bas pour une prise en pendule »).
+- La fermeture ne tourne que le roulis d'épaule : la main décrit un arc
+  autour de l'épaule et descend en fermant, d'autant plus qu'elle est haut
+  (robot simulé, carton T1 de la campagne : 5,5 cm ; il touchait 0,6 cm
+  au-dessus du centre, refusé au serrage), et avance de 3,4 mm (la ligne des
+  mains devant le centre de gravité : son moment, lu comme une force,
+  faussait la pesée et la calibration de charge). Les mains ouvertes sont
+  visées plus haut de ce qu'elles descendront et plus en arrière de ce
+  qu'elles avanceront, tant que les bras y arrivent
+  (`_ouvert_pendule`) ; si elles toucheraient encore à moins de 4 cm
+  au-dessus du centre, la prise est refusée avant de bouger (« prise en
+  pendule impossible d'ici : changer la distance ») et le planificateur
+  (contrôle « fermeture ») choisit une autre place.
+- Vérifié atteignable : planificateur (contrôles « pendule » et
+  « fermeture », la ligne jugée sur le centre de gravité), distance de
+  prise, garde des avant-bras, dépose (la hauteur de prise comptée), se
+  pencher (plan_penche) ; le retour vers le buste ne va que là d'où le torse
+  peut se redresser.
+- Robot simulé : le carton tourne autour de la ligne des mains dans le sens
+  qui annule son bras de levier (e cos θ - z sin θ), au-delà de ce que le
+  frottement des mains retient. Rejeu de la géométrie de 21 h 37 (frottement
+  en rotation de 1 mm de rayon effectif) : il tourne de 45° ; ligne 2 cm sous
+  le centre : il bascule et tombe ; ligne 6 cm au-dessus, écarté de 20° : il
+  revient vers son équilibre (test_prise_pendule).
+- Ce que ça coûte (campagne de cartons, plus bas) : les cartons de moins de
+  18 cm, et des cartons lourds bras plus hauts (épaules à leur plafond).
+
+### 15.2 Rotation entre les paumes, vue et arrêtée
+
+- Au 2e écartement des mains en 10 s (`ecartements_max`,
+  `fenetre_ecartements_s`), ou dès que l'écart grandit de 2 mm malgré le
+  resserrage (`croissance_ecart_m`, après `delai_croissance_s` = 0,2 s, le
+  temps qu'il agisse) : transport interrompu, à reposer, « carton qui tourne
+  entre les paumes ».
+- Caméra de tête : la pente du dessus mesurée même quand il n'est vu qu'en
+  partie (banc T1, `rotation_dessus` : nombre de points, plan net) ; l'OS
+  arrête à `rotation_vue_max_deg` (6°, jamais plus que `rotation_max_deg`).
+  Elle n'autorise rien : un carton vu droit ne fait que se taire.
+- Rejeu de 2137 (test_rejeu_port_t2137) : vue en retard de 0,1 s et 2° sous
+  la vérité, arrêt à 7,7° (10° passés 0,7 s plus tard) ; caméra aveugle, les
+  écartements vus à l'essai l'arrêtent à 55 s (25°) au lieu de 72 s.
+  Hypothèse à vérifier sur GPU : ce que la vue partielle du dessus donne
+  vraiment (ici, la vérité du juge dégradée).
+
+### 15.3 Pesée : les -14 % expliqués ; la marge sur le poids le plus prudent
+
+- Le poids de 2137 (8,4 N pour 9,8) : le moment du contact (le carton qui
+  tourne entre les paumes) lu comme une force. Moindres carrés force +
+  moment sur les 101 lectures : 9,72 N (-0,9 %), mais 4,5 N d'écart type par
+  lecture (contre 0,99) : trop bruité comme méthode.
+- La marge de frottement se juge désormais sur le plus prudent de la pesée
+  et de la médiane du poids lu sur la foulée : une pesée trop légère ne la
+  rend plus optimiste (test_port_sans_derive §6).
+
+### 15.4 Calibration de charge sur une table connue du site
+
+- La masse de référence est posée par l'opérateur sur un emplacement libre de
+  la table de prise (dans la carte du site) ; le robot la cherche, l'accoste
+  et la prend par la façade de l'app (`FacadeServices.calibrer_charge`),
+  exactement comme un carton (la prise de T1, la même exemption du gardien).
+  Une personne qui approche est détectée et arrête le robot pendant la
+  calibration (test_calibration_charge_site). T1 calibre par défaut ;
+  `--sans-calibration-charge` reste pour les essais.
+
+### 15.5 Préparation commune des bancs (banc_prise)
+
+- `preparer_scene` (mains caoutchouc et éclairage après les corps rigides,
+  puis ce qui précède le départ de la physique, puis `world.reset()`),
+  `demarrer_services`, `objets_inconnus` / `plateau_site` (aucun objet posé
+  devant le robot hors des tables du site) : appelés par T1 et par le banc
+  de posture. Trois défauts de banc en trois soirs venaient de cet ordre,
+  recopié à la main.
+
+### 15.6 Se pencher et plier les jambes, dans l'app de tri et le planificateur
+
+- Limites du banc de posture, inchangées (`BornesPosture`) : torse 0,35 rad au
+  plus demandé, bassin 10 cm au plus, marge d'équilibre 2 cm au moins ; toute
+  consigne passe par `LocomotionService.posture` (bornes, gardien de
+  proximité, équilibre).
+- Les jambes d'abord pour descendre (`plan_posture` : mains plus haut que le
+  carton, ou bras qui n'atteignent pas ; `abaissement_pour_deposer` : plateau
+  bas), le torse pour aller plus loin (`plan_penche`).
+- La prise se calcule sur la taille et le bassin MESURÉS (`_planifier`) : la
+  marche ne suit la taille qu'en partie (65 à 95 %, banc de posture) ; le
+  journal de l'app dit le torse demandé et le mesuré.
+- App de tri (façade) : posture prise une fois la base arrêtée à la pose de
+  prise, ARRIVE seulement atteinte ; on ne repart que droit (le torse
+  redressé l'objet tenu en place, puis les jambes) ; plateau bas : jambes
+  pliées, puis dépose.
+- Planificateur (`planifier_prise(postures=True)`) : si rien ne passe debout,
+  les candidates refusées pour la portée, la garde des avant-bras ou des
+  mains plus haut que le carton sont réévaluées jambes pliées puis torse
+  penché (couples, équilibre et chemins compris, redressement vérifié).
+- Robot simulé : carton sur une table de 66 cm pris jambes pliées de 7,5 cm ;
+  dépose sur un plateau de 64 cm (sous les 68 cm qu'atteignent les bras
+  debout) jambes pliées de 5 cm, à 3 mm près ; 56 cm : refusé avant de
+  bouger (test_posture_tri).
+
+### 15.7 Campagne de cartons
+
+Les 120 cartons de la campagne (graine 20261118 ; même robot simulé, mêmes
+erreurs de couples), essayés comme sur le banc T1 (planificateur, prise,
+port, dépose à leur place). « Faisables » : ni trop lourds, ni trop larges,
+ni hors de toute portée, ni (désormais) trop bas pour une prise en pendule.
+
+Table de la scène T1 (80 cm) :
+
+| | main | cette PR, debout | cette PR, postures |
+|---|---|---|---|
+| faisables | 33 | 21 | 21 |
+| déposés | 6 | 3 | 3 |
+| reposés (dont faisables) | 3 (1) | 7 (5) | 7 (5) |
+| refus des faisables | dépose 18, trop lourd 5, avant-bras 3, glisse 1 | trop lourd 11, dépose 3, glisse 3, trop lourd ou glissant 1 | les mêmes |
+| cas interdits | 0 | 0 | 0 |
+
+- 12 faisables de moins : 13 cartons de moins de 18 cm, trop bas pour une
+  prise en pendule (dont 2 déposés sur main, n° 15 et 75) ; un de plus (n° 40).
+- Déposés sur main, reposés ici : n° 85, la marge jugée sur le poids lu
+  (11,0 N, plus que les 10,1 pesés ; vrai 9,55) passe à 1,94 aux plafonds des
+  bras (§15.3 : la prudence demandée) ; n° 105 (0,22 kg), « ne pèse plus »
+  sur un poids lu bruité (0,8 N pour 2,5 au levage) : arrêt sûr, à tort.
+  Gagné : n° 69.
+- Avec le poids qui chute jugé depuis le niveau du début du port (§15.11) :
+  4 déposés (n° 105), le reste inchangé.
+- Les postures n'y changent rien : sur cette table, rien n'est trop bas
+  pour les mains, et les cartons trop loin qu'un torse penché atteindrait
+  font dépasser leur plafond aux épaules (10 N·m) avec la masse maximale
+  (1,2 kg), bras tendus.
+
+La même campagne sur une table de 66 cm (les cartons posés dessus, déposés
+à leur place) :
+
+| | debout | jambes et torse |
+|---|---|---|
+| déposés | 1 | 6 |
+| reposés | 1 | 4 |
+| refus des faisables | trop bas pour les mains 14, dépose 1 | trop bas pour les mains 6 (plus de 10 cm de jambes), dépose 1, contact 1, trop lourd ou glissant 1, glisse 1 |
+| postures | — | jambes pliées de 2,5 cm (4), 5 cm (6), 7,5 cm (5), 10 cm (2) |
+| cas interdits | 0 | 0 |
+
+### 15.8 Après la revue et la première CI
+
+La première CI dépassait ses 45 min (annulée à 90 %) et 8 tests échouaient.
+
+- Temps : la cinématique inverse recalculait la main au même angle 3 fois
+  de plus par tour (4 passes au lieu de 7, les mêmes nombres) ; campagne de
+  cartons 193 → 154 s, comme sur main ; suite de la CI 38,6 min. Puis la
+  cinématique directe garde ses 16 derniers calculs au lieu du dernier
+  (retrouvés : 54 → 81 % ; les mêmes nombres au bit près) : tests de port
+  −30 à −36 %, campagne 154 → 133 s (la CI du commit de l'hystérésis,
+  sur une machine deux fois plus lente en calcul, avait dépassé 45 min).
+- Se pencher : `plan_penche` vérifie les chemins comme le planificateur, et
+  que le torse se redresse l'objet tenu là où le retour ou le levage le
+  laisse (table de 70 cm, carton à 29 cm : il était pris penché, puis plus
+  moyen de se redresser ni de marcher).
+- Redressement : la consigne du torse reste droite sous 1 mrad mesuré (une
+  taille lue à 0,05° bloquait le départ) ; un délai, l'échec dit au-delà.
+- Placement : en profondeur, les mains à la moitié de ce que la ligne des
+  mains admet autour du centre de gravité (`tolerances_cg`), corrigées avant
+  de fermer ; `corrections_max` 2 → 3 (bras affaissés de 0,25 rad : la prise
+  tient de nouveau).
+- Planificateur : la graine de la cinématique inverse des candidates
+  suivantes vient d'une candidate à portée (`pick()` du SDK refusait un
+  carton que le planificateur retenait seul).
+- Distance de prise : refusée si les mains ouvertes n'atteignent pas les
+  faces.
+- Calibration de charge, au robot simulé (décision de revue) : gains des
+  coudes retrouvés à 3 % près (−2,7 %) ; la pesée de ce robot simulé lit
+  1 % de moins aux gains vrais (poignets très souples, efforts calculés sur
+  les bras non déformés), la calibration l'absorbe ; la pesée calibrée reste
+  à 2 % près.
+- Carton tourné de 11°, au robot simulé (décision de revue) : poignets
+  × 0,5 ; à × 0,25, son modèle de contact n'a plus d'équilibre pendant le
+  levage.
+
+Campagne de cartons refaite avec ces corrections (chiffres du §15.7) : 3 déposés,
+7 reposés, aucun cas interdit, comme avant elles ; un refus « trop lourd »
+devient « glisse au port ». Table de 66 cm : inchangée.
+
+### 15.9 Campagne : de 6 à 3 déposés depuis la PR #35, carton par carton
+
+La campagne refaite au commit de fusion de chaque PR depuis #35, puis aux
+commits de cette PR (les mêmes 120 cartons, la même graine) :
+
+| code | déposés |
+|---|---|
+| #35 | 6 : n° 15, 64, 70, 85, 90, 105 |
+| #36 | 6 : n° 90 perdu, n° 75 gagné |
+| #37 à #41 (main) | 6 : n° 15, 64, 70, 75, 85, 105 |
+| cette PR, marge sur le poids le plus prudent (§15.3) | 5 : n° 85 perdu |
+| cette PR, rotation entre les paumes (§15.2) | 5 |
+| cette PR, prise en pendule (§15.1) | 3 : n° 15, 75 et 105 perdus, n° 69 gagné |
+| cette PR, jusqu'à l'hystérésis | 3 : n° 64, 69, 70 |
+| cette PR, poids qui chute depuis le niveau du port (§15.11) | 4 : n° 105 retrouvé |
+
+- n° 90 (#36 ; 17,5 cm de haut, 0,44 kg) : refusé avant de bouger, « dépose
+  impossible ensuite » : la garde des avant-bras vérifiée aussi aux bornes
+  de l'erreur d'approche (§11). Voulu ; et il serait trop bas pour la prise
+  en pendule. n° 75, gagné par #36 : ses mains s'ouvrent sur place.
+- n° 85 (0,97 kg) : la marge jugée sur le poids lu sur la foulée (11,0 N ;
+  pesé 10,2 ; vrai 9,55), 1,94, sous le coefficient 2, et les bras à leurs
+  plafonds n'en serrent pas plus : reposé, jamais lâché. Voulu (§15.3) : la
+  marge n'est plus jamais calculée sur un poids plus léger que celui lu ; ce
+  carton-ci, le poids lu est trop lourd de 15 % (sur le vrai poids, marge
+  2,2) ; à 21 h 37, la pesée était trop légère de 14 %.
+- n° 15 (17 cm) et n° 75 (18 cm) : refusés avant de bouger, « trop bas pour
+  une prise en pendule » (mains au moins 3 cm au-dessus du centre de
+  gravité, contact 3 cm sous l'arête du dessus). Voulu (§15.1) : la prise qui
+  a laissé tourner le carton de 21 h 37 n'est plus faite.
+- n° 105 (0,224 kg, 2,2 N) : « le carton ne pèse plus sur les mains » au port,
+  alors qu'il est tenu (marge vraie 6,6, rotation 0°) : reposé, à tort. Un
+  défaut, que la prise en pendule a fait apparaître : dans sa posture, le
+  poids lu sur les couples est 1,6 fois plus bruité (0,43 → 0,68 N
+  d'écart-type sur 0,1 s, bruit des couples du banc GPU), et son décalage,
+  qui dépend de la posture, n'est plus celui du levage, où se prend la
+  référence (le plus grand poids lu depuis le levage) : 40 % de cette
+  référence tombe au niveau du poids lu au port. Sur 16 tirages du bruit
+  des couples, port de 10 s : 15 déposés avant la prise en pendule, 11
+  après ; le poids taré (le biais des couples s'y annule) n'y change rien
+  (11). Corrigé, sur décision (§15.11) : la chute jugée depuis le niveau lu
+  au début du port, dans sa posture.
+- n° 69 (1,08 kg), gagné par la prise en pendule : refusé avant (« dépose
+  impossible ensuite »), posé.
+
+### 15.10 Hystérésis des écartements des mains (`hysteresis_ecart_m`, 3 mm)
+
+Sans elle, après un vrai écartement des mains (au-delà de
+`ecart_face_port_m`, 5 mm), le resserrage s'arrêtait l'écart revenu à 5 mm,
+au ras du seuil ; l'écart lu, bruité, le repassait aussitôt : un 2e
+écartement compté, transport interrompu, le carton tenu.
+
+- Le bruit de l'écart lu, en marchant : 0,2 à 0,45 mm par lecture
+  (écart-type autour de sa médiane sur 0,3 à 0,5 s, hors l'arrondi au mm du
+  journal ; essais GPU 17 h 16, 18 h 21, 21 h 37), 2 mm au plus d'une lecture
+  à l'autre. Les grands écarts du journal (jusqu'à 11 mm) sont ceux de la
+  consigne (les resserrages), pas du bruit.
+- Boucle simulée : un vrai écartement de 7 mm, que le resserrage résorbe
+  (0,25 à 1 mm par lecture tant que la base est arrêtée), puis 10 s d'écart
+  lu avec ce bruit (0,3 ou 0,45 mm, 4 000 essais par cas). Transport
+  interrompu à tort :
+
+| hystérésis | sur le compte seul | le compte et la reprise de la base |
+|---|---|---|
+| aucune (avant) | 59 à 100 % | 59 à 100 % |
+| 1 mm | 19 à 100 % | 10 à 87 % |
+| 2 mm | 1 à 83 % | 0 à 8,5 % |
+| 3 mm | 0 à 1 % | 0 à 0,1 % |
+
+- Retenu : 3 mm, sur le compte et sur la reprise de la base, comme
+  l'hystérésis de la marge (arrêt sous 2,0, reprise au-dessus de 2,2) :
+  arrêtée pour un écartement, la base ne repart que l'écart revenu sous
+  2 mm (le resserrage l'y amène) ; alors seulement l'écartement finit et le
+  suivant peut compter. Sur le compte seul, le resserrage s'arrêtant à 5 mm,
+  l'écartement ne finirait presque jamais : un vrai 2e écartement ne
+  compterait plus.
+- Les bras à leurs plafonds (rien de plus à serrer ; carton de 1 kg en
+  pendule : lacets des poignets à 0,1 N·m du leur) : la base repart l'écart
+  revenu sous 5 mm, comme avant l'hystérésis (comme la marge,
+  `reprise_aux_plafonds`) ; l'écartement reste en cours : repasser le seuil
+  arrête la base, sans compter un 2e écartement.
+- Ce qu'elle coûte, à 21 h 37 : l'écart lu est redescendu à 0 mm entre les
+  deux premiers écartements de l'essai (52,9 s) ; le 2e compte au même
+  instant (55,0 s, rejeu). Recalculé sur le journal (arrondi au mm), l'écart
+  est revenu au seuil 0,6 s après le premier écartement, sans être
+  redescendu sous 3 à 4 mm : sans hystérésis, il pouvait compter pour un 2e
+  (52,7 s, carton tourné de 21°) ; avec, le 2e compte à 54,1 s (23°). La
+  caméra reste le premier signal (arrêt à 7,7°, §15.2).
+- Inchangés : le seuil (5 mm), 2 écartements en 10 s, l'écart qui grandit
+  de 2 mm malgré le resserrage, la durée du resserrage (1 s), les plafonds.
+
+### 15.11 Poids qui chute, depuis le niveau du début du port (décision sur la PR #42)
+
+Avant : le poids lu sur 0,1 s sous 40 % du plus grand poids lu depuis le
+levage, pendant 0,15 s. Ce plus grand se prenait dans d'autres postures
+(levage, retour) : le décalage des couples, qui change avec la posture, ne
+s'y annulait pas, et il retenait les pointes du bruit. Prise en pendule, le
+carton n° 105 (0,22 kg, 2,2 N) tenu y était lu sous le seuil (§15.9).
+
+Maintenant : le poids lu sur 0,1 s plus bas que le niveau du début du port
+de plus de 60 % du poids pesé (1 - `part_poids_min`), pendant 0,15 s.
+
+- Le niveau : la moyenne des lectures de la première foulée du port (1 s),
+  dans sa posture, sans celles des 0,3 s les plus récentes tant qu'elle se
+  remplit (`recentes_niveau_s`), puis figée ; repris à chaque nouvelle
+  posture (fin d'un geste du port). Pas encore lu (ses 0,4 premières
+  secondes) : le plus bas de la pesée et du poids lu sur 0,1 s en entrant au
+  port (ci-dessous). Une chute en cours garde le niveau d'avant elle (lâché
+  dans la première seconde, les lectures d'après l'abaisseraient : jamais
+  vu, prise normale).
+- Encore jeune, le niveau est incertain : la chute doit le dépasser aussi de
+  deux fois son incertitude (`sigmas_niveau_port` ; l'écart-type de ses
+  lectures, jamais moins que celui d'une lecture à la pesée, sur la racine
+  de leur nombre). Sans elle, sur le bruit réel des essais GPU, plus de
+  fausses alertes que l'ancienne règle à 5 et 10 N ; sans le plancher de la
+  pesée, deux lectures presque égales par hasard (7,90 et 7,89 N) la
+  faisaient tomber à rien.
+- Sans pesée : l'ancienne règle.
+
+`test_poids_qui_chute` (robot simulé, carton de 1 kg ; prise en pendule, et
+normale : mains visées au centre de gravité) :
+
+| | prise en pendule | prise normale |
+|---|---|---|
+| lâcher total, les deux mains ouvertes de 2,9 cm | lâché à 0,18 s ; poids 0,18 s après ; vu d'abord à 0,04 s (rotation) | lâché à 0,14 s ; poids 0,12 s après ; vu à 0,04 s (rotation) |
+| lâcher total, le bras droit à 30 % de sa raideur | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,02 s | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,02 s |
+| lâcher total dès l'entrée au port (niveau pas encore lu), les deux mains ouvertes | lâché à 0,16 s ; poids 0,18 s après ; vu d'abord à 0,16 s (mains écartées) | lâché à 0,14 s ; poids 0,12 s après, le premier à le voir |
+| lâcher total dès l'entrée au port, le bras droit à 30 % | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,04 s (rotation) | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,04 s |
+| lâcher total 0,2 s après l'entrée au port, les deux mains ouvertes | lâché à 0,16 s ; poids 0,18 s après ; vu à 0,04 s | lâché à 0,14 s ; poids 0,12 s après ; vu à 0,04 s |
+| lâcher partiel : glisse sans tomber | 4,7 cm (mains ouvertes de 0,089 rad) ; poids lu −11 % ; marge sur 0,3 s à 0,26 s, 0,24 s après le début du glissement | 5,3 cm (0,083 rad) ; poids lu −13 % ; marge à 0,26 s, 0,24 s après |
+
+- Le lâcher partiel n'était pas vu par le poids avant non plus : pendant le
+  glissement, les mains portent encore ce que leur frottement retient ; le
+  poids lu ne baisse que de 4 à 22 % (glissés de 1,3 à 8,8 cm), sous les 60 %
+  de la règle et sous les 40 % de l'ancienne. Ce qui le voit : la marge de
+  frottement sur 0,3 s (les forces normales, avec le frottement prudent 0,8 ;
+  ce carton en a 1,2) sous 1, « un vrai desserrage », 0,20 à 0,24 s après le
+  début du glissement.
+- La limite, inchangée : un carton plus glissant que le frottement prudent
+  (0,7) tombe 0,2 à 0,3 s après que les mains s'ouvrent, vu au même moment
+  (mains écartées, marge), puis par le poids 0,22 s après. Rien de ce que
+  l'OS lit ne le voit glisser avant.
+
+Les 0,4 premières secondes du port, avant que le niveau soit lu : d'abord
+sans référence, un lâcher y était vu tard par le poids, ou jamais (la panne
+de 0 à 0,6 s après l'entrée au port) : dès l'entrée, jamais, ses lectures
+dans le niveau ; prise normale, seule la marge l'avait vu (base arrêtée,
+« on resserre »), le port jamais interrompu, le carton par terre ; les deux
+mains ouvertes à 0,04 s, jamais non plus ; de 0,04 à 0,22 s, 0,20 à 0,46 s
+après que le carton a quitté les mains. L'ancienne règle, elle, avait
+toujours sa référence.
+
+Maintenant, tant que le niveau n'est pas lu : le plus bas de la pesée et du
+poids lu sur 0,1 s au premier pas du port, à l'incertitude d'une moyenne de
+5 lectures (celle d'une lecture à la pesée sur racine de 5). La panne à tout
+instant de ces 0,4 s : vu par le poids 0,12 à 0,24 s après que le carton a
+quitté les mains, comme plus tard.
+
+- Ni la pesée seule (une autre posture) : sur les 21 ports de la campagne
+  (n° 29, 64, 69, 70, 85 et 105 ; 15 tirages du bruit des couples du n° 105,
+  le 16e refusé à la pesée), la plus grande baisse du
+  poids lu dans les 0,4 premières secondes, carton tenu, atteint 1,09 fois le
+  seuil sous la pesée : le n° 105 (pesé 1,95 N) lu −0,2 N en entrant au port
+  en pendule, une fausse alerte. Ni le poids lu en entrant seul (la fin du
+  geste, en mouvement) : 0,80 fois le seuil au pire. Le plus bas des deux :
+  0,59 fois au pire (n° 105, tirage 0).
+- Sur le bruit réel des essais GPU (tableau plus bas), les mêmes fausses
+  alertes qu'avant : la référence du début du port n'en ajoute aucune.
+- Limite : un carton que les couples lisent déjà presque nul en entrant au
+  port (n° 105 : −0,2 N pour 2,2) n'a pas de chute de poids à montrer ; un
+  lâcher n'y est vu que par les autres contrôles (rotation, mains écartées,
+  marge).
+
+Fausses alertes sur le bruit réel des essais GPU (17 h 16, 22 h 04, 18 h 21 :
+27 s de port ; 25 ports de 10 s au plus, commencés chaque seconde ; un carton
+de W N lu W + le bruit de l'essai autour de son niveau ; la règle de l'OS
+rejouée, `_surveiller_port`) :
+
+| carton | relevé par l'OS (0,3 s) : nouvelle / ancienne | recalculé à chaque lecture : nouvelle / ancienne |
+|---|---|---|
+| 2,2 N | 0 / 0 | 1 / 17 |
+| 3 N | 0 / 0 | 0 / 10 |
+| 5 N | 0 / 0 | 0 / 0 |
+| 10 N | 0 / 0 | 0 / 0 |
+
+- Relevé par l'OS : la moyenne de 0,3 s qu'il a écrite au journal (plus
+  lisse que les 0,1 s de la règle : borne optimiste). Recalculé : le poids
+  de chaque lecture refait depuis les couples et angles relevés, comme
+  `_force_main` (pesanteur verticale, biais des couples inconnus : un
+  décalage constant ; une lecture au lieu de cinq : borne pessimiste) ;
+  vérifié sur le levage de 21 h 37 à 50 Hz (sa moyenne sur 15 lectures contre
+  le relevé de l'OS : corrélation 0,992). Bruit d'une lecture bras
+  immobiles : 0,95 N (17 h 16), 1,02 N (21 h 37) ; en marchant, 2,8 N.
+- Les vrais glissements GPU : 21 h 57, vu par les deux règles au même
+  instant ; 21 h 37 (tourné de 50°, glissé de 8 cm), le poids lu est resté
+  vers 10 N jusqu'à la fin, vu par les écartements et la caméra (§15.2).
+- Robot simulé, n° 105 porté 10 s, 16 tirages du bruit des couples : 1
+  fausse alerte (pesé 1,6 N pour 2,2 vrais) au lieu de 4 ; un tirage reste
+  refusé à la pesée (« ne pèse pas sur les mains », 0,8 N, au moins 1),
+  inchangé. Campagne : 4 déposés (n° 64, 69, 70, 105), le reste inchangé.

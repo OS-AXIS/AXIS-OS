@@ -352,7 +352,7 @@ check("Raideur de prise et arrêt d'urgence branchés", "raideur=regler_raideur,
       and "arret_urgence=lambda: hal.estop_active," in T1)
 check("Juge : rapport de contact PhysX posé sur les mains AVANT world.reset(), raisons d'un "
       "échec dites au journal (constat GPU : « indisponible », sans raison)",
-      0 < T1.find("capteurs.preparer(") < T1.find("\n    world.reset()\n")
+      0 < T1.find("    preparer_scene(world, stage, avant_reset=lambda: capteurs.preparer(")
       < T1.find("capteurs.initialiser()")
       and "' ; '.join(capteurs.raisons)" in T1)
 check("… lacet réel du carton noté au placement, au contact, au serrage et à la fin",
@@ -368,10 +368,12 @@ check("t1_prise.csv : de la fermeture au port (levage, ramené, tenu, reposé), 
 check("Juge : orientation du carton à chaque phase, et pendant le port jusqu'à la chute",
       "juge.noter_orientation(e_.name.lower(), ro_, ta_)" in T1
       and "juge (vérité simulation), port : " in T1)
-check("Caméra de tête branchée sur la prise (rotation du carton tenu, vue quand il est dans "
-      "l'image), sans vérité de la simulation",
+check("Caméra de tête branchée sur la prise (rotation du carton tenu, vue quand son dessus est "
+      "dans l'image, même en partie : essai GPU du 20 novembre 2026, 21 h 37), sans vérité de "
+      "la simulation",
       "rotation=lambda: rotation_tete())" in T1 and "def rotation_tete():" in T1
-      and "rotation_dessus(pts_b[dedans_], g_ - d_)" in T1)
+      and "rotation_dessus(pts_b[dedans_], g_ - d_)" in T1
+      and "np.clip(uv_.min(axis=0), 0.0, [w_, h_])" in T1 and "np.any(uv_ < 0)" not in T1)
 check("Juge : prise par prise au journal, compteurs dans l'évaluation",
       "juge.fin(manip.contacts_estimes)" in T1 and "**(juge.compteurs if juge" in T1)
 check("Vue du robot : vidéo, incrustation, page de suivi, réglage pour la démo",
@@ -386,16 +388,18 @@ check("Masse des cartons réglable pour la vidéo (--masse-carton, 1 kg par déf
       and "mass=1.0" not in T1 and "ap.error(" in T1
       and "cartons de la scène : {args.masse_carton:g} kg" in T1
       and "--masse-carton 0.5" in LANCEUR_T1)
-i_reset = T1.find("    world.reset()\n")
+i_reset = T1.find("    preparer_scene(world, stage")
 check("Calibration de charge au démarrage, après celle des bras, avant le tri : profil du robot du "
       "banc (une graine, un robot) relu ; sans calibration (ou --calibration-charge), masse de "
-      "référence posée sur un plateau devant le robot (créés avant le départ de la physique), "
-      "prise par ManipulationService.calibrer_charge, enregistrée au profil, puis retirée",
+      "référence (créée avant le départ de la physique) posée sur un emplacement de la table de "
+      "prise, connue du site (plus de plateau ajouté : essai GPU du 20 novembre 2026, 20 h 27), "
+      "accostée et prise par la façade, enregistrée au profil, puis retirée",
       0 < T1.find('"/World/masse_reference"') < i_reset
-      and 0 < T1.find('"/World/plateau_reference"') < i_reset
+      and "plateau_reference" not in T1 and "poser_devant(" not in T1
       and "mass=args.masse_reference" in T1 and "profil_robot_banc(args.graine)" in T1
       and "manip.appliquer_calibration_charge(cal_)" in T1
-      and "manip.calibrer_charge(" in T1
+      and "facade.accoster(vus_[0])" in T1 and "facade.calibrer_charge(" in T1
+      and "sd.PLATEAU + sd.HAUTEUR_CARTON / 2 + 0.003" in T1
       and 'enregistrer(chemin_profil, robot_id,\n                                                   "calibration_charge", f_)' in T1
       and T1.find("etat_calib[\"fini\"] = pas_calibration()") < T1.find("etat_charge[\"fini\"] = pas_charge()")
       < T1.find("            pilote.pas()")
