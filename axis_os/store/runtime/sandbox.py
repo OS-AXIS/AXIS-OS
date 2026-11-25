@@ -498,8 +498,9 @@ class SandboxRunner:
                                      error_kind=SandboxErrorKind.ARRET_URGENCE,
                                      duration_s=self._clock() - t_start)
 
-            if fin is None and encore_vivant:
-                violation = self._get_violation() or SandboxViolation(
+            releve = self._get_violation()
+            if fin is None and encore_vivant and (releve is None or releve.rule == "TIMEOUT"):
+                violation = releve or SandboxViolation(
                     app_id=self._app_id, rule="TIMEOUT",
                     value=self._clock() - t_start, limit=self._quota.max_runtime_s)
                 self._set_state(SandboxState.TIMEOUT)
