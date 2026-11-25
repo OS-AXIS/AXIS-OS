@@ -1590,7 +1590,11 @@ La première CI dépassait ses 45 min (annulée à 90 %) et 8 tests échouaient.
 
 - Temps : la cinématique inverse recalculait la main au même angle 3 fois
   de plus par tour (4 passes au lieu de 7, les mêmes nombres) ; campagne de
-  cartons 193 → 154 s, comme sur main ; suite de la CI 38,6 min.
+  cartons 193 → 154 s, comme sur main ; suite de la CI 38,6 min. Puis la
+  cinématique directe garde ses 16 derniers calculs au lieu du dernier
+  (retrouvés : 54 → 81 % ; les mêmes nombres au bit près) : tests de port
+  −30 à −36 %, campagne 154 → 133 s (la CI du commit de l'hystérésis,
+  sur une machine deux fois plus lente en calcul, avait dépassé 45 min).
 - Se pencher : `plan_penche` vérifie les chemins comme le planificateur, et
   que le torse se redresse l'objet tenu là où le retour ou le levage le
   laisse (table de 70 cm, carton à 29 cm : il était pris penché, puis plus
