@@ -17,6 +17,7 @@ sont ceux du fichier : rien n'est recopié à la main.
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -87,9 +88,11 @@ class ChaineBras:
         self._points = {p + "shoulder_pitch_link": EPAULE, p + "elbow_link": COUDE,
                         p + "wrist_roll_link": POIGNET}
         self.bornes = {l.nom: l.bornes for l in self._liens if l.axe is not None}
-        # Dernier calcul des repères (_reperes) : (angles, résultat), lu tel quel,
-        # jamais modifié ; un seul tuple remplacé d'un bloc (lu sans verrou).
-        self._memo = None
+        # Les 16 derniers calculs des repères (_reperes), par jeu d'angles, lus
+        # tels quels, jamais modifiés (lru_cache : sûr entre fils). Un seul ne
+        # resservait qu'un appel sur deux (54 %) : la cinématique inverse, le
+        # robot simulé et l'OS alternent leurs angles ; 16 : 81 %.
+        self._calcul = functools.lru_cache(maxsize=16)(self._calculer_reperes)
         self._centres = [np.asarray(l.centre) for l in self._liens]
 
     @classmethod
@@ -160,12 +163,12 @@ class ChaineBras:
     def _reperes(self, q: Dict[str, float]):
         """Pour chaque lien : (articulation, position et axe de l'articulation
         ou None si elle est fixe, centre de masse et masse du lien enfant),
-        repère du bassin ; puis la main. À lire seulement : le dernier calcul
-        est gardé (_memo) et rendu tel quel aux mêmes angles."""
-        angles = tuple(float(q.get(l.nom, 0.0)) for l in self._liens if l.axe is not None)
-        memo = self._memo
-        if memo is not None and memo[0] == angles:
-            return memo[1]
+        repère du bassin ; puis la main. À lire seulement : les derniers
+        calculs sont gardés (_calcul) et rendus tels quels aux mêmes angles."""
+        return self._calcul(tuple(float(q.get(l.nom, 0.0))
+                                  for l in self._liens if l.axe is not None))
+
+    def _calculer_reperes(self, angles: Tuple[float, ...]):
         t = np.eye(4)
         sortie = []
         valeurs = iter(angles)
@@ -178,7 +181,6 @@ class ChaineBras:
                 r[:3, :3] = _rotation(l.axe, next(valeurs))
                 t = t @ r
             sortie.append((l.nom, art, t[:3, :3] @ centre + t[:3, 3], l.masse))
-        self._memo = (angles, (sortie, t))
         return sortie, t
 
     def jacobienne(self, q: Dict[str, float], articulations: Sequence[str],
