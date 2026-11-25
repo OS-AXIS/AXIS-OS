@@ -181,6 +181,41 @@ check("Aucun objet posé devant le robot inconnu du site : le carton de ce banc 
       "objets_inconnus([(\"carton\"" in SCRIPT and "plateau_site((" in SCRIPT
       and "objets_inconnus([(\"masse de référence\"" in T1_ and "sd.OBSTACLES)" in T1_
       and "plateau_reference" not in T1_)
+# Essai GPU du 25 novembre 2026, 16 h 43 : table de prise remplie avant la
+# calibration de charge, la masse de référence posée sur le carton rouge de
+# l'emplacement du milieu, éjectée au sol en (3.23, 0.41), dans la zone de
+# marche ; le gardien l'a vue comme un obstacle inconnu, robot arrêté 90 s.
+from banc_prise import chevauchements  # noqa: E402
+from axis_os.apps.tri_colis import scene_demo as sd_  # noqa: E402
+taille_ = (sd_.LARGEUR_CARTON, sd_.PROFONDEUR_CARTON)
+table_ = [(c_, (x_, sd_.Y_CARTON)) for c_, x_ in zip(("bleu", "rouge", "rouge"), sd_.EMPLACEMENTS_X)]
+parcs_ = [(f"stock {k}", (30.0 + 0.5 * k, 30.0)) for k in range(10)]
+check("Deux objets jamais posés l'un dans l'autre (banc_prise.chevauchements) : la masse de "
+      "référence sur l'emplacement du milieu, la table remplie comme à 16 h 43 → occupé par le "
+      "carton rouge ; table vide → libre ; ses voisins (40 cm) ne la gênent pas ; son parc "
+      "(36, 30) loin de ceux des cartons",
+      chevauchements((sd_.EMPLACEMENTS_X[1], sd_.Y_CARTON), table_, taille_) == ["rouge"]
+      and chevauchements((sd_.EMPLACEMENTS_X[1], sd_.Y_CARTON), [], taille_) == []
+      and chevauchements((sd_.EMPLACEMENTS_X[1], sd_.Y_CARTON), [table_[0], table_[2]], taille_)
+      == []
+      and chevauchements((36.0, 30.0), parcs_, taille_) == [])
+appel_ = T1_.find("\n            operateur(t, stats)")
+check("Aucun objet posé par le banc T1 dans la zone de marche, inconnu du site : la table de "
+      "prise remplie seulement une fois la calibration de charge finie (plus avant la boucle) ; "
+      "la masse de référence posée sur un emplacement libre, sinon pas posée et dit ; tombée au "
+      "sol, retirée par l'opérateur et dit (comme les cartons) ; les objets du banc de posture "
+      "sur son plateau déclaré",
+      "operateur(0.0, stats)" not in T1_ and T1_.count("    operateur(") == 1
+      and 'etat_charge.get("fini")' in T1_[T1_.rfind("\n", 0, appel_):appel_]
+      and 0 < T1_.find("occupe_ = chevauchements(") < T1_.find("if occupe_:")
+      < T1_.find("reference.set_world_pose(position=np.array(\n                [X_REFERENCE")
+      and "masse de référence tombée au sol" in T1_
+      and T1_.find("masse de référence tombée au sol") < T1_.find("retirer_reference()\n            return True")
+      and "objets_inconnus([(\"carton\"" in SCRIPT)
+check("L'alerte « même cause » de la mission (ArretMemeCause, 20 s) aussi pendant la calibration "
+      "de charge, qui attend la sécurité hors de la mission (16 h 43 : 90 s d'arrêt, aucune alerte)",
+      "alerte_charge = ArretMemeCause(tri.cfg)" in T1_ and "alerte_charge.pas(" in T1_
+      and "ALERTE (calibration de charge)" in T1_)
 check("Au premier signe : arrêt de la série et retour droit par l'OS (posture(0.0, 0.0))",
       "p.suivre(" in SCRIPT and "loco.posture(0.0, 0.0)" in SCRIPT and "retour droit" in SCRIPT)
 check("Centrale inertielle (orientation, vitesse angulaire) et pieds (vérité de simulation)",
