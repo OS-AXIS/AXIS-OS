@@ -1568,6 +1568,8 @@ Table de la scène T1 (80 cm) :
   bras (§15.3 : la prudence demandée) ; n° 105 (0,22 kg), « ne pèse plus »
   sur un poids lu bruité (0,8 N pour 2,5 au levage) : arrêt sûr, à tort.
   Gagné : n° 69.
+- Avec le poids qui chute jugé depuis le niveau du début du port (§15.11) :
+  4 déposés (n° 105), le reste inchangé.
 - Les postures n'y changent rien : sur cette table, rien n'est trop bas
   pour les mains, et les cartons trop loin qu'un torse penché atteindrait
   font dépasser leur plafond aux épaules (10 N·m) avec la masse maximale
@@ -1636,7 +1638,8 @@ commits de cette PR (les mêmes 120 cartons, la même graine) :
 | cette PR, marge sur le poids le plus prudent (§15.3) | 5 : n° 85 perdu |
 | cette PR, rotation entre les paumes (§15.2) | 5 |
 | cette PR, prise en pendule (§15.1) | 3 : n° 15, 75 et 105 perdus, n° 69 gagné |
-| cette PR, jusqu'au bout | 3 : n° 64, 69, 70 |
+| cette PR, jusqu'à l'hystérésis | 3 : n° 64, 69, 70 |
+| cette PR, poids qui chute depuis le niveau du port (§15.11) | 4 : n° 105 retrouvé |
 
 - n° 90 (#36 ; 17,5 cm de haut, 0,44 kg) : refusé avant de bouger, « dépose
   impossible ensuite » : la garde des avant-bras vérifiée aussi aux bornes
@@ -1662,9 +1665,8 @@ commits de cette PR (les mêmes 120 cartons, la même graine) :
   référence tombe au niveau du poids lu au port. Sur 16 tirages du bruit
   des couples, port de 10 s : 15 déposés avant la prise en pendule, 11
   après ; le poids taré (le biais des couples s'y annule) n'y change rien
-  (11). Correction proposée, pas encore faite (elle change un contrôle du
-  port) : juger la chute depuis le niveau lu au début du port, dans sa
-  posture.
+  (11). Corrigé, sur décision (§15.11) : la chute jugée depuis le niveau lu
+  au début du port, dans sa posture.
 - n° 69 (1,08 kg), gagné par la prise en pendule : refusé avant (« dépose
   impossible ensuite »), posé.
 
@@ -1713,3 +1715,79 @@ au ras du seuil ; l'écart lu, bruité, le repassait aussitôt : un 2e
   caméra reste le premier signal (arrêt à 7,7°, §15.2).
 - Inchangés : le seuil (5 mm), 2 écartements en 10 s, l'écart qui grandit
   de 2 mm malgré le resserrage, la durée du resserrage (1 s), les plafonds.
+
+### 15.11 Poids qui chute, depuis le niveau du début du port (décision sur la PR #42)
+
+Avant : le poids lu sur 0,1 s sous 40 % du plus grand poids lu depuis le
+levage, pendant 0,15 s. Ce plus grand se prenait dans d'autres postures
+(levage, retour) : le décalage des couples, qui change avec la posture, ne
+s'y annulait pas, et il retenait les pointes du bruit. Prise en pendule, le
+carton n° 105 (0,22 kg, 2,2 N) tenu y était lu sous le seuil (§15.9).
+
+Maintenant : le poids lu sur 0,1 s plus bas que le niveau du début du port
+de plus de 60 % du poids pesé (1 - `part_poids_min`), pendant 0,15 s.
+
+- Le niveau : la moyenne des lectures de la première foulée du port (1 s),
+  dans sa posture, sans celles des 0,3 s les plus récentes tant qu'elle se
+  remplit (`recentes_niveau_s`), puis figée ; repris à chaque nouvelle
+  posture (fin d'un geste du port). Pas lu avant 0,4 s de port. Une chute en
+  cours garde le niveau d'avant elle (lâché dans la première seconde, les
+  lectures d'après l'abaisseraient : jamais vu, prise normale).
+- Encore jeune, le niveau est incertain : la chute doit le dépasser aussi de
+  deux fois son incertitude (`sigmas_niveau_port` ; l'écart-type de ses
+  lectures, jamais moins que celui d'une lecture à la pesée, sur la racine
+  de leur nombre). Sans elle, sur le bruit réel des essais GPU, plus de
+  fausses alertes que l'ancienne règle à 5 et 10 N ; sans le plancher de la
+  pesée, deux lectures presque égales par hasard (7,90 et 7,89 N) la
+  faisaient tomber à rien.
+- Sans pesée : l'ancienne règle.
+
+`test_poids_qui_chute` (robot simulé, carton de 1 kg ; prise en pendule, et
+normale : mains visées au centre de gravité) :
+
+| | prise en pendule | prise normale |
+|---|---|---|
+| lâcher total, les deux mains ouvertes de 2,9 cm | lâché à 0,18 s ; poids 0,18 s après ; vu d'abord à 0,04 s (rotation) | lâché à 0,14 s ; poids 0,12 s après ; vu à 0,04 s (rotation) |
+| lâcher total, le bras droit à 30 % de sa raideur | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,02 s | lâché à 0,06 s ; poids 0,24 s après ; vu à 0,02 s |
+| lâcher total 0,1 s après le début du port, niveau pas encore lu | poids 0,28 s après ; vu à 0,04 s (rotation) | poids 0,32 s après ; vu à 0,04 s (rotation) |
+| lâcher partiel : glisse sans tomber | 4,7 cm (mains ouvertes de 0,089 rad) ; poids lu −11 % ; marge sur 0,3 s à 0,26 s, 0,24 s après le début du glissement | 5,3 cm (0,083 rad) ; poids lu −13 % ; marge à 0,26 s, 0,24 s après |
+
+- Le lâcher partiel n'était pas vu par le poids avant non plus : pendant le
+  glissement, les mains portent encore ce que leur frottement retient ; le
+  poids lu ne baisse que de 4 à 22 % (glissés de 1,3 à 8,8 cm), sous les 60 %
+  de la règle et sous les 40 % de l'ancienne. Ce qui le voit : la marge de
+  frottement sur 0,3 s (les forces normales, avec le frottement prudent 0,8 ;
+  ce carton en a 1,2) sous 1, « un vrai desserrage », 0,20 à 0,24 s après le
+  début du glissement.
+- La limite, inchangée : un carton plus glissant que le frottement prudent
+  (0,7) tombe 0,2 à 0,3 s après que les mains s'ouvrent, vu au même moment
+  (mains écartées, marge), puis par le poids 0,22 s après. Rien de ce que
+  l'OS lit ne le voit glisser avant.
+
+Fausses alertes sur le bruit réel des essais GPU (17 h 16, 22 h 04, 18 h 21 :
+27 s de port ; 25 ports de 10 s au plus, commencés chaque seconde ; un carton
+de W N lu W + le bruit de l'essai autour de son niveau ; la règle de l'OS
+rejouée, `_surveiller_port`) :
+
+| carton | relevé par l'OS (0,3 s) : nouvelle / ancienne | recalculé à chaque lecture : nouvelle / ancienne |
+|---|---|---|
+| 2,2 N | 0 / 0 | 1 / 17 |
+| 3 N | 0 / 0 | 0 / 10 |
+| 5 N | 0 / 0 | 0 / 0 |
+| 10 N | 0 / 0 | 0 / 0 |
+
+- Relevé par l'OS : la moyenne de 0,3 s qu'il a écrite au journal (plus
+  lisse que les 0,1 s de la règle : borne optimiste). Recalculé : le poids
+  de chaque lecture refait depuis les couples et angles relevés, comme
+  `_force_main` (pesanteur verticale, biais des couples inconnus : un
+  décalage constant ; une lecture au lieu de cinq : borne pessimiste) ;
+  vérifié sur le levage de 21 h 37 à 50 Hz (sa moyenne sur 15 lectures contre
+  le relevé de l'OS : corrélation 0,992). Bruit d'une lecture bras
+  immobiles : 0,95 N (17 h 16), 1,02 N (21 h 37) ; en marchant, 2,8 N.
+- Les vrais glissements GPU : 21 h 57, vu par les deux règles au même
+  instant ; 21 h 37 (tourné de 50°, glissé de 8 cm), le poids lu est resté
+  vers 10 N jusqu'à la fin, vu par les écartements et la caméra (§15.2).
+- Robot simulé, n° 105 porté 10 s, 16 tirages du bruit des couples : 1
+  fausse alerte (pesé 1,6 N pour 2,2 vrais) au lieu de 4 ; un tirage reste
+  refusé à la pesée (« ne pèse pas sur les mains », 0,8 N, au moins 1),
+  inchangé. Campagne : 4 déposés (n° 64, 69, 70, 105), le reste inchangé.

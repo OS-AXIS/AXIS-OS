@@ -53,6 +53,12 @@ docs/validation_port_carton.md, §15.
   autour du seuil n'interrompt plus le transport (§15.10).
 - Campagne de cartons : les déposés perdus depuis la PR #35 attribués
   carton par carton (§15.9).
+- Poids qui chute au port, jugé depuis le niveau lu au début du port, dans
+  la même posture : plus bas de 60 % du poids pesé (plus deux fois
+  l'incertitude du niveau encore jeune), pendant 0,15 s ; le carton n° 105
+  n'est plus reposé à tort (§15.11).
+- CI : délai du job tests porté à 60 min (la suite prend de 33 à 43 min
+  selon la machine).
 
 ### Pesée sur 100 lectures
 
