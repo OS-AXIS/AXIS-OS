@@ -166,15 +166,29 @@ def posture(normale):
 
 
 section("1. Le niveau du début du port : la première foulée, dans sa posture")
-b = Banc(port_s=0.2)
+b = Banc(port_s=0.0)
 m = b.m
-check(f"Porté depuis {b.t[0] - b.t_port:.1f} s : pas encore de niveau (au moins 0,1 s de "
-      f"lectures plus vieilles que {R.recentes_niveau_s:g} s), rien à comparer",
-      m.etat is Etat.TENU and m._niveau_debut_port(b.t[0], m._hist_charge[-1][0]) is None)
+
+
+def lu_sur_0_1_s():
+    return float(np.mean([v[0] for v in list(m._hist_charge)[-R.filtre_force:]]))
+
+
+b.pas()
+entree = lu_sur_0_1_s()                     # le premier pas du port
+b.pas(round(0.2 / b.r._dt) - 1)
+avant, incertain = m._niveau_debut_port(b.t[0], m._hist_charge[-1][0], lu_sur_0_1_s())
+check(f"Porté depuis {b.t[0] - b.t_port:.1f} s, le niveau pas encore lu (au moins 0,1 s de "
+      f"lectures plus vieilles que {R.recentes_niveau_s:g} s) : le plus bas de la pesée "
+      f"({m.poids_carton:.2f} N) et du poids lu sur 0,1 s en entrant au port ({entree:.2f}), "
+      f"± {incertain:.2f} (une moyenne de {R.filtre_force} lectures)",
+      m.etat is Etat.TENU and m._poids_entree == entree
+      and avant == min(m.poids_carton, entree)
+      and abs(incertain - m._bruit_pesee / np.sqrt(R.filtre_force)) < 1e-12)
 b.pas(round(0.6 / b.r._dt))
-provisoire, incertain = m._niveau_debut_port(b.t[0], m._hist_charge[-1][0])
+provisoire, incertain = m._niveau_debut_port(b.t[0], m._hist_charge[-1][0], lu_sur_0_1_s())
 anciennes = [w for tt, w in m._niveau_port if tt <= b.t[0] - R.recentes_niveau_s + 1e-9]
-check(f"Porté depuis {b.t[0] - b.t_port:.1f} s : niveau provisoire {provisoire:.2f} N "
+check(f"Porté depuis {b.t[0] - b.t_port:.1f} s : niveau en cours de lecture, {provisoire:.2f} N "
       f"(± {incertain:.2f}), la moyenne des {len(anciennes)} lectures plus vieilles que "
       f"{R.recentes_niveau_s:g} s (une chute en cours n'abaisse pas sa propre référence)",
       abs(provisoire - float(np.mean(anciennes))) < 1e-9
@@ -210,20 +224,26 @@ for normale in (False, True):
               b.avant[0] is Etat.TENU and lache is not None and poids is not None
               and poids - lache <= DELAI and vu is not None and vu <= DELAI,
               f"{b.ligne()} {premiers}")
-# Au tout début du port (0,1 s), le niveau n'est pas encore lu (0,4 s) : le
-# lâcher est vu par les autres contrôles, et par le poids une fois le niveau
-# lu (sur les lectures d'avant le lâcher : une chute en cours n'abaisse pas sa
-# propre référence).
-for normale in (False, True):
-    b = Banc(normale=normale, port_s=0.1)
-    vu, lache, glisse, gmax, premiers, bas = b.essai(lacets(0.10))
+# Au tout début du port, le niveau n'est pas encore lu (ses 0,4 premières
+# secondes) : le plus bas de la pesée et du poids lu en entrant au port. Lâché
+# dès l'entrée au port (aucune lecture du port d'avant le lâcher), ou pendant
+# ces 0,4 s : vu par le poids 0,3 s au plus après, comme plus tard.
+for normale, nom, panne, port_s in (
+        (False, "les deux mains s'ouvrent", lacets(0.10), 0.0),
+        (True, "les deux mains s'ouvrent", lacets(0.10), 0.0),
+        (False, "le bras droit faiblit", bras_droit_faiblit(0.3), 0.0),
+        (True, "le bras droit faiblit", bras_droit_faiblit(0.3), 0.0),
+        (False, "les deux mains s'ouvrent", lacets(0.10), 0.2),
+        (True, "les deux mains s'ouvrent", lacets(0.10), 0.2)):
+    b = Banc(normale=normale, port_s=port_s)
+    vu, lache, glisse, gmax, premiers, bas = b.essai(panne, duree=1.0)
     poids = premiers.get("poids qui chute")
-    check(f"{posture(normale)}, les deux mains s'ouvrent 0,1 s après le début du port, avant que "
-          f"le niveau soit lu : carton lâché à {lache if lache is None else f'{lache:.2f}'} s, vu en "
-          f"{vu if vu is None else f'{vu:.2f}'} s ; le poids, {poids - lache if poids is not None and lache is not None else float('nan'):.2f} s "
-          f"après — {resume(premiers)}",
-          lache is not None and vu is not None and vu <= DELAI and poids is not None
-          and poids - lache <= 2 * DELAI, f"{premiers}")
+    check(f"{posture(normale)}, {nom} {port_s:g} s après le début du port (niveau pas encore lu) : "
+          f"carton lâché à {lache if lache is None else f'{lache:.2f}'} s, poids qui chute vu "
+          f"{poids - lache if poids is not None and lache is not None else float('nan'):.2f} s "
+          f"après ; premier vu en {vu if vu is None else f'{vu:.2f}'} s — {resume(premiers)}",
+          lache is not None and poids is not None and poids - lache <= DELAI
+          and vu is not None and vu <= DELAI, f"{premiers}")
 
 section("3. Lâcher partiel : le carton glisse sans tomber ; vu par la marge de frottement")
 # Le poids lu pendant le glissement n'est que ce que le frottement des mains

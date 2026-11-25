@@ -301,10 +301,11 @@ class ReglagesPrise:
     # (1 - part_poids_min) du poids pesé, 60 %. Le niveau : la moyenne des
     # lectures de la première foulée du port (fenetre_marge_s), sans celles des
     # recentes_niveau_s les plus récentes tant qu'elle se remplit (une chute en
-    # cours n'abaisse pas sa propre référence). Avant, « moins de 40 % du plus
-    # grand poids lu depuis le levage », pris dans d'autres postures : prise en
-    # pendule, un carton de 0,22 kg tenu y était lu sous ce seuil (campagne,
-    # n° 105).
+    # cours n'abaisse pas sa propre référence) ; pas encore lu (0,4 s), le plus
+    # bas de la pesée et du poids lu en entrant au port. Avant, « moins de 40 %
+    # du plus grand poids lu depuis le levage », pris dans d'autres postures :
+    # prise en pendule, un carton de 0,22 kg tenu y était lu sous ce seuil
+    # (campagne, n° 105).
     recentes_niveau_s: float = 0.3
     # Encore jeune (ses premières lectures), le niveau est lui-même incertain :
     # la chute doit le dépasser de sigmas_niveau_port fois son incertitude
