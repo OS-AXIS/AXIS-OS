@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from axis_os.apps.tri_colis import scene_demo  # noqa: E402
 from axis_os.apps.tri_colis.facade import FacadeServices  # noqa: E402
-from axis_os.apps.tri_colis.logique import ConfigTri, TriColis  # noqa: E402
+from axis_os.apps.tri_colis.logique import ArretMemeCause, ConfigTri, TriColis  # noqa: E402
 from axis_os.services.locomotion.proximite import Verdict  # noqa: E402
 from axis_os.services.navigation.service import Pose2D  # noqa: E402
 from monde_tri_factice import REGLES, MondeFactice, executer  # noqa: E402
@@ -142,6 +142,20 @@ check("Carton bleu sorti de 7 cm de la table : l'opérateur le sait au bout de 2
       len(a) == 1 and "il dépasse de 7 cm le bord de la table du poste « prise »" in a[0]
       and "carton bleu" in a[0] and tri.bilan.alertes and MEME in tri.bilan.alertes[-1], str(a))
 print("  " + (a[0] if a else ""))
+
+section("5. Hors de la mission : la calibration de charge attend la sécurité aussi")
+# Essai GPU du 25 novembre 2026, 16 h 43 : la masse de référence au sol, à
+# 0,9 m ; le gardien arrête le robot 90 s pendant l'accostage de la
+# calibration de charge (avant la mission), aucune alerte. Le banc T1 lui
+# donne la même surveillance que la mission (ArretMemeCause).
+f = facade(Verdict(0.0, 0.91, "obstacle à 0.91 m — arrêt", (3.23, 0.41)))
+veille = ArretMemeCause(ConfigTri(regles={}))
+donnees = [(k * 0.05, veille.pas(k * 0.05, *f.cause_arret())) for k in range(int(90.0 / 0.05))]
+a = [(t_, m_) for t_, m_ in donnees if m_]
+check(f"Arrêté 90 s pour la même cause hors de la mission : une alerte, à {a[0][0] if a else float('nan'):.1f} s, "
+      f"avec la cause (« {a[0][1][:90] if a else ''}… »)",
+      len(a) == 1 and 19.9 <= a[0][0] <= 20.1 and "(3.23, 0.41)" in a[0][1] and MEME in a[0][1],
+      str(a))
 
 print(f"\n{'=' * 66}")
 print(f"  Résultats : {'Tous les tests passés' if FAIL == 0 else str(FAIL) + ' échec(s)'}")
